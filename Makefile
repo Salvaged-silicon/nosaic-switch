@@ -85,14 +85,43 @@ fmt-check: $(BUILDER_DEP)
 ## nosaic: build the CLI for this host
 nosaic: $(BUILDER_DEP)
 	@mkdir -p $(OUT)
-	@$(RUN) go build -ldflags "$(LDFLAGS)" -o out/nosaic ./cmd/nosaic
+	@$(RUN) go build -buildvcs=false -ldflags "$(LDFLAGS)" -o out/nosaic ./cmd/nosaic
 	@echo "built $(OUT)/nosaic"
 
-## toolchains: build the crosstool-NG toolchains          (M1)
-## base:       build the base rootfs profiles             (M3)
-## packages:   build every recipe into a .nos package     (M2)
-## image:      assemble a board image                     (M3)
-toolchains base packages image:
+# --- toolchains (M1) -------------------------------------------------------
+# ARCHES is derived from arch/, not listed here: a new architecture is a
+# directory, the same way a new board is.
+ARCHES := $(notdir $(wildcard arch/*))
+
+## toolchains: build every architecture's toolchain
+toolchains: $(addprefix toolchain-,$(ARCHES))
+
+## toolchain: build one toolchain, e.g. make toolchain ARCH=x86_64
+toolchain: $(BUILDER_DEP)
+	@test -n "$(ARCH)" || { echo "usage: make toolchain ARCH=<one of: $(ARCHES)>"; exit 2; }
+	@$(RUN) bootstrap/build.sh build $(ARCH)
+
+toolchain-%: $(BUILDER_DEP)
+	@$(RUN) bootstrap/build.sh build $*
+
+## toolchain-seed: regenerate a defconfig from the upstream sample
+toolchain-seed: $(BUILDER_DEP)
+	@test -n "$(ARCH)" || { echo "usage: make toolchain-seed ARCH=<one of: $(ARCHES)>"; exit 2; }
+	@$(RUN) bootstrap/build.sh seed $(ARCH)
+
+## toolchain-test: prove a toolchain produces binaries that run
+toolchain-test: $(BUILDER_DEP)
+	@test -n "$(ARCH)" || { echo "usage: make toolchain-test ARCH=<one of: $(ARCHES)>"; exit 2; }
+	@$(RUN) bootstrap/build.sh test $(ARCH)
+
+toolchains-test: $(addprefix toolchain-test-,$(ARCHES))
+toolchain-test-%: $(BUILDER_DEP)
+	@$(RUN) bootstrap/build.sh test $*
+
+## base: build the base rootfs profiles (M3)
+## packages: build every recipe into a .nos package (M2)
+## image: assemble a board image (M3)
+base packages image:
 	@echo "'$@' is not implemented yet — see docs/DESIGN.md for its milestone"
 	@exit 3
 
@@ -101,4 +130,5 @@ clean:
 	rm -rf $(OUT)
 
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
-        toolchains base packages image clean
+        toolchains toolchain toolchain-seed toolchain-test toolchains-test \
+        base packages image clean

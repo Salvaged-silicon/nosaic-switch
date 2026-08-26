@@ -1,0 +1,22 @@
+# NOSaic CPU architecture: x86-64.
+#
+# The first architecture, and the one that goes all the way to real hardware
+# before anything is cross-compiled. It is still built through crosstool-NG
+# rather than with the host compiler: taking the same path as every other
+# architecture is what stops host assumptions leaking in and only being found
+# when the first genuine cross-build is attempted.
+id: x86_64
+name: x86-64
+triple: x86_64-nosaic-linux-gnu
+endian: little
+bits: 64
+kernel_arch: x86
+ctng_sample: x86_64-unknown-linux-gnu
+
+# Empty: binaries run natively on the build host.
+qemu: ""
+
+status: supported
+notes: >
+  Modern whitebox and brite-box switches are overwhelmingly x86-64, including
+  the Arista 7050 family. This is where NOSaic reaches hardware first.
