@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
 )
@@ -60,6 +61,12 @@ func Run(root string) *Result {
 		res.errf("missing platform/TEMPLATE/ — a board port needs a scaffold to copy")
 	}
 
+	arches, err := arch.LoadAll(root)
+	if err != nil {
+		res.errf("loading architectures: %v", err)
+	}
+	checkArches(res, root, arches)
+
 	recipes, err := recipe.LoadAll(root)
 	if err != nil {
 		res.errf("loading recipes: %v", err)
@@ -77,6 +84,36 @@ func Run(root string) *Result {
 	}
 
 	return res
+}
+
+func checkArches(res *Result, root string, arches []*arch.Arch) {
+	seenTriple := map[string]string{}
+
+	for _, a := range arches {
+		for _, e := range a.Validate() {
+			res.errf("%s: %s", rel(root, a.Path), e)
+		}
+
+		if a.Triple != "" {
+			if prev, dup := seenTriple[a.Triple]; dup {
+				res.errf("%s: triple %q is already used by %s", rel(root, a.Path), a.Triple, prev)
+			}
+			seenTriple[a.Triple] = a.ID
+		}
+
+		// An architecture that is meant to be built needs a committed
+		// defconfig. Without one the toolchain is not reproducible: it would
+		// depend on whatever the upstream sample happened to be on the day
+		// somebody ran the seed.
+		if a.Status == "planned" {
+			continue
+		}
+		cfg := filepath.Join(root, "bootstrap", "configs", a.ID+".defconfig")
+		if _, err := os.Stat(cfg); os.IsNotExist(err) {
+			res.errf("%s: status %q but bootstrap/configs/%s.defconfig is missing (run: make toolchain-seed ARCH=%s)",
+				rel(root, a.Path), a.Status, a.ID, a.ID)
+		}
+	}
 }
 
 func checkRecipes(res *Result, recipes []*recipe.Recipe) {
