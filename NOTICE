@@ -1,0 +1,10 @@
+NOSaic
+Copyright 2026 The NOSaic Authors
+
+This product includes software developed by the NOSaic project
+(https://github.com/salvaged-silicon/nosaic-switch).
+
+Images built by NOSaic may additionally include third-party software under
+other licences, including source-available vendor SDKs and firmware. Each
+built image ships its own NOTICE and SBOM enumerating every component and its
+licence. NOSaic itself, as distributed in this repository, is Apache-2.0.

@@ -1,0 +1,47 @@
+# NOSaic build container.
+#
+# Everything NOSaic compiles is compiled in here, so that a clone plus Docker
+# is the entire prerequisite list and every contributor and CI run share one
+# toolchain. The base is pinned by digest; see builder/images.env.
+ARG UBUNTU_REF=ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+FROM ${UBUNTU_REF}
+
+ARG GO_VERSION=1.27.0
+ARG GO_SHA256=675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+
+# Set true on networks without working IPv6. Left false by default because it
+# is a fact about the builder's network, not about NOSaic.
+ARG APT_FORCE_IPV4=false
+
+# apt drops privileges to the _apt user via setgroups(), which fails inside a
+# rootless user namespace. Rootless Docker is a legitimate way to build this,
+# so disable the sandbox rather than requiring a rootful daemon. Safe here: the
+# container is single-purpose and already root.
+RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/00-nosaic-sandbox \
+ && if [ "$APT_FORCE_IPV4" = "true" ]; then \
+      echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99-nosaic-ipv4; \
+    fi
+
+# Host tools. crosstool-NG, the kernel build and the base recipes all pull
+# from this set; it is deliberately explicit so that adding a dependency is a
+# reviewed change rather than something that drifts in.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bash bc bison build-essential ca-certificates cpio curl \
+      file flex gawk gettext git gperf help2man libncurses-dev \
+      libssl-dev libtool libtool-bin make patch pkg-config python3 \
+      rsync squashfs-tools texinfo unzip wget xz-utils zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go, verified against the published checksum.
+RUN curl -fsSL -o /tmp/go.tar.gz \
+      "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+ && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
+ && tar -C /usr/local -xzf /tmp/go.tar.gz \
+ && rm /tmp/go.tar.gz
+ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH
+ENV GOTOOLCHAIN=local
+
+WORKDIR /src

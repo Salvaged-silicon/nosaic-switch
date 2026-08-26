@@ -1,0 +1,23 @@
+# build output
+/out/
+/build/
+/.cache/
+
+# toolchains and sysroots (large, reproducible from bootstrap/)
+/toolchain/
+/sysroot/
+
+# fetched vendor sources — pinned by recipe, never committed
+/dl/
+
+# Go
+*.test
+/vendor/
+
+# editors / OS
+.DS_Store
+*.swp
+*~
+
+# host-specific build overrides
+local.mk

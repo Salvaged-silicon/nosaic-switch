@@ -1,0 +1,104 @@
+# NOSaic — top-level build entry point.
+#
+# The gate this file exists to satisfy: a fresh clone on a machine with only
+# Docker and make must pass `make check`. Every target therefore runs inside
+# the pinned builder container by default. Set NATIVE=1 to use host tools
+# instead, which is faster for local iteration but is not what CI does.
+
+include builder/images.env
+
+# Host-specific overrides (docker network, proxies, apt flags). Git-ignored:
+# a local quirk must never become everyone's default.
+-include local.mk
+
+export
+
+SHELL      := /bin/bash
+REPO_ROOT  := $(shell pwd)
+OUT        := $(REPO_ROOT)/out
+VERSION    := $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
+COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LDFLAGS    := -X github.com/salvaged-silicon/nosaic-switch/internal/version.Version=$(VERSION) \
+              -X github.com/salvaged-silicon/nosaic-switch/internal/version.Commit=$(COMMIT)
+
+# Run a command in the builder container, or on the host when NATIVE=1.
+ifeq ($(NATIVE),1)
+  RUN :=
+else
+  RUN := docker run --rm -t $(if $(DOCKER_NETWORK),--network $(DOCKER_NETWORK),) \
+           -v $(REPO_ROOT):/src -w /src \
+           -v nosaic-gocache:/root/.cache/go-build \
+           -v nosaic-gomod:/root/go/pkg/mod \
+           -e HOME=/root \
+           $(BUILDER_IMAGE)
+endif
+
+.DEFAULT_GOAL := help
+
+## help: list targets
+help:
+	@echo "NOSaic $(VERSION) ($(COMMIT))"
+	@echo
+	@sed -n 's/^## //p' $(MAKEFILE_LIST) | awk -F': ' '{printf "  %-14s %s\n", $$1, $$2}'
+	@echo
+	@echo "  NATIVE=1 <target>   use host tools instead of the builder container"
+
+## builder: build the pinned build container
+builder:
+	docker build $(if $(DOCKER_NETWORK),--network=$(DOCKER_NETWORK),) \
+	  --build-arg APT_FORCE_IPV4=$(if $(APT_FORCE_IPV4),$(APT_FORCE_IPV4),false) \
+	  --build-arg UBUNTU_REF=$(UBUNTU_REF) \
+	  --build-arg GO_VERSION=$(GO_VERSION) \
+	  --build-arg GO_SHA256=$(GO_SHA256) \
+	  -t $(BUILDER_IMAGE) -f builder/Dockerfile.build builder/
+
+# Targets that run in the container need it to exist first.
+ifeq ($(NATIVE),1)
+  BUILDER_DEP :=
+else
+  BUILDER_DEP := builder-if-missing
+endif
+
+builder-if-missing:
+	@docker image inspect $(BUILDER_IMAGE) >/dev/null 2>&1 || $(MAKE) builder
+
+## check: validate the repo against the design invariants
+check: $(BUILDER_DEP) fmt-check vet test
+	@$(RUN) go run ./cmd/nosaic check
+
+## test: run unit tests
+test: $(BUILDER_DEP)
+	@$(RUN) go test ./...
+
+## vet: static analysis
+vet: $(BUILDER_DEP)
+	@$(RUN) go vet ./...
+
+## fmt: format the Go source
+fmt: $(BUILDER_DEP)
+	@$(RUN) gofmt -w -s cmd internal
+
+fmt-check: $(BUILDER_DEP)
+	@out=$$($(RUN) gofmt -l -s cmd internal); \
+	if [ -n "$$out" ]; then echo "not gofmt-clean:"; echo "$$out"; exit 1; fi
+
+## nosaic: build the CLI for this host
+nosaic: $(BUILDER_DEP)
+	@mkdir -p $(OUT)
+	@$(RUN) go build -ldflags "$(LDFLAGS)" -o out/nosaic ./cmd/nosaic
+	@echo "built $(OUT)/nosaic"
+
+## toolchains: build the crosstool-NG toolchains          (M1)
+## base:       build the base rootfs profiles             (M3)
+## packages:   build every recipe into a .nos package     (M2)
+## image:      assemble a board image                     (M3)
+toolchains base packages image:
+	@echo "'$@' is not implemented yet — see docs/DESIGN.md for its milestone"
+	@exit 3
+
+## clean: remove build output
+clean:
+	rm -rf $(OUT)
+
+.PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
+        toolchains base packages image clean

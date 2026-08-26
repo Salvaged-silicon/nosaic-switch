@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: make check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The gate: a clone plus Docker and make must be enough. No Go setup
+      # step here on purpose — if CI needed one, the claim would be false.
+      - name: Build the pinned builder container
+        run: make builder
+
+      - name: Check
+        run: make check
+
+      - name: Build the CLI
+        run: make nosaic
+
+      - name: Smoke-test the CLI
+        run: |
+          ./out/nosaic version
+          ./out/nosaic boards
