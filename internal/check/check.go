@@ -14,6 +14,7 @@ import (
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
+	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
 )
 
@@ -144,18 +145,23 @@ func checkRecipes(res *Result, recipes []*recipe.Recipe) {
 		}
 	}
 
-	// Every dependency must resolve to a real package or to a virtual name
-	// some package provides. An unresolvable dependency is a build that fails
-	// late, on someone else's machine.
+	// Every dependency must parse, and must resolve to a real package or to a
+	// virtual name some package provides. An unresolvable dependency is a
+	// build that fails late, on someone else's machine.
 	for _, r := range recipes {
 		for _, d := range r.Depends {
-			if _, ok := seen[d]; ok {
+			req, err := depsolve.ParseRequirement(d)
+			if err != nil {
+				res.errf("%s: %q has an unparseable dependency: %v", r.Path, r.Name, err)
 				continue
 			}
-			if _, ok := provided[d]; ok {
+			if _, ok := seen[req.Name]; ok {
 				continue
 			}
-			res.errf("%s: %q depends on %q, which no recipe provides", r.Path, r.Name, d)
+			if _, ok := provided[req.Name]; ok {
+				continue
+			}
+			res.errf("%s: %q depends on %q, which no recipe provides", r.Path, r.Name, req.Name)
 		}
 	}
 }
