@@ -73,6 +73,16 @@ type Build struct {
 	// Targets are make targets for system: make.
 	Targets []string `yaml:"targets"`
 
+	// Defconfig and Fragment are for system: kernel. The defconfig comes from
+	// the kernel tree; the fragment is our own additions, kept small so the
+	// decisions are legible rather than buried in thousands of generated lines.
+	// Defconfig overrides the architecture's own kernel_defconfig.
+	Defconfig string `yaml:"defconfig"`
+
+	// Fragments are applied in order after the defconfig. ${ARCH} is
+	// substituted, so one recipe covers every architecture.
+	Fragments []string `yaml:"fragments"`
+
 	// Env overrides build environment variables. The cross-compilation
 	// variables are set for you; this is for a package's own quirks.
 	Env map[string]string `yaml:"env"`

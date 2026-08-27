@@ -21,6 +21,14 @@ qemu: ""
 # silently pinned itself to the kernel-headers version instead.
 abi_kernel_max: "4.0.0"
 
+qemu_system: qemu-system-x86_64
+qemu_console: ttyS0
+qemu_machine: ""
+
+qemu_cpu: ""
+
+kernel_defconfig: x86_64_defconfig
+kernel_image: arch/x86/boot/bzImage
 elf_machine: "EM_X86_64"
 
 status: supported

@@ -21,6 +21,13 @@ qemu: qemu-aarch64-static
 # silently pinned itself to the kernel-headers version instead.
 abi_kernel_max: "4.0.0"
 
+qemu_system: qemu-system-aarch64
+qemu_console: ttyAMA0
+qemu_machine: "virt,gic-version=3"
+qemu_cpu: cortex-a57
+
+kernel_defconfig: defconfig
+kernel_image: arch/arm64/boot/Image
 elf_machine: "EM_AARCH64"
 
 status: canary

@@ -40,6 +40,14 @@ forbidden_insn_re: "^(lfs|lfd|lfsu|lfdu|lfsx|lfdx|stfs|stfd|stfsu|stfdu|stfsx|st
 # silently pinned itself to the kernel-headers version instead.
 abi_kernel_max: "4.0.0"
 
+qemu_system: qemu-system-ppc
+qemu_console: ttyS0
+qemu_machine: "ppce500"
+
+qemu_cpu: ""
+
+kernel_defconfig: corenet32_smp_defconfig
+kernel_image: vmlinux
 elf_machine: "EM_PPC"
 
 status: canary

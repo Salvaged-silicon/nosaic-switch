@@ -1,0 +1,7 @@
+# aarch64-specific kernel decisions. Everything else is in common.fragment.
+#
+# QEMU's virt machine presents a PL011, not an 8250. Getting this wrong gives a
+# kernel that boots perfectly and says nothing at all, which is a slow thing to
+# diagnose.
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y

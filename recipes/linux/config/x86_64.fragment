@@ -1,0 +1,6 @@
+# x86_64-specific kernel decisions. Everything else is in common.fragment.
+#
+# Serial is how end-of-service-life switches are recovered, and often the only
+# way in before the network works. It is never a module.
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y

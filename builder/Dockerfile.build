@@ -31,10 +31,12 @@ RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/00-nosaic-sandbox \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       autoconf automake bash bc bison build-essential bzip2 \
       ca-certificates cpio curl file flex gawk gettext git gperf \
-      help2man libncurses-dev libssl-dev libtool libtool-bin make \
+      help2man libelf-dev libncurses-dev libssl-dev libtool libtool-bin \
+      libzstd-dev kmod make \
       meson ninja-build patch pkg-config python3 python3-dev \
-      qemu-user-static rsync squashfs-tools texinfo unzip wget \
-      xz-utils zlib1g-dev \
+      qemu-system-arm qemu-system-misc qemu-system-x86 qemu-user-static \
+      rsync squashfs-tools texinfo unzip wget xz-utils zlib1g-dev zstd \
+      dwarves \
     && rm -rf /var/lib/apt/lists/*
 
 # Go, verified against the published checksum.

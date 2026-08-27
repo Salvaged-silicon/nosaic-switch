@@ -103,6 +103,9 @@ func runBuild(o Options, srcDir, stage string) error {
 	jobs := "-j" + strconv.Itoa(o.Jobs)
 
 	switch b.System {
+	case "kernel":
+		return runKernelBuild(o, srcDir, stage)
+
 	case "configure", "autotools":
 		args := []string{"--prefix=" + prefix}
 		for _, a := range b.Configure {
@@ -124,7 +127,7 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", "DESTDIR="+stage, "install")
 
 	default:
-		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, none)", b.System)
+		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, kernel, none)", b.System)
 	}
 }
 

@@ -154,6 +154,11 @@ packages: $(BUILDER_DEP)
 	   $(RUN) go run ./cmd/nosaic pkg build $$p --arch $(ARCH) --jobs $(JOBS) || exit 1; \
 	 done
 
+## kernel-boot: boot a built kernel under QEMU and run its own userspace
+kernel-boot: $(BUILDER_DEP)
+	@test -n "$(ARCH)" || { echo "usage: make kernel-boot ARCH=<one of: $(ARCHES)>"; exit 2; }
+	@$(RUN) boot/virt/smoketest.sh $(ARCH)
+
 ## base: build the base rootfs profiles (M3)
 ## image: assemble a board image (M3)
 base image:
@@ -173,4 +178,4 @@ clean-toolchains:
 
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
-        pkg packages base image clean clean-toolchains
+        pkg packages kernel-boot base image clean clean-toolchains

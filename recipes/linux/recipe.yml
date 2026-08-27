@@ -1,0 +1,26 @@
+# The kernel — one version across the whole fleet.
+#
+# 6.12 LTS: mature, with a long support runway, and old enough that drivers for
+# ageing hardware have not yet been pruned the way they are in newer trees.
+# That last point matters more here than it would elsewhere: this project exists
+# for hardware whose drivers are exactly the ones that get removed.
+#
+# Per-board configuration arrives as additional fragments, so a board changes
+# the kernel by adding data rather than by forking a config.
+name: linux
+version: "6.12.105"
+summary: The Linux kernel
+
+license: GPL-2.0-only
+redistributable: true
+
+source:
+  url: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.105.tar.xz
+  sha256: eb36801e119529b13513c3459dc20e2a32f7053629f3aabb63ea501a4d88f63d
+
+build:
+  system: kernel
+  # The defconfig comes from the architecture, which names its own.
+  fragments:
+    - config/common.fragment
+    - config/${ARCH}.fragment

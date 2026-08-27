@@ -1,0 +1,52 @@
+# NOSaic's kernel decisions that hold for every architecture.
+#
+# A fragment rather than a complete .config on purpose. A full config is
+# thousands of generated lines that nobody reviews and that rots silently
+# across versions; this file is the set of decisions NOSaic actually made, and
+# it can be read in a minute.
+#
+# Every symbol here is verified after olddefconfig. A symbol whose
+# dependencies are unmet is dropped without complaint, which otherwise
+# produces a kernel that boots and then cannot mount its own root.
+
+# --- the image and its overlay -------------------------------------------
+# The root is a read-only squashfs with a writable overlay on top; the data
+# partition holding config and per-slot state is ext4.
+# These are asked for as built-in deliberately: each is needed to mount the
+# root filesystem, and a module cannot be loaded from a root that is not
+# mounted yet.
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_XZ=y
+CONFIG_SQUASHFS_ZSTD=y
+CONFIG_OVERLAY_FS=y
+CONFIG_EXT4_FS=y
+CONFIG_TMPFS=y
+
+# An initramfs assembles the overlay and selects the A/B slot before handing
+# over to the real root, so it is not optional.
+CONFIG_BLK_DEV_INITRD=y
+
+# --- virtual hardware ----------------------------------------------------
+# The virtual platform is a first-class board, not a convenience: it is the
+# one that keeps main provable with no switch attached.
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+
+# --- console-independent bits of the console --------------------------
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# --- the virtual dataplane -----------------------------------------------
+# veth pairs behind a bridge stand in for front-panel ports, presented through
+# the same interface a real ASIC would be.
+#
+# Asked for as modules rather than built in, because nothing here is needed
+# until userspace is already running. Built-in satisfies these too; the check
+# accepts y where m was requested, but not the other way round.
+CONFIG_VETH=m
+CONFIG_BRIDGE=m
+CONFIG_BRIDGE_VLAN_FILTERING=y
+CONFIG_VLAN_8021Q=m

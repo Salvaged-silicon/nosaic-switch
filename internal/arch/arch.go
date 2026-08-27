@@ -55,6 +55,25 @@ type Arch struct {
 	// fails on hardware. Auditing the instruction stream is what catches it.
 	ForbiddenInsnRE string `yaml:"forbidden_insn_re"`
 
+	// KernelDefconfig is the in-tree defconfig this architecture starts from.
+	// Each kernel architecture names its own: x86_64_defconfig, plain
+	// defconfig on arm64, and a board-specific one on powerpc.
+	KernelDefconfig string `yaml:"kernel_defconfig"`
+
+	// QEMUSystem is the full-system emulator for booting this architecture,
+	// with the console device and machine type it needs. Recorded here
+	// because they are facts about the architecture, like every other axis
+	// fact, rather than knowledge embedded in a script.
+	QEMUSystem  string `yaml:"qemu_system"`
+	QEMUConsole string `yaml:"qemu_console"`
+	QEMUMachine string `yaml:"qemu_machine"`
+	QEMUCPU     string `yaml:"qemu_cpu"`
+
+	// KernelImage is the bootable image's path within a built kernel tree,
+	// e.g. arch/x86/boot/bzImage. It differs per architecture, and getting it
+	// wrong produces a package with no kernel in it.
+	KernelImage string `yaml:"kernel_image"`
+
 	// ELFMachine is the ELF header machine type built objects must carry,
 	// e.g. EM_PPC. Checked after every package build: a cross-build that
 	// silently used the host compiler produces a package containing objects

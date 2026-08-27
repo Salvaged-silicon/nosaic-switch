@@ -68,6 +68,25 @@ jobs:
           make nosaic
           ./out/nosaic pkg verify out/packages/zlib_1.3.1_x86_64.nos
 
+      # The kernel is cached on the inputs that determine it, because building
+      # one on every commit would make CI useless without proving anything new.
+      - name: Cache the kernel package
+        id: kernel
+        uses: actions/cache@v4
+        with:
+          path: out/packages
+          key: kernel-x86_64-${{ hashFiles('recipes/linux/**', 'arch/x86_64/arch.yml') }}
+
+      - name: Build the kernel
+        if: steps.kernel.outputs.cache-hit != 'true'
+        run: make pkg PKG=linux ARCH=x86_64 JOBS=4 CPUS=4 MEMORY=8g
+
+      # Not "does it compile": boot it, run an init built by our own toolchain,
+      # and have that init confirm from inside the running kernel that the
+      # filesystems the image design depends on are actually present.
+      - name: Boot the kernel and run its own userspace
+        run: make kernel-boot ARCH=x86_64
+
       - name: Rebuild and require identical bytes
         run: |
           before=$(sha256sum out/packages/zlib_1.3.1_x86_64.nos | cut -d' ' -f1)

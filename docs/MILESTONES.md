@@ -8,7 +8,7 @@ leaves something bootable.
 | **M0** | A clean clone builds | Clone into an empty directory on a machine with only Docker and make; `make check` passes |
 | **M1** | Toolchains | **Done.** crosstool-NG 1.28.0 produces x86_64, aarch64 and powerpc toolchains from committed defconfigs; each compiles a binary that runs and passes three gates |
 | **M2** | Recipe engine and `.nos` packages | **Done.** zlib builds from source for x86_64 and powerpc; two clean builds are byte-identical; dependencies resolve in topological order; ELF objects are verified against the target |
-| **M3** | One kernel | Boots on x86_64 under QEMU; cross-builds clean for aarch64 |
+| **M3** | One kernel | **Done.** 6.12 LTS boots under QEMU on x86_64 *and* aarch64, running an init built by its own toolchain that verifies the configured filesystems are present |
 | **M4** | Base system, and a VM that boots | `nosaic build virt-x86_64` boots under QEMU in CI for all three profiles; the CLI configures a port, VLAN, address and route; an A/B upgrade, trial boot, commit and auto-rollback all pass |
 | **M5** | The boot axis | Two bootloader backends emit installable images; a corrupted image is rejected rather than installed |
 | **M6** | First real board | Boots from its own from-source base on real hardware, reports real sensors, forwards traffic — and the M3 CLI test passes unmodified |
@@ -31,7 +31,7 @@ distro is built on the assumption that every architecture is equally reachable.
 
 ## Current state
 
-**M0**, **M1** and **M2** complete. **S1** answered.
+**M0** through **M3** complete. **S1** answered.
 
 Three toolchains, each gated on three independent properties rather than "did it build":
 
@@ -80,4 +80,34 @@ assumptions a from-source base does not reproduce.
 
 The kernel has no dependency on the base, so it simply goes first.
 
-Next: **M3**, one kernel.
+### M3
+
+Linux 6.12 LTS, one version fleet-wide, built as a recipe like anything else
+rather than as a special case with its own script.
+
+Configuration is a 45-line common fragment plus six or seven architecture-specific
+lines — not a committed 5,000-line `.config` that nobody reviews and that rots
+across versions. Every symbol is verified after `olddefconfig`, because appending
+to `.config` is only a request: a symbol whose dependencies are unmet is dropped
+in silence, and the symptom arrives much later as an image that cannot mount its
+own root.
+
+That check earned itself immediately. On aarch64 it caught `CONFIG_BRIDGE`
+coming out as a module where the fragment asked for built-in — on the
+architecture nobody is testing by hand. It also forced a distinction worth
+keeping:
+
+| | Why |
+|---|---|
+| **`=y` required** — squashfs, overlayfs, ext4, virtio-blk, console | needed to mount the root; a module cannot load from a filesystem that is not mounted yet |
+| **`=m` accepted** — veth, bridge, VLAN | nothing needs them until userspace is running |
+
+So built-in satisfies a request for a module, never the reverse.
+
+The boot test does not merely check that a kernel starts. It builds an init with
+that architecture's own toolchain, boots it under QEMU, and has it report from
+inside the running kernel which filesystems are actually present — so a kernel
+that boots but is missing something it was configured with fails, rather than
+passing and disappointing someone later.
+
+Next: **M4**, the base system and a VM that boots.
