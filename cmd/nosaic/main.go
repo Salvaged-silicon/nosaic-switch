@@ -17,6 +17,7 @@ import (
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
+	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
 	"github.com/salvaged-silicon/nosaic-switch/internal/check"
 	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
 	"github.com/salvaged-silicon/nosaic-switch/internal/imgbuild"
@@ -296,6 +297,23 @@ func buildImage(root, boardID string) error {
 	if err != nil {
 		return err
 	}
+	// The installable artifact for whatever bootloader this board has. Every
+	// board goes through a backend, including the virtual one -- the moment a
+	// board is special-cased here, the interface stops being what every board
+	// uses.
+	backend, err := boot.For(b.Boot)
+	if err != nil {
+		return err
+	}
+	artifact, err := backend.Wrap(boot.Image{
+		Kernel: res.Kernel, Initramfs: res.Initramfs,
+		Squashfs: res.Squashfs, Disk: res.Disk,
+		Board: b.ID, Arch: a.ID, Version: version.Version,
+	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("\nimage for %s (%s profile)\n", b.ID, pr.Name)
 	for _, p := range res.Packages {
 		fmt.Printf("  %s\n", p)
@@ -304,6 +322,10 @@ func buildImage(root, boardID string) error {
 		if fi, err := os.Stat(f); err == nil {
 			fmt.Printf("  %-42s %6.1f MiB\n", f, float64(fi.Size())/(1<<20))
 		}
+	}
+	fmt.Printf("\ninstall with %s\n  %s\n", backend.ID(), backend.Describe())
+	if fi, err := os.Stat(artifact); err == nil {
+		fmt.Printf("  %-42s %6.1f MiB\n", artifact, float64(fi.Size())/(1<<20))
 	}
 	return nil
 }

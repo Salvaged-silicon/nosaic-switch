@@ -14,6 +14,7 @@ import (
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
+	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
 	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
 	"github.com/salvaged-silicon/nosaic-switch/internal/identity"
 	"github.com/salvaged-silicon/nosaic-switch/internal/profile"
@@ -103,6 +104,13 @@ func Run(root string) *Result {
 	for _, b := range boards {
 		for _, e := range b.Validate(root) {
 			res.errf("%s: %s", rel(root, b.Path), e)
+		}
+		// A board naming a bootloader with no backend cannot produce an
+		// installable image, which is worth saying before a build discovers it.
+		if b.Boot != "" {
+			if _, err := boot.For(b.Boot); err != nil {
+				res.errf("%s: %v", rel(root, b.Path), err)
+			}
 		}
 		// A board naming a profile that does not exist is a board that cannot
 		// be built, and saying so here costs nothing.
