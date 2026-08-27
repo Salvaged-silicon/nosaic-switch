@@ -21,6 +21,8 @@ qemu: ""
 # silently pinned itself to the kernel-headers version instead.
 abi_kernel_max: "4.0.0"
 
+elf_machine: "EM_X86_64"
+
 status: supported
 notes: >
   Modern whitebox and brite-box switches are overwhelmingly x86-64, including

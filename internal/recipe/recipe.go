@@ -63,9 +63,19 @@ type Service struct {
 
 // Build describes how the package is compiled.
 type Build struct {
-	System    string            `yaml:"system"`
-	Configure []string          `yaml:"configure"`
-	Env       map[string]string `yaml:"env"`
+	// System is how the package is built: configure, autotools, make, or none.
+	System string `yaml:"system"`
+
+	// Configure are extra arguments; --prefix is supplied automatically.
+	// ${TRIPLE}, ${ARCH}, ${PREFIX} and ${KERNEL_ARCH} are substituted.
+	Configure []string `yaml:"configure"`
+
+	// Targets are make targets for system: make.
+	Targets []string `yaml:"targets"`
+
+	// Env overrides build environment variables. The cross-compilation
+	// variables are set for you; this is for a package's own quirks.
+	Env map[string]string `yaml:"env"`
 }
 
 // Recipe is one package.
@@ -83,6 +93,11 @@ type Recipe struct {
 	// omitted licensing decision must fail the check, not default to
 	// permissive.
 	Redistributable *bool `yaml:"redistributable"`
+
+	// RuntimeInstallable allows this package to be installed onto a running
+	// switch, not merely composed into an image. Most packages are not: a
+	// libc cannot be swapped underneath a running system.
+	RuntimeInstallable bool `yaml:"runtime_installable"`
 
 	Source  *Source  `yaml:"source"`
 	Patches []string `yaml:"patches"`

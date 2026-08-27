@@ -10,10 +10,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
+	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/check"
+	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
+	"github.com/salvaged-silicon/nosaic-switch/internal/pkgbuild"
+	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
 	"github.com/salvaged-silicon/nosaic-switch/internal/version"
 )
 
@@ -22,15 +27,17 @@ const usage = `nosaic — a network OS for end-of-service-life switches and rout
 usage: nosaic <command> [args]
 
 available now
-  version              print the build identity
-  check                validate the repository against the design invariants
-  boards               list board ports and their status
+  version                      print the build identity
+  check                        validate the repository against the invariants
+  boards                       list board ports and their status
+  pkg build <name> --arch A    build a package from its recipe
+  pkg info <file.nos>          show a package's manifest
+  pkg verify <file.nos>        re-derive every digest in a package
 
 not yet implemented
-  pkg build <recipe>   build a package            (M2)
-  build <board>        assemble a board's image   (M3)
-  upgrade              A/B image upgrade          (M3)
-  platform hal         report board sensors       (M6)
+  build <board>                assemble a board's image   (M3)
+  upgrade                      A/B image upgrade          (M3)
+  platform hal                 report board sensors       (M6)
 
 `
 
@@ -60,7 +67,13 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "pkg", "build", "upgrade", "platform":
+	case "pkg":
+		if err := pkgCmd(repoRoot(), args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "build", "upgrade", "platform":
 		fmt.Fprintf(os.Stderr, "nosaic: %q is not implemented yet\n", args[0])
 		fmt.Fprintln(os.Stderr, "see docs/DESIGN.md for which milestone lands it")
 		os.Exit(3)
@@ -108,4 +121,98 @@ func repoRoot() string {
 		}
 		dir = parent
 	}
+}
+
+func pkgCmd(root string, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: nosaic pkg <build|info|verify> ...")
+	}
+	switch args[0] {
+	case "build":
+		// The package name is positional and comes first, because Go's flag
+		// package stops parsing at the first non-flag argument -- so flags
+		// written after a positional would be silently ignored.
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			return fmt.Errorf("usage: nosaic pkg build <name> --arch <arch>")
+		}
+		name := args[1]
+		fs := flag.NewFlagSet("pkg build", flag.ExitOnError)
+		archID := fs.String("arch", "", "target architecture")
+		jobs := fs.Int("jobs", 1, "parallel make jobs")
+		out := fs.String("out", "out/packages", "output directory")
+		epoch := fs.Int64("epoch", 0, "SOURCE_DATE_EPOCH (0 = the project default)")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		if *archID == "" {
+			return fmt.Errorf("--arch is required")
+		}
+		return pkgBuild(root, name, *archID, *jobs, *out, *epoch)
+
+	case "info", "verify":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: nosaic pkg %s <file.nos>", args[0])
+		}
+		var (
+			m   *nospkg.Manifest
+			err error
+		)
+		if args[0] == "verify" {
+			m, err = nospkg.VerifyFile(args[1])
+		} else {
+			m, err = nospkg.ReadManifestFile(args[1])
+		}
+		if err != nil {
+			return err
+		}
+		printManifest(m, args[0] == "verify")
+		return nil
+	}
+	return fmt.Errorf("unknown pkg subcommand %q", args[0])
+}
+
+func pkgBuild(root, name, archID string, jobs int, out string, epoch int64) error {
+	r, err := recipe.Load(filepath.Join(root, "recipes", name, "recipe.yml"))
+	if err != nil {
+		return err
+	}
+	a, err := arch.Load(filepath.Join(root, "arch", archID, "arch.yml"))
+	if err != nil {
+		return err
+	}
+	res, err := pkgbuild.Build(pkgbuild.Options{
+		Root:   root,
+		Recipe: r,
+		Arch:   a,
+		Jobs:   jobs,
+		OutDir: filepath.Join(root, out),
+		Epoch:  epoch,
+		Log:    os.Stdout,
+	})
+	if err != nil {
+		return err
+	}
+	printManifest(res.Manifest, false)
+	return nil
+}
+
+func printManifest(m *nospkg.Manifest, verified bool) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "name\t%s\n", m.Name)
+	fmt.Fprintf(w, "version\t%s\n", m.Version)
+	fmt.Fprintf(w, "arch\t%s\n", m.Arch)
+	fmt.Fprintf(w, "license\t%s\n", m.License)
+	fmt.Fprintf(w, "redistributable\t%v\n", m.Redistributable)
+	if len(m.Provides) > 0 {
+		fmt.Fprintf(w, "provides\t%s\n", strings.Join(m.Provides, ", "))
+	}
+	if len(m.Depends) > 0 {
+		fmt.Fprintf(w, "depends\t%s\n", strings.Join(m.Depends, ", "))
+	}
+	fmt.Fprintf(w, "files\t%d\n", len(m.Files))
+	fmt.Fprintf(w, "payload sha256\t%s\n", m.PayloadSHA256)
+	if verified {
+		fmt.Fprintf(w, "verified\tevery digest re-derived and matched\n")
+	}
+	w.Flush()
 }

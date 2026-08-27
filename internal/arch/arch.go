@@ -55,6 +55,12 @@ type Arch struct {
 	// fails on hardware. Auditing the instruction stream is what catches it.
 	ForbiddenInsnRE string `yaml:"forbidden_insn_re"`
 
+	// ELFMachine is the ELF header machine type built objects must carry,
+	// e.g. EM_PPC. Checked after every package build: a cross-build that
+	// silently used the host compiler produces a package containing objects
+	// for the wrong CPU, and nothing notices until the switch does.
+	ELFMachine string `yaml:"elf_machine"`
+
 	// ABIKernelMax caps the glibc minimum-kernel version baked into binaries.
 	// Exceeding it means they abort at startup on older kernels rather than
 	// degrading -- which would exclude exactly the end-of-service-life boards

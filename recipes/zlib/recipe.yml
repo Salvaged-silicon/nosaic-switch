@@ -1,0 +1,21 @@
+# zlib — the first package NOSaic builds from source.
+#
+# Chosen as the first because almost everything else needs it, it has no
+# dependencies of its own, and its build is plain enough that a failure is a
+# failure of our machinery rather than of the package.
+name: zlib
+version: "1.3.1"
+summary: Compression library
+
+license: Zlib
+redistributable: true
+
+source:
+  url: https://zlib.net/fossils/zlib-1.3.1.tar.gz
+  sha256: 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+
+build:
+  system: configure
+  # zlib's configure is hand-written rather than autotools, so it takes no
+  # --host. It cross-compiles from CHOST and CC, which the builder sets.
+  configure: []

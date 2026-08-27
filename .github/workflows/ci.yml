@@ -10,24 +10,73 @@ permissions:
   contents: read
 
 jobs:
+  # Fast gate, on every commit. A clone plus Docker and make must be enough,
+  # which is why there is no Go setup step here: if CI needed one, the claim
+  # in the README would be false.
   check:
     name: make check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # The gate: a clone plus Docker and make must be enough. No Go setup
-      # step here on purpose — if CI needed one, the claim would be false.
       - name: Build the pinned builder container
         run: make builder
-
       - name: Check
         run: make check
-
       - name: Build the CLI
         run: make nosaic
-
       - name: Smoke-test the CLI
         run: |
           ./out/nosaic version
           ./out/nosaic boards
+
+  # The M2 gate: a package builds from source, and building it twice produces
+  # identical bytes.
+  #
+  # This needs a cross-toolchain, which takes about 45 minutes to build, so it
+  # is cached on the defconfig and the crosstool-NG version -- the only inputs
+  # that can change what the toolchain is. A cache hit makes this job minutes
+  # rather than an hour; a miss rebuilds honestly rather than skipping the gate.
+  package:
+    name: build a package, reproducibly
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the x86_64 toolchain
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: toolchain
+          key: toolchain-x86_64-${{ hashFiles('bootstrap/configs/x86_64.defconfig', 'bootstrap/versions.env') }}
+
+      - name: Build the pinned builder container
+        run: make builder
+
+      - name: Build the toolchain
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: make toolchain ARCH=x86_64 JOBS=4 CPUS=4 MEMORY=8g
+
+      - name: Prove the toolchain produces runnable binaries
+        run: make toolchain-test ARCH=x86_64
+
+      - name: Build zlib from source
+        run: make pkg PKG=zlib ARCH=x86_64 JOBS=4 CPUS=4 MEMORY=8g
+
+      - name: Verify every digest in the package
+        run: |
+          make nosaic
+          ./out/nosaic pkg verify out/packages/zlib_1.3.1_x86_64.nos
+
+      - name: Rebuild and require identical bytes
+        run: |
+          before=$(sha256sum out/packages/zlib_1.3.1_x86_64.nos | cut -d' ' -f1)
+          make pkg PKG=zlib ARCH=x86_64 JOBS=4 CPUS=4 MEMORY=8g
+          after=$(sha256sum out/packages/zlib_1.3.1_x86_64.nos | cut -d' ' -f1)
+          echo "first:  $before"
+          echo "second: $after"
+          if [ "$before" != "$after" ]; then
+            echo "::error::the package is not reproducible"
+            exit 1
+          fi
+          echo "reproducible"

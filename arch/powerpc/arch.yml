@@ -40,6 +40,8 @@ forbidden_insn_re: "^(lfs|lfd|lfsu|lfdu|lfsx|lfdx|stfs|stfd|stfsu|stfdu|stfsx|st
 # silently pinned itself to the kernel-headers version instead.
 abi_kernel_max: "4.0.0"
 
+elf_machine: "EM_PPC"
+
 status: canary
 notes: >
   Spike S1, answered 2026-08-27: yes. gcc-15.2.0 / glibc-2.42 / binutils-2.45

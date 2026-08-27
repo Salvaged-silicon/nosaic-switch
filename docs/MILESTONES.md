@@ -7,7 +7,7 @@ leaves something bootable.
 |---|---|---|
 | **M0** | A clean clone builds | Clone into an empty directory on a machine with only Docker and make; `make check` passes |
 | **M1** | Toolchains | **Done.** crosstool-NG 1.28.0 produces x86_64, aarch64 and powerpc toolchains from committed defconfigs; each compiles a binary that runs and passes three gates |
-| **M2** | Recipe engine and `.nos` packages | A leaf package builds in CI; dependencies install in topological order; two builds produce identical hashes |
+| **M2** | Recipe engine and `.nos` packages | **Done.** zlib builds from source for x86_64 and powerpc; two clean builds are byte-identical; dependencies resolve in topological order; ELF objects are verified against the target |
 | **M3** | Base system, and a VM that boots | `nosaic build virt-x86_64` boots under QEMU in CI for all three profiles; the CLI configures a port, VLAN, address and route; an A/B upgrade, trial boot, commit and auto-rollback all pass |
 | **M4** | One kernel | Boots on x86_64 under QEMU; cross-builds clean for aarch64 |
 | **M5** | The boot axis | Two bootloader backends emit installable images; a corrupted image is rejected rather than installed |
@@ -31,7 +31,7 @@ distro is built on the assumption that every architecture is equally reachable.
 
 ## Current state
 
-**M0** and **M1** complete. **S1** answered.
+**M0**, **M1** and **M2** complete. **S1** answered.
 
 Three toolchains, each gated on three independent properties rather than "did it build":
 
@@ -47,4 +47,26 @@ which would have refused to start on the very boards this project targets. The
 instruction audit was added because an emulator is permissive enough to run
 instructions the real CPU traps on.
 
-Next: **M2**, the recipe engine — which needs no toolchain to develop against.
+### M2
+
+The first package built from source is `zlib` — chosen over the originally
+planned `json-c` because json-c moved to CMake, which would have meant
+implementing a second build system before the first package existed. zlib has
+no dependencies, is needed by nearly everything, and its build is plain enough
+that a failure is a failure of our machinery rather than of the package.
+
+The same recipe, built for two architectures, produces genuinely different
+machine code:
+
+```
+x86_64:  ELF 64-bit LSB shared object, x86-64
+powerpc: ELF 32-bit MSB shared object, PowerPC
+```
+
+That is checked mechanically now, not by eye: every ELF object in a package is
+compared against the target's machine, word size and endianness before the
+package is written. A cross-build that silently used the host compiler
+otherwise produces a package that builds, installs, and fails only on the
+switch.
+
+Next: **M3**, the base system and a VM that boots.

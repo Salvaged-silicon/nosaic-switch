@@ -138,10 +138,25 @@ toolchains-test: $(addprefix toolchain-test-,$(ARCHES))
 toolchain-test-%: $(BUILDER_DEP)
 	@$(RUN) bootstrap/build.sh test $*
 
+# --- packages (M2) ---------------------------------------------------------
+RECIPES := $(notdir $(patsubst %/,%,$(dir $(wildcard recipes/*/recipe.yml))))
+
+## pkg: build one package, e.g. make pkg PKG=zlib ARCH=x86_64
+pkg: $(BUILDER_DEP)
+	@test -n "$(PKG)"  || { echo "usage: make pkg PKG=<one of: $(RECIPES)> ARCH=<arch>"; exit 2; }
+	@test -n "$(ARCH)" || { echo "usage: make pkg PKG=$(PKG) ARCH=<one of: $(ARCHES)>"; exit 2; }
+	@$(RUN) go run ./cmd/nosaic pkg build $(PKG) --arch $(ARCH) --jobs $(JOBS)
+
+## packages: build every recipe for one architecture
+packages: $(BUILDER_DEP)
+	@test -n "$(ARCH)" || { echo "usage: make packages ARCH=<one of: $(ARCHES)>"; exit 2; }
+	@for p in $(RECIPES); do \
+	   $(RUN) go run ./cmd/nosaic pkg build $$p --arch $(ARCH) --jobs $(JOBS) || exit 1; \
+	 done
+
 ## base: build the base rootfs profiles (M3)
-## packages: build every recipe into a .nos package (M2)
 ## image: assemble a board image (M3)
-base packages image:
+base image:
 	@echo "'$@' is not implemented yet — see docs/DESIGN.md for its milestone"
 	@exit 3
 
@@ -158,4 +173,4 @@ clean-toolchains:
 
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
-        base packages image clean clean-toolchains
+        pkg packages base image clean clean-toolchains
