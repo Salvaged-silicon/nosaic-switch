@@ -19,6 +19,10 @@ Boards appear in this table when they boot, forward traffic, and pass CI. Not be
 |-------|------|------|------|--------|
 | _none_ | | | | |
 
+Every board that lands carries three pages — **install**, **build** and a deep
+**hardware** reference with its architecture, port map and registers. They live in the
+board's own directory, and [docs/switches.md](docs/switches.md) indexes them.
+
 ## Bootloaders
 
 Switches disagree about how an image gets onto them, so the bootloader is one of the four

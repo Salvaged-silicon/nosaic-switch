@@ -22,6 +22,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
 	"github.com/salvaged-silicon/nosaic-switch/internal/check"
 	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
+	"github.com/salvaged-silicon/nosaic-switch/internal/docsgen"
 	"github.com/salvaged-silicon/nosaic-switch/internal/imgbuild"
 	nosdclient "github.com/salvaged-silicon/nosaic-switch/internal/nosd/client"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
@@ -93,6 +94,23 @@ func main() {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
 		}
+
+	case "docs":
+		if len(args) != 2 || args[1] != "index" {
+			fmt.Fprintln(os.Stderr, "usage: nosaic docs index")
+			os.Exit(2)
+		}
+		root := repoRoot()
+		boards, err := board.LoadAll(root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+		if err := docsgen.Write(root, boards); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("wrote %s\n", docsgen.Path)
 
 	case "build":
 		root := repoRoot()
@@ -183,6 +201,23 @@ func pkgCmd(root string, args []string) error {
 		return fmt.Errorf("usage: nosaic pkg <build|info|verify> ...")
 	}
 	switch args[0] {
+	case "docs":
+		if len(args) != 2 || args[1] != "index" {
+			fmt.Fprintln(os.Stderr, "usage: nosaic docs index")
+			os.Exit(2)
+		}
+		root := repoRoot()
+		boards, err := board.LoadAll(root)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+		if err := docsgen.Write(root, boards); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("wrote %s\n", docsgen.Path)
+
 	case "build":
 		// The package name is positional and comes first, because Go's flag
 		// package stops parsing at the first non-flag argument -- so flags

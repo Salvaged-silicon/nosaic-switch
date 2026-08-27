@@ -18,6 +18,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
 	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
+	"github.com/salvaged-silicon/nosaic-switch/internal/docsgen"
 	"github.com/salvaged-silicon/nosaic-switch/internal/identity"
 	"github.com/salvaged-silicon/nosaic-switch/internal/profile"
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
@@ -105,6 +106,7 @@ func Run(root string) *Result {
 	if err != nil {
 		res.errf("loading boards: %v", err)
 	}
+	checkBoardDocs(res, root, boards)
 	for _, b := range boards {
 		for _, e := range b.Validate(root) {
 			res.errf("%s: %s", rel(root, b.Path), e)
@@ -135,6 +137,45 @@ func Run(root string) *Result {
 // tells people to run. A guide naming a target that does not exist is worse
 // than no guide: the reader assumes they have got something wrong, and the
 // first thing they try fails.
+// checkBoardDocs requires every board to carry the three pages a reader needs,
+// and requires them to have been filled in. A board port that lands without
+// them is one only its author can install.
+func checkBoardDocs(res *Result, root string, boards []*board.Board) {
+	for _, b := range boards {
+		for _, page := range []string{"install", "build", "hardware"} {
+			p := filepath.Join(root, "platform", b.ID, "docs", page+".md")
+			body, err := os.ReadFile(p)
+			if os.IsNotExist(err) {
+				res.errf("board %q has no %s — copy platform/TEMPLATE/docs/%s.md",
+					b.ID, rel(root, p), page)
+				continue
+			}
+			if err != nil {
+				res.errf("cannot read %s: %v", rel(root, p), err)
+				continue
+			}
+			// The template marks itself, so a page copied and not written is
+			// caught here rather than by the first person to follow it.
+			if strings.Contains(string(body), "> Delete this line when the page is filled in.") {
+				res.errf("%s is still the unfilled template", rel(root, p))
+			}
+		}
+		readme := filepath.Join(root, "platform", b.ID, "README.md")
+		if _, err := os.Stat(readme); os.IsNotExist(err) {
+			res.errf("board %q has no README.md", b.ID)
+		}
+	}
+
+	stale, err := docsgen.Stale(root, boards)
+	if err != nil {
+		res.errf("cannot check %s: %v", docsgen.Path, err)
+		return
+	}
+	if stale {
+		res.errf("%s is out of date — run: make docs", docsgen.Path)
+	}
+}
+
 func checkDocumentedTargets(res *Result, root string) {
 	mk, err := os.ReadFile(filepath.Join(root, "Makefile"))
 	if os.IsNotExist(err) {

@@ -154,11 +154,45 @@ Slot control differs per bootloader (GRUB counters, U-Boot `bootcount`, Aboot
 On the smallest boards two slots may not fit. There, `nosaic upgrade` degrades to a
 non-atomic path and says so, rather than pretending.
 
+## Documentation, per switch
+
+A reader arrives with one of three questions, and should not have to work out which page
+answers it. So every board carries the same three, inside its own directory:
+
+| Page | Audience | Contains |
+|---|---|---|
+| `docs/install.md` | Somebody holding the switch | Console, getting the image on, first boot, going back to the vendor OS, and the failures seen on *this* board |
+| `docs/build.md` | Somebody making an image | Only what is board-specific — firmware, modules, device tree, profile. The generic build is in `BUILDING.md` and repeating it would let it drift |
+| `docs/hardware.md` | Somebody changing the datapath | Block diagram, boot chain, port map, the register regions our code touches, the platform HAL, and the quirks |
+
+They live with the board rather than in a central tree, because a board port is one
+self-contained directory: adding one is adding a directory, never editing a shared file
+that every other contributor is also editing. `docs/switches.md` is **generated** from the
+board directories by `make docs`, and `nosaic check` fails if it has gone stale — so the
+index cannot drift from the boards it indexes.
+
+The template pages ship marked as unfilled, and the check fails while that marking is
+still present. A board therefore cannot merge carrying a page nobody wrote, which is the
+common way per-board documentation becomes a directory of headings.
+
 ## Reverse engineering
 
 Much of this hardware is undocumented, and working it out is a large part of the project.
 It lives in its own repository per switch, linked from the board's directory. The OS tree
 stays about the OS.
+
+**Where the line falls.** `docs/hardware.md` documents the board *as NOSaic drives it*:
+topology, boot chain, port map, the register regions our code touches, and the quirks that
+cost somebody a day. The *investigation* — traces, hypotheses, eliminated leads, and
+anything derived from vendor binaries or headers — stays in the RE repository. That is not
+only a licensing rule, though it is that too: a register table transcribed from a vendor
+header is that vendor's, and a published image containing non-redistributable material is
+the failure mode the `redistributable:` gate exists to prevent. It is also an editorial
+one. The investigation is a record of how something was learned, and it is far longer than
+what was learned; mixing the two makes the hardware page unreadable for the person trying
+to fix a port at 2am.
+
+Vendor SDK source is never copied into this tree. Reference it by `file:line`.
 
 ## Prior art, and what it taught
 
