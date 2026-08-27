@@ -64,7 +64,7 @@ payload, built reproducibly, hashed per file, tagged by architecture, and refuse
 install time if it does not match the running system.
 
 **One name, many providers.** The datapath daemon is always `nosd`. Implementations are
-packaged per ASIC — `nosd-td2`, `nosd-prestera`, `nosd-virt` — each declaring
+packaged per ASIC — `nosd-td2p`, `nosd-td2`, `nosd-prestera`, `nosd-virt` — each declaring
 `provides: [nosd]` and `conflicts: [nosd]`. Units, CLI, config and documentation only ever
 say `nosd`; the builder picks the provider from the board's ASIC, and the conflict makes it
 an error to end up with two fighting over one chip. Providers are keyed to the *silicon*,

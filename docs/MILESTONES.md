@@ -10,10 +10,10 @@ leaves something bootable.
 | **M2** | Recipe engine and `.nos` packages | **Done.** zlib builds from source for x86_64 and powerpc; two clean builds are byte-identical; dependencies resolve in topological order; ELF objects are verified against the target |
 | **M3** | One kernel | **Done.** 6.12 LTS boots under QEMU on x86_64 *and* aarch64, running an init built by its own toolchain that verifies the configured filesystems are present |
 | **M4** | Base system, and a VM that boots | **In progress.** Boots, persists, upgrades atomically with rollback, and the CLI drives a real veth datapath through the contract. Remaining: the systemd profiles |
-| **M5** | The boot axis | **Mostly done.** Three backends (virt, onie-sfx, aboot) emit installable artifacts, tested by running the installer's own extraction. Aboot needs confirming on hardware |
+| **M5** | The boot axis | **Mostly done.** Four backends (virt, onie-sfx, aboot, uboot) emit installable artifacts, tested by running the installer's own extraction and by reading the FIT back. Aboot needs confirming on hardware |
 | **M6** | First real board | Boots from its own from-source base on real hardware, reports real sensors, forwards traffic — and the M3 CLI test passes unmodified |
 | **M7** | Routing and upgrades | BGP establishes; an upgrade that boots but fails to forward rolls back unattended |
-| **M8** | Older architectures | PowerPC and armhf toolchains, `uboot` and `onl-swi` backends, and ports for older boards |
+| **M8** | Older architectures | PowerPC and armhf toolchains, the `onl-swi` backend, and ports for older boards |
 
 ## Spikes
 

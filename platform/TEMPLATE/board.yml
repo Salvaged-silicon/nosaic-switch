@@ -3,12 +3,12 @@
 
 id: TEMPLATE                 # unique, matches the directory name
 vendor: ""                   # e.g. arista, accton, juniper
-model: ""                    # e.g. 7050tx-64
+model: ""                    # e.g. 7050sx2-72q
 
 # The orthogonal axes. arch and boot name directories (arch/<arch>, boot/<boot>);
 # asic selects which nosd provider this board installs.
 arch: ""                     # x86_64 | aarch64 | powerpc | armhf
-asic: ""                     # e.g. td2, tdp, helix4, prestera, virt
+asic: ""                     # e.g. td2p, td2, tdp, helix4, prestera, virt
 boot: ""                     # virt | aboot | onie-sfx | uboot
 
 # Only for boot: uboot. Where in RAM the kernel is loaded, which is a property
