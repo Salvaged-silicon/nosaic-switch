@@ -3,9 +3,6 @@
 A network operating system for **end-of-service-life switches and routers** — hardware
 the vendor has abandoned, given a modern, open, maintained OS.
 
-A mosaic is assembled from broken and discarded pieces into something better than the
-originals came from. NOS is the first three letters.
-
 > **Status: early. Nothing is supported yet.**
 > This README advertises only what is merged and working. Right now that is the build
 > skeleton and its checks. See [docs/DESIGN.md](docs/DESIGN.md) for where it is going

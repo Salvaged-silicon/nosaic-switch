@@ -14,6 +14,21 @@ include builder/images.env
 export
 
 SHELL      := /bin/bash
+
+# Resource limits.
+#
+# A toolchain build will otherwise take the whole machine: GCC's memory use
+# scales with -j, and on Docker's vfs storage driver the I/O multiplies too.
+# On a 6-core box, -j6 drove load average past 70 and exhausted memory. These
+# defaults are deliberately conservative -- a build that makes the machine
+# unusable is a broken build, however fast it would have been.
+#
+# Raise them in local.mk on a machine with headroom.
+NPROC      := $(shell nproc 2>/dev/null || echo 2)
+MEM_TOTAL  := $(shell free -m 2>/dev/null | awk '/^Mem:/{print $$2}' || echo 4096)
+CPUS       ?= $(shell v=$$(( $(NPROC) / 3 )); [ $$v -lt 1 ] && v=1; echo $$v)
+MEMORY     ?= $(shell v=$$(( $(MEM_TOTAL) / 3 )); [ $$v -lt 2048 ] && v=2048; echo $${v}m)
+JOBS       ?= $(CPUS)
 REPO_ROOT  := $(shell pwd)
 OUT        := $(REPO_ROOT)/out
 VERSION    := $(shell cat VERSION 2>/dev/null || echo 0.0.0-dev)
@@ -26,6 +41,8 @@ ifeq ($(NATIVE),1)
   RUN :=
 else
   RUN := docker run --rm -t $(if $(DOCKER_NETWORK),--network $(DOCKER_NETWORK),) \
+           --cpus=$(CPUS) --memory=$(MEMORY) \
+           -e JOBS=$(JOBS) \
            -v $(REPO_ROOT):/src -w /src \
            -v nosaic-gocache:/root/.cache/go-build \
            -v nosaic-gomod:/root/go/pkg/mod \
@@ -42,6 +59,9 @@ help:
 	@sed -n 's/^## //p' $(MAKEFILE_LIST) | awk -F': ' '{printf "  %-14s %s\n", $$1, $$2}'
 	@echo
 	@echo "  NATIVE=1 <target>   use host tools instead of the builder container"
+	@echo
+	@echo "resource limits (override in local.mk):"
+	@echo "  CPUS=$(CPUS)  MEMORY=$(MEMORY)  JOBS=$(JOBS)   (host: $(NPROC) cores, $(MEM_TOTAL)m)"
 
 ## builder: build the pinned build container
 builder:

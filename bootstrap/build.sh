@@ -21,7 +21,10 @@ DL="$ROOT/dl"
 CACHE="$ROOT/.cache"
 CTNG_SRC="$CACHE/crosstool-ng-$CTNG_VERSION"
 CTNG="$CTNG_SRC/ct-ng"
-JOBS="${JOBS:-$(nproc)}"
+# Deliberately not $(nproc). GCC's memory use scales with parallelism, and an
+# unconstrained toolchain build will exhaust a modest machine. The Makefile
+# passes a considered value; this is the floor for a direct invocation.
+JOBS="${JOBS:-2}"
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
