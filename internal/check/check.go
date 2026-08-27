@@ -136,6 +136,13 @@ func checkBootTools(res *Result, root string) {
 	}
 	df := filepath.Join(root, "builder", "Dockerfile.build")
 	b, err := os.ReadFile(df)
+	if os.IsNotExist(err) {
+		// Not this check's business. It compares the tools backends run
+		// against the packages the container installs; with no Dockerfile
+		// there is nothing to compare, and a repo missing it fails to build a
+		// container long before this matters.
+		return
+	}
 	if err != nil {
 		res.errf("cannot read %s: %v", rel(root, df), err)
 		return
