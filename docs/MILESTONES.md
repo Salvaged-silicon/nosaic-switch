@@ -9,7 +9,7 @@ leaves something bootable.
 | **M1** | Toolchains | **Done.** crosstool-NG 1.28.0 produces x86_64, aarch64 and powerpc toolchains from committed defconfigs; each compiles a binary that runs and passes three gates |
 | **M2** | Recipe engine and `.nos` packages | **Done.** zlib builds from source for x86_64 and powerpc; two clean builds are byte-identical; dependencies resolve in topological order; ELF objects are verified against the target |
 | **M3** | One kernel | **Done.** 6.12 LTS boots under QEMU on x86_64 *and* aarch64, running an init built by its own toolchain that verifies the configured filesystems are present |
-| **M4** | Base system, and a VM that boots | **In progress.** The minimal profile boots, persists across reboots, and upgrades atomically with automatic rollback. Remaining: `nosd-virt` and the systemd profiles |
+| **M4** | Base system, and a VM that boots | **In progress.** Boots, persists, upgrades atomically with rollback, and the CLI drives a real veth datapath through the contract. Remaining: the systemd profiles |
 | **M5** | The boot axis | Two bootloader backends emit installable images; a corrupted image is rejected rather than installed |
 | **M6** | First real board | Boots from its own from-source base on real hardware, reports real sensors, forwards traffic — and the M3 CLI test passes unmodified |
 | **M7** | Routing and upgrades | BGP establishes; an upgrade that boots but fails to forward rolls back unattended |
@@ -164,7 +164,30 @@ where `debugfs` wrote it, `upgrade status` read it back correctly, and the
 kernel then reverted it by replaying the journal on mount. The installer
 reported success and the switch booted the old slot anyway.
 
-Still to come in M4: `nosd-virt` driving veth pairs through the switch-api
-contract, and the systemd profiles.
+### The datapath
 
-Next: `nosd-virt`.
+    driver  virt        vlans  false       ecmp  yes, up to 32 paths
+
+    PREFIX           NEXT-HOPS
+    192.0.2.0/24     10.0.0.2 dev swp1
+    198.51.100.0/24  10.0.0.2 dev swp1, 10.0.1.2 dev swp2
+
+`nosd` owns the datapath; everything else configures it over a Unix socket. The
+client implements the same `switchapi.Switch` interface as the server, so the
+conformance suite runs *through* the socket — which caught the thing most
+likely to be lost in serialisation, and most damaging to lose: the difference
+between "this hardware cannot" and "this went wrong".
+
+The virtual datapath is not a stub. Ports are veth pairs carrying real packets,
+addresses and routes are installed in the kernel, and multipath is the kernel's
+own — so the ECMP path of the contract is exercised against something that
+genuinely implements it.
+
+It declares VLANs unsupported rather than faking them. Doing them properly
+means a bridge with VLAN filtering, which changes how addresses behave on a
+port; half-implementing them would be exactly what the conformance suite exists
+to catch.
+
+Still to come in M4: the systemd profiles.
+
+Next: the full and slim profiles.

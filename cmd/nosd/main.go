@@ -18,13 +18,14 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/nosd/mem"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nosd/proto"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nosd/server"
+	"github.com/salvaged-silicon/nosaic-switch/internal/nosd/virt"
 	"github.com/salvaged-silicon/nosaic-switch/internal/switchapi"
 	"github.com/salvaged-silicon/nosaic-switch/internal/version"
 )
 
 func main() {
 	socket := flag.String("socket", proto.SocketPath, "unix socket to listen on")
-	driver := flag.String("driver", "mem", "datapath driver")
+	driver := flag.String("driver", "mem", "datapath driver: mem or virt")
 	ports := flag.Int("ports", 4, "number of front-panel ports (mem driver)")
 
 	// The mem driver can be shaped to resemble hardware that lacks a feature.
@@ -74,6 +75,11 @@ func open(driver string, ports int, ecmp, vlans, l3 bool) (switchapi.Switch, err
 		caps.VLANs = vlans
 		caps.L3 = l3
 		return mem.New(mem.Config{Ports: ports, Caps: caps}), nil
+
+	case "virt":
+		// Real veth interfaces carrying real packets. The flags above shape
+		// only the simulated driver; virt reports what it can actually do.
+		return virt.New(virt.Config{Ports: ports}), nil
 	}
-	return nil, fmt.Errorf("unknown driver %q (known: mem)", driver)
+	return nil, fmt.Errorf("unknown driver %q (known: mem, virt)", driver)
 }

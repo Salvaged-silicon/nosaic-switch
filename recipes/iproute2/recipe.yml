@@ -1,0 +1,34 @@
+# iproute2 — ip, bridge, and the rest of the modern Linux networking tools.
+#
+# The virtual datapath drives veth pairs and a bridge through these, and the
+# full profile wants them regardless: busybox's ip is a subset that cannot
+# create a bridge or manage VLAN filtering.
+#
+# Version tracks the kernel series (6.12) on purpose. iproute2 talks to the
+# kernel through netlink, and matching the series avoids the case where a tool
+# knows about an attribute the running kernel does not.
+name: iproute2
+version: "6.12.0"
+summary: Networking utilities (ip, bridge, tc)
+
+license: GPL-2.0-only
+redistributable: true
+
+source:
+  url: https://mirrors.edge.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.12.0.tar.xz
+  sha256: bbd141ef7b5d0127cc2152843ba61f274dc32814fa3e0f13e7d07a080bef53d9
+  # Tried in order after the URL above. Our own copy comes first among the
+  # fallbacks because it is the one we control.
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/iproute2-6.12.0.tar.xz
+    - https://cdn.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.12.0.tar.xz
+
+build:
+  system: configure
+  # iproute2's configure is hand-written and rejects --prefix; the prefix is a
+  # make variable instead.
+  no_prefix: true
+  install_args:
+    - DESTDIR=${DESTDIR}
+    - PREFIX=/usr
+    - install

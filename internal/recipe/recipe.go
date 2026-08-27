@@ -92,6 +92,11 @@ type Build struct {
 	// substituted, so one recipe covers every architecture.
 	Fragments []string `yaml:"fragments"`
 
+	// NoPrefix stops --prefix being passed to configure. Several projects
+	// ship a hand-written configure that does not accept it and fails; that is
+	// a property of the package, so it is recorded with the package.
+	NoPrefix bool `yaml:"no_prefix"`
+
 	// ConfigTarget resolves a .config after fragments are appended. The kernel
 	// calls this olddefconfig; busybox's older kconfig calls it oldconfig.
 	ConfigTarget string `yaml:"config_target"`

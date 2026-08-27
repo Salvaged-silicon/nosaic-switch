@@ -31,8 +31,26 @@ func buildEnv(o Options) []string {
 	bin := filepath.Join(tc, "bin")
 	t := o.Arch.Triple
 
+	sysroot := filepath.Join(tc, t, "sysroot")
+
 	env := []string{
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
+
+		// pkg-config must not see the build host's libraries.
+		//
+		// Left alone it reads /usr/lib/pkgconfig and reports that the host has
+		// libelf, zlib, whatever -- and a configure script then enables a
+		// feature whose headers do not exist in the target sysroot. The build
+		// fails later, in a compile error that names a missing header rather
+		// than the contamination that caused it. iproute2 found exactly this.
+		//
+		// LIBDIR replaces the search path entirely rather than adding to it,
+		// which is the only version of this that actually works: appending
+		// still leaves the host visible.
+		"PKG_CONFIG_LIBDIR=" + filepath.Join(sysroot, "usr", "lib", "pkgconfig") +
+			":" + filepath.Join(sysroot, "usr", "share", "pkgconfig"),
+		"PKG_CONFIG_SYSROOT_DIR=" + sysroot,
+		"PKG_CONFIG_PATH=",
 		"CHOST=" + t,
 		"CBUILD=" + t,
 		"CC=" + t + "-gcc",
@@ -139,7 +157,10 @@ func runBuild(o Options, srcDir, stage string) error {
 		return runKernelBuild(o, srcDir, stage)
 
 	case "configure", "autotools":
-		args := []string{"--prefix=" + prefix}
+		var args []string
+		if !b.NoPrefix {
+			args = append(args, "--prefix="+prefix)
+		}
 		for _, a := range b.Configure {
 			args = append(args, expand(o, a))
 		}

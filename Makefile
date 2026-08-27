@@ -164,6 +164,17 @@ image: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image BOARD=<board>"; exit 2; }
 	@$(RUN) go run ./cmd/nosaic build $(BOARD)
 
+## dataplane-test: drive the veth datapath with real interfaces
+# Needs NET_ADMIN and SYS_ADMIN: it creates interfaces, in a private network
+# namespace of its own so nothing outside is touched.
+dataplane-test: $(BUILDER_DEP)
+	@docker run --rm $(if $(DOCKER_NETWORK),--network $(DOCKER_NETWORK),) \
+	  --cap-add NET_ADMIN --cap-add SYS_ADMIN \
+	  --cpus=$(CPUS) --memory=$(MEMORY) \
+	  -v $(REPO_ROOT):/src -w /src -v nosaic-gocache:/root/.cache/go-build \
+	  -v nosaic-gomod:/root/go/pkg/mod \
+	  $(BUILDER_IMAGE) bash boot/virt/dataplane-test.sh
+
 ## image-ab: prove the A/B upgrade commits and rolls back
 image-ab: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image-ab BOARD=<board>"; exit 2; }
@@ -187,4 +198,5 @@ clean-toolchains:
 
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
-        pkg packages kernel-boot image image-boot image-ab clean clean-toolchains
+        pkg packages kernel-boot image image-boot image-ab dataplane-test \
+        clean clean-toolchains
