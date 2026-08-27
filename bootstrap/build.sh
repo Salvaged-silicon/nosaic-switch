@@ -74,7 +74,7 @@ ctng_overrides() {
     local arch="$1"
     cat <<EOF
 CT_TARGET_VENDOR="nosaic"
-CT_PREFIX_DIR="\${CT_TOP_DIR}/../toolchain/$arch"
+CT_PREFIX_DIR="\${CT_TOP_DIR}/../../toolchain/$arch"
 
 # The build runs in a single-purpose container. Rootless Docker maps container
 # root to the invoking user, so dropping privileges here would write files the
@@ -85,7 +85,7 @@ CT_ALLOW_BUILD_AS_ROOT_SURE=y
 
 # Keep downloaded component tarballs in the repo's dl/ so a rebuild is offline
 # and so the exact sources are inspectable.
-CT_LOCAL_TARBALLS_DIR="\${CT_TOP_DIR}/../dl"
+CT_LOCAL_TARBALLS_DIR="\${CT_TOP_DIR}/../../dl"
 CT_SAVE_TARBALLS=y
 
 # glibc's minimum kernel is left at its own default. NOSaic exists for
@@ -140,9 +140,22 @@ cmd_build() {
     ( cd "$work" && CT_JOBS="$JOBS" "$CTNG" build )
 
     local triple; triple="$(arch_field "$arch" triple)"
-    printf 'arch=%s\ntriple=%s\ncrosstool_ng=%s\n' "$arch" "$triple" "$CTNG_VERSION" \
-        > "toolchain/$arch/.nosaic-stamp"
-    log "toolchain/$arch ready"
+    # crosstool-NG bakes the configured prefix into the compiler as an absolute
+    # sysroot path, so a toolchain built to the wrong prefix compiles nothing
+    # and says only "stdio.h: No such file or directory". Fail here, where the
+    # cause is obvious, rather than an hour later in a recipe.
+    local sysroot
+    sysroot="$("toolchain/$arch/bin/$triple-gcc" -print-sysroot)"
+    if [ ! -d "$sysroot" ]; then
+        die "toolchain built with a bad prefix: it looks for its sysroot at
+       $sysroot
+     which does not exist. Check CT_PREFIX_DIR in bootstrap/configs/$arch.defconfig
+     (CT_TOP_DIR is the build directory, not the repository root)."
+    fi
+
+    printf 'arch=%s\ntriple=%s\ncrosstool_ng=%s\nsysroot=%s\n' \
+        "$arch" "$triple" "$CTNG_VERSION" "$sysroot" > "toolchain/$arch.stamp"
+    log "toolchain/$arch ready (sysroot: $sysroot)"
 }
 
 # ----------------------------------------------------------------------- test

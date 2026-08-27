@@ -15,6 +15,21 @@ leaves something bootable.
 | **M7** | Routing and upgrades | BGP establishes; an upgrade that boots but fails to forward rolls back unattended |
 | **M8** | Older architectures | PowerPC and armhf toolchains, `uboot` and `onl-swi` backends, and ports for older boards |
 
+## Spikes
+
+A spike is a timeboxed investigation scoped by a question, not by a deliverable. It ends
+when the question is answered — and "we could not answer this cheaply" is itself an answer
+worth having early.
+
+| | Question | Gate |
+|---|---|---|
+| **S1** | Can a current toolchain produce working binaries for 32-bit big-endian PowerPC (Freescale e500v2)? | A binary from that toolchain runs and reports the correct word size and endianness |
+
+S1 runs ahead of M8 rather than as part of it. If the answer is no, that class of hardware
+needs a pinned ancient compiler, and M8's scope changes — which is worth knowing before a
+distro is built on the assumption that every architecture is equally reachable.
+
 ## Current state
 
-**M0.** The skeleton, the CLI, and the checks that enforce the design's invariants.
+**M0** complete. **M1** in progress: crosstool-NG pinned and building, defconfigs committed
+and validated for x86_64, aarch64 and powerpc.
