@@ -174,3 +174,41 @@ install:
 		t.Fatalf("relative dst should be an error, got %v", errs)
 	}
 }
+
+// The rule that keeps the minimal profile alive: a recipe may not hand-write
+// an init file, because a systemd unit does nothing on a box running s6.
+func TestInitOwnedPathsRejected(t *testing.T) {
+	for _, dst := range []string{
+		"/etc/systemd/system/zebra.service",
+		"/usr/lib/systemd/system/zebra.service",
+		"/lib/systemd/system/zebra.service",
+		"/etc/init.d/zebra",
+		"/etc/s6-rc/source/zebra/run",
+	} {
+		r := loadOK(t, `
+name: frr
+version: "10.2"
+license: GPL-2.0-or-later
+redistributable: true
+install:
+  - {src: unit, dst: "`+dst+`", mode: "0644"}
+`)
+		if !hasErr(r.Validate(), "owned by an init system") {
+			t.Errorf("%s should be rejected, got %v", dst, r.Validate())
+		}
+	}
+}
+
+func TestServiceValidatedThroughGenerator(t *testing.T) {
+	r := loadOK(t, `
+name: frr
+version: "10.2"
+license: GPL-2.0-or-later
+redistributable: true
+services:
+  - {name: zebra, exec: "zebra -f /etc/frr/zebra.conf"}
+`)
+	if !hasErr(r.Validate(), "absolute path") {
+		t.Fatalf("a relative exec should be rejected, got %v", r.Validate())
+	}
+}

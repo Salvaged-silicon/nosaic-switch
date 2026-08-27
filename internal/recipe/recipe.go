@@ -17,7 +17,23 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/salvaged-silicon/nosaic-switch/internal/svcgen"
 )
+
+// initOwnedDirs are paths an init system owns. A recipe installing into one is
+// hand-writing a unit file, which breaks the minimal profile: that tier runs s6
+// rather than systemd, so a hand-written systemd unit silently does nothing
+// there. Declaring the service instead generates a definition for every init.
+var initOwnedDirs = []string{
+	"/etc/systemd/",
+	"/usr/lib/systemd/",
+	"/lib/systemd/",
+	"/etc/s6-rc/",
+	"/etc/s6/",
+	"/etc/init.d/",
+	"/etc/rc.d/",
+}
 
 // Source locates and pins upstream source. Vendor sources are pinned by hash
 // and fetched at build time; they are never committed to the repository.
@@ -38,9 +54,11 @@ type Install struct {
 // this, so the minimal profile can ship a different init without forking every
 // recipe that starts a daemon.
 type Service struct {
-	Name  string   `yaml:"name"`
-	After []string `yaml:"after"`
-	Exec  string   `yaml:"exec"`
+	Name    string   `yaml:"name"`
+	Exec    string   `yaml:"exec"`
+	After   []string `yaml:"after"`
+	Wants   []string `yaml:"wants"`
+	Restart string   `yaml:"restart"`
 }
 
 // Build describes how the package is compiled.
@@ -170,12 +188,15 @@ func (r *Recipe) Validate() []string {
 		}
 	}
 
+	// Validate through the generator, so a recipe cannot declare something
+	// that only one init system could express.
 	for i, s := range r.Services {
-		if s.Name == "" {
-			bad("services[%d]: name is required", i)
+		gs := svcgen.Service{
+			Name: s.Name, Exec: s.Exec, After: s.After,
+			Wants: s.Wants, Restart: s.Restart,
 		}
-		if s.Exec == "" {
-			bad("services[%d]: exec is required", i)
+		if err := gs.Validate(); err != nil {
+			bad("services[%d]: %v", i, err)
 		}
 	}
 
@@ -185,6 +206,13 @@ func (r *Recipe) Validate() []string {
 		}
 		if in.Dst != "" && !strings.HasPrefix(in.Dst, "/") {
 			bad("install[%d]: dst %q must be an absolute path in the image", i, in.Dst)
+		}
+		for _, d := range initOwnedDirs {
+			if strings.HasPrefix(in.Dst, d) {
+				bad("install[%d]: %q is owned by an init system — declare a services: entry instead, "+
+					"so systemd and s6 definitions are both generated. A hand-written unit does "+
+					"nothing on the minimal profile.", i, in.Dst)
+			}
 		}
 	}
 
