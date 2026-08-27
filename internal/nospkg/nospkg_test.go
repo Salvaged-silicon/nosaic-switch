@@ -197,14 +197,14 @@ func TestSymlinksAndDirs(t *testing.T) {
 	}
 }
 
-// The licensing gate starts here: a package with no stated licence cannot be
+// The licensing gate starts here: a package with no stated license cannot be
 // built at all, so it can never reach an image.
-func TestLicenceRequired(t *testing.T) {
+func TestLicenseRequired(t *testing.T) {
 	m := manifest()
 	m.License = ""
 	var buf bytes.Buffer
 	if err := Build(&buf, m, nil); err == nil {
-		t.Fatal("a package with no licence should not build")
+		t.Fatal("a package with no license should not build")
 	}
 }
 

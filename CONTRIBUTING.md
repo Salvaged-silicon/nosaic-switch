@@ -14,7 +14,7 @@ same thing CI runs. It needs only Docker and make.
 These are checked mechanically because a rule that depends on being remembered has
 already been broken by the time anyone notices.
 
-**Every recipe declares a licence and whether it may be published.**
+**Every recipe declares a license and whether it may be published.**
 `license:` and `redistributable:` are both required, and both refuse omission rather than
 defaulting. NOSaic is Apache 2.0, but built images may contain source-available vendor
 code. The build will not produce a *publishable* image containing something marked

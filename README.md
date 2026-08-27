@@ -46,15 +46,15 @@ make nosaic         # build the CLI into out/
 `NATIVE=1` uses host tools instead of the container, which is faster for local
 iteration but is not what CI does.
 
-## Licence
+## License
 
 Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Images built by NOSaic may include third-party software under other licences, including
-source-available vendor SDKs and firmware. Every recipe declares its licence and whether
+Images built by NOSaic may include third-party software under other licenses, including
+source-available vendor SDKs and firmware. Every recipe declares its license and whether
 it may be published, the build refuses to produce a publishable image containing anything
 that may not be, and every image ships a NOTICE and an SBOM. A built image is therefore
-mixed-licence, not pure OSI — NOSaic itself is Apache 2.0.
+mixed-license, not pure OSI — NOSaic itself is Apache 2.0.
 
 ## Contributing
 

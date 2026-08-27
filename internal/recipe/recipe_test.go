@@ -50,16 +50,16 @@ func TestMinimalRecipeIsValid(t *testing.T) {
 }
 
 // The licensing gate must refuse omission rather than assume a default. A
-// component with no stated licence is the thing that eventually gets
+// component with no stated license is the thing that eventually gets
 // published by mistake.
-func TestLicenceIsRequired(t *testing.T) {
+func TestLicenseIsRequired(t *testing.T) {
 	errs := loadOK(t, `
 name: mystery
 version: "1.0"
 redistributable: true
 `).Validate()
 	if !hasErr(errs, "license is required") {
-		t.Fatalf("missing licence should be an error, got %v", errs)
+		t.Fatalf("missing license should be an error, got %v", errs)
 	}
 }
 

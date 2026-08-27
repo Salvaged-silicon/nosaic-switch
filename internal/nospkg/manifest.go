@@ -90,12 +90,12 @@ type Manifest struct {
 	Arch string `json:"arch"`
 	Type string `json:"type"`
 
-	// License is an SPDX identifier or a named vendor licence.
+	// License is an SPDX identifier or a named vendor license.
 	License string `json:"license"`
 
 	// Redistributable records whether this component may appear in a
 	// published image. False is legitimate — vendor firmware, an SDK with a
-	// restrictive licence — and means the build will still produce an image
+	// restrictive license — and means the build will still produce an image
 	// locally but refuse to publish one.
 	Redistributable bool `json:"redistributable"`
 

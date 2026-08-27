@@ -73,7 +73,7 @@ not the board, so one package serves every switch using that chip.
 ### Licensing
 
 NOSaic is Apache 2.0. Built images may contain source-available vendor code and are
-therefore mixed-licence, not pure OSI.
+therefore mixed-license, not pure OSI.
 
 This is enforced rather than documented. Every recipe declares `license:` and
 `redistributable:`, both of which refuse omission rather than defaulting. The build will

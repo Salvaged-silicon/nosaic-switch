@@ -56,7 +56,7 @@ type Recipe struct {
 	Version string `yaml:"version"`
 	Summary string `yaml:"summary"`
 
-	// License is an SPDX identifier, or a named vendor licence for
+	// License is an SPDX identifier, or a named vendor license for
 	// source-available SDKs.
 	License string `yaml:"license"`
 
@@ -144,7 +144,7 @@ func (r *Recipe) Validate() []string {
 	// and whether it may be published. Both are refused by omission rather
 	// than assumed.
 	if r.License == "" {
-		bad("license is required (SPDX id, or the vendor licence name)")
+		bad("license is required (SPDX id, or the vendor license name)")
 	}
 	if r.Redistributable == nil {
 		bad("redistributable must be set explicitly (true or false)")
