@@ -6,7 +6,7 @@ leaves something bootable.
 | | Milestone | Gate |
 |---|---|---|
 | **M0** | A clean clone builds | Clone into an empty directory on a machine with only Docker and make; `make check` passes |
-| **M1** | Toolchains | crosstool-NG produces x86_64 and aarch64 toolchains; each compiles a binary that runs |
+| **M1** | Toolchains | **Done.** crosstool-NG 1.28.0 produces x86_64, aarch64 and powerpc toolchains from committed defconfigs; each compiles a binary that runs and passes three gates |
 | **M2** | Recipe engine and `.nos` packages | A leaf package builds in CI; dependencies install in topological order; two builds produce identical hashes |
 | **M3** | Base system, and a VM that boots | `nosaic build virt-x86_64` boots under QEMU in CI for all three profiles; the CLI configures a port, VLAN, address and route; an A/B upgrade, trial boot, commit and auto-rollback all pass |
 | **M4** | One kernel | Boots on x86_64 under QEMU; cross-builds clean for aarch64 |
@@ -31,5 +31,20 @@ distro is built on the assumption that every architecture is equally reachable.
 
 ## Current state
 
-**M0** complete. **M1** in progress: crosstool-NG pinned and building, defconfigs committed
-and validated for x86_64, aarch64 and powerpc.
+**M0** and **M1** complete. **S1** answered.
+
+Three toolchains, each gated on three independent properties rather than "did it build":
+
+| | triple | runs | instruction audit | ABI floor |
+|---|---|---|---|---|
+| x86_64 | `x86_64-nosaic-linux-gnu` | 64-bit LE | — | Linux 3.2.0 |
+| aarch64 | `aarch64-nosaic-linux-gnu` | 64-bit LE, under QEMU | — | Linux 3.7.0 |
+| powerpc | `powerpc-nosaic-linux-gnu` | **32-bit BE**, under QEMU | 0 forbidden of 112,775 | Linux 3.2.0 |
+
+Each gate exists because something went wrong without it. The ABI floor check
+was added after two toolchains silently pinned themselves to Linux 6.16.0,
+which would have refused to start on the very boards this project targets. The
+instruction audit was added because an emulator is permissive enough to run
+instructions the real CPU traps on.
+
+Next: **M2**, the recipe engine — which needs no toolchain to develop against.
