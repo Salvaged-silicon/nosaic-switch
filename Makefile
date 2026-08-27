@@ -40,6 +40,10 @@ LDFLAGS    := -X github.com/salvaged-silicon/nosaic-switch/internal/version.Vers
 ifeq ($(NATIVE),1)
   RUN :=
 else
+  # -t allocates a TTY, which is wanted for readable build output and is wrong
+  # for anything whose output is captured: a TTY turns every newline into CRLF,
+  # so a captured package list yields names with a trailing carriage return and
+  # the build looks for recipes/linux\r/recipe.yml. RUN_CAPTURE has no TTY.
   RUN := docker run --rm -t $(if $(DOCKER_NETWORK),--network $(DOCKER_NETWORK),) \
            --cpus=$(CPUS) --memory=$(MEMORY) \
            -e JOBS=$(JOBS) \
@@ -49,6 +53,9 @@ else
            -e HOME=/root \
            $(BUILDER_IMAGE)
 endif
+
+# Same as RUN but without a TTY, for commands whose output is read by make.
+RUN_CAPTURE = $(subst --rm -t,--rm,$(RUN))
 
 .DEFAULT_GOAL := help
 
@@ -111,7 +118,10 @@ nosaic: $(BUILDER_DEP)
 # --- toolchains (M1) -------------------------------------------------------
 # ARCHES is derived from arch/, not listed here: a new architecture is a
 # directory, the same way a new board is.
-ARCHES := $(notdir $(wildcard arch/*))
+# Directories that actually define an architecture. A plain wildcard also
+# matches arch/README.md, which then appears in every usage message as though
+# it were a target you could build.
+ARCHES := $(notdir $(patsubst %/,%,$(dir $(wildcard arch/*/arch.yml))))
 
 ## toolchains: build every architecture's toolchain
 toolchains: $(addprefix toolchain-,$(ARCHES))
@@ -153,7 +163,7 @@ pkg: $(BUILDER_DEP)
 # before libcap and s6 before skalibs.
 packages: $(BUILDER_DEP)
 	@test -n "$(ARCH)" || { echo "usage: make packages ARCH=<one of: $(ARCHES)>"; exit 2; }
-	@for p in $$($(RUN) go run ./cmd/nosaic pkg order $(if $(PROFILE),--profile $(PROFILE),)); do \
+	@for p in $$($(RUN_CAPTURE) go run ./cmd/nosaic pkg order $(if $(PROFILE),--profile $(PROFILE),)); do \
 	   $(RUN) go run ./cmd/nosaic pkg build $$p --arch $(ARCH) --jobs $(JOBS) || exit 1; \
 	 done
 
