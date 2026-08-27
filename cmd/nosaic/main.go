@@ -8,8 +8,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -17,10 +19,12 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/check"
 	"github.com/salvaged-silicon/nosaic-switch/internal/imgbuild"
+	nosdclient "github.com/salvaged-silicon/nosaic-switch/internal/nosd/client"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
 	"github.com/salvaged-silicon/nosaic-switch/internal/pkgbuild"
 	"github.com/salvaged-silicon/nosaic-switch/internal/profile"
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
+	"github.com/salvaged-silicon/nosaic-switch/internal/switchapi"
 	"github.com/salvaged-silicon/nosaic-switch/internal/upgrade"
 	"github.com/salvaged-silicon/nosaic-switch/internal/version"
 )
@@ -39,6 +43,13 @@ available now
   build <board>                assemble a board's image
   upgrade status <disk>        show which slot is active or on trial
   upgrade install <disk> <img> --slot b   install into the inactive slot
+
+on a running switch
+  show ports | routes | caps    what the datapath is doing
+  interface <name> up|down      administrative state
+  interface <name> mtu <n>      set the MTU
+  route add <prefix> via <ip> dev <port>
+  route del <prefix>
 
 not yet implemented
   upgrade                      A/B image upgrade          (M3)
@@ -90,6 +101,12 @@ func main() {
 
 	case "upgrade":
 		if err := upgradeCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "show", "interface", "route":
+		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
 		}
@@ -320,4 +337,155 @@ func upgradeCmd(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown upgrade subcommand %q", args[0])
+}
+
+// switchCmd handles the commands that talk to a running datapath.
+//
+// They are written against switchapi, not against nosd, so the same code would
+// work against an in-process datapath. What a user types does not depend on
+// which chip is underneath — that is the whole point of the contract.
+func switchCmd(args []string) error {
+	c, err := nosdclient.Dial(os.Getenv("NOSD_SOCKET"))
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	switch args[0] {
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: nosaic show <ports|routes|caps>")
+		}
+		return showCmd(c, args[1])
+
+	case "interface":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: nosaic interface <name> <up|down|mtu <n>>")
+		}
+		name := args[1]
+		switch args[2] {
+		case "up":
+			return c.SetPortAdmin(name, true)
+		case "down":
+			return c.SetPortAdmin(name, false)
+		case "mtu":
+			if len(args) < 4 {
+				return fmt.Errorf("usage: nosaic interface %s mtu <n>", name)
+			}
+			mtu, err := strconv.Atoi(args[3])
+			if err != nil {
+				return fmt.Errorf("mtu %q is not a number", args[3])
+			}
+			return c.SetPortMTU(name, mtu)
+		}
+		return fmt.Errorf("unknown interface command %q", args[2])
+
+	case "route":
+		return routeCmd(c, args[1:])
+	}
+	return fmt.Errorf("unknown command %q", args[0])
+}
+
+func showCmd(c *nosdclient.Client, what string) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	defer w.Flush()
+
+	switch what {
+	case "caps":
+		caps := c.Capabilities()
+		fmt.Fprintf(w, "driver\t%s\n", caps.Driver)
+		fmt.Fprintf(w, "contract\t%s\n", caps.Contract)
+		fmt.Fprintf(w, "ports\t%d max\n", caps.MaxPorts)
+		fmt.Fprintf(w, "vlans\t%v\n", caps.VLANs)
+		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
+		// Reported explicitly because an operator planning multipath needs to
+		// know before configuring it, not after a route is refused.
+		if caps.ECMP {
+			fmt.Fprintf(w, "ecmp\tyes, up to %d paths\n", caps.MaxECMP)
+		} else {
+			fmt.Fprintf(w, "ecmp\tno\n")
+		}
+		return nil
+
+	case "ports":
+		ports, err := c.Ports()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "PORT\tADMIN\tOPER\tSPEED\tMTU")
+		for _, p := range ports {
+			st, err := c.PortStatus(p.Name)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
+				st.Name, updown(st.AdminUp), updown(st.OperUp), st.SpeedMbps, st.MTU)
+		}
+		return nil
+
+	case "routes":
+		routes, err := c.Routes()
+		if err != nil {
+			return err
+		}
+		if len(routes) == 0 {
+			fmt.Fprintln(w, "no routes")
+			return nil
+		}
+		fmt.Fprintln(w, "PREFIX\tNEXT-HOPS")
+		for _, r := range routes {
+			var hops []string
+			for _, nh := range r.NextHops {
+				hops = append(hops, nh.Via.String()+" dev "+nh.Port)
+			}
+			fmt.Fprintf(w, "%s\t%s\n", r.Prefix, strings.Join(hops, ", "))
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown show target %q", what)
+}
+
+func routeCmd(c *nosdclient.Client, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: nosaic route add <prefix> via <ip> dev <port> | route del <prefix>")
+	}
+	prefix, err := netip.ParsePrefix(args[1])
+	if err != nil {
+		return fmt.Errorf("%q is not a prefix: %w", args[1], err)
+	}
+
+	switch args[0] {
+	case "del":
+		return c.DelRoute(prefix)
+
+	case "add":
+		// Repeating "via ... dev ..." adds a next-hop, which is how a
+		// multipath route is expressed. If the datapath cannot do multipath it
+		// refuses, rather than installing the first and saying nothing.
+		r := switchapi.Route{Prefix: prefix}
+		rest := args[2:]
+		for len(rest) >= 4 && rest[0] == "via" && rest[2] == "dev" {
+			via, err := netip.ParseAddr(rest[1])
+			if err != nil {
+				return fmt.Errorf("%q is not an address: %w", rest[1], err)
+			}
+			r.NextHops = append(r.NextHops, switchapi.NextHop{Via: via, Port: rest[3]})
+			rest = rest[4:]
+		}
+		if len(rest) != 0 {
+			return fmt.Errorf("unexpected %q: expected via <ip> dev <port>", strings.Join(rest, " "))
+		}
+		if len(r.NextHops) == 0 {
+			return fmt.Errorf("a route needs at least one next-hop: via <ip> dev <port>")
+		}
+		return c.AddRoute(r)
+	}
+	return fmt.Errorf("unknown route command %q", args[0])
+}
+
+func updown(b bool) string {
+	if b {
+		return "up"
+	}
+	return "down"
 }
