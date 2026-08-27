@@ -1,0 +1,39 @@
+# The default login, defined once.
+#
+# Everything that mentions credentials reads this: the base profiles that
+# create the account, the installer documentation, and the CLI. Nothing
+# restates it, so nothing can disagree with it.
+#
+# NOSaic ships no password. The image contains no credential at all, so there
+# is nothing in the repository or the download to leak, and no NOSaic switch on
+# a network is reachable with a known one. Until a password is set the account
+# logs in on the serial console only, and SSH refuses password authentication.
+
+account: admin
+privilege: sudo
+
+# Where the credential lives once set. Deliberately not in the image: config is
+# shared across A/B slots, so a password set here survives an upgrade and
+# survives a rollback -- an upgrade cannot reset it and a rollback cannot lock
+# you out. Wiping the config partition is therefore a complete factory reset,
+# with no special mechanism required.
+secrets_dir: /mnt/data/secrets
+config_file: /mnt/data/config/nosaic.yml
+
+# Stored as a hash, never as a password. The overlay is not encrypted, so a
+# plaintext credential here would be strictly worse than /etc/shadow on any
+# ordinary Linux system; a modern hash makes it equivalent.
+password_hash: yescrypt
+
+# Secrets live outside the shareable config on purpose. nosaic.yml is the file
+# people paste into a bug report, commit to a repository, or copy between
+# switches -- a credential in it leaks through ordinary well-meaning behaviour.
+# Same partition, same persistence, same rollback semantics, different file and
+# different permissions.
+secrets_mode: "0700"
+
+ssh:
+  # No password authentication until a password exists, so an unconfigured
+  # switch cannot be logged into over the network at all.
+  password_auth_until_set: false
+  authorized_keys: /mnt/data/secrets/authorized_keys

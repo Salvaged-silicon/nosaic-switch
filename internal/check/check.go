@@ -15,6 +15,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
+	"github.com/salvaged-silicon/nosaic-switch/internal/identity"
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
 )
 
@@ -60,6 +61,14 @@ func Run(root string) *Result {
 	// which is how a tree ends up with three boards that share no shape.
 	if fi, err := os.Stat(filepath.Join(root, "platform", "TEMPLATE")); err != nil || !fi.IsDir() {
 		res.errf("missing platform/TEMPLATE/ — a board port needs a scaffold to copy")
+	}
+
+	if id, err := identity.Load(root); err != nil {
+		res.errf("loading base/identity.yml: %v", err)
+	} else {
+		for _, e := range id.Validate() {
+			res.errf("base/identity.yml: %s", e)
+		}
 	}
 
 	arches, err := arch.LoadAll(root)

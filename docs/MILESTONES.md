@@ -8,8 +8,8 @@ leaves something bootable.
 | **M0** | A clean clone builds | Clone into an empty directory on a machine with only Docker and make; `make check` passes |
 | **M1** | Toolchains | **Done.** crosstool-NG 1.28.0 produces x86_64, aarch64 and powerpc toolchains from committed defconfigs; each compiles a binary that runs and passes three gates |
 | **M2** | Recipe engine and `.nos` packages | **Done.** zlib builds from source for x86_64 and powerpc; two clean builds are byte-identical; dependencies resolve in topological order; ELF objects are verified against the target |
-| **M3** | Base system, and a VM that boots | `nosaic build virt-x86_64` boots under QEMU in CI for all three profiles; the CLI configures a port, VLAN, address and route; an A/B upgrade, trial boot, commit and auto-rollback all pass |
-| **M4** | One kernel | Boots on x86_64 under QEMU; cross-builds clean for aarch64 |
+| **M3** | One kernel | Boots on x86_64 under QEMU; cross-builds clean for aarch64 |
+| **M4** | Base system, and a VM that boots | `nosaic build virt-x86_64` boots under QEMU in CI for all three profiles; the CLI configures a port, VLAN, address and route; an A/B upgrade, trial boot, commit and auto-rollback all pass |
 | **M5** | The boot axis | Two bootloader backends emit installable images; a corrupted image is rejected rather than installed |
 | **M6** | First real board | Boots from its own from-source base on real hardware, reports real sensors, forwards traffic — and the M3 CLI test passes unmodified |
 | **M7** | Routing and upgrades | BGP establishes; an upgrade that boots but fails to forward rolls back unattended |
@@ -69,4 +69,15 @@ package is written. A cross-build that silently used the host compiler
 otherwise produces a package that builds, installs, and fails only on the
 switch.
 
-Next: **M3**, the base system and a VM that boots.
+### The kernel comes before the base
+
+These two were originally the other way round, which was wrong: the base
+milestone's gate is "boots under QEMU", and nothing boots without a kernel.
+The alternative — borrowing a distribution kernel to prove the base, then
+replacing it — would have meant building a throwaway boot path that proves less
+than it appears to, since a distribution kernel brings module and initramfs
+assumptions a from-source base does not reproduce.
+
+The kernel has no dependency on the base, so it simply goes first.
+
+Next: **M3**, one kernel.

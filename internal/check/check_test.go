@@ -20,6 +20,9 @@ func repo(t *testing.T, recipes map[string]string) string {
 	if err := os.MkdirAll(filepath.Join(root, "platform", "TEMPLATE"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "base", "identity.yml"), []byte(validIdentity), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	for name, body := range recipes {
 		dir := filepath.Join(root, "recipes", name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -31,6 +34,18 @@ func repo(t *testing.T, recipes map[string]string) string {
 	}
 	return root
 }
+
+const validIdentity = `
+account: admin
+privilege: sudo
+secrets_dir: /mnt/data/secrets
+config_file: /mnt/data/config/nosaic.yml
+secrets_mode: "0700"
+password_hash: yescrypt
+ssh:
+  password_auth_until_set: false
+  authorized_keys: /mnt/data/secrets/authorized_keys
+`
 
 func hasErr(errs []string, substr string) bool {
 	for _, e := range errs {
@@ -134,5 +149,42 @@ redistributable: false
 	}
 	if len(res.Warnings) == 0 {
 		t.Fatal("non-redistributable should warn so it stays visible")
+	}
+}
+
+// The login definition is the single source of truth for credentials, so the
+// rules that keep it safe are enforced rather than documented.
+func TestIdentityRulesAreEnforced(t *testing.T) {
+	cases := []struct{ name, replace, with, want string }{
+		{
+			"secrets in the shareable config",
+			"config_file: /mnt/data/config/nosaic.yml",
+			"config_file: /mnt/data/secrets/nosaic.yml",
+			"must not live among secrets",
+		},
+		{
+			"network login before a password exists",
+			"password_auth_until_set: false",
+			"password_auth_until_set: true",
+			"before any password is set",
+		},
+		{
+			"a plaintext credential",
+			"password_hash: yescrypt",
+			"password_hash: plaintext",
+			"never in plain text",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := repo(t, nil)
+			body := strings.Replace(validIdentity, c.replace, c.with, 1)
+			if err := os.WriteFile(filepath.Join(root, "base", "identity.yml"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if !hasErr(Run(root).Errors, c.want) {
+				t.Fatalf("expected an error mentioning %q, got %v", c.want, Run(root).Errors)
+			}
+		})
 	}
 }
