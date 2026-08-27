@@ -21,6 +21,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/pkgbuild"
 	"github.com/salvaged-silicon/nosaic-switch/internal/profile"
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
+	"github.com/salvaged-silicon/nosaic-switch/internal/upgrade"
 	"github.com/salvaged-silicon/nosaic-switch/internal/version"
 )
 
@@ -36,6 +37,8 @@ available now
   pkg info <file.nos>          show a package's manifest
   pkg verify <file.nos>        re-derive every digest in a package
   build <board>                assemble a board's image
+  upgrade status <disk>        show which slot is active or on trial
+  upgrade install <disk> <img> --slot b   install into the inactive slot
 
 not yet implemented
   upgrade                      A/B image upgrade          (M3)
@@ -85,7 +88,13 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "upgrade", "platform":
+	case "upgrade":
+		if err := upgradeCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "platform":
 		fmt.Fprintf(os.Stderr, "nosaic: %q is not implemented yet\n", args[0])
 		fmt.Fprintln(os.Stderr, "see docs/DESIGN.md for which milestone lands it")
 		os.Exit(3)
@@ -265,4 +274,50 @@ func buildImage(root, boardID string) error {
 		}
 	}
 	return nil
+}
+
+func upgradeCmd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: nosaic upgrade <status|install> <disk> ...")
+	}
+	switch args[0] {
+	case "status":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: nosaic upgrade status <disk>")
+		}
+		st, err := upgrade.Status(upgrade.Disk{Path: args[1]})
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintf(w, "active\t%s\n", st.Active)
+		if st.Trial != "" {
+			fmt.Fprintf(w, "trial\t%s (attempt %d)\n", st.Trial, st.Tries)
+			fmt.Fprintf(w, "\tnot yet committed: it rolls back unless it confirms itself healthy\n")
+		} else {
+			fmt.Fprintf(w, "trial\tnone\n")
+		}
+		return w.Flush()
+
+	case "install":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: nosaic upgrade install <disk> <image> --slot <a|b>")
+		}
+		disk, image := args[1], args[2]
+		fs := flag.NewFlagSet("upgrade install", flag.ExitOnError)
+		slot := fs.String("slot", "", "slot to install into (must not be the active one)")
+		if err := fs.Parse(args[3:]); err != nil {
+			return err
+		}
+		if *slot == "" {
+			return fmt.Errorf("--slot is required")
+		}
+		if err := upgrade.Install(upgrade.Disk{Path: disk}, *slot, image); err != nil {
+			return err
+		}
+		fmt.Printf("installed %s into slot %s, marked for trial\n", filepath.Base(image), *slot)
+		fmt.Println("it becomes active only after it boots and confirms itself healthy")
+		return nil
+	}
+	return fmt.Errorf("unknown upgrade subcommand %q", args[0])
 }

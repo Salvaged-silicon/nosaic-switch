@@ -35,46 +35,91 @@ mount -t devtmpfs devtmpfs /dev   || fail "cannot mount /dev"
 
 echo "NOSAIC-INITRAMFS starting"
 
-# Which slot to boot. The bootloader sets this; on a direct kernel boot it
-# comes straight from the command line. Defaulting to A matters: a switch whose
-# boot pointer has been lost should still come up rather than sit in an
-# initramfs shell in a rack somewhere.
-SLOT=a
-for arg in $(cat /proc/cmdline); do
-    case "$arg" in nosaic.slot=*) SLOT="${arg#nosaic.slot=}" ;; esac
-done
-case "$SLOT" in
-    a) SLOTDEV=/dev/vda2 ;;
-    b) SLOTDEV=/dev/vda3 ;;
-    *) fail "unknown slot '$SLOT'" ;;
-esac
-echo "NOSAIC-INITRAMFS slot $SLOT ($SLOTDEV)"
+# The persistent partition comes first, because the slot decision is recorded
+# there. A switch that cannot read it still boots: it falls back to slot A
+# stateless rather than sitting in an initramfs shell in a rack somewhere.
+# The slot pointer, on its own journal-less filesystem. Read before anything
+# else, because it decides what gets mounted.
+mkdir -p /mnt/boot
+BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null || echo /dev/vda1)"
+if mount -t ext2 "$BOOTDEV" /mnt/boot 2>/dev/null; then
+    B=/mnt/boot/boot
+    mkdir -p $B
+else
+    echo "NOSAIC-INITRAMFS-WARN no boot partition; defaulting to slot a"
+    B=/tmp/boot
+    mkdir -p $B
+fi
 
-[ -b "$SLOTDEV" ] || fail "slot $SLOT has no device at $SLOTDEV"
-mount -t squashfs -o ro "$SLOTDEV" /mnt/image || fail "slot $SLOT does not contain a mountable image"
-echo "NOSAIC-INITRAMFS image mounted"
-
-# The persistent partition, shared by both slots. Configuration lives here, so
-# it survives an upgrade and survives a rollback; the writable overlay lives
-# here too but per-slot, so a change to the running slot cannot leak into the
-# other slot's known-good state.
+PERSIST=no
 DATA="$(findfs LABEL=nosaic-data 2>/dev/null || echo /dev/vda4)"
 if mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
     echo "NOSAIC-INITRAMFS data partition mounted ($DATA)"
-    UPPER="/mnt/data/slot-$SLOT/upper"
-    WORK="/mnt/data/slot-$SLOT/work"
-    mkdir -p "$UPPER" "$WORK" /mnt/data/config /mnt/data/secrets
+    mkdir -p /mnt/data/config /mnt/data/secrets
     PERSIST=yes
 else
-    # A switch with an unreadable data partition should still boot, so it can
-    # be diagnosed. It boots stateless, and says so, rather than refusing.
     echo "NOSAIC-INITRAMFS-WARN no data partition; booting stateless"
     mount -t tmpfs tmpfs /mnt/data || fail "cannot mount a fallback writable layer"
-    UPPER=/mnt/data/upper
-    WORK=/mnt/data/work
-    mkdir -p "$UPPER" "$WORK"
-    PERSIST=no
 fi
+
+slotdev() {
+    case "$1" in
+        a) echo /dev/vda2 ;;
+        b) echo /dev/vda3 ;;
+        *) echo "" ;;
+    esac
+}
+
+ACTIVE="$(cat $B/active 2>/dev/null || echo a)"
+TRIAL="$(cat $B/trial  2>/dev/null || echo '')"
+TRIES="$(cat $B/tries  2>/dev/null || echo 0)"
+MAXTRIES=3
+
+# A command-line override wins, for recovery and for testing. It is never
+# written back, so it cannot accidentally become the committed choice.
+for arg in $(cat /proc/cmdline); do
+    case "$arg" in nosaic.slot=*) ACTIVE="${arg#nosaic.slot=}"; TRIAL="" ;; esac
+done
+
+SLOT="$ACTIVE"
+if [ -n "$TRIAL" ]; then
+    if [ "$TRIES" -ge "$MAXTRIES" ]; then
+        # The trial slot booted but never confirmed itself healthy. An image
+        # that starts and then does not work is exactly what rollback is for.
+        echo "NOSAIC-BOOT-ROLLBACK slot $TRIAL failed to confirm after $TRIES attempts; returning to $ACTIVE"
+        rm -f $B/trial $B/tries
+    else
+        TRIES=$((TRIES + 1))
+        echo "$TRIES" > $B/tries 2>/dev/null
+        SLOT="$TRIAL"
+        echo "NOSAIC-BOOT-TRIAL slot $TRIAL attempt $TRIES of $MAXTRIES"
+    fi
+fi
+
+SLOTDEV="$(slotdev "$SLOT")"
+[ -n "$SLOTDEV" ] || fail "unknown slot '$SLOT'"
+echo "NOSAIC-INITRAMFS slot $SLOT ($SLOTDEV)"
+
+if ! mount -t squashfs -o ro "$SLOTDEV" /mnt/image 2>/dev/null; then
+    # A trial slot that will not even mount is definitively bad. There is
+    # nothing to learn from retrying it, so roll back at once rather than
+    # spending the trial budget discovering the same thing three times.
+    if [ "$SLOT" != "$ACTIVE" ]; then
+        echo "NOSAIC-BOOT-ROLLBACK slot $SLOT does not contain a mountable image; returning to $ACTIVE"
+        rm -f $B/trial $B/tries
+        SLOT="$ACTIVE"
+        SLOTDEV="$(slotdev "$SLOT")"
+        mount -t squashfs -o ro "$SLOTDEV" /mnt/image || fail "slot $ACTIVE is unmountable too; there is nothing left to boot"
+    else
+        fail "slot $SLOT does not contain a mountable image"
+    fi
+fi
+echo "NOSAIC-INITRAMFS image mounted"
+echo "NOSAIC-BOOT-SLOT $SLOT"
+
+UPPER="/mnt/data/slot-$SLOT/upper"
+WORK="/mnt/data/slot-$SLOT/work"
+mkdir -p "$UPPER" "$WORK"
 
 mount -t overlay overlay \
     -o lowerdir=/mnt/image,upperdir=$UPPER,workdir=$WORK \
@@ -85,8 +130,9 @@ echo "NOSAIC-INITRAMFS overlay assembled (persistent=$PERSIST)"
 
 # Carry the data partition and the pseudo-filesystems into the real root, so
 # the running system does not have to re-mount what is already mounted.
-mkdir -p /mnt/root/mnt/data
+mkdir -p /mnt/root/mnt/data /mnt/root/mnt/boot
 mount --move /mnt/data /mnt/root/mnt/data 2>/dev/null
+mount --move /mnt/boot /mnt/root/mnt/boot 2>/dev/null
 mount --move /dev /mnt/root/dev 2>/dev/null
 
 echo "NOSAIC-INITRAMFS handing over to /sbin/init"

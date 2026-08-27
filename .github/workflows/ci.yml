@@ -100,6 +100,12 @@ jobs:
       - name: Boot it
         run: make image-boot BOARD=virt-x86_64
 
+      # Both directions. A happy-path-only test is passed perfectly by an
+      # implementation that always commits, and that implementation has no
+      # safety net at all.
+      - name: Prove the A/B upgrade commits and rolls back
+        run: make image-ab BOARD=virt-x86_64
+
       - name: Rebuild and require identical bytes
         run: |
           before=$(sha256sum out/packages/zlib_1.3.1_x86_64.nos | cut -d' ' -f1)

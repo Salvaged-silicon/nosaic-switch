@@ -9,7 +9,7 @@ leaves something bootable.
 | **M1** | Toolchains | **Done.** crosstool-NG 1.28.0 produces x86_64, aarch64 and powerpc toolchains from committed defconfigs; each compiles a binary that runs and passes three gates |
 | **M2** | Recipe engine and `.nos` packages | **Done.** zlib builds from source for x86_64 and powerpc; two clean builds are byte-identical; dependencies resolve in topological order; ELF objects are verified against the target |
 | **M3** | One kernel | **Done.** 6.12 LTS boots under QEMU on x86_64 *and* aarch64, running an init built by its own toolchain that verifies the configured filesystems are present |
-| **M4** | Base system, and a VM that boots | **In progress.** The minimal profile boots to a login prompt under QEMU and self-tests from inside the running system. Remaining: persistent data partition, A/B slots, `nosd-virt`, and the systemd profiles |
+| **M4** | Base system, and a VM that boots | **In progress.** The minimal profile boots, persists across reboots, and upgrades atomically with automatic rollback. Remaining: `nosd-virt` and the systemd profiles |
 | **M5** | The boot axis | Two bootloader backends emit installable images; a corrupted image is rejected rather than installed |
 | **M6** | First real board | Boots from its own from-source base on real hardware, reports real sensors, forwards traffic — and the M3 CLI test passes unmodified |
 | **M7** | Routing and upgrades | BGP establishes; an upgrade that boots but fails to forward rolls back unattended |
@@ -135,8 +135,36 @@ identity, the login account with no password — then powers off. Running it
 "a login prompt appeared" and "the self-test passed" mutually exclusive, which
 is a mistake this gate made once already.
 
-Still to come in M4: the persistent data partition (the writable layer is tmpfs
-today, so changes do not survive a reboot), A/B slots and rollback, `nosd-virt`
-driving veth pairs through the switch-api contract, and the systemd profiles.
+### A/B upgrades
 
-Next: the data partition and A/B slots.
+    3. trial boot   NOSAIC-BOOT-TRIAL slot b attempt 1 of 3
+                    NOSAIC-SELFTEST COMMIT the trial slot is now active
+    5. trial boot   NOSAIC-BOOT-ROLLBACK slot a does not contain a mountable
+                    image; returning to b
+
+Both directions are tested, because a happy-path-only test is passed perfectly
+by an implementation that always commits — and that implementation has no
+safety net at all. So the suite installs 4 MB of `/dev/urandom` into a slot and
+requires the switch to come back on the known-good one, and it requires an
+attempt to overwrite the *running* slot to be refused, since an installer that
+permits that has quietly deleted the thing you would roll back to.
+
+The commit is gated on the health checks rather than on having reached
+userspace. An image that boots and does not work is precisely the case rollback
+exists for, so committing because init ran would defeat the mechanism.
+
+Two failure modes are handled differently on purpose. A trial slot that will
+not mount rolls back immediately — there is nothing to learn from retrying
+garbage three times. A trial slot that mounts but never confirms burns a retry
+budget first, because "booted but unhealthy" may be transient.
+
+The slot pointer lives on the boot partition, which is deliberately ext2 with
+no journal. That is not a detail: it was first put on the ext4 data partition,
+where `debugfs` wrote it, `upgrade status` read it back correctly, and the
+kernel then reverted it by replaying the journal on mount. The installer
+reported success and the switch booted the old slot anyway.
+
+Still to come in M4: `nosd-virt` driving veth pairs through the switch-api
+contract, and the systemd profiles.
+
+Next: `nosd-virt`.

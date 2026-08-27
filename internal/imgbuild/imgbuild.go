@@ -307,6 +307,23 @@ else
 fi
 grep -q "^admin::" /etc/shadow && say "no password set, as shipped" || { say "FAIL admin has a password"; fail=1; }
 
+# Commit or decline the trial. This is what "confirms itself healthy" means in
+# practice: the system that just booted decides whether it is good enough to
+# keep, and if it never does, the initramfs rolls back on a later boot.
+#
+# Deliberately gated on the health checks rather than on merely having reached
+# userspace. An image that boots and does not work is exactly the case rollback
+# exists for, and committing on "init ran" would defeat it.
+if [ -f /mnt/boot/boot/trial ]; then
+    if [ "$fail" = 0 ]; then
+        mv /mnt/boot/boot/trial /mnt/boot/boot/active
+        rm -f /mnt/boot/boot/tries
+        say "COMMIT the trial slot is now active"
+    else
+        say "NOCOMMIT health checks failed; this trial will roll back"
+    fi
+fi
+
 [ "$fail" = 0 ] && say "OK" || say "FAILED"
 sync
 poweroff -f
@@ -322,7 +339,7 @@ poweroff -f
 ::sysinit:/bin/mkdir -p /dev/pts /run /tmp
 ::sysinit:/bin/mount -t devpts devpts /dev/pts
 ::sysinit:/bin/mount -t tmpfs tmpfs /run
-::sysinit:/bin/mkdir -p /mnt/data
+::sysinit:/bin/mkdir -p /mnt/data /mnt/boot
 ::sysinit:/bin/hostname nosaic
 ::sysinit:/bin/echo "NOSAIC-BOOT userspace reached"
 ::once:/etc/nosaic/selftest.sh

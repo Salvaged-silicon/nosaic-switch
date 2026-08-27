@@ -164,6 +164,11 @@ image: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image BOARD=<board>"; exit 2; }
 	@$(RUN) go run ./cmd/nosaic build $(BOARD)
 
+## image-ab: prove the A/B upgrade commits and rolls back
+image-ab: $(BUILDER_DEP)
+	@test -n "$(BOARD)" || { echo "usage: make image-ab BOARD=<board>"; exit 2; }
+	@$(RUN) boot/virt/abtest.sh $(BOARD)
+
 ## image-boot: boot a built image under QEMU
 image-boot: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image-boot BOARD=<board>"; exit 2; }
@@ -182,4 +187,4 @@ clean-toolchains:
 
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
-        pkg packages kernel-boot image image-boot clean clean-toolchains
+        pkg packages kernel-boot image image-boot image-ab clean clean-toolchains

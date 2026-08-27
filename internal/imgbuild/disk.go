@@ -12,7 +12,20 @@ import (
 
 // Disk layout.
 //
-//	p1  boot    bootloader and its configuration; the slot pointer lives here
+//	p1  boot    bootloader configuration and the slot pointer
+//
+// The slot pointer lives here rather than on the data partition, and that is
+// not arbitrary. This filesystem carries no journal, so it can be edited
+// offline with debugfs and the change survives. ext4's journal is replayed
+// when the kernel mounts it, which silently reverts modifications made outside
+// the journal -- an installer writing a boot pointer there appears to succeed
+// and the switch boots the old slot anyway.
+//
+// It is also the right place on its own merits: the pointer is what the
+// bootloader reads, it is tiny, and keeping it off the partition holding
+// configuration means a corrupted config filesystem cannot make a switch
+// unbootable.
+//
 //	p2  slot A  an image, read-only and immutable
 //	p3  slot B  an image
 //	p4  data    persistent, shared by both slots
@@ -82,6 +95,14 @@ size=%dMiB, type=linux, name="nosaic-slot-b"
 	}
 	if len(parts) != 4 {
 		return "", fmt.Errorf("expected 4 partitions, got %d", len(parts))
+	}
+
+	boot, err := buildBootPartition(o, parts[0].Size*512)
+	if err != nil {
+		return "", err
+	}
+	if err := ddInto(boot, out, parts[0].Start*512, parts[0].Size*512, "boot"); err != nil {
+		return "", err
 	}
 
 	// Slot A gets the image. Slot B is left empty on purpose: a freshly
@@ -160,6 +181,35 @@ Wiping this partition is a complete factory reset: the switch returns to
 		"-F", img)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("mke2fs: %v\n%s", err, b)
+	}
+	return img, nil
+}
+
+// buildBootPartition makes the small, journal-less filesystem holding the slot
+// pointer. ext2 rather than ext4 on purpose: no journal means an offline edit
+// is not undone by journal replay the next time the kernel mounts it.
+func buildBootPartition(o Options, size int64) (string, error) {
+	work := filepath.Join(o.Root, ".cache", "image", o.Board.ID, "bootpart")
+	if err := os.RemoveAll(work); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Join(work, "boot"), 0o755); err != nil {
+		return "", err
+	}
+	// A fresh disk boots slot A, with nothing on trial.
+	if err := os.WriteFile(filepath.Join(work, "boot", "active"), []byte("a\n"), 0o644); err != nil {
+		return "", err
+	}
+
+	img := filepath.Join(o.Root, ".cache", "image", o.Board.ID, "boot.ext2")
+	if err := truncate(img, size); err != nil {
+		return "", err
+	}
+	cmd := exec.Command("mke2fs", "-q", "-t", "ext2", "-L", "nosaic-boot",
+		"-d", work, "-U", "8f3a1c22-0000-4000-8000-6e6f73616962",
+		"-F", img)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("mke2fs (boot): %v\n%s", err, b)
 	}
 	return img, nil
 }
