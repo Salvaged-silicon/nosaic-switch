@@ -26,10 +26,10 @@ func init() { register(aboot{}) }
 // fact that it kexecs. The boot0 below is written from scratch and shares no
 // code with the vendor's.
 //
-// Still to confirm on hardware: whether Aboot requires the archive be stored
-// rather than deflated (the vendor's is stored, so this one is too), and
-// whether it cares about the other members EOS ships. Neither can be settled
-// without a switch, and both are recorded here rather than assumed away.
+// Both of the questions this comment used to leave open are now answered from
+// two EOS SWIs pulled off a switch's flash: every member is Stored rather than
+// deflated, and version is the first member. The metadata Aboot reads is in
+// Wrap below.
 type aboot struct{}
 
 func (aboot) ID() string { return "aboot" }
@@ -53,8 +53,10 @@ const abootBoot0 = `#!/bin/sh
 
 set -e
 
-swipath="$1"
-[ -n "$swipath" ] || swipath="$(pwd)"
+# Aboot EXPORTS swipath; it does not pass it as an argument. EOS's own boot0
+# reads ${swipath} without ever assigning it, which is what settles this. The
+# $0 fallback is for running this by hand during bring-up.
+: "${swipath:=$0}"
 
 echo "NOSaic %s for %s"
 
@@ -110,8 +112,26 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	if err := os.WriteFile(filepath.Join(work, "boot0"), []byte(boot0), 0o755); err != nil {
 		return "", err
 	}
-	version := fmt.Sprintf("SWI_VERSION=%s\nSWI_VARIANT=NOSaic\nNOSAIC_BOARD=%s\n",
-		img.Version, img.Board)
+	// Read off two EOS SWIs from the flash of a real switch rather than
+	// guessed. BLESSED=1 is the load-bearing one: it is what lets Aboot boot a
+	// SWI with no signature, and without it this image is refused.
+	//
+	// SWI_MAX_HWEPOCH is the newest hardware epoch the image claims to
+	// support, and Aboot rejects a board whose epoch exceeds it. Unlike the
+	// U-Boot load address this has a safe default, because getting it wrong
+	// means a visible refusal rather than a board that hangs.
+	//
+	// SWI_ARCH is deliberately absent: neither EOS SWI sets it, which is
+	// proof Aboot does not require it.
+	epoch := img.AbootMaxHWEpoch
+	if epoch == "" {
+		epoch = "1"
+	}
+	version := fmt.Sprintf(
+		"BLESSED=1\nSWI_VERSION=%s\nSWI_RELEASE=nosaic-%s\n"+
+			"SWI_FLAVOR=DEFAULT\nSWI_VARIANT=US\nSWI_MAX_HWEPOCH=%s\n"+
+			"NOSAIC_BOARD=%s\n",
+		img.Version, img.Version, epoch, img.Board)
 	if err := os.WriteFile(filepath.Join(work, "version"), []byte(version), 0o644); err != nil {
 		return "", err
 	}
@@ -126,8 +146,9 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	// -0 stores rather than deflates. The vendor's own SWI is stored, and
 	// since Aboot has to read boot0 out of this before anything else runs,
 	// matching what is known to work is worth more than the space.
+	// version first, matching the member order of the vendor's own SWIs.
 	cmd := exec.Command("zip", "-0", "-q", "-X", out,
-		"boot0", "version", "nosaic-kernel", "nosaic-initrd")
+		"version", "boot0", "nosaic-kernel", "nosaic-initrd")
 	cmd.Dir = work
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("building the SWI: %v\n%s", err, b)

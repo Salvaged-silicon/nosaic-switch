@@ -324,6 +324,7 @@ func buildImage(root, boardID string) error {
 		Squashfs: res.Squashfs, Disk: res.Disk,
 		Board: b.ID, Arch: a.ID, Version: version.Version,
 		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
+		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
 	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
 	if err != nil {
 		return err

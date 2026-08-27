@@ -42,6 +42,10 @@ type Image struct {
 	UBootArch  string
 	UBootLoad  string
 	UBootEntry string
+
+	// AbootMaxHWEpoch is the newest Arista hardware epoch this image claims to
+	// support; Aboot refuses a board whose epoch is higher. Empty means 1.
+	AbootMaxHWEpoch string
 }
 
 // Backend produces an installable artifact for one bootloader.

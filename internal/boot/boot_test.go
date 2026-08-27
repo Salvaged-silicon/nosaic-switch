@@ -264,3 +264,116 @@ func TestUBootCommandsMatchTheImage(t *testing.T) {
 		}
 	}
 }
+
+// Aboot refuses a SWI with no signature unless the version member says
+// BLESSED=1. NOSaic does not sign, so without this the image is rejected by
+// the bootloader before any of our code runs -- and the only symptom is a
+// switch that stays on EOS.
+//
+// The field set here was read off two EOS SWIs pulled from a switch's flash.
+func TestAbootSWIIsBlessedAndOrderedLikeTheVendors(t *testing.T) {
+	img, dir := fixture(t)
+	b, _ := For("aboot")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	version, err := exec.Command("unzip", "-p", out, "version").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(version), "BLESSED=1") {
+		t.Errorf("version has no BLESSED=1, so Aboot will refuse it:\n%s", version)
+	}
+	if !strings.Contains(string(version), "SWI_MAX_HWEPOCH=") {
+		t.Errorf("version has no SWI_MAX_HWEPOCH:\n%s", version)
+	}
+	// EOS omits SWI_ARCH, which is what proves Aboot does not need it. Adding
+	// one we invented would be guessing at a field the bootloader parses.
+	if strings.Contains(string(version), "SWI_ARCH") {
+		t.Errorf("SWI_ARCH is set, but neither vendor SWI sets it:\n%s", version)
+	}
+
+	listing, err := exec.Command("unzip", "-l", out).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	iv := strings.Index(string(listing), "version")
+	ib := strings.Index(string(listing), "boot0")
+	if iv < 0 || ib < 0 || iv > ib {
+		t.Errorf("version should be the first member, as in the vendor's SWIs:\n%s", listing)
+	}
+}
+
+// The board's epoch is board data, and an image claiming an epoch lower than
+// the switch is refused by Aboot.
+func TestAbootHWEpochComesFromTheBoard(t *testing.T) {
+	img, dir := fixture(t)
+	img.AbootMaxHWEpoch = "3"
+	b, _ := For("aboot")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, _ := exec.Command("unzip", "-p", out, "version").Output()
+	if !strings.Contains(string(version), "SWI_MAX_HWEPOCH=3") {
+		t.Errorf("board epoch not carried into the SWI:\n%s", version)
+	}
+}
+
+// Aboot EXPORTS swipath; it does not pass it as an argument. This ran as
+// `boot0 <path>` originally, which finds nothing on a real switch -- and the
+// failure is a kexec of a file that is not there, on hardware, with a console
+// message that does not say why.
+func TestAbootBoot0ReadsSwipathFromTheEnvironment(t *testing.T) {
+	img, dir := fixture(t)
+	b, _ := For("aboot")
+	if _, err := b.Wrap(img, dir, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unpacked-directory form, so boot0 takes the cp branch and needs no unzip.
+	swidir := t.TempDir()
+	for name, content := range map[string]string{
+		"nosaic-kernel": "KERNEL-CONTENT",
+		"nosaic-initrd": "INITRAMFS-CONTENT",
+	} {
+		if err := os.WriteFile(filepath.Join(swidir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	boot0, err := exec.Command("unzip", "-p",
+		filepath.Join(dir, "NOSaic-"+img.Version+"-"+img.Board+".swi"), "boot0").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b0 := filepath.Join(swidir, "boot0")
+	if err := os.WriteFile(b0, boot0, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stub kexec so nothing is actually loaded, and record how it was called.
+	binDir := t.TempDir()
+	record := filepath.Join(binDir, "kexec.log")
+	stub := "#!/bin/sh\necho \"$@\" >> " + record + "\n"
+	if err := os.WriteFile(filepath.Join(binDir, "kexec"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("sh", b0)
+	cmd.Env = append(os.Environ(),
+		"swipath="+swidir,
+		"PATH="+binDir+":"+os.Getenv("PATH"))
+	if outp, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("boot0 failed with swipath in the environment: %v\n%s", err, outp)
+	}
+
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("boot0 never reached kexec: %v", err)
+	}
+	if !strings.Contains(string(got), "/tmp/nosaic-kernel") {
+		t.Errorf("kexec was not given our kernel, got: %s", got)
+	}
+}

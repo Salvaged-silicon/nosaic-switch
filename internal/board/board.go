@@ -50,6 +50,10 @@ type Board struct {
 	UBootLoad  string `yaml:"u_boot_load"`
 	UBootEntry string `yaml:"u_boot_entry"`
 
+	// AbootMaxHWEpoch is board data for Arista boards; read it off the switch
+	// with prefdl. Defaults to 1, which covers the 7050SX2.
+	AbootMaxHWEpoch string `yaml:"aboot_max_hwepoch"`
+
 	Notes string `yaml:"notes"`
 
 	Path string `yaml:"-"`
