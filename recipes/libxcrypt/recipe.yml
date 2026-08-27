@@ -1,0 +1,25 @@
+# libxcrypt - the crypt() implementation.
+#
+# glibc removed libcrypt, so anything that hashes a password needs this
+# separately now. That includes systemd, and it includes NOSaic's own login:
+# the account password is stored hashed on the data partition.
+name: libxcrypt
+version: "4.4.38"
+summary: Modern crypt() library
+
+license: LGPL-2.1-or-later
+redistributable: true
+
+source:
+  url: https://github.com/besser82/libxcrypt/releases/download/v4.4.38/libxcrypt-4.4.38.tar.xz
+  sha256: 80304b9c306ea799327f01d9a7549bdb28317789182631f1b54f4511b4206dd6
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/libxcrypt-4.4.38.tar.xz
+
+build:
+  system: autotools
+  configure:
+    # The obsolete API exists for compatibility with binaries from the 1990s.
+    # Nothing in a NOSaic image is that old.
+    - --disable-obsolete-api
+    - --enable-hashes=strong,descrypt

@@ -28,8 +28,10 @@ echo "using $(command -v ip) from $(basename "$IPR")"
 # also closer to the truth: a switch runs nosd and nosaic, not `go run`.
 if [ "${NOSAIC_NETNS:-}" != "private" ]; then
     mkdir -p out
-    go build -o out/nosd   ./cmd/nosd
-    go build -o out/nosaic ./cmd/nosaic
+    # Skip if they are already built: in CI they come from the pinned
+    # container, and rebuilding here would use whatever Go the host has.
+    [ -x out/nosd ]   || go build -o out/nosd   ./cmd/nosd
+    [ -x out/nosaic ] || go build -o out/nosaic ./cmd/nosaic
 fi
 
 # Run in a private network namespace, and refuse to run outside one.

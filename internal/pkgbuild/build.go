@@ -32,6 +32,10 @@ func buildEnv(o Options) []string {
 	t := o.Arch.Triple
 
 	sysroot := filepath.Join(tc, t, "sysroot")
+	// Where this package's dependencies were staged. Searched before the
+	// toolchain's own sysroot so a project-built library wins over anything
+	// the toolchain happens to carry.
+	staging := filepath.Join(o.Root, ".cache", "sysroot", o.Arch.ID)
 
 	env := []string{
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
@@ -47,9 +51,16 @@ func buildEnv(o Options) []string {
 		// LIBDIR replaces the search path entirely rather than adding to it,
 		// which is the only version of this that actually works: appending
 		// still leaves the host visible.
-		"PKG_CONFIG_LIBDIR=" + filepath.Join(sysroot, "usr", "lib", "pkgconfig") +
+		"PKG_CONFIG_LIBDIR=" + filepath.Join(staging, "usr", "lib", "pkgconfig") +
+			":" + filepath.Join(staging, "usr", "share", "pkgconfig") +
+			":" + filepath.Join(sysroot, "usr", "lib", "pkgconfig") +
 			":" + filepath.Join(sysroot, "usr", "share", "pkgconfig"),
-		"PKG_CONFIG_SYSROOT_DIR=" + sysroot,
+		// Points at staging, not at the toolchain sysroot. pkg-config prefixes
+		// every path from a .pc file with this, and the .pc files come from
+		// packages we staged -- so pointing it at the toolchain root rewrote
+		// util-linux's include path to somewhere that does not exist, and
+		// systemd failed on a missing libmount.h while libmount was present.
+		"PKG_CONFIG_SYSROOT_DIR=" + staging,
 		"PKG_CONFIG_PATH=",
 		"CHOST=" + t,
 		"CBUILD=" + t,
@@ -63,8 +74,9 @@ func buildEnv(o Options) []string {
 		"STRIP=" + t + "-strip",
 		"OBJCOPY=" + t + "-objcopy",
 		"OBJDUMP=" + t + "-objdump",
-		"CFLAGS=-O2 -pipe",
-		"CXXFLAGS=-O2 -pipe",
+		"CFLAGS=-O2 -pipe -I" + filepath.Join(staging, "usr", "include"),
+		"CXXFLAGS=-O2 -pipe -I" + filepath.Join(staging, "usr", "include"),
+		"LDFLAGS=-L" + filepath.Join(staging, "usr", "lib"),
 		// Reproducibility: anything embedding a build timestamp must use
 		// this rather than the clock.
 		"SOURCE_DATE_EPOCH=" + strconv.FormatInt(effectiveEpoch(o), 10),
@@ -156,10 +168,23 @@ func runBuild(o Options, srcDir, stage string) error {
 	case "kernel":
 		return runKernelBuild(o, srcDir, stage)
 
+	case "meson":
+		return runMesonBuild(o, srcDir, stage)
+
 	case "configure", "autotools":
 		var args []string
 		if !b.NoPrefix {
 			args = append(args, "--prefix="+prefix)
+		}
+		// This is the difference between the two systems. A real autotools
+		// configure needs --host to know it is cross-compiling; without it,
+		// it probes the build machine, decides it can run test programs, and
+		// produces a package built for the wrong CPU or one that fails
+		// obscurely at link time. A hand-written configure (zlib's, for
+		// instance) does not accept --host at all, which is why "configure"
+		// exists as a separate system rather than being assumed.
+		if b.System == "autotools" {
+			args = append(args, "--host="+o.Arch.Triple)
 		}
 		for _, a := range b.Configure {
 			args = append(args, expand(o, a))
@@ -193,7 +218,7 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", install...)
 
 	default:
-		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, kernel, none)", b.System)
+		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, meson, kernel, none)", b.System)
 	}
 }
 

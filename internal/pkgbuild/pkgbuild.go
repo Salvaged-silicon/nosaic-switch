@@ -97,6 +97,10 @@ func Build(o Options) (*Result, error) {
 		}
 	}
 
+	if _, err := stageDependencies(o); err != nil {
+		return nil, err
+	}
+
 	if r.Build != nil && r.Build.System != "" && r.Build.System != "none" {
 		if srcDir == "" {
 			return nil, fmt.Errorf("build.system is %q but the recipe has no source", r.Build.System)

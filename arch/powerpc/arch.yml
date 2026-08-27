@@ -46,6 +46,7 @@ qemu_machine: "ppce500"
 
 qemu_cpu: ""
 
+meson_cpu: ppc
 kernel_defconfig: corenet32_smp_defconfig
 kernel_image: vmlinux
 elf_machine: "EM_PPC"

@@ -55,6 +55,10 @@ type Arch struct {
 	// fails on hardware. Auditing the instruction stream is what catches it.
 	ForbiddenInsnRE string `yaml:"forbidden_insn_re"`
 
+	// MesonCPU is meson's cpu_family for this architecture, which uses its own
+	// names: ppc rather than powerpc, and so on. Defaults to the arch id.
+	MesonCPU string `yaml:"meson_cpu"`
+
 	// KernelDefconfig is the in-tree defconfig this architecture starts from.
 	// Each kernel architecture names its own: x86_64_defconfig, plain
 	// defconfig on arm64, and a board-specific one on powerpc.

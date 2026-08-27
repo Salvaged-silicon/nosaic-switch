@@ -1,0 +1,36 @@
+# libcap - POSIX capabilities. systemd will not build without it.
+name: libcap
+version: "2.76"
+summary: POSIX capabilities library
+
+license: BSD-3-Clause OR GPL-2.0-only
+redistributable: true
+
+source:
+  url: https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.76.tar.xz
+  sha256: 629da4ab29900d0f7fcc36227073743119925fd711c99a1689bbf5c9b40c8e6f
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/libcap-2.76.tar.xz
+
+build:
+  system: make
+  env:
+    # libcap builds a few tools that run during its own build, so it needs a
+    # compiler for the build machine as well as one for the target. Left
+    # unset it uses the cross compiler for both and the build dies trying to
+    # execute a target binary.
+    BUILD_CC: gcc
+    # PAM is not in the image and pulling it in for a library nothing here
+    # uses would be a poor trade.
+    PAM_CAP: "no"
+    lib: lib
+    # The builder has a Go toolchain for our own tools, and libcap notices it
+    # and tries to build Go bindings for the target. Nothing here uses them,
+    # and cross-building them is a problem worth not having.
+    GOLANG: "no"
+  install_args:
+    - DESTDIR=${DESTDIR}
+    - prefix=/usr
+    - lib=lib
+    - PAM_CAP=no
+    - install

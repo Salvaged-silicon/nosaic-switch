@@ -1,0 +1,28 @@
+# util-linux - here for its libraries, not its programs.
+#
+# systemd needs libmount, libblkid and libuuid. The programs are deliberately
+# not built: busybox already provides mount, and building the full set would
+# add a great deal to an image for tools that would never be used.
+name: util-linux
+version: "2.40.4"
+summary: libmount, libblkid and libuuid
+
+license: GPL-2.0-or-later
+redistributable: true
+
+source:
+  url: https://mirrors.edge.kernel.org/pub/linux/utils/util-linux/v2.40/util-linux-2.40.4.tar.xz
+  sha256: 5c1daf733b04e9859afdc3bd87cc481180ee0f88b5c0946b16fdec931975fb79
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/util-linux-2.40.4.tar.xz
+
+build:
+  system: autotools
+  configure:
+    - --disable-all-programs
+    - --enable-libmount
+    - --enable-libblkid
+    - --enable-libuuid
+    - --disable-nls
+    - --without-python
+    - --without-systemd

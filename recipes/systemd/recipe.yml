@@ -1,0 +1,69 @@
+# systemd - the init for the full and slim profiles.
+#
+# The minimal profile does not run this: it is too large for the boards that
+# tier exists for, which is why recipes declare services abstractly and both
+# init backends are generated rather than written.
+#
+# Configured down to what a switch actually needs. systemd's default build
+# pulls in a great deal that has no meaning here -- there are no user sessions,
+# no encrypted disks, no smartcards on a switch -- and every one of those is a
+# dependency to cross-compile and a component to keep patched.
+name: systemd
+version: "257.9"
+summary: System and service manager
+
+license: LGPL-2.1-or-later
+redistributable: true
+
+depends:
+  - libcap
+  - libxcrypt
+  - util-linux
+
+source:
+  url: https://github.com/systemd/systemd/archive/refs/tags/v257.9.tar.gz
+  sha256: b27dcc100a738b4b5b81f7c5174c1239a6495f5bdf3d3caa94a17b8373e6a1ca
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/systemd-257.9.tar.gz
+
+build:
+  system: meson
+  # Option names were read out of systemd's own meson_options.txt rather than
+  # recalled: it exposes 256 of them, several have been renamed between
+  # releases, and nspawn is not one of them at all in 257.
+  configure:
+    - -Dmode=release
+    - -Dstatic-libsystemd=true
+    # Things a switch has no use for. Each is also a library that would have
+    # to be cross-compiled and maintained.
+    - -Dseccomp=disabled
+    - -Dselinux=disabled
+    - -Dapparmor=disabled
+    - -Daudit=disabled
+    - -Dpam=disabled
+    - -Dlibcryptsetup=disabled
+    - -Dlibidn2=disabled
+    - -Dgcrypt=disabled
+    - -Dp11kit=disabled
+    - -Dqrencode=disabled
+    - -Dlibfido2=disabled
+    - -Dtpm2=disabled
+    - -Dxkbcommon=disabled
+    - -Dpwquality=disabled
+    - -Dopenssl=disabled
+    - -Dbzip2=disabled
+    - -Dlz4=disabled
+    - -Dxz=disabled
+    - -Dzstd=disabled
+    - -Delfutils=disabled
+    - -Dpolkit=disabled
+    - -Dbpf-framework=disabled
+    - -Dvmspawn=disabled
+    - -Dportabled=false
+    - -Dsysupdate=disabled
+    - -Dhomed=disabled
+    - -Duserdb=false
+    - -Dmachined=false
+    - -Doomd=false
+    - -Dman=disabled
+    - -Dtests=false
