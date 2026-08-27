@@ -18,26 +18,48 @@ is *not* what CI does, so a NATIVE pass is weaker evidence than a container one.
 Building a cross-toolchain and a libc from source is not quick, and it is
 honest to say so before you start rather than after.
 
-These are **measured from CI**, not estimates — a 4-core runner with `JOBS=4`.
-They scale roughly with `JOBS`, so a slower machine or a lower job count will
-take longer:
+Both columns are **measured, not estimated**. CI is a 4-core runner with
+`JOBS=4` and Docker's `overlay2` driver; "a laptop" is a 6-core machine sharing
+those cores with a desktop, running Docker on the much slower `vfs` driver, so
+treat it as a worst case rather than a target:
 
-| Step | Measured | Notes |
+| Step | On CI | On a laptop |
 |---|---|---|
-| `make builder` | 1 min | Once, then cached |
-| `make toolchain ARCH=x86_64` | **44 min** | Once. By far the longest step |
-| `make packages PROFILE=minimal` | 14 min | glibc dominates |
-| `make pkg PKG=linux` | 13 min | The kernel |
-| `make image BOARD=virt-x86_64` | 26 s | |
-| `make image-boot BOARD=virt-x86_64` | 20 s | Boots twice, on purpose |
-| `make image-ab BOARD=virt-x86_64` | 33 s | |
+| `make check` | — | 2 min |
+| `make builder` | 1 min | 2 min |
+| `make toolchain ARCH=x86_64` | **44 min** | **51 min** |
+| `make toolchain-test` | — | 39 s |
+| `make packages PROFILE=minimal` | 14 min | 33 min |
+| `make pkg PKG=linux` | 13 min | 15 min |
+| `make image BOARD=virt-x86_64` | 26 s | 76 s |
+| `make image-boot BOARD=virt-x86_64` | 20 s | 86 s |
+| `make image-ab BOARD=virt-x86_64` | 33 s | 2 min |
 
-So: **about 75 minutes from a clean clone to a VM you can log into**, most of it
+So: **roughly 75 minutes on CI, under two hours on a busy laptop**, most of it
 the toolchain, which you build once.
 
-The pinned source archives are about 490 MB. Total disk for a full build is
-several gigabytes on top of that — the toolchain's build tree is the bulk of it,
-and that figure has not been measured precisely, so leave headroom.
+### Disk
+
+This is the part worth reading before you start, because the build needs an
+order of magnitude more space than it keeps:
+
+| | |
+|---|---|
+| **Peak, during the build** | **~18 GB** |
+| What survives it | ~1.4 GB — toolchain 435 MB, sources 487 MB, output 444 MB |
+
+The difference is intermediate build trees under `.cache/`, and the toolchain's
+alone is 14 GB. Keeping them makes a rebuild much faster, but if you are short
+of space, that is where it went:
+
+```sh
+make clean              # build output and the package trees
+make clean-toolchains   # the toolchains and their build trees
+```
+
+Sources in `dl/` are kept by both, so a rebuild needs no network.
+
+### Limits
 
 The build is bounded by limits derived from your host and shown by `make help`;
 override them in `local.mk`, which is untracked and is where anything specific
@@ -51,6 +73,10 @@ JOBS   = 8
 # Only if your Docker cannot create a private network namespace; see below.
 # DOCKER_NETWORK = host
 ```
+
+Set `MEMORY` **below** your available RAM, not above it. A cap higher than what
+the host actually has is not a cap: the host starts swapping long before the
+container limit is ever reached, which is the failure it was meant to prevent.
 
 Those limits are enforced, not advisory. Raising them raises the load — an
 earlier version of this build defaulted to every core and drove the host load

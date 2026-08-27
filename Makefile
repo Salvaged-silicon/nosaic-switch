@@ -211,16 +211,17 @@ image-boot: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image-boot BOARD=<board>"; exit 2; }
 	@$(RUN) boot/virt/bootimage.sh $(BOARD)
 
-## clean: remove build output
+
+## clean: remove build output and the package build trees
 clean:
-	rm -rf $(OUT)
+	@NOSAIC_RUN="$(RUN)" builder/reclaim.sh $(OUT) .cache/pkg .cache/image .cache/sysroot
 
 ## clean-toolchains: remove built toolchains
 # crosstool-NG finalises each toolchain read-only, so a plain rm -rf fails on
 # every file: you cannot unlink from a directory you cannot write.
 clean-toolchains:
-	@if [ -d toolchain ]; then chmod -R u+w toolchain; rm -rf toolchain; fi
-	@echo "toolchains removed (sources kept in dl/, so a rebuild is offline)"
+	@NOSAIC_RUN="$(RUN)" builder/reclaim.sh toolchain .cache/build-* .cache/crosstool-ng-* .cache/test-*
+	@echo "toolchains and their build trees removed (sources kept in dl/, so a rebuild is offline)"
 
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
