@@ -16,8 +16,10 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/check"
+	"github.com/salvaged-silicon/nosaic-switch/internal/imgbuild"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
 	"github.com/salvaged-silicon/nosaic-switch/internal/pkgbuild"
+	"github.com/salvaged-silicon/nosaic-switch/internal/profile"
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
 	"github.com/salvaged-silicon/nosaic-switch/internal/version"
 )
@@ -33,9 +35,9 @@ available now
   pkg build <name> --arch A    build a package from its recipe
   pkg info <file.nos>          show a package's manifest
   pkg verify <file.nos>        re-derive every digest in a package
+  build <board>                assemble a board's image
 
 not yet implemented
-  build <board>                assemble a board's image   (M3)
   upgrade                      A/B image upgrade          (M3)
   platform hal                 report board sensors       (M6)
 
@@ -73,7 +75,17 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "build", "upgrade", "platform":
+	case "build":
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "usage: nosaic build <board>")
+			os.Exit(2)
+		}
+		if err := buildImage(repoRoot(), args[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "upgrade", "platform":
 		fmt.Fprintf(os.Stderr, "nosaic: %q is not implemented yet\n", args[0])
 		fmt.Fprintln(os.Stderr, "see docs/DESIGN.md for which milestone lands it")
 		os.Exit(3)
@@ -215,4 +227,42 @@ func printManifest(m *nospkg.Manifest, verified bool) {
 		fmt.Fprintf(w, "verified\tevery digest re-derived and matched\n")
 	}
 	w.Flush()
+}
+
+func buildImage(root, boardID string) error {
+	b, err := board.Load(filepath.Join(root, "platform", boardID, "board.yml"))
+	if err != nil {
+		return err
+	}
+	a, err := arch.Load(filepath.Join(root, "arch", b.Arch, "arch.yml"))
+	if err != nil {
+		return err
+	}
+	pr, err := profile.Load(root, b.Profile)
+	if err != nil {
+		return err
+	}
+	res, err := imgbuild.Build(imgbuild.Options{
+		Root:       root,
+		Board:      b,
+		Arch:       a,
+		Profile:    pr,
+		PackageDir: filepath.Join(root, "out", "packages"),
+		OutDir:     filepath.Join(root, "out", "images", boardID),
+		Version:    version.Version,
+		Log:        os.Stdout,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nimage for %s (%s profile)\n", b.ID, pr.Name)
+	for _, p := range res.Packages {
+		fmt.Printf("  %s\n", p)
+	}
+	for _, f := range []string{res.Kernel, res.Initramfs, res.Squashfs} {
+		if fi, err := os.Stat(f); err == nil {
+			fmt.Printf("  %-42s %6.1f MiB\n", f, float64(fi.Size())/(1<<20))
+		}
+	}
+	return nil
 }

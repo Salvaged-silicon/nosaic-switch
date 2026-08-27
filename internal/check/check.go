@@ -16,6 +16,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
 	"github.com/salvaged-silicon/nosaic-switch/internal/identity"
+	"github.com/salvaged-silicon/nosaic-switch/internal/profile"
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
 )
 
@@ -71,6 +72,18 @@ func Run(root string) *Result {
 		}
 	}
 
+	profiles, err := profile.LoadAll(root)
+	if err != nil {
+		res.errf("loading profiles: %v", err)
+	}
+	known := map[string]bool{}
+	for _, p := range profiles {
+		known[p.Name] = true
+		for _, e := range p.Validate() {
+			res.errf("%s: %s", rel(root, p.Path), e)
+		}
+	}
+
 	arches, err := arch.LoadAll(root)
 	if err != nil {
 		res.errf("loading architectures: %v", err)
@@ -90,6 +103,11 @@ func Run(root string) *Result {
 	for _, b := range boards {
 		for _, e := range b.Validate(root) {
 			res.errf("%s: %s", rel(root, b.Path), e)
+		}
+		// A board naming a profile that does not exist is a board that cannot
+		// be built, and saying so here costs nothing.
+		if b.Profile != "" && len(known) > 0 && !known[b.Profile] {
+			res.errf("%s: profile %q has no base/%s.yml", rel(root, b.Path), b.Profile, b.Profile)
 		}
 	}
 

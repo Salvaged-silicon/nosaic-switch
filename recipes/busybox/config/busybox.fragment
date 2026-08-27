@@ -7,10 +7,20 @@
 # most needed.
 CONFIG_STATIC=y
 
-# Not the system init. NOSaic's profiles run systemd or s6; busybox provides
-# the shell and the utilities, and leaving its init out avoids two things
-# claiming PID 1.
-# CONFIG_INIT is not set
+# busybox is PID 1 on the minimal profile. The plan has that tier running s6,
+# which is a later package; until then busybox init boots the system, and it is
+# a legitimate init in its own right for a box this small.
+CONFIG_INIT=y
+CONFIG_FEATURE_USE_INITTAB=y
+
+# A console login, which is how the identity decision is actually implemented:
+# the admin account exists with no password, and until one is set this is the
+# only way in.
+CONFIG_GETTY=y
+CONFIG_LOGIN=y
+CONFIG_FEATURE_SHADOWPASSWDS=y
+CONFIG_PASSWD=y
+CONFIG_SU=y
 
 # switch_root hands control from the initramfs to the real root, and pivot_root
 # is its fallback. Without these the initramfs has nowhere to go.

@@ -75,7 +75,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/packages
-          key: kernel-x86_64-${{ hashFiles('recipes/linux/**', 'arch/x86_64/arch.yml') }}
+          key: pkgs-x86_64-${{ hashFiles('recipes/**', 'arch/x86_64/arch.yml') }}
 
       - name: Build the kernel
         if: steps.kernel.outputs.cache-hit != 'true'
@@ -86,6 +86,19 @@ jobs:
       # filesystems the image design depends on are actually present.
       - name: Boot the kernel and run its own userspace
         run: make kernel-boot ARCH=x86_64
+
+      - name: Build busybox
+        run: make pkg PKG=busybox ARCH=x86_64 JOBS=4 CPUS=4 MEMORY=8g
+
+      - name: Compose the image
+        run: make image BOARD=virt-x86_64
+
+      # The real gate. Not "does it compile" and not "does it start": the image
+      # is attached as a disk and mounted by the initramfs exactly as it would
+      # be on hardware, reaches a login prompt, and self-tests from inside the
+      # running system before powering off.
+      - name: Boot it
+        run: make image-boot BOARD=virt-x86_64
 
       - name: Rebuild and require identical bytes
         run: |

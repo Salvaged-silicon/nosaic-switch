@@ -1,0 +1,23 @@
+# The virtual platform — board number one.
+#
+# Not a convenience or a test fixture. It is what keeps main provable with no
+# switch attached, and it is where the switch-api contract was defined so that
+# no real ASIC could bias it. It stays permanently green in CI; if it breaks,
+# the core has grown a dependency on hardware it is not supposed to have.
+id: virt-x86_64
+vendor: nosaic
+model: virt
+
+arch: x86_64
+asic: virt
+boot: virt
+
+profile: minimal
+kernel: ""
+
+status: bringup
+
+notes: >
+  Front-panel ports are veth pairs behind a bridge, presented through the same
+  port map a real board uses. The control plane, the HAL and the CLI are all
+  genuinely exercised; only the silicon is stubbed.

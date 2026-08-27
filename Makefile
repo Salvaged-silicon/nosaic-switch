@@ -159,11 +159,15 @@ kernel-boot: $(BUILDER_DEP)
 	@test -n "$(ARCH)" || { echo "usage: make kernel-boot ARCH=<one of: $(ARCHES)>"; exit 2; }
 	@$(RUN) boot/virt/smoketest.sh $(ARCH)
 
-## base: build the base rootfs profiles (M3)
-## image: assemble a board image (M3)
-base image:
-	@echo "'$@' is not implemented yet — see docs/DESIGN.md for its milestone"
-	@exit 3
+## image: assemble a board's image, e.g. make image BOARD=virt-x86_64
+image: $(BUILDER_DEP)
+	@test -n "$(BOARD)" || { echo "usage: make image BOARD=<board>"; exit 2; }
+	@$(RUN) go run ./cmd/nosaic build $(BOARD)
+
+## image-boot: boot a built image under QEMU
+image-boot: $(BUILDER_DEP)
+	@test -n "$(BOARD)" || { echo "usage: make image-boot BOARD=<board>"; exit 2; }
+	@$(RUN) boot/virt/bootimage.sh $(BOARD)
 
 ## clean: remove build output
 clean:
@@ -178,4 +182,4 @@ clean-toolchains:
 
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
-        pkg packages kernel-boot base image clean clean-toolchains
+        pkg packages kernel-boot image image-boot clean clean-toolchains

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // ErrNotNOS is returned for a file that is not a .nos package at all.
@@ -159,4 +161,81 @@ func short(h string) string {
 		return h[:12] + "..."
 	}
 	return h
+}
+
+// Extract unpacks a package's payload into dst.
+//
+// Verification happens first and on the whole package: extracting a payload
+// whose digest has not been checked would mean trusting a file that arrived
+// from somewhere, which is the thing the format exists to avoid.
+func Extract(path, dst string) (*Manifest, error) {
+	m, err := VerifyFile(path)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	tr := tar.NewReader(f)
+	if _, err := tr.Next(); err != nil { // manifest
+		return nil, err
+	}
+	if _, err := tr.Next(); err != nil { // payload
+		return nil, err
+	}
+	zr, err := gzip.NewReader(tr)
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+
+	ptr := tar.NewReader(zr)
+	for {
+		h, err := ptr.Next()
+		if err == io.EOF {
+			return m, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Paths in a package are absolute by construction, and were validated
+		// as such when it was built; joining defensively anyway means a
+		// malformed package cannot write outside the target.
+		clean := filepath.Join(dst, filepath.Clean("/"+h.Name))
+		if !strings.HasPrefix(clean, filepath.Clean(dst)+string(os.PathSeparator)) {
+			return nil, fmt.Errorf("nospkg: %q escapes the target directory", h.Name)
+		}
+		switch h.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(clean, os.FileMode(h.Mode)); err != nil {
+				return nil, err
+			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
+				return nil, err
+			}
+			os.Remove(clean)
+			if err := os.Symlink(h.Linkname, clean); err != nil {
+				return nil, err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
+				return nil, err
+			}
+			out, err := os.OpenFile(clean, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(h.Mode))
+			if err != nil {
+				return nil, err
+			}
+			if _, err := io.Copy(out, ptr); err != nil {
+				out.Close()
+				return nil, err
+			}
+			if err := out.Close(); err != nil {
+				return nil, err
+			}
+		}
+	}
 }

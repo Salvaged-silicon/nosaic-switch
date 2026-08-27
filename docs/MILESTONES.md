@@ -9,7 +9,7 @@ leaves something bootable.
 | **M1** | Toolchains | **Done.** crosstool-NG 1.28.0 produces x86_64, aarch64 and powerpc toolchains from committed defconfigs; each compiles a binary that runs and passes three gates |
 | **M2** | Recipe engine and `.nos` packages | **Done.** zlib builds from source for x86_64 and powerpc; two clean builds are byte-identical; dependencies resolve in topological order; ELF objects are verified against the target |
 | **M3** | One kernel | **Done.** 6.12 LTS boots under QEMU on x86_64 *and* aarch64, running an init built by its own toolchain that verifies the configured filesystems are present |
-| **M4** | Base system, and a VM that boots | `nosaic build virt-x86_64` boots under QEMU in CI for all three profiles; the CLI configures a port, VLAN, address and route; an A/B upgrade, trial boot, commit and auto-rollback all pass |
+| **M4** | Base system, and a VM that boots | **In progress.** The minimal profile boots to a login prompt under QEMU and self-tests from inside the running system. Remaining: persistent data partition, A/B slots, `nosd-virt`, and the systemd profiles |
 | **M5** | The boot axis | Two bootloader backends emit installable images; a corrupted image is rejected rather than installed |
 | **M6** | First real board | Boots from its own from-source base on real hardware, reports real sensors, forwards traffic — and the M3 CLI test passes unmodified |
 | **M7** | Routing and upgrades | BGP establishes; an upgrade that boots but fails to forward rolls back unattended |
@@ -110,4 +110,33 @@ inside the running kernel which filesystems are actually present — so a kernel
 that boots but is missing something it was configured with fails, rather than
 passing and disappointing someone later.
 
-Next: **M4**, the base system and a VM that boots.
+### M4, so far
+
+NOSaic boots.
+
+```
+NOSAIC-INITRAMFS image mounted
+NOSAIC-INITRAMFS overlay assembled
+NOSAIC-BOOT userspace reached
+nosaic login:
+NOSAIC-SELFTEST OK
+```
+
+An image is composed from packages, never assembled by hand: the board names a
+profile, the profile names packages, and their closure is the image. What is in
+one can be answered by reading `/etc/nosaic/image.json` on the box rather than
+by inspecting a filesystem.
+
+The boot test does not stop at a login prompt. Reaching one proves the boot
+path but not that the system is usable, so a self-test runs alongside `getty`
+and checks the things an image must actually have — a writable overlay, its own
+identity, the login account with no password — then powers off. Running it
+*alongside* getty rather than before matters: powering off first would make
+"a login prompt appeared" and "the self-test passed" mutually exclusive, which
+is a mistake this gate made once already.
+
+Still to come in M4: the persistent data partition (the writable layer is tmpfs
+today, so changes do not survive a reboot), A/B slots and rollback, `nosd-virt`
+driving veth pairs through the switch-api contract, and the systemd profiles.
+
+Next: the data partition and A/B slots.
