@@ -1,0 +1,39 @@
+# NOSaic CPU architecture: 32-bit big-endian PowerPC (Freescale e500v2).
+#
+# The AS5610-52X's P2020. Status is 'planned' until spike S1 proves a modern
+# toolchain can produce binaries that actually run on the hardware.
+#
+# Why the nofpu sample, and not the obvious ones:
+#
+#   powerpc-e500v2-linux-gnuspe   the native e500v2 ABI, but crosstool-NG pins
+#                                 it to gcc-8.5.0 + glibc-2.29, because GCC 8
+#                                 is the last release that has the SPE ABI at
+#                                 all. Choosing it freezes this architecture on
+#                                 a 2021 compiler forever.
+#   powerpc-unknown-linux-gnu     generic PowerPC, gcc-15 -- but with a classic
+#                                 FPU. e500v2 has no classic FPU, so binaries
+#                                 built this way die with SIGILL on the real
+#                                 board. It is the trap, not the answer.
+#   powerpc-8540-linux-gnu        e500v1, and pinned to glibc-2.23 with 3.4
+#                                 kernel headers.
+#
+# So: soft-float generic PowerPC on a current gcc-15.2.0 / glibc-2.42. e500v2
+# executes standard PowerPC integer instructions natively; software floating
+# point costs nothing measurable in a datapath that barely uses it.
+id: powerpc
+name: PowerPC 32-bit big-endian (e500v2, soft-float)
+triple: powerpc-nosaic-linux-gnu
+endian: big
+bits: 32
+kernel_arch: powerpc
+ctng_sample: powerpc-unknown_nofpu-linux-gnu
+
+qemu: qemu-ppc-static
+
+status: planned
+notes: >
+  Spike S1. The question is narrow: can a current toolchain produce a working
+  binary for this CPU at all? If not, this class of hardware needs a pinned
+  ancient GCC, and that changes what M8 can promise. The answer is worth having
+  before a distro is built on the assumption that four architectures are
+  equally reachable.
