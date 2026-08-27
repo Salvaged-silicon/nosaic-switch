@@ -43,6 +43,7 @@ type Result struct {
 	Squashfs  string
 	Initramfs string
 	Kernel    string
+	Disk      string
 	Packages  []string
 }
 
@@ -107,12 +108,17 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 
+	disk, err := BuildDisk(o, sqsh)
+	if err != nil {
+		return nil, err
+	}
+
 	outKernel := filepath.Join(o.OutDir, "vmlinuz")
 	if err := copyFile(kernel, outKernel); err != nil {
 		return nil, err
 	}
 
-	return &Result{Squashfs: sqsh, Initramfs: initramfs, Kernel: outKernel, Packages: names}, nil
+	return &Result{Squashfs: sqsh, Initramfs: initramfs, Kernel: outKernel, Disk: disk, Packages: names}, nil
 }
 
 type pkgRef struct {
@@ -286,6 +292,19 @@ if touch /nosaic-should-fail 2>/dev/null; then
 fi
 
 grep -q "^admin:" /etc/passwd && say "login account present" || { say "FAIL no admin account"; fail=1; }
+
+# Persistence. A count that survives a reboot is the only honest way to show
+# that the data partition is real rather than a tmpfs pretending to be one.
+if mountpoint -q /mnt/data 2>/dev/null || [ -d /mnt/data/config ]; then
+    n=0
+    [ -f /mnt/data/boot-count ] && n=$(cat /mnt/data/boot-count 2>/dev/null || echo 0)
+    n=$((n + 1))
+    echo "$n" > /mnt/data/boot-count 2>/dev/null && say "boot count $n" || { say "FAIL data partition is not writable"; fail=1; }
+    [ -d /mnt/data/config ]  && say "config directory present"  || { say "FAIL no config directory"; fail=1; }
+    [ -d /mnt/data/secrets ] && say "secrets directory present" || { say "FAIL no secrets directory"; fail=1; }
+else
+    say "FAIL no data partition mounted"; fail=1
+fi
 grep -q "^admin::" /etc/shadow && say "no password set, as shipped" || { say "FAIL admin has a password"; fail=1; }
 
 [ "$fail" = 0 ] && say "OK" || say "FAILED"
@@ -303,6 +322,7 @@ poweroff -f
 ::sysinit:/bin/mkdir -p /dev/pts /run /tmp
 ::sysinit:/bin/mount -t devpts devpts /dev/pts
 ::sysinit:/bin/mount -t tmpfs tmpfs /run
+::sysinit:/bin/mkdir -p /mnt/data
 ::sysinit:/bin/hostname nosaic
 ::sysinit:/bin/echo "NOSAIC-BOOT userspace reached"
 ::once:/etc/nosaic/selftest.sh
