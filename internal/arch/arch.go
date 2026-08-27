@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -44,6 +45,15 @@ type Arch struct {
 	// QEMU is the user-mode emulator for running this architecture's binaries
 	// on the build host. Empty means native.
 	QEMU string `yaml:"qemu"`
+
+	// ForbiddenInsnRE matches instruction mnemonics this CPU cannot execute.
+	// The toolchain test disassembles its output and fails on any match.
+	//
+	// Emulators are permissive: QEMU's generic PowerPC model happily runs
+	// classic FPU instructions that a real e500v2 traps on. A hard-float build
+	// therefore compiles, disassembles and passes an emulated run, and only
+	// fails on hardware. Auditing the instruction stream is what catches it.
+	ForbiddenInsnRE string `yaml:"forbidden_insn_re"`
 
 	Status string `yaml:"status"`
 	Notes  string `yaml:"notes"`
@@ -138,6 +148,12 @@ func (a *Arch) Validate() []string {
 	}
 	if !oneOf(a.Status, validStatus) {
 		bad("status %q must be one of %s", a.Status, strings.Join(validStatus, ", "))
+	}
+
+	if a.ForbiddenInsnRE != "" {
+		if _, err := regexp.Compile(a.ForbiddenInsnRE); err != nil {
+			bad("forbidden_insn_re is not a valid regexp: %v", err)
+		}
 	}
 
 	return errs

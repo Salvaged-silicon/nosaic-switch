@@ -30,10 +30,19 @@ ctng_sample: powerpc-unknown_nofpu-linux-gnu
 
 qemu: qemu-ppc-static
 
-status: planned
+# Instruction classes an e500v2 cannot execute. Audited on every toolchain test,
+# because a hard-float build disassembles cleanly, runs under QEMU's permissive
+# generic-PowerPC model, and only fails on the real board.
+forbidden_insn_re: "^(lfs|lfd|lfsu|lfdu|lfsx|lfdx|stfs|stfd|stfsu|stfdu|stfsx|stfdx|fadd|fadds|fsub|fsubs|fmul|fmuls|fdiv|fdivs|fmadd|fmadds|fmsub|fmsubs|fnmadd|fnmsub|fneg|fabs|fmr|frsp|fctiw|fctiwz|fcmpu|fcmpo|mffs|mtfsf|fsqrt|fsqrts|fsel|fres|frsqrte|lvx|stvx|vadd[a-z0-9]*|vsub[a-z0-9]*|vperm)$"
+
+status: canary
 notes: >
-  Spike S1. The question is narrow: can a current toolchain produce a working
-  binary for this CPU at all? If not, this class of hardware needs a pinned
-  ancient GCC, and that changes what M8 can promise. The answer is worth having
-  before a distro is built on the assumption that four architectures are
-  equally reachable.
+  Spike S1, answered 2026-08-27: yes. gcc-15.2.0 / glibc-2.42 / binutils-2.45
+  built in 47 minutes and produced a static big-endian 32-bit binary that ran
+  and reported bits=32 endian=big. An instruction audit of the whole binary --
+  112,775 instructions, all of glibc included -- found no classic-FPU, no SPE
+  and no AltiVec instructions at all, only base integer PowerPC. So the SIGILL
+  risk is structurally absent rather than merely untested.
+  Outstanding: confirmation on a real AS5610. QEMU emulates a permissive
+  generic PowerPC, so it cannot settle CPU-model questions on its own -- the
+  instruction audit is what carries that argument, not the emulator.

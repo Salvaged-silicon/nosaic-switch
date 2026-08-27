@@ -23,7 +23,7 @@ worth having early.
 
 | | Question | Gate |
 |---|---|---|
-| **S1** | Can a current toolchain produce working binaries for 32-bit big-endian PowerPC (Freescale e500v2)? | A binary from that toolchain runs and reports the correct word size and endianness |
+| **S1** | Can a current toolchain produce working binaries for 32-bit big-endian PowerPC (Freescale e500v2)? | **Answered: yes.** gcc-15.2.0 / glibc-2.42, soft-float, built in 47 min; the binary ran and reported `bits=32 endian=big`, and an audit of all 112,775 instructions found no FPU, SPE or AltiVec instruction anywhere. Hardware confirmation on a real board outstanding. |
 
 S1 runs ahead of M8 rather than as part of it. If the answer is no, that class of hardware
 needs a pinned ancient compiler, and M8's scope changes — which is worth knowing before a

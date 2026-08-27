@@ -149,6 +149,13 @@ base packages image:
 clean:
 	rm -rf $(OUT)
 
+## clean-toolchains: remove built toolchains
+# crosstool-NG finalises each toolchain read-only, so a plain rm -rf fails on
+# every file: you cannot unlink from a directory you cannot write.
+clean-toolchains:
+	@if [ -d toolchain ]; then chmod -R u+w toolchain; rm -rf toolchain; fi
+	@echo "toolchains removed (sources kept in dl/, so a rebuild is offline)"
+
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
-        base packages image clean
+        base packages image clean clean-toolchains

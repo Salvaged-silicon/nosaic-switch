@@ -200,6 +200,26 @@ cmd_test() {
         *) die "expected ${want_bits}-bit, got: $result" ;;
     esac
 
+    # Some CPUs lack instruction classes the compiler would otherwise be free
+    # to emit -- e500v2 has no classic FPU, so a hard-float build produces a
+    # binary that disassembles fine, runs under a permissive emulator, and dies
+    # with SIGILL on the real board. Emulation does not catch that; auditing the
+    # instruction stream does.
+    local forbidden
+    forbidden="$(arch_field "$arch" forbidden_insn_re)"
+    if [ -n "$forbidden" ]; then
+        local od hits
+        od="toolchain/$arch/bin/$triple-objdump"
+        hits="$("$od" -d "$out/hello" 2>/dev/null \
+                | awk -F"\t" 'NF>=3 {split($3,a," "); print a[1]}' \
+                | grep -cE "$forbidden" || true)"
+        if [ "${hits:-0}" -ne 0 ]; then
+            die "$hits instruction(s) this CPU cannot execute. Pattern: $forbidden
+     A hard-float or wrong-CPU build gets this far and then SIGILLs on hardware."
+        fi
+        echo "  instruction audit: 0 forbidden (pattern: $forbidden)"
+    fi
+
     echo "  OK"
 }
 
