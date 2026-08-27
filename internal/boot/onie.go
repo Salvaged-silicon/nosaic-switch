@@ -21,6 +21,8 @@ type onieSFX struct{}
 
 func (onieSFX) ID() string { return "onie-sfx" }
 
+func (onieSFX) Tools() []string { return []string{"tar"} }
+
 func (onieSFX) Describe() string {
 	return "a self-extracting installer run by ONIE: onie-nos-install <file>"
 }

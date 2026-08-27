@@ -26,6 +26,9 @@ type uboot struct{}
 
 func (uboot) ID() string { return "uboot" }
 
+// dtc because mkimage shells out to it to compile the FIT description.
+func (uboot) Tools() []string { return []string{"mkimage", "dtc"} }
+
 func (uboot) Describe() string {
 	return "a FIT image loaded by U-Boot, over TFTP during bring-up or from flash"
 }
@@ -83,6 +86,18 @@ func (u uboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	if load == "" || entry == "" {
 		return "", fmt.Errorf("uboot needs the board's load and entry addresses: " +
 			"they depend on where that board's RAM is, and a wrong one overwrites something")
+	}
+
+	// mkimage does not compile the FIT description itself, it shells out to
+	// dtc -- and dtc is only a Recommends of u-boot-tools, so an image built
+	// with --no-install-recommends has mkimage and not dtc. Without this
+	// check the failure is mkimage reporting that it cannot open a temporary
+	// file it never got as far as creating, which says nothing about why.
+	for _, tool := range []string{"mkimage", "dtc"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			return "", fmt.Errorf("uboot needs %s: install u-boot-tools and "+
+				"device-tree-compiler (both are in builder/Dockerfile.build)", tool)
+		}
 	}
 
 	fmt.Fprintf(log, "==> building the FIT image\n")

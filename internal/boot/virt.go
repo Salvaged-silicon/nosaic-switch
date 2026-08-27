@@ -18,6 +18,9 @@ type virt struct{}
 
 func (virt) ID() string { return "virt" }
 
+// Nothing: QEMU is handed the artifacts as they are built.
+func (virt) Tools() []string { return nil }
+
 func (virt) Describe() string {
 	return "no installer: QEMU is given the kernel, initramfs and disk directly"
 }

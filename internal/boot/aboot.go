@@ -34,6 +34,8 @@ type aboot struct{}
 
 func (aboot) ID() string { return "aboot" }
 
+func (aboot) Tools() []string { return []string{"zip"} }
+
 func (aboot) Describe() string {
 	return "a SWI booted by Aboot: copy to flash and point boot-config at it"
 }

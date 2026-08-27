@@ -184,6 +184,9 @@ func TestBackendsRefuseIncompleteImages(t *testing.T) {
 // rather than failing for a reason that has nothing to do with the code.
 func mkimageOrSkip(t *testing.T) {
 	t.Helper()
+	// Skip only when u-boot-tools is absent entirely. A machine that has
+	// mkimage but not dtc is a broken build environment, and skipping there
+	// would hide exactly the gap that made CI red.
 	if _, err := exec.LookPath("mkimage"); err != nil {
 		t.Skip("mkimage not installed; it is in builder/Dockerfile.build")
 	}

@@ -54,6 +54,13 @@ type Backend interface {
 	// restating it in three places.
 	Describe() string
 
+	// Tools names the host commands this backend shells out to. Declared
+	// rather than discovered because the builder container is built from a
+	// package list, and a tool nobody wrote down is a tool nobody installs:
+	// aboot shipped without zip, and uboot without dtc, both found only when
+	// CI went red. check verifies every name here is in the Dockerfile.
+	Tools() []string
+
 	// Wrap writes the installable artifact into outDir and returns its path.
 	Wrap(img Image, outDir string, log io.Writer) (string, error)
 }

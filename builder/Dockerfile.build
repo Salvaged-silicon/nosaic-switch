@@ -30,7 +30,8 @@ RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/00-nosaic-sandbox \
 # reviewed change rather than something that drifts in.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       autoconf automake bash bc bison build-essential bzip2 \
-      ca-certificates cpio curl e2fsprogs fdisk file flex gawk gettext \
+      ca-certificates cpio curl device-tree-compiler e2fsprogs fdisk file \
+      flex gawk gettext \
       git gperf \
       help2man libelf-dev libncurses-dev libssl-dev libtool libtool-bin \
       libzstd-dev kmod make \

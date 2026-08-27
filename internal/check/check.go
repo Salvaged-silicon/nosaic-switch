@@ -90,6 +90,7 @@ func Run(root string) *Result {
 		res.errf("loading architectures: %v", err)
 	}
 	checkArches(res, root, arches)
+	checkBootTools(res, root)
 
 	recipes, err := recipe.LoadAll(root)
 	if err != nil {
@@ -120,6 +121,72 @@ func Run(root string) *Result {
 	}
 
 	return res
+}
+
+// checkBootTools makes the builder container's package list answerable to the
+// code rather than to memory. A backend that shells out to a tool the
+// container does not install fails at image-build time with whatever confusing
+// error that tool happens to produce -- which is how both zip and dtc were
+// found, each after a red CI run.
+func checkBootTools(res *Result, root string) {
+	// tool name -> the Debian package that provides it, where they differ.
+	pkgFor := map[string]string{
+		"mkimage": "u-boot-tools",
+		"dtc":     "device-tree-compiler",
+	}
+	df := filepath.Join(root, "builder", "Dockerfile.build")
+	b, err := os.ReadFile(df)
+	if err != nil {
+		res.errf("cannot read %s: %v", rel(root, df), err)
+		return
+	}
+	text := string(b)
+	for _, id := range boot.All() {
+		be, err := boot.For(id)
+		if err != nil {
+			continue
+		}
+		for _, tool := range be.Tools() {
+			pkg := tool
+			if p, ok := pkgFor[tool]; ok {
+				pkg = p
+			}
+			// Word-boundary match: a bare substring search reports success for
+			// "zip" against "bzip2", which is a false confirmation of exactly
+			// the thing being checked.
+			if !hasWord(text, pkg) {
+				res.errf("boot backend %q runs %s, but %s does not install %s",
+					id, tool, rel(root, df), pkg)
+			}
+		}
+	}
+}
+
+// hasWord reports whether text contains word delimited by non-package-name
+// characters, so "zip" does not match inside "bzip2".
+func hasWord(text, word string) bool {
+	for i := 0; i+len(word) <= len(text); i++ {
+		if text[i:i+len(word)] != word {
+			continue
+		}
+		before := byte(' ')
+		if i > 0 {
+			before = text[i-1]
+		}
+		after := byte(' ')
+		if i+len(word) < len(text) {
+			after = text[i+len(word)]
+		}
+		if !isPkgChar(before) && !isPkgChar(after) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPkgChar(c byte) bool {
+	return c == '-' || c == '.' || c == '+' ||
+		(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 func checkArches(res *Result, root string, arches []*arch.Arch) {
