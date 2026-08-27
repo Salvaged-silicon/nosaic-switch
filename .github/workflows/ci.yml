@@ -43,6 +43,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Sources are pinned by hash, so caching them is safe: a cache cannot
+      # substitute different content. It also stops a transient network failure
+      # from failing a run that has nothing to do with the network -- which is
+      # what happened twice before this was added.
+      - name: Cache fetched sources
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: dl-${{ hashFiles('recipes/**/recipe.yml', 'bootstrap/versions.env') }}
+          restore-keys: dl-
+
       - name: Cache the x86_64 toolchain
         id: toolchain
         uses: actions/cache@v4

@@ -40,6 +40,15 @@ var initOwnedDirs = []string{
 type Source struct {
 	URL    string `yaml:"url"`
 	SHA256 string `yaml:"sha256"`
+
+	// Mirrors are tried in order if URL fails.
+	//
+	// This matters more here than in most projects. NOSaic exists for hardware
+	// whose vendors have walked away, and the same happens to source archives:
+	// a project's own download server is the first thing to disappear when it
+	// is abandoned. Because every source is pinned by hash, a mirror cannot
+	// substitute different content — so falling back costs nothing in trust.
+	Mirrors []string `yaml:"mirrors"`
 }
 
 // Install maps one built file into the image.

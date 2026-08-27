@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
@@ -183,9 +184,20 @@ func fetch(o Options, r *recipe.Recipe) (string, error) {
 	path := filepath.Join(dl, name)
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fmt.Fprintf(o.Log, "==> fetching %s\n", r.Source.URL)
-		if err := download(r.Source.URL, path); err != nil {
-			return "", err
+		urls := append([]string{r.Source.URL}, r.Source.Mirrors...)
+		var lastErr error
+		for _, u := range urls {
+			fmt.Fprintf(o.Log, "==> fetching %s\n", u)
+			if err := downloadWithRetry(o, u, path); err != nil {
+				fmt.Fprintf(o.Log, "    %v\n", err)
+				lastErr = err
+				continue
+			}
+			lastErr = nil
+			break
+		}
+		if lastErr != nil {
+			return "", fmt.Errorf("could not fetch %s from any source: %w", name, lastErr)
 		}
 	}
 
@@ -202,17 +214,69 @@ func fetch(o Options, r *recipe.Recipe) (string, error) {
 	return path, nil
 }
 
-func download(url, dst string) error {
-	resp, err := http.Get(url)
+// downloadWithRetry fetches a URL, resuming rather than restarting.
+//
+// A transfer of a hundred-megabyte kernel tarball fails often enough on an
+// ordinary connection that treating one interruption as fatal makes builds
+// flaky for reasons that have nothing to do with the code. Resuming also means
+// a retry costs only what was lost, not the whole file again.
+func downloadWithRetry(o Options, url, dst string) error {
+	const attempts = 4
+	var err error
+	for i := range attempts {
+		if i > 0 {
+			// Linear backoff: the failures worth retrying here are transient
+			// resets and closed connections, not rate limits.
+			time.Sleep(time.Duration(i*2) * time.Second)
+			fmt.Fprintf(o.Log, "    retrying (%d of %d)\n", i+1, attempts)
+		}
+		err = downloadResume(url, dst+".part")
+		if err == nil {
+			return os.Rename(dst+".part", dst)
+		}
+	}
+	return err
+}
+
+func downloadResume(url, tmp string) error {
+	var have int64
+	if fi, statErr := os.Stat(tmp); statErr == nil {
+		have = fi.Size()
+	}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if have > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetching %s: %s", url, resp.Status)
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// The server ignored the range, so start again.
+		have = 0
+	case http.StatusPartialContent:
+	case http.StatusRequestedRangeNotSatisfiable:
+		// Already complete as far as the server is concerned.
+		return nil
+	default:
+		return fmt.Errorf("%s: %s", url, resp.Status)
 	}
-	tmp := dst + ".part"
-	f, err := os.Create(tmp)
+
+	flags := os.O_CREATE | os.O_WRONLY
+	if have > 0 {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(tmp, flags, 0o644)
 	if err != nil {
 		return err
 	}
@@ -220,10 +284,7 @@ func download(url, dst string) error {
 		f.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp, dst)
+	return f.Close()
 }
 
 func sha256File(path string) (string, error) {

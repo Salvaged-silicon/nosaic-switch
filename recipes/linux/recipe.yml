@@ -17,6 +17,8 @@ redistributable: true
 source:
   url: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.105.tar.xz
   sha256: eb36801e119529b13513c3459dc20e2a32f7053629f3aabb63ea501a4d88f63d
+  mirrors:
+    - https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/linux-6.12.105.tar.xz
 
 build:
   system: kernel
