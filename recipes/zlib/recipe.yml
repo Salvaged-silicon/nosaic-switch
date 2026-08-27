@@ -13,7 +13,11 @@ redistributable: true
 source:
   url: https://zlib.net/fossils/zlib-1.3.1.tar.gz
   sha256: 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
+  # Tried in order after the URL above. Our own copy comes first among the
+  # fallbacks because it is the one we control; the third-party mirror follows.
+  # Order costs nothing in trust: the hash above is checked either way.
   mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/zlib-1.3.1.tar.gz
     - https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
 
 build:

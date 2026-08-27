@@ -185,10 +185,22 @@ func fetch(o Options, r *recipe.Recipe) (string, error) {
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		urls := append([]string{r.Source.URL}, r.Source.Mirrors...)
+
+		// Retry hard only when there is nowhere else to go. Where a mirror
+		// exists, failing over quickly beats persisting against a host that is
+		// refusing us -- busybox.net failed three CI runs in a row from
+		// GitHub's address ranges while working fine elsewhere, and four
+		// retries against it wasted a minute before reaching a mirror that
+		// would have worked at once.
+		attempts := 4
+		if len(urls) > 1 {
+			attempts = 2
+		}
+
 		var lastErr error
 		for _, u := range urls {
 			fmt.Fprintf(o.Log, "==> fetching %s\n", u)
-			if err := downloadWithRetry(o, u, path); err != nil {
+			if err := downloadWithRetry(o, u, path, attempts); err != nil {
 				fmt.Fprintf(o.Log, "    %v\n", err)
 				lastErr = err
 				continue
@@ -220,8 +232,7 @@ func fetch(o Options, r *recipe.Recipe) (string, error) {
 // ordinary connection that treating one interruption as fatal makes builds
 // flaky for reasons that have nothing to do with the code. Resuming also means
 // a retry costs only what was lost, not the whole file again.
-func downloadWithRetry(o Options, url, dst string) error {
-	const attempts = 4
+func downloadWithRetry(o Options, url, dst string, attempts int) error {
 	var err error
 	for i := range attempts {
 		if i > 0 {

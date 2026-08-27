@@ -48,7 +48,17 @@ fetch_ctng() {
 
     if [ ! -f "$tarball" ]; then
         log "fetching crosstool-NG $CTNG_VERSION"
-        curl -fsSL -o "$tarball.part" "$CTNG_URL"
+        got=no
+        for url in "$CTNG_URL" ${CTNG_MIRROR:-}; do
+            # --retry covers a transient reset; -C - resumes rather than
+            # starting the transfer again from nothing.
+            if curl -fsSL --retry 3 --retry-delay 2 -C - -o "$tarball.part" "$url"; then
+                got=yes
+                break
+            fi
+            printf '    %s did not answer; trying the next source\n' "$url"
+        done
+        [ "$got" = yes ] || die "could not fetch crosstool-NG from any source"
         mv "$tarball.part" "$tarball"
     fi
 

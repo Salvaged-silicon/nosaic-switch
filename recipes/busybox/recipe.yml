@@ -12,7 +12,11 @@ redistributable: true
 source:
   url: https://busybox.net/downloads/busybox-1.37.0.tar.bz2
   sha256: 3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
+  # Tried in order after the URL above. Our own copy comes first among the
+  # fallbacks because it is the one we control; the third-party mirror follows.
+  # Order costs nothing in trust: the hash above is checked either way.
   mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/busybox-1.37.0.tar.bz2
     - https://sources.buildroot.net/busybox/busybox-1.37.0.tar.bz2
 
 build:

@@ -17,7 +17,11 @@ redistributable: true
 source:
   url: https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.105.tar.xz
   sha256: eb36801e119529b13513c3459dc20e2a32f7053629f3aabb63ea501a4d88f63d
+  # Tried in order after the URL above. Our own copy comes first among the
+  # fallbacks because it is the one we control; the third-party mirror follows.
+  # Order costs nothing in trust: the hash above is checked either way.
   mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/linux-6.12.105.tar.xz
     - https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/linux-6.12.105.tar.xz
 
 build:

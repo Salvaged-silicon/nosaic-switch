@@ -46,6 +46,20 @@ make nosaic         # build the CLI into out/
 `NATIVE=1` uses host tools instead of the container, which is faster for local
 iteration but is not what CI does.
 
+## Source archives
+
+Every upstream source is pinned by SHA-256 and mirrored at
+[salvaged-silicon/nosaic-sources](https://github.com/Salvaged-silicon/nosaic-sources).
+
+NOSaic runs on hardware whose vendors walked away, and source archives are abandoned on
+the same timeline — several components here (gcc, glibc, binutils, gmp, mpfr, isl) have no
+repository on GitHub at all and are served from FTP mirrors that come and go. Because
+everything is hash-verified, a mirror cannot serve different content than upstream would,
+so falling back to one costs nothing in trust.
+
+Upstream is still tried first: it is the real provenance, and a build that quietly stopped
+touching it would never notice it rotting.
+
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
