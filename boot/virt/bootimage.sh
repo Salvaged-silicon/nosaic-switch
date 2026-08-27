@@ -12,30 +12,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 BOARD="${1:?usage: bootimage.sh <board>}"
 
-board_field() { sed -n "s/^$2:[[:space:]]*//p" "platform/$BOARD/board.yml" | head -1 | tr -d '"'; }
-arch_field()  { sed -n "s/^$2:[[:space:]]*//p" "arch/$1/arch.yml"          | head -1 | tr -d '"'; }
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
-
-ARCH="$(board_field "$BOARD" arch)"
-QEMU="$(arch_field "$ARCH" qemu_system)"
-CONSOLE="$(arch_field "$ARCH" qemu_console)"
-MACHINE="$(arch_field "$ARCH" qemu_machine)"
-CPU="$(arch_field "$ARCH" qemu_cpu)"
-
-DIR="out/images/$BOARD"
-for f in vmlinuz initramfs.cpio.gz disk.img; do
-    [ -f "$DIR/$f" ] || die "$DIR/$f missing — run: make image BOARD=$BOARD"
-done
+# shellcheck source=boot/virt/qemulib.sh
+. "$ROOT/boot/virt/qemulib.sh"
+nosaic_qemu_setup "$BOARD"
 
 boot_once() {
     local log="$1" slot="$2"
     set +e
-    timeout 180 "$QEMU" \
-      ${MACHINE:+-machine "$MACHINE"} ${CPU:+-cpu "$CPU"} \
-      -nographic -no-reboot -m 1024 \
-      -kernel "$DIR/vmlinuz" \
-      -initrd "$DIR/initramfs.cpio.gz" \
-      -drive "file=$DIR/disk.img,format=raw,if=virtio" \
+    timeout 180 "$QEMU" "${QEMU_ARGS[@]}" \
       -append "console=$CONSOLE panic=5 loglevel=4 nosaic.selftest nosaic.slot=$slot" \
       </dev/null >"$log" 2>&1
     set -e

@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
@@ -91,6 +93,7 @@ func Run(root string) *Result {
 	}
 	checkArches(res, root, arches)
 	checkBootTools(res, root)
+	checkDocumentedTargets(res, root)
 
 	recipes, err := recipe.LoadAll(root)
 	if err != nil {
@@ -128,6 +131,55 @@ func Run(root string) *Result {
 // container does not install fails at image-build time with whatever confusing
 // error that tool happens to produce -- which is how both zip and dtc were
 // found, each after a red CI run.
+// checkDocumentedTargets keeps the documentation honest about the commands it
+// tells people to run. A guide naming a target that does not exist is worse
+// than no guide: the reader assumes they have got something wrong, and the
+// first thing they try fails.
+func checkDocumentedTargets(res *Result, root string) {
+	mk, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		res.errf("cannot read Makefile: %v", err)
+		return
+	}
+	targets := map[string]bool{}
+	for _, line := range strings.Split(string(mk), "\n") {
+		if m := targetRe.FindStringSubmatch(line); m != nil {
+			targets[m[1]] = true
+		}
+	}
+
+	docs := []string{filepath.Join(root, "README.md")}
+	if entries, err := os.ReadDir(filepath.Join(root, "docs")); err == nil {
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".md") {
+				docs = append(docs, filepath.Join(root, "docs", e.Name()))
+			}
+		}
+	}
+	for _, doc := range docs {
+		b, err := os.ReadFile(doc)
+		if err != nil {
+			continue
+		}
+		for _, m := range makeRe.FindAllStringSubmatch(string(b), -1) {
+			if !targets[m[1]] {
+				res.errf("%s says `make %s`, but the Makefile has no such target",
+					rel(root, doc), m[1])
+			}
+		}
+	}
+}
+
+var (
+	targetRe = regexp.MustCompile(`^([a-z][a-z0-9_-]*):`)
+	// "make foo" at a line start or after a backtick, so prose like
+	// "make sure" is not mistaken for a target.
+	makeRe = regexp.MustCompile("(?m)(?:^|`)make ([a-z][a-z0-9-]*)")
+)
+
 func checkBootTools(res *Result, root string) {
 	// tool name -> the Debian package that provides it, where they differ.
 	pkgFor := map[string]string{

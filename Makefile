@@ -57,6 +57,10 @@ endif
 # Same as RUN but without a TTY, for commands whose output is read by make.
 RUN_CAPTURE = $(subst --rm -t,--rm,$(RUN))
 
+# Same as RUN but with stdin attached, for the interactive VM. Without -i the
+# console is read-only and you cannot log in.
+RUN_TTY = $(subst --rm -t,--rm -it,$(RUN))
+
 .DEFAULT_GOAL := help
 
 ## help: list targets
@@ -193,6 +197,11 @@ image-ab: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image-ab BOARD=<board>"; exit 2; }
 	@$(RUN) boot/virt/abtest.sh $(BOARD)
 
+## vm: run a built image as an interactive VM, e.g. make vm BOARD=virt-x86_64
+vm: $(BUILDER_DEP)
+	@test -n "$(BOARD)" || { echo "usage: make vm BOARD=<board>"; exit 2; }
+	@$(RUN_TTY) boot/virt/vm.sh $(BOARD) $(if $(SLOT),$(SLOT),a)
+
 ## image-boot: boot a built image under QEMU
 image-boot: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image-boot BOARD=<board>"; exit 2; }
@@ -211,5 +220,5 @@ clean-toolchains:
 
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
-        pkg packages kernel-boot image image-boot image-ab dataplane-test \
+        pkg packages kernel-boot image image-boot image-ab vm dataplane-test \
         clean clean-toolchains

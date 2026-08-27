@@ -79,6 +79,15 @@ number or name:
 In a script or in CI it prints the same list and exits, rather than waiting for an answer
 nobody is there to give.
 
+Those two are quick. Building the OS itself means building a cross-toolchain and
+a libc from source, which is measured in hours rather than minutes — the whole
+sequence, what it costs, and how to boot the result in a VM you can log into are
+in **[docs/BUILDING.md](docs/BUILDING.md)**.
+
+```sh
+make vm BOARD=virt-x86_64     # once built: a console on the running system
+```
+
 `NATIVE=1` uses host tools instead of the container, which is faster for local
 iteration but is not what CI does.
 
