@@ -1,4 +1,19 @@
-# systemd - the init for the full and slim profiles.
+# systemd - the init for the full and slim profiles. NOT YET BUILDING.
+#
+# State as of 2026-08-27: meson configures cleanly and 1021 of 1495 objects
+# compile. It then fails linking libsystemd-core-257.so and
+# libsystemd-shared-257.so with undefined references to libmount and libblkid
+# symbols -- mnt_free_iter, mnt_monitor_get_fd, blkid_new_probe and others.
+#
+# What has been ruled out:
+#   - the libraries are staged, and nm shows they export those exact symbols
+#   - pkg-config reports the right thing: -L<staging>/usr/lib -lmount
+#   - meson's own log shows "Run-time dependency mount found: YES 2.40.4"
+#   - it is not --default-library static; removing that changed nothing
+#
+# So dependency resolution is correct and the failure is in how those targets
+# are linked. The next step is to capture the full link command for
+# libsystemd-core-257.so from ninja -v and see what is actually on it.
 #
 # The minimal profile does not run this: it is too large for the boards that
 # tier exists for, which is why recipes declare services abstractly and both

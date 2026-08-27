@@ -26,10 +26,14 @@ func runMesonBuild(o Options, srcDir, stage string) error {
 		"--cross-file", cross,
 		"--prefix", prefix,
 		"--buildtype", "release",
-		// Nothing on a switch needs to relink against a shared library we
-		// built; static keeps the image smaller and removes a class of
-		// upgrade problem where a library and its user disagree.
-		"--default-library", "static",
+		// No blanket --default-library here.
+		//
+		// It was set to static on the grounds that nothing on a switch needs
+		// to relink against a library we built. That is a reasonable policy
+		// and a bad default: systemd deliberately builds shared internal
+		// libraries, and overriding that globally broke its linking. A
+		// package that wants static can ask for it in its own recipe, where
+		// the choice is visible next to the package it affects.
 	}
 	for _, a := range o.Recipe.Build.Configure {
 		args = append(args, expand(o, a))
