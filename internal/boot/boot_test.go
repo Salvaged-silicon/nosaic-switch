@@ -172,10 +172,92 @@ func TestAbootWritesBootConfig(t *testing.T) {
 
 func TestBackendsRefuseIncompleteImages(t *testing.T) {
 	dir := t.TempDir()
-	for _, id := range []string{"onie-sfx", "aboot", "virt"} {
+	for _, id := range []string{"onie-sfx", "aboot", "virt", "uboot"} {
 		b, _ := For(id)
 		if _, err := b.Wrap(Image{Board: "b", Version: "1"}, dir, io.Discard); err == nil {
 			t.Errorf("%s accepted an image with no artifacts", id)
+		}
+	}
+}
+
+// mkimageOrSkip keeps the U-Boot tests honest on a machine without u-boot-tools
+// rather than failing for a reason that has nothing to do with the code.
+func mkimageOrSkip(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("mkimage"); err != nil {
+		t.Skip("mkimage not installed; it is in builder/Dockerfile.build")
+	}
+}
+
+func TestUBootRefusesWithoutBoardAddresses(t *testing.T) {
+	mkimageOrSkip(t)
+	img, dir := fixture(t)
+	b, _ := For("uboot")
+
+	// Guessing a load address is how a board ends up hanging with nothing on
+	// the console, so refusing is the whole point of this test.
+	for _, missing := range []struct {
+		what string
+		img  Image
+	}{
+		{"arch", Image{Kernel: img.Kernel, Initramfs: img.Initramfs,
+			UBootLoad: "0x1000000", UBootEntry: "0x1000000"}},
+		{"load address", Image{Kernel: img.Kernel, Initramfs: img.Initramfs,
+			UBootArch: "ppc", UBootEntry: "0x1000000"}},
+		{"entry address", Image{Kernel: img.Kernel, Initramfs: img.Initramfs,
+			UBootArch: "ppc", UBootLoad: "0x1000000"}},
+	} {
+		if _, err := b.Wrap(missing.img, dir, io.Discard); err == nil {
+			t.Errorf("uboot built an image with no %s", missing.what)
+		}
+	}
+}
+
+func TestUBootFITIsReadableByMkimage(t *testing.T) {
+	mkimageOrSkip(t)
+	img, dir := fixture(t)
+	img.UBootArch, img.UBootLoad, img.UBootEntry = "ppc", "0x01000000", "0x01000000"
+
+	b, _ := For("uboot")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Asking mkimage to read the FIT back proves it is a FIT rather than
+	// merely a file that got written -- and that the kernel and the initramfs
+	// both landed in it, which a length check would not show.
+	listed, err := exec.Command("mkimage", "-l", out).CombinedOutput()
+	if err != nil {
+		t.Fatalf("mkimage could not read back its own output: %v\n%s", err, listed)
+	}
+	for _, want := range []string{"kernel", "ramdisk", "01000000"} {
+		if !strings.Contains(string(listed), want) {
+			t.Errorf("FIT has no %q:\n%s", want, listed)
+		}
+	}
+}
+
+func TestUBootCommandsMatchTheImage(t *testing.T) {
+	mkimageOrSkip(t)
+	img, dir := fixture(t)
+	img.UBootArch, img.UBootLoad, img.UBootEntry = "arm", "0x02000000", "0x02000000"
+
+	b, _ := For("uboot")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The commands are typed at a console by a person, so a filename or an
+	// address that disagrees with the image is a bricked bring-up session.
+	notes, err := os.ReadFile(filepath.Join(dir, "uboot-commands.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{filepath.Base(out), img.UBootLoad} {
+		if !strings.Contains(string(notes), want) {
+			t.Errorf("uboot-commands.txt does not mention %q:\n%s", want, notes)
 		}
 	}
 }

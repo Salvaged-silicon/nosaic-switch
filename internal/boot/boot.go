@@ -35,6 +35,13 @@ type Image struct {
 	Board   string
 	Arch    string
 	Version string
+
+	// U-Boot needs to be told things the other bootloaders work out for
+	// themselves: which architecture name it uses, and where in RAM to put the
+	// kernel. Those are properties of the board, so they come from board.yml.
+	UBootArch  string
+	UBootLoad  string
+	UBootEntry string
 }
 
 // Backend produces an installable artifact for one bootloader.

@@ -9,7 +9,14 @@ model: ""                    # e.g. 7050tx-64
 # asic selects which nosd provider this board installs.
 arch: ""                     # x86_64 | aarch64 | powerpc | armhf
 asic: ""                     # e.g. td2, tdp, helix4, prestera, virt
-boot: ""                     # virt | aboot | onie-sfx | uboot | onl-swi
+boot: ""                     # virt | aboot | onie-sfx | uboot
+
+# Only for boot: uboot. Where in RAM the kernel is loaded, which is a property
+# of the SoC -- there is no safe default, and a wrong one hangs the board with
+# nothing on the console.
+# u_boot_arch: ppc
+# u_boot_load: "0x01000000"
+# u_boot_entry: "0x01000000"
 
 profile: full                # full | slim | minimal
 kernel: ""                   # empty means the fleet default

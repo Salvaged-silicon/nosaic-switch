@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
 )
 
 // Status is how far a port has got. Only "production" boards are advertised
@@ -39,6 +41,14 @@ type Board struct {
 	Profile string `yaml:"profile"`
 	Kernel  string `yaml:"kernel"`
 	Status  string `yaml:"status"`
+
+	// U-Boot boards must state where in RAM the kernel is loaded. There is no
+	// sensible default: an address that works on one SoC lands on top of
+	// something important on another, and the symptom is a board that hangs
+	// with nothing on the console.
+	UBootArch  string `yaml:"u_boot_arch"`
+	UBootLoad  string `yaml:"u_boot_load"`
+	UBootEntry string `yaml:"u_boot_entry"`
 
 	Notes string `yaml:"notes"`
 
@@ -117,6 +127,19 @@ func (b *Board) Validate(root string) []string {
 		bad("profile %q must be one of %s", b.Profile, strings.Join(validProfile, ", "))
 	}
 
+	// Checked here rather than at build time: a U-Boot board with no load
+	// address cannot produce a bootable image, and finding that out after a
+	// full build wastes an hour.
+	if b.Boot == "uboot" {
+		if b.UBootArch == "" {
+			bad("boot is uboot, so u_boot_arch is required (ppc, arm, arm64, x86)")
+		}
+		if b.UBootLoad == "" || b.UBootEntry == "" {
+			bad("boot is uboot, so u_boot_load and u_boot_entry are required: " +
+				"they depend on where this board's RAM is and have no safe default")
+		}
+	}
+
 	// The axes are directories. A board naming one that does not exist is a
 	// port that cannot build, and saying so here is cheaper than finding out
 	// during an image build.
@@ -125,9 +148,15 @@ func (b *Board) Validate(root string) []string {
 			bad("arch %q has no arch/%s directory", b.Arch, b.Arch)
 		}
 	}
+	// Ask the registry, not the filesystem. What makes a bootloader supported
+	// is a backend that can wrap an image for it; boot/<id>/ holds notes and
+	// helper scripts and several backends need neither. Checking for the
+	// directory would have rejected every board using aboot, onie-sfx or
+	// uboot, none of which have one.
 	if b.Boot != "" {
-		if _, err := os.Stat(filepath.Join(root, "boot", b.Boot)); os.IsNotExist(err) {
-			bad("boot %q has no boot/%s directory", b.Boot, b.Boot)
+		if _, err := boot.For(b.Boot); err != nil {
+			bad("boot %q is not a supported bootloader; have %s",
+				b.Boot, strings.Join(boot.All(), ", "))
 		}
 	}
 

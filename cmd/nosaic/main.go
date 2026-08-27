@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
+	"unsafe"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
@@ -43,7 +45,7 @@ available now
   pkg info <file.nos>          show a package's manifest
   pkg verify <file.nos>        re-derive every digest in a package
   pkg order [--profile P]      list recipes in dependency order
-  build <board>                assemble a board's image
+  build [board]                assemble a board's image; lists boards if omitted
   upgrade status <disk>        show which slot is active or on trial
   upgrade install <disk> <img> --slot b   install into the inactive slot
 
@@ -93,11 +95,23 @@ func main() {
 		}
 
 	case "build":
-		if len(args) != 2 {
-			fmt.Fprintln(os.Stderr, "usage: nosaic build <board>")
-			os.Exit(2)
+		root := repoRoot()
+		target := ""
+		if len(args) > 1 {
+			target = args[1]
+		} else {
+			// No board named. Rather than an unhelpful usage line, show what
+			// there is to choose from -- and offer to choose, but only when a
+			// person is actually at a terminal. Prompting in a script or in CI
+			// would hang a build waiting for input nobody is there to give.
+			chosen, err := chooseBoard(root)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+				os.Exit(2)
+			}
+			target = chosen
 		}
-		if err := buildImage(repoRoot(), args[1]); err != nil {
+		if err := buildImage(root, target); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
 		}
@@ -309,6 +323,7 @@ func buildImage(root, boardID string) error {
 		Kernel: res.Kernel, Initramfs: res.Initramfs,
 		Squashfs: res.Squashfs, Disk: res.Disk,
 		Board: b.ID, Arch: a.ID, Version: version.Version,
+		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
 	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
 	if err != nil {
 		return err
@@ -562,4 +577,71 @@ func pkgOrder(root, prof string) error {
 		fmt.Println(p.Name)
 	}
 	return nil
+}
+
+// isTerminal reports whether f is a terminal.
+//
+// Checking for a character device is not enough, and fails in the exact case
+// this needs to get right: /dev/null is a character device, so `nosaic build
+// </dev/null` would have been treated as a person sitting at a console and
+// prompted into the void. Asking the terminal driver a question only a
+// terminal can answer is the reliable test.
+func isTerminal(f *os.File) bool {
+	var termios [64]byte
+	_, _, errno := syscall.Syscall6(syscall.SYS_IOCTL, f.Fd(),
+		syscall.TCGETS, uintptr(unsafe.Pointer(&termios[0])), 0, 0, 0)
+	return errno == 0
+}
+
+// chooseBoard lists the supported switches and, at a terminal, lets one be
+// picked.
+//
+// The alternative — asking during every build — was considered and rejected:
+// a build that blocks on input cannot run in CI or in a script, and the board
+// already records which bootloader it uses, so asking would duplicate data
+// that is already written down.
+func chooseBoard(root string) (string, error) {
+	boards, err := board.LoadAll(root)
+	if err != nil {
+		return "", err
+	}
+	if len(boards) == 0 {
+		return "", fmt.Errorf("no boards are supported yet; see platform/TEMPLATE to add one")
+	}
+
+	w := tabwriter.NewWriter(os.Stderr, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(os.Stderr, "Which switch?")
+	fmt.Fprintln(w, "\t\tBOARD\tINSTALLS BY\tSTATUS")
+	for i, b := range boards {
+		how := b.Boot
+		if be, err := boot.For(b.Boot); err == nil {
+			how = be.Describe()
+		}
+		fmt.Fprintf(w, "\t%d.\t%s\t%s\t%s\n", i+1, b.ID, how, b.Status)
+	}
+	w.Flush()
+
+	// A terminal means a person; anything else means a script.
+	if !isTerminal(os.Stdin) {
+		return "", fmt.Errorf("name one: nosaic build <board>")
+	}
+
+	fmt.Fprint(os.Stderr, "\nnumber or name: ")
+	var answer string
+	if _, err := fmt.Fscanln(os.Stdin, &answer); err != nil {
+		return "", fmt.Errorf("nothing chosen")
+	}
+	answer = strings.TrimSpace(answer)
+	if n, err := strconv.Atoi(answer); err == nil {
+		if n < 1 || n > len(boards) {
+			return "", fmt.Errorf("%d is not one of the %d boards listed", n, len(boards))
+		}
+		return boards[n-1].ID, nil
+	}
+	for _, b := range boards {
+		if b.ID == answer {
+			return b.ID, nil
+		}
+	}
+	return "", fmt.Errorf("no board called %q", answer)
 }

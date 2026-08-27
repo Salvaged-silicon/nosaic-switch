@@ -19,6 +19,27 @@ Boards appear in this table when they boot, forward traffic, and pass CI. Not be
 |-------|------|------|------|--------|
 | _none_ | | | | |
 
+## Bootloaders
+
+Switches disagree about how an image gets onto them, so the bootloader is one of the four
+things a board declares — beside its architecture, its ASIC and its profile. You do not
+pick it when you build; the board already knows, and `boot:` in its `board.yml` says so.
+
+| `boot:` | Used by | What NOSaic emits |
+|---------|---------|-------------------|
+| `onie-sfx` | Most whitebox switches (Edgecore, Delta, Celestica) | A self-extracting installer ONIE runs |
+| `aboot` | Arista | A `.swi` Aboot loads, plus the `boot-config` pointing at it |
+| `uboot` | Older boards with no ONIE | A FIT image, loadable over TFTP or from flash |
+| `virt` | QEMU | Nothing — the kernel and disk are handed to QEMU directly |
+
+Adding another is a backend in `internal/boot/` and a line in the board — not a change to
+the image builder, which never learns what a bootloader is.
+
+U-Boot boards must also state `u_boot_load` and `u_boot_entry`. There is no default,
+because the right address depends on where that board's RAM is and a wrong one produces a
+board that hangs with nothing on the console. A board that omits them is rejected before
+the build starts rather than after it.
+
 ## What makes it different
 
 - **Built from source.** NOSaic builds its own toolchain and its own base system. It does
@@ -42,6 +63,21 @@ cd nosaic-switch
 make check          # validate the repo
 make nosaic         # build the CLI into out/
 ```
+
+To build an image, name the board — `nosaic build <board>`. Run it without one and it
+lists what there is to choose from, and offers to pick if you are at a terminal:
+
+```
+$ nosaic build
+Which switch?
+      BOARD        INSTALLS BY                                       STATUS
+  1.  virt-x86_64  no installer: QEMU is given the kernel...         bringup
+
+number or name:
+```
+
+In a script or in CI it prints the same list and exits, rather than waiting for an answer
+nobody is there to give.
 
 `NATIVE=1` uses host tools instead of the container, which is faster for local
 iteration but is not what CI does.
