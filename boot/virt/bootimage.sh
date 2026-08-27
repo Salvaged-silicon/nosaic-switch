@@ -46,7 +46,7 @@ echo "==> booting $BOARD under $QEMU (slot a)"
 boot_once "$LOG" a
 
 echo "--- console ---"
-grep -aE 'NOSAIC-|Kernel panic|login:|Welcome' "$LOG" | sed 's/^/    /' | head -20 || true
+grep -aE 'NOSAIC-|Kernel panic|login:|Welcome|fatal:|s6-rc' "$LOG" | sed 's/^/    /' | head -24 || true
 echo "---------------"
 
 grep -aq 'NOSAIC-INITRAMFS starting'    "$LOG" || die "the initramfs never ran; see $LOG"

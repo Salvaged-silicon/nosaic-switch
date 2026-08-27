@@ -1,0 +1,20 @@
+# glibc - the C library, taken from the toolchain that compiled everything.
+#
+# Not built from source here. crosstool-NG builds glibc as part of producing
+# the toolchain, and compiling a second copy would risk the image's libc
+# disagreeing with the one every binary was compiled against -- a class of bug
+# that shows up as inexplicable crashes rather than as a link error.
+#
+# This package exists because an image had no libc at all. Everything built
+# before it was either static (busybox) or never executed on the box, so the
+# gap stayed invisible until s6 became the first dynamically linked program
+# that actually runs, and failed to start with no message whatsoever.
+name: glibc
+version: "2.42"
+summary: The GNU C library, from the toolchain sysroot
+
+license: LGPL-2.1-or-later
+redistributable: true
+
+build:
+  system: sysroot-libc

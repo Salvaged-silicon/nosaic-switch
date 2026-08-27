@@ -106,6 +106,10 @@ func expand(o Options, s string) string {
 		"${ARCH}", o.Arch.ID,
 		"${PREFIX}", prefix,
 		"${KERNEL_ARCH}", o.Arch.KernelArch,
+		// Where this package's dependencies were staged. Most build systems
+		// find them through pkg-config or the compiler's search path; a few
+		// want to be told explicitly, and this is how a recipe says it.
+		"${STAGING}", filepath.Join(o.Root, ".cache", "sysroot", o.Arch.ID),
 	)
 	return r.Replace(s)
 }
@@ -171,6 +175,9 @@ func runBuild(o Options, srcDir, stage string) error {
 	case "meson":
 		return runMesonBuild(o, srcDir, stage)
 
+	case "sysroot-libc":
+		return runSysrootLibc(o, stage)
+
 	case "configure", "autotools":
 		var args []string
 		if !b.NoPrefix {
@@ -218,7 +225,7 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", install...)
 
 	default:
-		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, meson, kernel, none)", b.System)
+		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, meson, kernel, sysroot-libc, none)", b.System)
 	}
 }
 

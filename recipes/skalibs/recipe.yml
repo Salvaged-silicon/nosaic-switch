@@ -1,0 +1,43 @@
+# skalibs - the base of the s6 supervision suite.
+#
+# The minimal profile's init. systemd does not fit the boards that tier exists
+# for; this whole chain is a few hundred kilobytes.
+#
+# Built static throughout: these are the programs that run when nothing else
+# does, including PID 1, and a supervision tree that cannot start because a
+# shared library is missing is the worst possible failure on a switch.
+name: skalibs
+version: "2.15.1.0"
+summary: General-purpose C library for the s6 suite
+
+license: ISC
+redistributable: true
+
+source:
+  url: https://skarnet.org/software/skalibs/skalibs-2.15.1.0.tar.gz
+  sha256: f9c905e74935c6fe911c7e344e3e89d5fbd2014c1a04650b524b15ce9b5635d1
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/skalibs-2.15.1.0.tar.gz
+
+build:
+  system: configure
+  configure:
+    - --host=${TRIPLE}
+    - --disable-shared
+    - --enable-static
+    # Four of skalibs' system probes cannot be autodetected when
+    # cross-compiling: three need to run a program on the target, and one wants
+    # a path. Every answer is a property of Linux with glibc.
+    #
+    # The list was extracted from this version's own configure -- both the
+    # "choose" probes marked as needing to run and the separate "choosevalue"
+    # ones, which are a different code path. Deriving it from an older release
+    # missed selectinfinite, which 2.15 added, so it is worth re-checking on a
+    # version bump rather than assuming the set is stable.
+    - --with-sysdep-devurandom=yes
+    - --with-sysdep-posixspawnearlyreturn=no
+    - --with-sysdep-selectinfinite=yes
+    # A third probe, in a separate code path I missed on the first pass: it
+    # wants a path rather than yes/no. On Linux the running executable is
+    # reachable through /proc/self/exe.
+    - --with-sysdep-procselfexe=/proc/self/exe

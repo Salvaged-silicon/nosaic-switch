@@ -1,0 +1,29 @@
+# execline - the language s6 service definitions are written in.
+#
+# skarnet's build finds its dependencies through explicit paths rather than
+# pkg-config, so the staging sysroot is named directly.
+name: execline
+version: "2.9.9.2"
+summary: Non-interactive scripting language used by s6
+
+license: ISC
+redistributable: true
+
+depends:
+  - skalibs >= 2.15.1.0
+
+source:
+  url: https://skarnet.org/software/execline/execline-2.9.9.2.tar.gz
+  sha256: 908ed4db3a6b3a23a205d8fd4cf2a71089156f2aeae0f54656045aafad2dee32
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/execline-2.9.9.2.tar.gz
+
+build:
+  system: configure
+  configure:
+    - --host=${TRIPLE}
+    - --disable-shared
+    - --enable-static
+    - --with-include=${STAGING}/usr/include
+    - --with-lib=${STAGING}/usr/lib
+    - --with-sysdeps=${STAGING}/usr/lib/skalibs/sysdeps

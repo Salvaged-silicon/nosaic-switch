@@ -1,0 +1,34 @@
+# s6-rc - dependency-ordered service management.
+#
+# This is what svcgen generates for: a service directory with type, run and
+# dependencies.d, produced from the same abstract declaration that produces a
+# systemd unit. Until now that backend had never made files a running system
+# used.
+name: s6-rc
+version: "0.7.0.0"
+summary: Dependency-ordered service manager for s6
+
+license: ISC
+redistributable: true
+
+depends:
+  - skalibs >= 2.15.1.0
+  - execline
+  - s6 >= 2.15.1.0
+  - glibc
+
+source:
+  url: https://skarnet.org/software/s6-rc/s6-rc-0.7.0.0.tar.gz
+  sha256: bf5b8ce0da5a4ee70d642b818b61d9916a7a9b64a457595f388113e54a188688
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/s6-rc-0.7.0.0.tar.gz
+
+build:
+  system: configure
+  configure:
+    - --host=${TRIPLE}
+    - --disable-shared
+    - --enable-static
+    - --with-include=${STAGING}/usr/include
+    - --with-lib=${STAGING}/usr/lib
+    - --with-sysdeps=${STAGING}/usr/lib/skalibs/sysdeps

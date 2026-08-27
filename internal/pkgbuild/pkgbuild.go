@@ -102,7 +102,9 @@ func Build(o Options) (*Result, error) {
 	}
 
 	if r.Build != nil && r.Build.System != "" && r.Build.System != "none" {
-		if srcDir == "" {
+		// sysroot-libc packages what the toolchain already built, so it has
+		// no source of its own.
+		if srcDir == "" && r.Build.System != "sysroot-libc" {
 			return nil, fmt.Errorf("build.system is %q but the recipe has no source", r.Build.System)
 		}
 		if err := runBuild(o, srcDir, stage); err != nil {

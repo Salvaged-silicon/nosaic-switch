@@ -1,0 +1,28 @@
+# s6 - the supervisor itself. s6-svscan runs as PID 1 on the minimal profile.
+name: s6
+version: "2.15.1.0"
+summary: Process supervision suite
+
+license: ISC
+redistributable: true
+
+depends:
+  - skalibs >= 2.15.1.0
+  - execline
+  - glibc
+
+source:
+  url: https://skarnet.org/software/s6/s6-2.15.1.0.tar.gz
+  sha256: eab9c46e22b66b16135f9a05ec68a0ea287d9060b84d10defaaa2caad158ab52
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/s6-2.15.1.0.tar.gz
+
+build:
+  system: configure
+  configure:
+    - --host=${TRIPLE}
+    - --disable-shared
+    - --enable-static
+    - --with-include=${STAGING}/usr/include
+    - --with-lib=${STAGING}/usr/lib
+    - --with-sysdeps=${STAGING}/usr/lib/skalibs/sysdeps
