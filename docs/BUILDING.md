@@ -40,12 +40,16 @@ several gigabytes on top of that — the toolchain's build tree is the bulk of i
 and that figure has not been measured precisely, so leave headroom.
 
 The build is bounded by limits derived from your host and shown by `make help`;
-override them in `local.mk` (untracked):
+override them in `local.mk`, which is untracked and is where anything specific
+to your machine belongs — so that host quirks never get baked into the repo:
 
 ```make
 CPUS   = 8
 MEMORY = 16g
 JOBS   = 8
+
+# Only if your Docker cannot create a private network namespace; see below.
+# DOCKER_NETWORK = host
 ```
 
 Those limits are enforced, not advisory. Raising them raises the load — an
@@ -125,6 +129,20 @@ implementation has no safety net at all.
 - **The image boots but the self-test fails.** The console log is kept at
   `out/images/<board>/console.log`, and the second boot at `console-2.log`.
 - **QEMU exits immediately.** Usually the image is missing — `make image` first.
+- **Every container fails before running anything**, with
+
+  ```
+  runc create failed: unable to start container process:
+  error during container init: open sysctl
+  net.ipv4.ip_unprivileged_port_start ... permission denied
+  ```
+
+  You are running Docker inside an unprivileged container — LXC, including a
+  Proxmox container, is the usual case. `runc` sets that sysctl while building
+  a private network namespace, and `/proc/sys` is not writable there. Put
+  `DOCKER_NETWORK = host` in `local.mk` so containers share the host's network
+  instead. Nothing about the build depends on network isolation; the sources
+  are hash-verified either way.
 
 ## What is not here yet
 
