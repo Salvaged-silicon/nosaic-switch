@@ -18,6 +18,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/check"
+	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
 	"github.com/salvaged-silicon/nosaic-switch/internal/imgbuild"
 	nosdclient "github.com/salvaged-silicon/nosaic-switch/internal/nosd/client"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
@@ -40,6 +41,7 @@ available now
   pkg build <name> --arch A    build a package from its recipe
   pkg info <file.nos>          show a package's manifest
   pkg verify <file.nos>        re-derive every digest in a package
+  pkg order [--profile P]      list recipes in dependency order
   build <board>                assemble a board's image
   upgrade status <disk>        show which slot is active or on trial
   upgrade install <disk> <img> --slot b   install into the inactive slot
@@ -186,6 +188,19 @@ func pkgCmd(root string, args []string) error {
 			return fmt.Errorf("--arch is required")
 		}
 		return pkgBuild(root, name, *archID, *jobs, *out, *epoch)
+
+	case "order":
+		fs := flag.NewFlagSet("pkg order", flag.ExitOnError)
+		prof := fs.String("profile", "", "only what this profile needs")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		_ = prof
+		// Build order, computed rather than assumed. `make packages` used to
+		// build in directory order, which is alphabetical and therefore wrong
+		// the moment one package needs another: systemd before libcap, s6
+		// before skalibs. The resolver already knows the answer.
+		return pkgOrder(root, *prof)
 
 	case "info", "verify":
 		if len(args) != 2 {
@@ -488,4 +503,41 @@ func updown(b bool) string {
 		return "up"
 	}
 	return "down"
+}
+
+// pkgOrder prints every recipe in an order where each package is built after
+// everything it depends on.
+func pkgOrder(root, prof string) error {
+	recipes, err := recipe.LoadAll(root)
+	if err != nil {
+		return err
+	}
+	var available []depsolve.Pkg
+	var roots []string
+	for _, r := range recipes {
+		available = append(available, depsolve.Pkg{
+			Name: r.Name, Version: r.Version,
+			Provides: r.Provides, Conflicts: r.Conflicts, Depends: r.Depends,
+		})
+		roots = append(roots, r.Name)
+	}
+
+	// Narrowed to one profile's closure when asked. Everything in recipes/ is
+	// not necessarily wanted in every image, and something being unfinished
+	// should not stop a profile that does not use it from being built.
+	if prof != "" {
+		pr, err := profile.Load(root, prof)
+		if err != nil {
+			return err
+		}
+		roots = pr.Packages
+	}
+	order, err := depsolve.Resolve(available, roots)
+	if err != nil {
+		return err
+	}
+	for _, p := range order {
+		fmt.Println(p.Name)
+	}
+	return nil
 }

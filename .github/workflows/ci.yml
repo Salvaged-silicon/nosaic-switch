@@ -79,6 +79,13 @@ jobs:
           make nosaic
           ./out/nosaic pkg verify out/packages/zlib_1.3.1_x86_64.nos
 
+      # Everything the minimal profile needs, in dependency order computed from
+      # the recipes rather than from a list here that would drift. Narrowed to
+      # the profile so an unfinished package elsewhere in recipes/ cannot block
+      # a profile that does not use it.
+      - name: Build the minimal profile's packages
+        run: make packages ARCH=x86_64 PROFILE=minimal JOBS=4 CPUS=4 MEMORY=8g
+
       # The kernel is cached on the inputs that determine it, because building
       # one on every commit would make CI useless without proving anything new.
       - name: Cache the kernel package
@@ -98,16 +105,14 @@ jobs:
       - name: Boot the kernel and run its own userspace
         run: make kernel-boot ARCH=x86_64
 
-      - name: Build busybox
-        run: make pkg PKG=busybox ARCH=x86_64 JOBS=4 CPUS=4 MEMORY=8g
-
       - name: Compose the image
         run: make image BOARD=virt-x86_64
 
       # The real gate. Not "does it compile" and not "does it start": the image
       # is attached as a disk and mounted by the initramfs exactly as it would
-      # be on hardware, reaches a login prompt, and self-tests from inside the
-      # running system before powering off.
+      # be on hardware, brings up an s6 supervision tree from service
+      # definitions svcgen generated, reaches a login prompt, and self-tests
+      # from inside the running system before powering off.
       - name: Boot it
         run: make image-boot BOARD=virt-x86_64
 

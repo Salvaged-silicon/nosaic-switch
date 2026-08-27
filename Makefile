@@ -147,10 +147,13 @@ pkg: $(BUILDER_DEP)
 	@test -n "$(ARCH)" || { echo "usage: make pkg PKG=$(PKG) ARCH=<one of: $(ARCHES)>"; exit 2; }
 	@$(RUN) go run ./cmd/nosaic pkg build $(PKG) --arch $(ARCH) --jobs $(JOBS)
 
-## packages: build every recipe for one architecture
+## packages: build recipes in dependency order (PROFILE=minimal to narrow)
+# Order comes from the resolver, not from the directory listing. Alphabetical
+# order is wrong the moment one package needs another: it would attempt systemd
+# before libcap and s6 before skalibs.
 packages: $(BUILDER_DEP)
 	@test -n "$(ARCH)" || { echo "usage: make packages ARCH=<one of: $(ARCHES)>"; exit 2; }
-	@for p in $(RECIPES); do \
+	@for p in $$($(RUN) go run ./cmd/nosaic pkg order $(if $(PROFILE),--profile $(PROFILE),)); do \
 	   $(RUN) go run ./cmd/nosaic pkg build $$p --arch $(ARCH) --jobs $(JOBS) || exit 1; \
 	 done
 
