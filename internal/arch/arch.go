@@ -55,6 +55,12 @@ type Arch struct {
 	// fails on hardware. Auditing the instruction stream is what catches it.
 	ForbiddenInsnRE string `yaml:"forbidden_insn_re"`
 
+	// ABIKernelMax caps the glibc minimum-kernel version baked into binaries.
+	// Exceeding it means they abort at startup on older kernels rather than
+	// degrading -- which would exclude exactly the end-of-service-life boards
+	// this project exists for.
+	ABIKernelMax string `yaml:"abi_kernel_max"`
+
 	Status string `yaml:"status"`
 	Notes  string `yaml:"notes"`
 

@@ -35,6 +35,11 @@ qemu: qemu-ppc-static
 # generic-PowerPC model, and only fails on the real board.
 forbidden_insn_re: "^(lfs|lfd|lfsu|lfdu|lfsx|lfdx|stfs|stfd|stfsu|stfdu|stfsx|stfdx|fadd|fadds|fsub|fsubs|fmul|fmuls|fdiv|fdivs|fmadd|fmadds|fmsub|fmsubs|fnmadd|fnmsub|fneg|fabs|fmr|frsp|fctiw|fctiwz|fcmpu|fcmpo|mffs|mtfsf|fsqrt|fsqrts|fsel|fres|frsqrte|lvx|stvx|vadd[a-z0-9]*|vsub[a-z0-9]*|vperm)$"
 
+# Ceiling on the glibc minimum-kernel ABI floor. Generous enough for any
+# architecture's own glibc default, strict enough to catch a toolchain that
+# silently pinned itself to the kernel-headers version instead.
+abi_kernel_max: "4.0.0"
+
 status: canary
 notes: >
   Spike S1, answered 2026-08-27: yes. gcc-15.2.0 / glibc-2.42 / binutils-2.45

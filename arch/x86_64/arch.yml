@@ -16,6 +16,11 @@ ctng_sample: x86_64-unknown-linux-gnu
 # Empty: binaries run natively on the build host.
 qemu: ""
 
+# Ceiling on the glibc minimum-kernel ABI floor. Generous enough for any
+# architecture's own glibc default, strict enough to catch a toolchain that
+# silently pinned itself to the kernel-headers version instead.
+abi_kernel_max: "4.0.0"
+
 status: supported
 notes: >
   Modern whitebox and brite-box switches are overwhelmingly x86-64, including

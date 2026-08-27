@@ -88,10 +88,16 @@ CT_ALLOW_BUILD_AS_ROOT_SURE=y
 CT_LOCAL_TARBALLS_DIR="\${CT_TOP_DIR}/../../dl"
 CT_SAVE_TARBALLS=y
 
-# glibc's minimum kernel is left at its own default. NOSaic exists for
-# end-of-service-life hardware, some of which is stuck on a vendor kernel that
-# will never be updated; raising the floor would close those doors for no
-# measurable gain on a switch.
+# glibc's minimum supported kernel. Set explicitly, because the per-sample
+# default is NOT uniform: the x86_64 sample sets NONE (floor 3.2.0) while the
+# aarch64 and powerpc samples inherit AS_HEADERS, which pinned them to 6.16.0.
+# A binary built that way aborts at startup with "kernel too old" on anything
+# older -- including the AS5610, which runs 5.10/6.1. NOSaic exists for
+# end-of-service-life hardware, much of which is stuck on a vendor kernel that
+# will never be updated, so the floor stays at glibc's own minimum.
+CT_GLIBC_KERNEL_VERSION_NONE=y
+# CT_GLIBC_KERNEL_VERSION_AS_HEADERS is not set
+# CT_GLIBC_KERNEL_VERSION_CHOSEN is not set
 EOF
 }
 
@@ -218,6 +224,27 @@ cmd_test() {
      A hard-float or wrong-CPU build gets this far and then SIGILLs on hardware."
         fi
         echo "  instruction audit: 0 forbidden (pattern: $forbidden)"
+    fi
+
+    # The glibc ABI floor. A binary built against a newer minimum kernel aborts
+    # at startup with "kernel too old" -- it does not degrade, it refuses. This
+    # was a real regression: the aarch64 and powerpc samples default to
+    # AS_HEADERS and pinned themselves to 6.16.0, which would not have started
+    # on the AS5610's 5.10/6.1 kernel. Documenting the intent was not enough.
+    local abimax
+    abimax="$(arch_field "$arch" abi_kernel_max)"
+    if [ -n "$abimax" ]; then
+        local got lowest
+        got="$(file "$out/hello" | grep -oE 'for GNU/Linux [0-9.]+' | awk '{print $3}')"
+        if [ -n "$got" ]; then
+            lowest="$(printf '%s\n%s\n' "$got" "$abimax" | sort -V | head -1)"
+            if [ "$lowest" != "$got" ]; then
+                die "binary requires Linux >= $got, above this architecture's ceiling of $abimax.
+     Check CT_GLIBC_KERNEL_VERSION_NONE in bootstrap/configs/$arch.defconfig.
+     End-of-service-life boards run vendor kernels that will never be updated."
+            fi
+            echo "  abi floor: Linux $got (ceiling $abimax)"
+        fi
     fi
 
     echo "  OK"

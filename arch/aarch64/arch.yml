@@ -16,6 +16,11 @@ ctng_sample: aarch64-unknown-linux-gnu
 # toolchain produces working code; not a substitute for booting.
 qemu: qemu-aarch64-static
 
+# Ceiling on the glibc minimum-kernel ABI floor. Generous enough for any
+# architecture's own glibc default, strict enough to catch a toolchain that
+# silently pinned itself to the kernel-headers version instead.
+abi_kernel_max: "4.0.0"
+
 status: canary
 notes: >
   Newer whitebox designs are moving to arm64, so this is a real target in
