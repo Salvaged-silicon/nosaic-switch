@@ -83,6 +83,15 @@ type Build struct {
 	// substituted, so one recipe covers every architecture.
 	Fragments []string `yaml:"fragments"`
 
+	// ConfigTarget resolves a .config after fragments are appended. The kernel
+	// calls this olddefconfig; busybox's older kconfig calls it oldconfig.
+	ConfigTarget string `yaml:"config_target"`
+
+	// InstallArgs replaces the default "DESTDIR=<stage> install" for packages
+	// whose build system spells staging differently. ${DESTDIR} is
+	// substituted.
+	InstallArgs []string `yaml:"install_args"`
+
 	// Env overrides build environment variables. The cross-compilation
 	// variables are set for you; this is for a package's own quirks.
 	Env map[string]string `yaml:"env"`

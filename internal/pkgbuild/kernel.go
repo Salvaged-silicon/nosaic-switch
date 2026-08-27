@@ -63,39 +63,8 @@ func runKernelBuild(o Options, srcDir, stage string) error {
 		return err
 	}
 
-	if len(b.Fragments) > 0 {
-		var data []byte
-		for _, name := range b.Fragments {
-			frag := filepath.Join(filepath.Dir(o.Recipe.Path), expand(o, name))
-			part, err := os.ReadFile(frag)
-			if err != nil {
-				return fmt.Errorf("kernel fragment: %w", err)
-			}
-			data = append(append(data, part...), '\n')
-		}
-		f, err := os.OpenFile(filepath.Join(srcDir, ".config"), os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			return err
-		}
-		if _, err := f.Write(append([]byte("\n# --- NOSaic fragments ---\n"), data...)); err != nil {
-			f.Close()
-			return err
-		}
-		f.Close()
-
-		// olddefconfig resolves the fragment against the defconfig and fills
-		// in anything newly implied.
-		if err := run(o, srcDir, env, "make", "olddefconfig"); err != nil {
-			return err
-		}
-
-		// Appending to .config is only a request: a symbol whose dependencies
-		// are unmet is silently dropped. Verifying afterwards is what turns a
-		// silently missing filesystem into a build error rather than a kernel
-		// that boots and then cannot mount its root.
-		if err := verifyFragment(srcDir, data); err != nil {
-			return err
-		}
+	if err := applyFragments(o, srcDir, env, b.Fragments); err != nil {
+		return err
 	}
 
 	if err := run(o, srcDir, env, "make", jobs); err != nil {
@@ -180,4 +149,96 @@ func copyFile(src, dst string, mode os.FileMode) error {
 		return fmt.Errorf("staging %s: %w", filepath.Base(src), err)
 	}
 	return os.WriteFile(dst, b, mode)
+}
+
+// mergeConfig applies a fragment to a .config by replacing, not appending.
+//
+// Appending is not enough, and the difference is silent. Linux's kconfig lets
+// a later assignment win, so appending happens to work there. busybox's older
+// kconfig takes the *first* occurrence, so an appended CONFIG_STATIC=y loses
+// to the "# CONFIG_STATIC is not set" that defconfig wrote a thousand lines
+// earlier — and the build then quietly produces a dynamically linked binary
+// that cannot run in an initramfs.
+//
+// So every symbol the fragment mentions is removed from the file first. This
+// is what Linux's own merge_config.sh does, and it is correct for both.
+func mergeConfig(path string, fragment []byte) error {
+	set := map[string]bool{}
+	for _, line := range strings.Split(string(fragment), "\n") {
+		if sym, ok := symbolOf(strings.TrimSpace(line)); ok {
+			set[sym] = true
+		}
+	}
+
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var kept []string
+	for _, line := range strings.Split(string(existing), "\n") {
+		if sym, ok := symbolOf(strings.TrimSpace(line)); ok && set[sym] {
+			continue // ours replaces it
+		}
+		kept = append(kept, line)
+	}
+
+	out := strings.Join(kept, "\n") + "\n# --- NOSaic fragments ---\n" + string(fragment)
+	return os.WriteFile(path, []byte(out), 0o644)
+}
+
+// symbolOf recognises both forms kconfig writes: an assignment, and the
+// "is not set" comment that means disabled.
+func symbolOf(line string) (string, bool) {
+	if rest, ok := strings.CutPrefix(line, "# "); ok {
+		if sym, ok := strings.CutSuffix(rest, " is not set"); ok && strings.HasPrefix(sym, "CONFIG_") {
+			return sym, true
+		}
+		return "", false
+	}
+	if sym, _, ok := strings.Cut(line, "="); ok && strings.HasPrefix(sym, "CONFIG_") {
+		return sym, true
+	}
+	return "", false
+}
+
+// applyKconfig runs a defconfig and fragments for a package that configures
+// the way the kernel does, which busybox and a few others do.
+func applyKconfig(o Options, srcDir string, env []string) error {
+	b := o.Recipe.Build
+	if b.Defconfig == "" {
+		return nil
+	}
+	if err := run(o, srcDir, env, "make", b.Defconfig); err != nil {
+		return err
+	}
+	return applyFragments(o, srcDir, env, b.Fragments)
+}
+
+// applyFragments appends fragments to .config, resolves them, and then checks
+// that every symbol asked for actually took effect.
+func applyFragments(o Options, srcDir string, env []string, fragments []string) error {
+	if len(fragments) == 0 {
+		return nil
+	}
+	var data []byte
+	for _, name := range fragments {
+		frag := filepath.Join(filepath.Dir(o.Recipe.Path), expand(o, name))
+		part, err := os.ReadFile(frag)
+		if err != nil {
+			return fmt.Errorf("config fragment: %w", err)
+		}
+		data = append(append(data, part...), '\n')
+	}
+	if err := mergeConfig(filepath.Join(srcDir, ".config"), data); err != nil {
+		return err
+	}
+
+	target := o.Recipe.Build.ConfigTarget
+	if target == "" {
+		target = "olddefconfig"
+	}
+	if err := runInteractive(o, srcDir, env, "make", target); err != nil {
+		return err
+	}
+	return verifyFragment(srcDir, data)
 }

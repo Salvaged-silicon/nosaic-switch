@@ -80,6 +80,38 @@ func expand(o Options, s string) string {
 	return r.Replace(s)
 }
 
+// newlines answers an interactive prompt by accepting its default, forever.
+//
+// busybox's oldconfig asks about every symbol it cannot resolve and fails on a
+// closed stdin. Feeding it defaults is the conventional answer; the fragment
+// verification afterwards is what stops that being a blind "yes to everything",
+// since anything we actually asked for is checked.
+type newlines struct{}
+
+func (newlines) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = '\n'
+	}
+	return len(p), nil
+}
+
+func runInteractive(o Options, dir string, env []string, name string, args ...string) error {
+	fmt.Fprintf(o.Log, "    $ %s %s\n", name, strings.Join(args, " "))
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdin = newlines{}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		tail := string(out)
+		if len(tail) > 2000 {
+			tail = "...\n" + tail[len(tail)-2000:]
+		}
+		return fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, tail)
+	}
+	return nil
+}
+
 func run(o Options, dir string, env []string, name string, args ...string) error {
 	fmt.Fprintf(o.Log, "    $ %s %s\n", name, strings.Join(args, " "))
 	cmd := exec.Command(name, args...)
@@ -120,11 +152,24 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", "DESTDIR="+stage, "install")
 
 	case "make":
+		// Some packages configure through kconfig exactly as the kernel does.
+		// Sharing that path means their configuration is a reviewable fragment
+		// too, rather than a committed generated file.
+		if err := applyKconfig(o, srcDir, env); err != nil {
+			return err
+		}
 		args := append([]string{jobs}, b.Targets...)
 		if err := run(o, srcDir, env, "make", args...); err != nil {
 			return err
 		}
-		return run(o, srcDir, env, "make", "DESTDIR="+stage, "install")
+		install := []string{"DESTDIR=" + stage, "install"}
+		if len(b.InstallArgs) > 0 {
+			install = nil
+			for _, a := range b.InstallArgs {
+				install = append(install, strings.ReplaceAll(expand(o, a), "${DESTDIR}", stage))
+			}
+		}
+		return run(o, srcDir, env, "make", install...)
 
 	default:
 		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, kernel, none)", b.System)

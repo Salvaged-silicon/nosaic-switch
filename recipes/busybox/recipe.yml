@@ -1,0 +1,26 @@
+# busybox — the shell and core utilities, and the initramfs's entire userspace.
+#
+# Built static: it runs before any root filesystem is mounted, which is exactly
+# when a dynamically linked binary has no libc to find.
+name: busybox
+version: "1.37.0"
+summary: Core utilities and shell in a single binary
+
+license: GPL-2.0-only
+redistributable: true
+
+source:
+  url: https://busybox.net/downloads/busybox-1.37.0.tar.bz2
+  sha256: 3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
+
+build:
+  system: make
+  defconfig: defconfig
+  # busybox's kconfig predates olddefconfig.
+  config_target: oldconfig
+  fragments:
+    - config/busybox.fragment
+  # busybox stages through CONFIG_PREFIX rather than DESTDIR.
+  install_args:
+    - CONFIG_PREFIX=${DESTDIR}
+    - install

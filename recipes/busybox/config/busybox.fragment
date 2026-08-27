@@ -1,0 +1,47 @@
+# NOSaic's additions to busybox's own defconfig.
+#
+# Built static on purpose. This is the first userspace on the box and it runs
+# before anything has mounted the root it would load a shared libc from — the
+# initramfs uses it to assemble the overlay and hand over. A dynamically linked
+# busybox works fine once a system is up and is useless at the moment it is
+# most needed.
+CONFIG_STATIC=y
+
+# Not the system init. NOSaic's profiles run systemd or s6; busybox provides
+# the shell and the utilities, and leaving its init out avoids two things
+# claiming PID 1.
+# CONFIG_INIT is not set
+
+# switch_root hands control from the initramfs to the real root, and pivot_root
+# is its fallback. Without these the initramfs has nowhere to go.
+CONFIG_SWITCH_ROOT=y
+CONFIG_PIVOT_ROOT=y
+
+# Enough to assemble an overlay and diagnose one that will not assemble.
+CONFIG_MOUNT=y
+CONFIG_UMOUNT=y
+CONFIG_FEATURE_MOUNT_LOOP=y
+CONFIG_MKDIR=y
+CONFIG_MKNOD=y
+CONFIG_MODPROBE=y
+CONFIG_INSMOD=y
+
+# The shell that runs the initramfs script, and the pieces it needs.
+CONFIG_ASH=y
+CONFIG_SH_IS_ASH=y
+CONFIG_CAT=y
+CONFIG_ECHO=y
+CONFIG_LS=y
+CONFIG_MV=y
+CONFIG_CP=y
+CONFIG_RM=y
+CONFIG_SLEEP=y
+CONFIG_DMESG=y
+CONFIG_BLKID=y
+CONFIG_FINDFS=y
+
+# busybox 1.37's tc applet references CBQ scheduler structures that Linux
+# removed from its uapi headers in the 6.x series, so it cannot compile against
+# a current sysroot. Nothing here wants busybox's tc: traffic control belongs to
+# iproute2, and on a switch it belongs to the datapath.
+# CONFIG_TC is not set
