@@ -42,15 +42,13 @@ import (
 // directory, because a component hot-patched onto the running slot must not
 // leak into the other slot's known-good state, or rollback stops meaning
 // anything.
-const (
-	bootMiB = 32
-	slotMiB = 96
-	dataMiB = 256
-)
+// Defaults only. The board decides, because flash size is a property of the
+// board: see Board.Layout.
 
 // BuildDisk assembles a partitioned disk image containing the composed image
 // in slot A and an empty, initialised data partition.
 func BuildDisk(o Options, squashfs string) (string, error) {
+	bootMiB, slotMiB, dataMiB := o.Board.Layout()
 	out := filepath.Join(o.OutDir, "disk.img")
 	fmt.Fprintf(o.Log, "==> assembling the disk image\n")
 
@@ -58,9 +56,10 @@ func BuildDisk(o Options, squashfs string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if sq.Size() > slotMiB*1024*1024 {
+	if sq.Size() > int64(slotMiB)*1024*1024 {
 		return "", fmt.Errorf("the image is %.1f MiB but a slot is %d MiB — "+
-			"raise slotMiB or shrink the profile", float64(sq.Size())/(1<<20), slotMiB)
+			"raise slot_mib in %s or shrink the profile",
+			float64(sq.Size())/(1<<20), slotMiB, o.Board.ID)
 	}
 
 	// Slack for GPT itself: the 1 MiB alignment gap at the front and the

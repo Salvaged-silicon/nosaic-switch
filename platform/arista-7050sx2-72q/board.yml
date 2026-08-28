@@ -21,6 +21,15 @@ aboot_max_hwepoch: "1"
 profile: full
 kernel: ""
 
+# Flash layout. This board has around 2.1 GB free and the vendor's own OS
+# occupies 347 MB (EOS 4.14) to 600 MB (4.20), so the defaults chosen for a
+# virtual machine -- 96 MiB slots -- are far too small to be meaningful here.
+# A datapath daemon linked against the Broadcom SDK is 151 MB stripped on its
+# own.
+boot_mib: 64
+slot_mib: 768
+data_mib: 512
+
 status: planned
 
 notes: >

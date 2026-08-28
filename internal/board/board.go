@@ -50,6 +50,18 @@ type Board struct {
 	UBootLoad  string `yaml:"u_boot_load"`
 	UBootEntry string `yaml:"u_boot_entry"`
 
+	// Flash layout, in MiB. Zero means the default, which suits a board with
+	// modest flash; a board with room should say so rather than inherit a
+	// number chosen for a virtual machine.
+	//
+	// These were constants until it became clear what that meant: 96 MiB
+	// slots on a switch with 2.1 GB free, where the vendor's own OS occupies
+	// 347 MB and its successor 600 MB. An image that does not fit is then a
+	// property of our arithmetic rather than of the hardware.
+	BootMiB int `yaml:"boot_mib"`
+	SlotMiB int `yaml:"slot_mib"`
+	DataMiB int `yaml:"data_mib"`
+
 	// AbootMaxHWEpoch is board data for Arista boards; read it off the switch
 	// with prefdl. Defaults to 1, which covers the 7050SX2.
 	AbootMaxHWEpoch string `yaml:"aboot_max_hwepoch"`
@@ -106,6 +118,22 @@ func LoadAll(root string) ([]*Board, error) {
 }
 
 // Validate returns every problem with this board port.
+// Layout returns the flash layout in MiB, with defaults for anything the board
+// does not state.
+func (b *Board) Layout() (boot, slot, data int) {
+	boot, slot, data = b.BootMiB, b.SlotMiB, b.DataMiB
+	if boot == 0 {
+		boot = 32
+	}
+	if slot == 0 {
+		slot = 96
+	}
+	if data == 0 {
+		data = 256
+	}
+	return
+}
+
 func (b *Board) Validate(root string) []string {
 	var errs []string
 	bad := func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }
@@ -129,6 +157,17 @@ func (b *Board) Validate(root string) []string {
 	}
 	if !oneOf(b.Profile, validProfile) {
 		bad("profile %q must be one of %s", b.Profile, strings.Join(validProfile, ", "))
+	}
+
+	// A slot smaller than the boot partition is almost certainly a
+	// transposition. Nothing else about the proportions is checkable: the
+	// first board to state a layout has 768 MiB slots and a 512 MiB data
+	// partition, which an earlier version of this check called transposed
+	// because it assumed data must exceed a slot. It need not -- the image is
+	// large and the configuration it persists is small.
+	if boot, slot, data := b.Layout(); slot < boot {
+		bad("flash layout looks transposed: boot %d MiB is larger than a %d MiB slot (data %d MiB)",
+			boot, slot, data)
 	}
 
 	// Checked here rather than at build time: a U-Boot board with no load
