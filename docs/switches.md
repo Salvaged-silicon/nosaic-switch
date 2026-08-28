@@ -12,8 +12,10 @@ the datapath or debugging silicon.
 
 | Board | Arch | ASIC | Boot | Status | Pages |
 |---|---|---|---|---|---|
+| [arista-7050sx2-72q](../platform/arista-7050sx2-72q/README.md) | x86_64 | td2p | aboot | planned | [install](../platform/arista-7050sx2-72q/docs/install.md) · [build](../platform/arista-7050sx2-72q/docs/build.md) · [hardware](../platform/arista-7050sx2-72q/docs/hardware.md) |
 | [virt-x86_64](../platform/virt-x86_64/README.md) | x86_64 | virt | virt | bringup | [install](../platform/virt-x86_64/docs/install.md) · [build](../platform/virt-x86_64/docs/build.md) · [hardware](../platform/virt-x86_64/docs/hardware.md) |
 
 ## How each board installs
 
+- **aboot** — a SWI booted by Aboot: copy to flash and point boot-config at it
 - **virt** — no installer: QEMU is given the kernel, initramfs and disk directly

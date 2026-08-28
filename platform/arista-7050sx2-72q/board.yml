@@ -1,0 +1,45 @@
+# Arista DCS-7050SX2-72Q-R — Trident2+ (BCM56860).
+#
+# NOSaic's first real board. Nothing here has run on the switch yet: the port
+# is scaffolded so the remaining work is concrete, and status stays planned
+# until it boots from its own base and forwards traffic.
+
+id: arista-7050sx2-72q
+vendor: arista
+model: 7050sx2-72q
+
+arch: x86_64
+asic: td2p
+boot: aboot
+
+# The board's prefdl reports HwEpoch 1, so a SWI claiming 1 is accepted. EOS
+# 4.20 on the same family ships SWI_MAX_HWEPOCH=2; 4.14 has no such field.
+aboot_max_hwepoch: "1"
+
+# systemd, because this box has flash to spare and no reason to run the tier
+# built for boards that do not.
+profile: full
+kernel: ""
+
+status: planned
+
+notes: >
+  Aboot boots unsigned SWIs here: boot0 is a shell script we control, no
+  signing is enforced, and Aboot can load from flash, HTTP, FTP, TFTP or NFS.
+  Console is ttyS0 at 9600, and the management port is a BCM57762 (14e4:1682)
+  driven by tg3.
+
+  The front panel is 48 SFP+ and 6 QSFP+, 72 ports of 10G. The SDK's physical
+  port index IS the RX lane for the 48 SFP+ cages and is NOT for the 24 QSFP
+  lanes, where it follows the cage's subport instead. Code assuming one rule
+  for both mis-maps two thirds of the QSFP capacity, and it presents as a dead
+  port rather than as a wrong index.
+
+  Everything proven on this box so far was proven after kexec from EOS, and
+  kexec is known to reset the SerDes here. NOSaic boots standalone from Aboot,
+  so the chip is in a different state when our code first touches it. Prove
+  standalone boot early, before the datapath work leans on it.
+
+  Do not use fanset, and do not trust fanread: it returns garbage on this
+  board. Temperature (three sensors), PSU presence and PSU status all read
+  correctly. Reaching the fan CPLD at all needs CONFIG_I2C_PIIX4.
