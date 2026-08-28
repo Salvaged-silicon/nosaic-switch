@@ -1,0 +1,67 @@
+# Broadcom's OpenBCM SDK — the chip support for Trident2+ and the rest of the
+# XGS line.
+#
+# Staged, not shipped. This package exists so nosd-td2p can be compiled against
+# the SDK's headers and libraries; the switch runs the daemon, not the SDK
+# tree. Nothing lists it in a profile.
+#
+# WHAT IS AND IS NOT USED
+#
+# The SDK's own BDE is a pair of kernel modules whose newest version guard is
+# Linux 4.16, and which use interfaces removed since -- ioremap_nocache went in
+# 5.6. This fleet runs 6.12. They are not built, and they are not needed: the
+# BDE's job is register access, PCI configuration, a DMA pool and interrupts
+# the SDK does not require when nothing is connected, all of which can be done
+# from userspace. That is how EOS reaches this chip on the same hardware, with
+# no arbitrating driver and ten agents mapping the PCI BAR at once.
+#
+# So what is built here is the SDK as a library, and NOSaic supplies the small
+# piece underneath it. Everything above that piece is unmodified Broadcom code,
+# which matters most for chip initialisation: the Trident2 MMU and LLS
+# sequences are the part that hand-reproduction repeatedly failed to match.
+#
+# LICENCE
+#
+# Broadcom's licence (Legal/LICENSE in the archive) grants the right to
+# reproduce and distribute the software and, for source, to create and
+# distribute derivative works -- which is what makes an image containing it
+# publishable rather than local-only. It also requires that every distributed
+# copy reproduce all proprietary notices, so they ship in the image's NOTICE
+# and are never stripped.
+name: openbcm
+version: "6.5.24"
+summary: Broadcom OpenBCM SDK (XGS chip support)
+
+license: Broadcom-OpenBCM
+redistributable: true
+
+source:
+  # Our own deterministic archive of the pinned commit, produced with
+  # git archive so it can be reproduced rather than trusted. GitHub's generated
+  # archives are not byte-stable, so one is not used as the pinned artifact.
+  url: https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sdk-openbcm-6.5.24/openbcm-6d2330ce1b4f.tar.gz
+  sha256: 069f2da9ee4af5fd29dbdcc84a1f2c47dc026455d0f33d66c6fe4a2018847fb9
+  mirrors:
+    - https://github.com/Salvaged-silicon/OpenBCM/archive/6d2330ce1b4fc49d681cffcf09af408661be4c62.tar.gz
+
+build:
+  # NOT YET BUILDING. Fetching and verifying works; producing something is the
+  # open piece.
+  #
+  # What is needed is the SDK's static libraries -- build/unix-user/<platform>/
+  # *.a -- because that is what a daemon links against, with --whole-archive on
+  # the chip ones (libsoc_trident2p.a, libtrident2plus.a, libsoc_mcm.a) since
+  # the SDK registers its chip drivers through tables a normal link discards.
+  #
+  # The invocation that produces them is not settled. The SDK's own make is
+  # driven by `target` and `platform` (make/Make.config:511 includes
+  # make/Makefile.${target}), the platform for this board is x86-64-fc28, and
+  # the release notes are PDFs. It has been done by hand on this hardware, so
+  # the answer exists; it has not been written down in a form a build can run,
+  # and guessing at it would produce a recipe that appears to work and links
+  # against the wrong thing.
+  #
+  # Until then this recipe fetches and verifies the source and nothing more,
+  # which is why the package build fails: the packager refuses to produce a
+  # package with no files, and that refusal is correct.
+  system: none
