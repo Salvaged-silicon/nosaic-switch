@@ -116,6 +116,7 @@ func main() {
 		root := repoRoot()
 		target := ""
 		profileOverride := ""
+		ramBoot := false
 		rest := args[1:]
 		for i := 0; i < len(rest); i++ {
 			switch {
@@ -124,6 +125,8 @@ func main() {
 				i++
 			case strings.HasPrefix(rest[i], "--profile="):
 				profileOverride = strings.TrimPrefix(rest[i], "--profile=")
+			case rest[i] == "--ram-boot":
+				ramBoot = true
 			default:
 				target = rest[i]
 			}
@@ -140,7 +143,7 @@ func main() {
 			}
 			target = chosen
 		}
-		if err := buildImage(root, target, profileOverride); err != nil {
+		if err := buildImage(root, target, profileOverride, ramBoot); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
 		}
@@ -339,7 +342,7 @@ func printManifest(m *nospkg.Manifest, verified bool) {
 // all, and no way for CI to build every profile -- which the design names as
 // the thing keeping the abstract services: stanza honest, since a recipe
 // reaching for a systemd-specific feature breaks the s6 tier first.
-func buildImage(root, boardID, profileOverride string) error {
+func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 	b, err := board.Load(filepath.Join(root, "platform", boardID, "board.yml"))
 	if err != nil {
 		return err
@@ -361,6 +364,7 @@ func buildImage(root, boardID, profileOverride string) error {
 		Board:      b,
 		Arch:       a,
 		Profile:    pr,
+		RAMBoot:    ramBoot,
 		PackageDir: filepath.Join(root, "out", "packages"),
 		OutDir:     filepath.Join(root, "out", "images", boardID),
 		Version:    version.Version,

@@ -37,6 +37,12 @@ type Options struct {
 	OutDir     string
 	Version    string
 	Log        io.Writer
+
+	// RAMBoot carries the root filesystem inside the initramfs, so the image
+	// boots with no storage of ours. It is how a board is tried the first
+	// time: the bootloader fetches it over the network, the vendor's OS stays
+	// intact on flash, and a power cycle undoes everything.
+	RAMBoot bool
 }
 
 // Result is what was produced.
@@ -111,7 +117,13 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 
-	initramfs, err := buildInitramfs(o, work, rootfs)
+	// A board booted over the network from its bootloader has no partitions
+	// of ours to mount, so the root filesystem travels inside the initramfs.
+	embed := ""
+	if o.RAMBoot {
+		embed = sqsh
+	}
+	initramfs, err := buildInitramfs(o, work, rootfs, embed)
 	if err != nil {
 		return nil, err
 	}
@@ -319,6 +331,12 @@ if mountpoint -q /mnt/data 2>/dev/null || [ -d /mnt/data/config ]; then
     echo "$n" > /mnt/data/boot-count 2>/dev/null && say "boot count $n" || { say "FAIL data partition is not writable"; fail=1; }
     [ -d /mnt/data/config ]  && say "config directory present"  || { say "FAIL no config directory"; fail=1; }
     [ -d /mnt/data/secrets ] && say "secrets directory present" || { say "FAIL no secrets directory"; fail=1; }
+elif [ -f /etc/nosaic/ramboot ]; then
+    # A RAM boot has no persistent storage and is not supposed to. Asserting
+    # otherwise fails an image that is behaving exactly as intended, which is
+    # how the first network boot of a new switch would have reported itself
+    # broken.
+    say "no data partition, as expected for a RAM boot"
 else
     say "FAIL no data partition mounted"; fail=1
 fi

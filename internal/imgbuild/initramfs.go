@@ -35,6 +35,36 @@ mount -t devtmpfs devtmpfs /dev   || fail "cannot mount /dev"
 
 echo "NOSAIC-INITRAMFS starting"
 
+# A rootfs carried inside the initramfs, for booting with no NOSaic partitions
+# at all. That is how a switch is tried before anything is written to it:
+# Aboot's "boot --testonly <url>" fetches the image over the network into RAM,
+# so the flash still holds the vendor's layout and there is no slot to find.
+#
+# Checked before anything probes storage. Doing it afterwards still worked, but
+# printed two warnings about missing partitions first -- on a boot where their
+# absence is the entire intention. Warnings that are expected teach an operator
+# to ignore warnings.
+if [ -f /nosaic-rootfs.sqsh ]; then
+    echo "NOSAIC-INITRAMFS booting from RAM, no partitions used"
+    mount -t squashfs -o ro,loop /nosaic-rootfs.sqsh /mnt/image \
+        || fail "the embedded rootfs will not mount"
+    echo "NOSAIC-INITRAMFS image mounted"
+    echo "NOSAIC-BOOT-SLOT ram"
+    mount -t tmpfs tmpfs /mnt/data 2>/dev/null || true
+    mkdir -p /mnt/data/slot-ram/upper/etc/nosaic /mnt/data/slot-ram/work
+    # Tells the booted system it has no persistence by design, so its self-test
+    # does not report the absence as a fault.
+    : > /mnt/data/slot-ram/upper/etc/nosaic/ramboot
+    mount -t overlay overlay \
+        -o lowerdir=/mnt/image,upperdir=/mnt/data/slot-ram/upper,workdir=/mnt/data/slot-ram/work \
+        /mnt/root || fail "cannot assemble the overlay"
+    echo "NOSAIC-INITRAMFS overlay assembled (persistent=no)"
+    [ -x /mnt/root/sbin/init ] || fail "the image has no /sbin/init"
+    echo "NOSAIC-BOOT userspace reached (ram)"
+    echo "NOSAIC-INITRAMFS handing over to /sbin/init"
+    exec switch_root /mnt/root /sbin/init || fail "switch_root failed"
+fi
+
 # The persistent partition comes first, because the slot decision is recorded
 # there. A switch that cannot read it still boots: it falls back to slot A
 # stateless rather than sitting in an initramfs shell in a rack somewhere.
@@ -62,12 +92,27 @@ else
     mount -t tmpfs tmpfs /mnt/data || fail "cannot mount a fallback writable layer"
 fi
 
+# Slots are found by label first. The device names below are a fallback for a
+# disk that has our partitions but no readable labels, and they are guesses:
+# virtio on a VM, SCSI/SATA on most switches, eMMC on some. Naming one disk
+# would have been wrong on every board that is not that disk.
 slotdev() {
+    local want=""
     case "$1" in
-        a) echo /dev/vda2 ;;
-        b) echo /dev/vda3 ;;
-        *) echo "" ;;
+        a) want=nosaic-slot-a ;;
+        b) want=nosaic-slot-b ;;
+        *) echo ""; return ;;
     esac
+    findfs "LABEL=$want" 2>/dev/null && return
+    local n=""
+    case "$1" in a) n=2 ;; b) n=3 ;; esac
+    for d in /dev/vda /dev/sda /dev/mmcblk0p; do
+        case "$d" in
+            /dev/mmcblk0p) [ -b "$d$n" ] && { echo "$d$n"; return; } ;;
+            *)             [ -b "$d$n" ] && { echo "$d$n"; return; } ;;
+        esac
+    done
+    echo ""
 }
 
 ACTIVE="$(cat $B/active 2>/dev/null || echo a)"
@@ -144,7 +189,18 @@ exec switch_root /mnt/root /sbin/init || fail "switch_root failed"
 // busybox comes from the composed image rather than from a separate build, so
 // the initramfs and the system it boots are the same binary — which is why
 // that package is built static.
-func buildInitramfs(o Options, work, rootfs string) (string, error) {
+// buildInitramfs packs busybox, the init script, and — when embed is non-empty
+// — the root filesystem itself.
+//
+// Embedding makes the image self-contained: kernel plus initramfs and nothing
+// else, which is what a switch needs to be tried before anything is written to
+// it. Aboot fetches such an image over the network and runs it from RAM, so
+// there are no NOSaic partitions to find and the vendor's OS is still intact
+// on flash.
+//
+// It is not the normal shape. An installed switch mounts its slot from flash;
+// this exists so the first boot on a new board risks nothing.
+func buildInitramfs(o Options, work, rootfs string, embed string) (string, error) {
 	fmt.Fprintf(o.Log, "==> building the initramfs\n")
 	dir := filepath.Join(work, "initramfs")
 	for _, d := range []string{"bin", "sbin", "proc", "sys", "dev", "mnt"} {
@@ -168,6 +224,16 @@ func buildInitramfs(o Options, work, rootfs string) (string, error) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "init"), []byte(initScript), 0o755); err != nil {
 		return "", err
+	}
+
+	// The root filesystem, carried inside, when this image is meant to boot
+	// without touching storage. Copied rather than linked: the cpio has to
+	// contain the bytes.
+	if embed != "" {
+		if err := copyFile(embed, filepath.Join(dir, "nosaic-rootfs.sqsh")); err != nil {
+			return "", fmt.Errorf("embedding the root filesystem: %w", err)
+		}
+		fmt.Fprintf(o.Log, "    embedding the root filesystem for a RAM boot\n")
 	}
 
 	out := filepath.Join(o.OutDir, "initramfs.cpio.gz")
