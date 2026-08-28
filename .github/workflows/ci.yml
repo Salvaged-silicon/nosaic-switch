@@ -47,11 +47,28 @@ jobs:
       # substitute different content. It also stops a transient network failure
       # from failing a run that has nothing to do with the network -- which is
       # what happened twice before this was added.
+      # What determines the downloads is the source URLs and their hashes, not
+      # every byte of every recipe. Keying on whole files meant a comment edit
+      # minted another 487 MB cache: eight of them accumulated in a day, which
+      # is how a 10 GB repo limit gets spent on nothing.
+      - name: Compute the source-set key
+        run: |
+          grep -rhE '^[[:space:]]*(url|sha256):' recipes/*/recipe.yml \
+            | sort > .source-set
+          cat bootstrap/versions.env >> .source-set
+
       - name: Cache fetched sources
         uses: actions/cache@v4
         with:
-          path: dl
-          key: dl-${{ hashFiles('recipes/**/recipe.yml', 'bootstrap/versions.env') }}
+          # The SDK is excluded deliberately. It is 1.79 GB, and caching it
+          # would leave room for one copy before eviction started taking the
+          # toolchains -- which cost 45 minutes to rebuild, where the SDK costs
+          # a download on a runner with free minutes. Cache the cheap thing,
+          # refetch the expensive-to-store one.
+          path: |
+            dl
+            !dl/openbcm-*.tar.gz
+          key: dl-${{ hashFiles('.source-set') }}
           restore-keys: dl-
 
       - name: Cache the x86_64 toolchain
@@ -230,11 +247,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # What determines the downloads is the source URLs and their hashes, not
+      # every byte of every recipe. Keying on whole files meant a comment edit
+      # minted another 487 MB cache: eight of them accumulated in a day, which
+      # is how a 10 GB repo limit gets spent on nothing.
+      - name: Compute the source-set key
+        run: |
+          grep -rhE '^[[:space:]]*(url|sha256):' recipes/*/recipe.yml \
+            | sort > .source-set
+          cat bootstrap/versions.env >> .source-set
+
       - name: Cache fetched sources
         uses: actions/cache@v4
         with:
-          path: dl
-          key: dl-${{ hashFiles('recipes/**/recipe.yml', 'bootstrap/versions.env') }}
+          # The SDK is excluded deliberately. It is 1.79 GB, and caching it
+          # would leave room for one copy before eviction started taking the
+          # toolchains -- which cost 45 minutes to rebuild, where the SDK costs
+          # a download on a runner with free minutes. Cache the cheap thing,
+          # refetch the expensive-to-store one.
+          path: |
+            dl
+            !dl/openbcm-*.tar.gz
+          key: dl-${{ hashFiles('.source-set') }}
           restore-keys: dl-
 
       - name: Cache the aarch64 toolchain

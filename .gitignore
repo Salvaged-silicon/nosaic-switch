@@ -21,3 +21,4 @@
 
 # host-specific build overrides
 local.mk
+.source-set

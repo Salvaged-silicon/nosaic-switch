@@ -120,6 +120,12 @@ type Build struct {
 	// substituted.
 	InstallArgs []string `yaml:"install_args"`
 
+	// Mkdirs are created under the source root before the build runs, for
+	// build systems that write into a directory they do not create. The
+	// OpenBCM SDK links its application into build/linux/user/common and fails
+	// with "cannot open output file" if nothing made it first.
+	Mkdirs []string `yaml:"mkdirs"`
+
 	// Stage copies paths out of the build tree into the staging root, for
 	// build systems that have no install target of their own. Src is relative
 	// to the source directory (after subdir is applied to the build, not to

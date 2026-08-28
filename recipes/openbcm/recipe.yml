@@ -74,10 +74,16 @@ build:
     # than failing. bcm is what pulls in libsoc, libbcm and the chip archives.
     - user_libs
     - bcm
+  # The SDK links its application into this directory without creating it, and
+  # fails with "cannot open output file" if nothing has.
+  mkdirs:
+    - sdk-6.5.24/build/linux/user/common
+
   # The SDK has no install target, so the libraries and headers are copied out
-  # of the build tree directly.
+  # of the build tree directly. The archives land in build/unix-user, flat --
+  # not under a per-platform directory.
   stage:
-    - {src: sdk-6.5.24/build/unix-user/x86-64-fc28, dst: /usr/lib/openbcm}
+    - {src: sdk-6.5.24/build/unix-user, dst: /usr/lib/openbcm}
     - {src: sdk-6.5.24/include, dst: /usr/include/openbcm}
 
   env:

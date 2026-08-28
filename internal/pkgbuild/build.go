@@ -223,6 +223,13 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", "DESTDIR="+stage, "install")
 
 	case "make":
+		// Directories the build writes into but does not create.
+		for _, d := range b.Mkdirs {
+			if err := os.MkdirAll(filepath.Join(srcDir, expand(o, d)), 0o755); err != nil {
+				return err
+			}
+		}
+
 		// A build that runs somewhere other than the source root.
 		if b.Subdir != "" {
 			srcDir = filepath.Join(srcDir, b.Subdir)
