@@ -122,6 +122,34 @@ jobs:
       - name: Prove the A/B upgrade commits and rolls back
         run: make image-ab BOARD=virt-x86_64
 
+      # Every profile, booted -- not merely built.
+      #
+      # The design leans on the abstract services: stanza to keep two init
+      # backends viable, and the only thing that actually holds it is building
+      # both. A recipe reaching for something systemd-specific breaks the s6
+      # tier, and a change to the shared image layout breaks whichever tier
+      # nobody ran: the /usr merge that made the systemd tiers work rewrote the
+      # layout for all three, and only booting minimal again showed it had not
+      # broken it.
+      #
+      # Booted rather than built because a build proves very little here. Every
+      # failure in these tiers so far -- extraction writing through a symlink,
+      # a split /usr, an init symlink that resolved to nothing -- produced a
+      # clean build and an image that panicked.
+      - name: Build and boot the systemd tiers
+        run: |
+          for profile in slim full; do
+            echo "::group::$profile"
+            make packages ARCH=x86_64 PROFILE=$profile JOBS=4 CPUS=4 MEMORY=8g
+            make image BOARD=virt-x86_64 PROFILE=$profile
+            make image-boot BOARD=virt-x86_64
+            echo "::endgroup::"
+          done
+
+      # Leave the minimal image in place: the steps after this one expect it.
+      - name: Restore the minimal image
+        run: make image BOARD=virt-x86_64
+
       # Run on the runner with sudo rather than granting the build container
       # NET_ADMIN and SYS_ADMIN.
       #
