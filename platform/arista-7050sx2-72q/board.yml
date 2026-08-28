@@ -40,6 +40,12 @@ notes: >
   so the chip is in a different state when our code first touches it. Prove
   standalone boot early, before the datapath work leans on it.
 
+  The datapath does not use Broadcom's BDE kernel modules: they target Linux
+  5.10 and older and this fleet runs 6.12. The SDK is driven from userspace
+  instead, over an mmap of the ASIC's BAR0, which is how EOS reaches the chip
+  on this box too. That requires a reserved DMA region on the kernel command
+  line -- memmap=64M$0x100000000 -- which boot0 must set.
+
   Do not use fanset, and do not trust fanread: it returns garbage on this
   board. Temperature (three sensors), PSU presence and PSU status all read
   correctly. Reaching the fan CPLD at all needs CONFIG_I2C_PIIX4.

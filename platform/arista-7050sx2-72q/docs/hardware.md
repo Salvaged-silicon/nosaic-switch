@@ -91,10 +91,45 @@ header is that vendor's, and an image containing it could not be published.
 
 `nosd-td2p` will drive the chip through the OpenBCM SDK — `sdk-6.5.24` carries
 BCM56860 (`src/soc/mcm/bcm56860_a0.c`) with a full register and memory
-database. That is a deliberate choice: the licence expressly permits
-distributing the source and derivative works, so the resulting image is
-shippable, and the SDK path is the one already proven to bring this chip to
-forwarding. See the build page for the notice obligation that comes with it.
+database. The licence expressly permits distributing the source and derivative
+works, so the resulting image is shippable. See the build page for the notice
+obligation that comes with it.
+
+**No Broadcom kernel modules.** The SDK ships a BDE as a pair of kernel modules
+which target Linux 5.10 and older; NOSaic runs 6.12, and the gap is not
+cosmetic — the BDE uses `ioremap_nocache`, removed in 5.6, and other interfaces
+gone since. Patching it would mean owning that patch set forever, on hardware
+whose vendor has moved on.
+
+It is also unnecessary, and EOS demonstrates why: on this box EOS has no
+arbitrating driver at all. Ten of its agents hold live mappings of the ASIC's
+PCI BAR simultaneously, reaching the chip straight from userspace. The BDE's
+job is small enough to do the same way:
+
+| What the SDK needs | Where it comes from |
+|---|---|
+| Register access | `mmap` of the ASIC's BAR0 |
+| PCI configuration | `/sys/bus/pci/devices/.../config` |
+| DMA memory | a physically contiguous region, mapped through `/dev/mem` |
+| Interrupts | none — the SDK polls when nothing is connected |
+
+That is a `soc_cm_device_vectors_t` handed to `soc_cm_device_init()`, with
+**everything above it the unmodified SDK**. The chip initialisation this board
+needs — `_soc_trident2_mmu_init`, `soc_td2_lls_init` — is then Broadcom's own
+code running, rather than a sequence reproduced by hand.
+
+**This constrains the kernel command line.** The DMA pool must be physically
+contiguous and its physical address known, which a pagemap lookup cannot
+provide for a 32 MB pool. The region is reserved at boot instead:
+
+```
+memmap=64M$0x100000000
+```
+
+The `$` marks it reserved so the kernel never touches it, and physical
+addresses become base plus offset. Whatever sets the kernel command line for
+this board — `boot0` inside the SWI — has to carry that, and an image that
+forgets it will initialise the chip and then fail at the first DMA.
 
 It implements `switch-api`; it does not get to change it. Where the chip cannot
 do what the contract describes, it says so through the capability model.

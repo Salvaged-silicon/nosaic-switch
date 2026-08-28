@@ -30,7 +30,7 @@ that must be answered before it can ship in a published image:
 | Piece | What it is | Redistributable? |
 |---|---|---|
 | OpenBCM SDK | Chip support for BCM56860, from the `sdk-6.5.24` tree | **Yes** — see below |
-| BDE / KNET | Broadcom kernel modules, built against our kernel recipe | Same grant as the SDK |
+| BDE shim | A userspace BDE — see the hardware page. **Not** Broadcom's kernel modules | Ours |
 | `nosd-td2p` | The Trident2+ datapath, implementing `switch-api` | Ours, Apache 2.0 |
 | platform HAL | Sensors, PSUs, LEDs, SFP EEPROM | Ours |
 
