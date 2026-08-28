@@ -102,9 +102,12 @@ func Build(o Options) (*Result, error) {
 	}
 
 	if r.Build != nil && r.Build.System != "" && r.Build.System != "none" {
-		// sysroot-libc packages what the toolchain already built, so it has
+		// Two systems package what something else already built rather than
+		// compiling from a tarball: sysroot-libc takes the C library out of
+		// the toolchain, and kernel-headers takes the build tree out of the
+		// kernel recipe's output. Neither has a source of its own.
 		// no source of its own.
-		if srcDir == "" && r.Build.System != "sysroot-libc" {
+		if srcDir == "" && r.Build.System != "sysroot-libc" && r.Build.System != "kernel-headers" {
 			return nil, fmt.Errorf("build.system is %q but the recipe has no source", r.Build.System)
 		}
 		if err := runBuild(o, srcDir, stage); err != nil {

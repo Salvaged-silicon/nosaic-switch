@@ -77,6 +77,25 @@ func runKernelBuild(o Options, srcDir, stage string) error {
 		return err
 	}
 
+	// modules_install leaves build/ and source/ symlinks pointing at the
+	// directory the kernel was compiled in. That directory is inside the
+	// builder container, so what ships is an absolute path into a filesystem
+	// the switch has never seen -- /lib/modules/<ver>/build resolving to
+	// nothing. depmod does not need them and nothing on a switch builds a
+	// module in place, so they are removed rather than repointed.
+	//
+	// Out-of-tree modules are built against the kernel recipe's output at
+	// build time, not on the box.
+	modDir := filepath.Join(modStage, "lib", "modules", o.Recipe.Version)
+	for _, link := range []string{"build", "source"} {
+		p := filepath.Join(modDir, link)
+		if fi, err := os.Lstat(p); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(p); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Stage the bootable image and the config that produced it. Shipping the
 	// config matters: reproducing or debugging a kernel a year later starts
 	// with knowing exactly how it was configured.

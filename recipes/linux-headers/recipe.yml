@@ -1,0 +1,26 @@
+# The kernel build tree, for compiling out-of-tree modules against it.
+#
+# Separate from linux because whatever the linux package contains ships in the
+# image, and no switch builds a module on itself. As its own package this is
+# staged when a module recipe depends on it and appears in no profile, so it
+# exists at build time and nowhere else.
+#
+# The first thing that needs it is the Broadcom BDE and KNET modules for the
+# Trident2+ datapath.
+name: linux-headers
+version: "6.12.105"
+summary: Kernel build tree for out-of-tree modules
+
+license: GPL-2.0-only
+redistributable: true
+
+# Not a source dependency but an ordering one: this packages the tree the
+# linux recipe built, so linux must have been built first. Building the kernel
+# twice would be slower and worse -- a module compiled against different
+# headers than the running kernel loads and then misbehaves, which is harder to
+# diagnose than a build that fails.
+depends:
+  - linux
+
+build:
+  system: kernel-headers

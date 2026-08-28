@@ -190,6 +190,9 @@ func runBuild(o Options, srcDir, stage string) error {
 	case "meson":
 		return runMesonBuild(o, srcDir, stage)
 
+	case "kernel-headers":
+		return runKernelHeaders(o, stage)
+
 	case "sysroot-libc":
 		return runSysrootLibc(o, stage)
 
@@ -256,7 +259,7 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", install...)
 
 	default:
-		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, meson, kernel, sysroot-libc, none)", b.System)
+		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, meson, kernel, kernel-headers, sysroot-libc, none)", b.System)
 	}
 }
 

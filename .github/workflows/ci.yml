@@ -105,6 +105,35 @@ jobs:
       - name: Boot the kernel and run its own userspace
         run: make kernel-boot ARCH=x86_64
 
+      # The datapath needs Broadcom's BDE and KNET modules, which are built out
+      # of tree against the kernel we ship. Proving a module compiles is the
+      # only way to know the packaged build tree is usable: it can contain the
+      # right paths and still be missing Module.symvers, or carry a pristine
+      # scripts/ rather than the built one, and both produce a package that
+      # looks correct and cannot build anything.
+      #
+      # vermagic is checked because a module built against the wrong headers
+      # does not fail to build -- it loads and then misbehaves.
+      - name: Build a module out of tree against the packaged kernel headers
+        run: |
+          make pkg PKG=linux-headers ARCH=x86_64 JOBS=4 CPUS=4 MEMORY=8g
+          rm -rf /tmp/hdr && mkdir -p /tmp/hdr
+          tar xOf out/packages/linux-headers_6.12.105_x86_64.nos data.tar.gz \
+            | tar xz -C /tmp/hdr
+          KDIR=/tmp/hdr/usr/lib/modules/6.12.105/build
+          cp -r internal/pkgbuild/testdata/oot-module /tmp/oot
+          docker run --rm -v "$PWD":/src -v /tmp:/tmp -w /tmp/oot \
+            -e PATH=/src/toolchain/x86_64/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            nosaic/builder:0.1 \
+            make -C "$KDIR" M=/tmp/oot ARCH=x86 CROSS_COMPILE=x86_64-nosaic-linux-gnu- modules
+          test -f /tmp/oot/hello.ko || { echo "::error::no module was produced"; exit 1; }
+          vm=$(strings -a /tmp/oot/hello.ko | grep '^vermagic=' || true)
+          echo "$vm"
+          case "$vm" in
+            vermagic=6.12.105*) echo "matches the shipped kernel" ;;
+            *) echo "::error::vermagic does not match the shipped kernel: $vm"; exit 1 ;;
+          esac
+
       - name: Compose the image
         run: make image BOARD=virt-x86_64
 
