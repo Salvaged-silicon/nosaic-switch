@@ -109,6 +109,24 @@ so falling back to one costs nothing in trust.
 Upstream is still tried first: it is the real provenance, and a build that quietly stopped
 touching it would never notice it rotting.
 
+## Vendor SDKs
+
+Silicon that needs a vendor SDK gets one, where the licence permits shipping it.
+Both are forked into this organisation so a build never depends on an upstream
+that could move:
+
+| Fork | Upstream | Used for |
+|---|---|---|
+| [OpenBCM](https://github.com/Salvaged-silicon/OpenBCM) | Broadcom-Network-Switching-Software/OpenBCM | Trident2+ (BCM56860) and the rest of the XGS line |
+| [OpenMDK](https://github.com/Salvaged-silicon/OpenMDK) | Broadcom/OpenMDK | CDK-driven older parts |
+
+Broadcom's licence grants a worldwide, royalty-free, perpetual right to
+reproduce and distribute the software, and for source to create and distribute
+derivative works — which is what makes an image containing it publishable. It
+also requires that **every distributed copy reproduce all proprietary notices**,
+so those ship in the image's NOTICE. No SDK source is copied into this
+repository; it is referenced by `file:line`.
+
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

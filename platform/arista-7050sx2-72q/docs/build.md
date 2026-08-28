@@ -29,12 +29,31 @@ that must be answered before it can ship in a published image:
 
 | Piece | What it is | Redistributable? |
 |---|---|---|
-| OpenBCM SDK | Chip support for BCM56860; `sdk-6.5.27` covers it | Licence permits distribution — confirm per file |
+| OpenBCM SDK | Chip support for BCM56860, from the `sdk-6.5.24` tree | **Yes** — see below |
 | BDE / KNET | Broadcom kernel modules, built against our kernel recipe | Same grant as the SDK |
 | `nosd-td2p` | The Trident2+ datapath, implementing `switch-api` | Ours, Apache 2.0 |
 | platform HAL | Sensors, PSUs, LEDs, SFP EEPROM | Ours |
 
 The SDK is referenced by `file:line` and never copied into this tree.
+
+## The SDK, and why an image carrying it may be published
+
+Broadcom's OpenBCM licence (`Legal/LICENSE` in that tree) grants a worldwide,
+royalty-free, perpetual licence to reproduce and distribute the software, and
+for source to create and distribute derivative works. That is what makes a
+NOSaic image containing it shippable rather than local-only, and it is why the
+datapath here goes through the SDK rather than around it.
+
+One obligation comes with it, and it is not optional: **every distributed copy
+must reproduce all proprietary notices**. Removing or obscuring them is
+expressly forbidden, so the SDK's own licence and notices ship in the image's
+NOTICE alongside everything else, and the recipe declares
+`redistributable: true` on that basis rather than on assumption.
+
+The source is mirrored at
+[Salvaged-silicon/OpenBCM](https://github.com/Salvaged-silicon/OpenBCM), a fork
+of Broadcom's repository, so the build does not depend on an upstream that
+could move. `sdk-6.5.24/src/soc/mcm/bcm56860_a0.c` is this chip's support.
 
 ## Kernel
 

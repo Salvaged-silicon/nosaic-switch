@@ -89,10 +89,12 @@ header is that vendor's, and an image containing it could not be published.
 
 ## Datapath
 
-`nosd-td2p` will drive the chip through the OpenBCM SDK — `sdk-6.5.27` carries
-BCM56860 with a full register and memory database. That is a deliberate choice:
-the licence permits distribution, so the resulting image is shippable, and the
-SDK path is the one already proven to bring this chip to forwarding.
+`nosd-td2p` will drive the chip through the OpenBCM SDK — `sdk-6.5.24` carries
+BCM56860 (`src/soc/mcm/bcm56860_a0.c`) with a full register and memory
+database. That is a deliberate choice: the licence expressly permits
+distributing the source and derivative works, so the resulting image is
+shippable, and the SDK path is the one already proven to bring this chip to
+forwarding. See the build page for the notice obligation that comes with it.
 
 It implements `switch-api`; it does not get to change it. Where the chip cannot
 do what the contract describes, it says so through the capability model.
