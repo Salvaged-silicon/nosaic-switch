@@ -57,7 +57,11 @@
 
 /* Defaults matching the reservation the board's boot0 makes. Overridable so a
  * board whose memory map differs does not need a rebuild. */
-#define DMA_BASE_DEFAULT 0x100000000ULL
+/* Where the reservation actually is on the first board, read off the running
+ * switch. Not 0x100000000: that board has 3844 MB of RAM, so 4 GB is past the
+ * end of physical memory and the mapping would simply fail. A board with more
+ * memory can put it higher; that is what NOSAIC_DMA_BASE is for. */
+#define DMA_BASE_DEFAULT 0xd0000000ULL
 #define DMA_SIZE_DEFAULT (64u << 20)
 
 static uint64_t env_u64(const char *name, uint64_t fallback)
@@ -117,7 +121,8 @@ int nosaic_bde_open(struct nosaic_bde *b, const char *bdf)
 	if (b->dma == MAP_FAILED) {
 		fprintf(stderr,
 			"nosd-td2p: mapping %zu bytes of DMA at %#llx: %s\n"
-			"  the kernel command line must reserve it, e.g. memmap=64M$%#llx\n",
+			"  the kernel command line must reserve it and allow the mapping:\n"
+			"    memmap=64M$%#llx iomem=relaxed\n",
 			b->dma_len, (unsigned long long)b->dma_phys, strerror(errno),
 			(unsigned long long)b->dma_phys);
 		b->dma = NULL;

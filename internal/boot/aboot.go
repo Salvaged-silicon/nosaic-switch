@@ -108,6 +108,17 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 			return "", err
 		}
 	}
+	// The board's own kernel arguments, which boot0 appends. Written as a
+	// file rather than baked into boot0 so the same stage-0 serves every
+	// board -- and so what a board needs is visible in the board, not buried
+	// in a generated shell script.
+	if img.KernelParams != "" {
+		if err := os.WriteFile(filepath.Join(work, "kernel-params"),
+			[]byte(img.KernelParams+"\n"), 0o644); err != nil {
+			return "", err
+		}
+	}
+
 	boot0 := fmt.Sprintf(abootBoot0, img.Version, img.Board)
 	if err := os.WriteFile(filepath.Join(work, "boot0"), []byte(boot0), 0o755); err != nil {
 		return "", err
@@ -147,8 +158,11 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	// since Aboot has to read boot0 out of this before anything else runs,
 	// matching what is known to work is worth more than the space.
 	// version first, matching the member order of the vendor's own SWIs.
-	cmd := exec.Command("zip", "-0", "-q", "-X", out,
-		"version", "boot0", "nosaic-kernel", "nosaic-initrd")
+	members := []string{"version", "boot0", "nosaic-kernel", "nosaic-initrd"}
+	if img.KernelParams != "" {
+		members = append(members, "kernel-params")
+	}
+	cmd := exec.Command("zip", append([]string{"-0", "-q", "-X", out}, members...)...)
 	cmd.Dir = work
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("building the SWI: %v\n%s", err, b)

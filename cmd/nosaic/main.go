@@ -387,6 +387,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 		Board: b.ID, Arch: a.ID, Version: version.Version,
 		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
 		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
+		KernelParams:    b.KernelParams,
 	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
 	if err != nil {
 		return err

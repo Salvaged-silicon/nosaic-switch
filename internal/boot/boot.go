@@ -43,6 +43,9 @@ type Image struct {
 	UBootLoad  string
 	UBootEntry string
 
+	// KernelParams are appended to the kernel command line.
+	KernelParams string
+
 	// AbootMaxHWEpoch is the newest Arista hardware epoch this image claims to
 	// support; Aboot refuses a board whose epoch is higher. Empty means 1.
 	AbootMaxHWEpoch string

@@ -62,6 +62,10 @@ type Board struct {
 	SlotMiB int `yaml:"slot_mib"`
 	DataMiB int `yaml:"data_mib"`
 
+	// KernelParams are appended to the kernel command line by the board's
+	// installer. Board data because they describe this box's memory map.
+	KernelParams string `yaml:"kernel_params"`
+
 	// AbootMaxHWEpoch is board data for Arista boards; read it off the switch
 	// with prefdl. Defaults to 1, which covers the 7050SX2.
 	AbootMaxHWEpoch string `yaml:"aboot_max_hwepoch"`
