@@ -52,6 +52,12 @@ type Source struct {
 }
 
 // Install maps one built file into the image.
+// StagePath copies a built path into the staging root.
+type StagePath struct {
+	Src string `yaml:"src"`
+	Dst string `yaml:"dst"`
+}
+
 type Install struct {
 	Src  string `yaml:"src"`
 	Dst  string `yaml:"dst"`
@@ -79,8 +85,16 @@ type Build struct {
 	// ${TRIPLE}, ${ARCH}, ${PREFIX} and ${KERNEL_ARCH} are substituted.
 	Configure []string `yaml:"configure"`
 
-	// Targets are make targets for system: make.
+	// Targets are make targets for system: make. Command-line variable
+	// assignments belong here too: make treats VAR=value as an argument, and a
+	// build system driven by variables rather than targets is common enough
+	// that separating them would be a distinction without a difference.
 	Targets []string `yaml:"targets"`
+
+	// Subdir is where the build runs, relative to the source root. Several
+	// projects put the entry point for a given platform in its own directory
+	// and expect make to be run there; the OpenBCM SDK is one.
+	Subdir string `yaml:"subdir"`
 
 	// Defconfig and Fragment are for system: kernel. The defconfig comes from
 	// the kernel tree; the fragment is our own additions, kept small so the
@@ -105,6 +119,16 @@ type Build struct {
 	// whose build system spells staging differently. ${DESTDIR} is
 	// substituted.
 	InstallArgs []string `yaml:"install_args"`
+
+	// Stage copies paths out of the build tree into the staging root, for
+	// build systems that have no install target of their own. Src is relative
+	// to the source directory (after subdir is applied to the build, not to
+	// these), Dst is absolute within the stage. A directory is copied whole.
+	//
+	// The OpenBCM SDK is the case this exists for: it produces static
+	// libraries in build/unix-user/<platform> and has nothing that installs
+	// them anywhere.
+	Stage []StagePath `yaml:"stage"`
 
 	// Env overrides build environment variables. The cross-compilation
 	// variables are set for you; this is for a package's own quirks.

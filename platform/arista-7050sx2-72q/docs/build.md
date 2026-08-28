@@ -53,7 +53,18 @@ NOTICE alongside everything else, and the recipe declares
 The source is mirrored at
 [Salvaged-silicon/OpenBCM](https://github.com/Salvaged-silicon/OpenBCM), a fork
 of Broadcom's repository, so the build does not depend on an upstream that
-could move. `sdk-6.5.24/src/soc/mcm/bcm56860_a0.c` is this chip's support.
+could move.
+
+**That repository carries ten SDK versions side by side**, from 6.5.16 to
+6.5.27, and the pinned archive contains all of them. So every path names the
+version it means, and the recipe pins **6.5.24** — not because it is the newest,
+which it is not, but because it is the version the datapath was proven with on
+this board. `sdk-6.5.24/src/soc/mcm/bcm56860_a0.c` is this chip's support.
+
+A newer version is not automatically a better one here: the SDK is the piece
+whose unmodified chip initialisation is the entire reason for taking this
+route, so the version that has been run against real silicon wins over the one
+with the higher number.
 
 ## Kernel
 

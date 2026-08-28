@@ -1,0 +1,46 @@
+Build against a modern toolchain and glibc.
+
+Three changes, none of them to Broadcom's logic:
+
+  * Werror stops being fatal. A decade of new gcc diagnostics arrive at once
+    on code that cannot be revised upstream, so the warnings stay and stop
+    failing the build. Same for the format-security variant.
+
+  * The nsl library is dropped. It was folded into glibc years ago and no
+    longer exists separately, so linking against it fails outright.
+
+  * muldefs is added, because the SDK defines some symbols in more than one
+    archive and the linker of its era accepted that by default.
+
+Paths carry the sdk-6.5.24 component because the archive holds ten SDK
+versions side by side, not one tree. This is pinned to 6.5.24: it is the
+version proven on the 7050SX2, and the same repairs are spelled differently in
+other versions, so it should fail loudly rather than apply loosely elsewhere.
+
+Note for anyone editing this file: no line of this preamble may begin with a
+plus or minus, or patch reads it as diff content and rejects the whole file.
+
+--- a/sdk-6.5.24/make/Makefile.unix-user
++++ b/sdk-6.5.24/make/Makefile.unix-user
+@@ -56,7 +56,7 @@
+ OSTYPE = LINUX
+ 
+ # Linux
+-LIBS =-lnsl -pthread -lm -lrt
++LIBS =-Wl,-z,muldefs -pthread -lm -lrt
+ ifeq (${LINK_UBSAN},1)
+ LIBS += -lubsan
+ endif
+@@ -89,10 +89,10 @@
+ STD_CPPFLAGS = ${STD_CFLAGS}
+ STD_CXXFLAGS = ${STD_CFLAGS}
+ 
+-BCM_CFLAGS   ?= -Wall -Werror -fno-strict-aliasing
++BCM_CFLAGS   ?= -Wall -Wno-error -fno-strict-aliasing
+ ifeq ($(platform), iproc-3_6)
+ ifeq (BE,$(ENDIAN_MODE))
+-BCM_CFLAGS   += -Werror=format-security
++BCM_CFLAGS   += -Wno-error=format-security
+ endif
+ endif
+ 

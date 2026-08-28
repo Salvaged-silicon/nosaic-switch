@@ -223,6 +223,14 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", "DESTDIR="+stage, "install")
 
 	case "make":
+		// A build that runs somewhere other than the source root.
+		if b.Subdir != "" {
+			srcDir = filepath.Join(srcDir, b.Subdir)
+			if _, err := os.Stat(srcDir); err != nil {
+				return fmt.Errorf("build.subdir %q is not in the source tree: %w", b.Subdir, err)
+			}
+		}
+
 		// The compiler is passed as a make variable, not through the
 		// environment, because these packages define it themselves. busybox's
 		// Makefile says
@@ -249,6 +257,11 @@ func runBuild(o Options, srcDir, stage string) error {
 		if err := run(o, srcDir, env, "make", args...); err != nil {
 			return err
 		}
+		// A build that stages by copying has no install target to run.
+		if len(b.Stage) > 0 {
+			return stagePaths(o, srcDir, stage)
+		}
+
 		install := []string{cross, "DESTDIR=" + stage, "install"}
 		if len(b.InstallArgs) > 0 {
 			install = []string{cross}
@@ -365,4 +378,34 @@ func generateServices(o Options, work string) ([]nospkg.Entry, error) {
 		}
 	}
 	return entries, nil
+}
+
+// stagePaths copies the recipe's stage: entries out of the build tree.
+//
+// srcDir here is the directory the build ran in, which may be a subdir; the
+// paths are resolved against the source root instead, because what a build
+// produces and where it is invoked from are different questions.
+func stagePaths(o Options, srcDir, stage string) error {
+	root := srcDir
+	if o.Recipe.Build.Subdir != "" {
+		root = strings.TrimSuffix(srcDir, string(os.PathSeparator)+o.Recipe.Build.Subdir)
+	}
+	n := 0
+	for _, sp := range o.Recipe.Build.Stage {
+		from := filepath.Join(root, expand(o, sp.Src))
+		if _, err := os.Lstat(from); err != nil {
+			return fmt.Errorf("stage %s: %w", sp.Src, err)
+		}
+		to := filepath.Join(stage, filepath.Clean("/"+expand(o, sp.Dst)))
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			return err
+		}
+		c, err := copyTree(from, to)
+		if err != nil {
+			return fmt.Errorf("stage %s: %w", sp.Src, err)
+		}
+		n += c
+	}
+	fmt.Fprintf(o.Log, "    staged %d files\n", n)
+	return nil
 }

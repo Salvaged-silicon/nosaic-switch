@@ -1,6 +1,11 @@
 # Broadcom's OpenBCM SDK — the chip support for Trident2+ and the rest of the
 # XGS line.
 #
+# The upstream repository carries ten SDK versions side by side, from 6.5.16 to
+# 6.5.27, so the archive is one tree containing all of them and every path here
+# names the version it means. 6.5.24 is pinned because it is the one proven on
+# this hardware; the newest is not automatically the right one.
+#
 # Staged, not shipped. This package exists so nosd-td2p can be compiled against
 # the SDK's headers and libraries; the switch runs the daemon, not the SDK
 # tree. Nothing lists it in a profile.
@@ -44,24 +49,39 @@ source:
   mirrors:
     - https://github.com/Salvaged-silicon/OpenBCM/archive/6d2330ce1b4fc49d681cffcf09af408661be4c62.tar.gz
 
+patches:
+  - patches/0001-build-with-a-modern-toolchain.patch
+
 build:
-  # NOT YET BUILDING. Fetching and verifying works; producing something is the
-  # open piece.
+  # The build runs in systems/linux/user/common, which is where the targets
+  # live: the per-platform directories carry only `platform=` and defer here,
+  # so building in one gives "No rule to make target user_libs". platform
+  # selects x86-64-fc28, whose libraries land in build/unix-user/x86-64-fc28
+  # and are what a daemon links against.
   #
-  # What is needed is the SDK's static libraries -- build/unix-user/<platform>/
-  # *.a -- because that is what a daemon links against, with --whole-archive on
-  # the chip ones (libsoc_trident2p.a, libtrident2plus.a, libsoc_mcm.a) since
-  # the SDK registers its chip drivers through tables a normal link discards.
-  #
-  # The invocation that produces them is not settled. The SDK's own make is
-  # driven by `target` and `platform` (make/Make.config:511 includes
-  # make/Makefile.${target}), the platform for this board is x86-64-fc28, and
-  # the release notes are PDFs. It has been done by hand on this hardware, so
-  # the answer exists; it has not been written down in a form a build can run,
-  # and guessing at it would produce a recipe that appears to work and links
-  # against the wrong thing.
-  #
-  # Until then this recipe fetches and verifies the source and nothing more,
-  # which is why the package build fails: the packager refuses to produce a
-  # package with no files, and that refusal is correct.
-  system: none
+  # user_libs rather than a full application: we want libsoc, libbcm and the
+  # chip archives, not the SDK's own diagnostic shell.
+  system: make
+  subdir: sdk-6.5.24/systems/linux/user/common
+  targets:
+    - platform=x86-64-fc28
+    - LINUX_MAKE_USER=1
+    - LINUX_MAKE_SHARED_LIB=0
+    - SHAREDLIBVER=1
+    # Both, in this order, as the working build on this hardware does.
+    # user_libs alone builds only systems/bde/linux/user and produces no SDK
+    # libraries at all -- it succeeds having compiled nothing, which is worse
+    # than failing. bcm is what pulls in libsoc, libbcm and the chip archives.
+    - user_libs
+    - bcm
+  # The SDK has no install target, so the libraries and headers are copied out
+  # of the build tree directly.
+  stage:
+    - {src: sdk-6.5.24/build/unix-user/x86-64-fc28, dst: /usr/lib/openbcm}
+    - {src: sdk-6.5.24/include, dst: /usr/include/openbcm}
+
+  env:
+    # A decade of new diagnostics on code that cannot be revised upstream.
+    ADD_TO_CFLAGS: >-
+      -Wno-error -Wno-cpp -Wno-address-of-packed-member
+      -Wno-stringop-overflow -Wno-stringop-truncation -Wno-array-bounds
