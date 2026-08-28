@@ -30,6 +30,10 @@ func init() { register(aboot{}) }
 // two EOS SWIs pulled off a switch's flash: every member is Stored rather than
 // deflated, and version is the first member. The metadata Aboot reads is in
 // Wrap below.
+// abootSWIVersion satisfies Aboot's "at least 4.14.7" floor. It is not a
+// version of NOSaic and not a real EOS release; see the note in Wrap.
+const abootSWIVersion = "4.99.0"
+
 type aboot struct{}
 
 func (aboot) ID() string { return "aboot" }
@@ -62,19 +66,28 @@ echo "NOSaic %s for %s"
 
 # Everything we need is in the archive Aboot is running us from.
 rm -f /tmp/nosaic-kernel /tmp/nosaic-initrd
+# kernel-params is extracted with the rest. It is inside the archive, so a
+# test for it beside the archive is always false -- which is what the first dry
+# run on hardware showed: the kernel booted with the console setting and
+# nothing else, and the board's memmap reservation silently never arrived.
+# That failure would have surfaced much later, as a datapath that could not map
+# its DMA pool.
 if [ -d "$swipath" ]; then
     cp "$swipath/nosaic-kernel" "$swipath/nosaic-initrd" /tmp/
+    [ -f "$swipath/kernel-params" ] && cp "$swipath/kernel-params" /tmp/
 else
     unzip -oq "$swipath" nosaic-kernel nosaic-initrd -d /tmp
+    unzip -oq "$swipath" kernel-params -d /tmp 2>/dev/null
 fi
 
 # The slot is not chosen here. NOSaic's initramfs reads the pointer from its
 # own boot partition, so an A/B decision and a rollback work the same way on
 # every board and the bootloader never has to know about them.
 CMDLINE="console=ttyS0,9600n8 panic=5"
-if [ -f "$swipath/kernel-params" ]; then
-    CMDLINE="$CMDLINE $(cat "$swipath/kernel-params")"
+if [ -f /tmp/kernel-params ]; then
+    CMDLINE="$CMDLINE $(cat /tmp/kernel-params)"
 fi
+echo "NOSaic: cmdline: $CMDLINE"
 
 kexec --load /tmp/nosaic-kernel \
       --initrd=/tmp/nosaic-initrd \
@@ -145,6 +158,22 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	//
 	// SWI_ARCH is deliberately absent: neither EOS SWI sets it, which is
 	// proof Aboot does not require it.
+	//
+	// SWI_VERSION is Aboot's field with Aboot's meaning, not ours. It parses
+	// the value as EOS's series.major.minor and refuses anything below 4.14.7
+	// outright:
+	//
+	//	swi_version=0.0.0-dev ... [ 0 -lt 4 ]
+	//	The SWI is too old. Please use a SWI with version of at least 4.14.7
+	//
+	// So it carries a number that satisfies that floor, and NOSaic's real
+	// version travels in its own key beside it. Putting our version in a field
+	// the bootloader parses to a different specification only looks tidy until
+	// the bootloader disagrees -- which it does, on this board, before running
+	// anything.
+	//
+	// The value is deliberately not a real EOS release: nothing should mistake
+	// this image for one.
 	epoch := img.AbootMaxHWEpoch
 	if epoch == "" {
 		epoch = "1"
@@ -152,8 +181,8 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	version := fmt.Sprintf(
 		"BLESSED=1\nSWI_VERSION=%s\nSWI_RELEASE=nosaic-%s\n"+
 			"SWI_FLAVOR=DEFAULT\nSWI_VARIANT=US\nSWI_MAX_HWEPOCH=%s\n"+
-			"NOSAIC_BOARD=%s\n",
-		img.Version, img.Version, epoch, img.Board)
+			"NOSAIC_VERSION=%s\nNOSAIC_BOARD=%s\n",
+		abootSWIVersion, img.Version, epoch, img.Version, img.Board)
 	if err := os.WriteFile(filepath.Join(work, "version"), []byte(version), 0o644); err != nil {
 		return "", err
 	}

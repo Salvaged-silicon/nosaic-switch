@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -405,5 +406,85 @@ func TestAbootBoot0HonoursTestonly(t *testing.T) {
 	if load < 0 || check < 0 || exec < 0 || !(load < check && check < exec) {
 		t.Errorf("the testonly check must sit between kexec --load and kexec --exec (load=%d check=%d exec=%d)",
 			load, check, exec)
+	}
+}
+
+// Aboot parses SWI_VERSION as EOS's series.major.minor and refuses anything
+// below 4.14.7 before running any of the image. A NOSaic version in that field
+// reads as 0.0.0 and the switch rejects the SWI outright, which is how the
+// first real boot attempt on the 7050SX2 ended.
+func TestAbootSWIVersionSatisfiesTheBootloaderFloor(t *testing.T) {
+	img, dir := fixture(t)
+	b, _ := For("aboot")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := exec.Command("unzip", "-p", out, "version").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var swi string
+	for _, line := range strings.Split(string(version), "\n") {
+		if strings.HasPrefix(line, "SWI_VERSION=") {
+			swi = strings.TrimPrefix(line, "SWI_VERSION=")
+		}
+	}
+	if swi == "" {
+		t.Fatal("no SWI_VERSION")
+	}
+	parts := strings.Split(swi, ".")
+	if len(parts) < 3 {
+		t.Fatalf("SWI_VERSION %q is not series.major.minor, which is how Aboot reads it", swi)
+	}
+	series, err := strconv.Atoi(parts[0])
+	if err != nil || series < 4 {
+		t.Errorf("SWI_VERSION %q: Aboot refuses a series below 4", swi)
+	}
+
+	// And ours must still be recoverable, or the image cannot say what it is.
+	if !strings.Contains(string(version), "NOSAIC_VERSION="+img.Version) {
+		t.Errorf("the image does not carry its own version:\n%s", version)
+	}
+}
+
+// The board's kernel arguments have to reach the kernel. boot0 extracts them
+// from the SWI, because they live inside it -- testing for the file beside the
+// archive is always false, and the first dry run on hardware booted with the
+// console setting alone and no memmap reservation.
+func TestAbootBoot0ExtractsAndUsesKernelParams(t *testing.T) {
+	img, dir := fixture(t)
+	img.KernelParams = "memmap=64M$0xd0000000 iomem=relaxed"
+	b, _ := For("aboot")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if listing, err := exec.Command("unzip", "-l", out).Output(); err != nil {
+		t.Fatal(err)
+	} else if !strings.Contains(string(listing), "kernel-params") {
+		t.Fatalf("the SWI does not carry kernel-params:\n%s", listing)
+	}
+
+	boot0, err := exec.Command("unzip", "-p", out, "boot0").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(boot0)
+	if !strings.Contains(script, "unzip -oq \"$swipath\" kernel-params") {
+		t.Error("boot0 never extracts kernel-params from the SWI")
+	}
+	// The command line must be built from the extracted copy. Reading it
+	// through $swipath is the original bug: after extraction $swipath is
+	// still the archive, so the test is false and the parameters vanish.
+	// (Inside the unpacked-directory branch, $swipath/kernel-params is
+	// legitimate -- there it really is a directory.)
+	if strings.Contains(script, `CMDLINE="$CMDLINE $(cat "$swipath/kernel-params")"`) {
+		t.Error("boot0 builds the command line from $swipath, which is the archive")
+	}
+	if !strings.Contains(script, "cat /tmp/kernel-params") {
+		t.Error("boot0 does not read the extracted kernel-params")
 	}
 }

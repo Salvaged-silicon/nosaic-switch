@@ -38,7 +38,26 @@ data_mib: 512
 # 0x100000000 that a 4 GB-plus machine would use is past the end of memory
 # here. iomem=relaxed is what allows /dev/mem to map that region at all --
 # without it the mapping fails and nothing says why.
-kernel_params: "memmap=64M$0xd0000000 iomem=relaxed"
+# earlyprintk so a kernel that dies before the console is up still says so --
+# on a box reached by serial that is the difference between a diagnosis and a
+# silent brick.
+#
+# reboot=p because EOS uses it on this board. The 7150's boot0 adds
+# reboot=p,force for AP cores that wedge post-kexec; this box reboots cleanly
+# and does not need it.
+#
+# nosmp is a conservative first-boot default carried over from the 7150 work.
+# It costs three of the four cores and should be dropped once this board is
+# known to survive a kexec with them enabled.
+#
+# memmap reserves the pool the userspace BDE claims through /dev/mem, and
+# iomem=relaxed is what permits that mapping at all. 0xd0000000 rather than
+# 0x100000000: this board has 3844 MB, so 4 GB is past the end of memory.
+#
+# Not yet included: EOS passes dmamem=136M on this platform (platform=magpie;
+# PortolaSPlus is not in the 272M SID list). Irrelevant while the ASIC is dark,
+# required once the datapath does DMA.
+kernel_params: "earlyprintk=serial,ttyS0,9600 rdinit=/init panic=10 nosmp reboot=p memmap=64M$0xd0000000 iomem=relaxed"
 
 status: planned
 
