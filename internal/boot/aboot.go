@@ -79,6 +79,17 @@ fi
 kexec --load /tmp/nosaic-kernel \
       --initrd=/tmp/nosaic-initrd \
       --append="$CMDLINE"
+
+# Aboot exports testonly when it was asked for a dry run. Honouring it is what
+# makes "boot --testonly <url>" a dry run rather than a boot: everything up to
+# here has already proved the SWI unpacks, the kernel and initrd stage, and the
+# command line assembles -- and then we return to the prompt without jumping.
+#
+# The vendor's own boot0 does exactly this, at the same point. A SWI that
+# ignores it boots for real at the moment somebody was deliberately being
+# careful, which is the worst possible time to be surprised.
+[ -z "${testonly}" ] || { echo "NOSaic: staged, not booting (testonly)"; exit 0; }
+
 sync
 kexec --exec
 `

@@ -377,3 +377,33 @@ func TestAbootBoot0ReadsSwipathFromTheEnvironment(t *testing.T) {
 		t.Errorf("kexec was not given our kernel, got: %s", got)
 	}
 }
+
+// Aboot's dry run only works if the SWI cooperates: it exports testonly and
+// expects boot0 to stage the kernel and then stop. A boot0 that ignores it
+// boots for real when somebody asked for a rehearsal.
+func TestAbootBoot0HonoursTestonly(t *testing.T) {
+	img, dir := fixture(t)
+	b, _ := For("aboot")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boot0, err := exec.Command("unzip", "-p", out, "boot0").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(boot0)
+
+	if !strings.Contains(script, "${testonly}") {
+		t.Error("boot0 never looks at testonly, so a dry run would boot the switch")
+	}
+	// It has to come after staging and before the jump, or it proves nothing
+	// and stops nothing respectively.
+	load := strings.Index(script, "kexec --load")
+	check := strings.Index(script, "${testonly}")
+	exec := strings.LastIndex(script, "kexec --exec")
+	if load < 0 || check < 0 || exec < 0 || !(load < check && check < exec) {
+		t.Errorf("the testonly check must sit between kexec --load and kexec --exec (load=%d check=%d exec=%d)",
+			load, check, exec)
+	}
+}
