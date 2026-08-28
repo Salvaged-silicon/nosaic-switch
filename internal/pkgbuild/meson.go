@@ -72,8 +72,11 @@ func mesonCrossFile(o Options) string {
 [built-in options]
 c_args = ['-I%s/usr/include', '-O2', '-pipe']
 cpp_args = ['-I%s/usr/include', '-O2', '-pipe']
-c_link_args = ['-L%s/usr/lib', '-L%s/lib']
-cpp_link_args = ['-L%s/usr/lib', '-L%s/lib']
+# -rpath-link as well as -L: the -L paths are not searched for a shared
+# object's own DT_NEEDED entries, so an executable linking against a staged
+# library that needs another staged library fails without it.
+c_link_args = ['-L%s/usr/lib', '-L%s/lib', '-Wl,-rpath-link=%s/usr/lib', '-Wl,-rpath-link=%s/lib']
+cpp_link_args = ['-L%s/usr/lib', '-L%s/lib', '-Wl,-rpath-link=%s/usr/lib', '-Wl,-rpath-link=%s/lib']
 
 [binaries]
 c = '%s/%s-gcc'
@@ -87,6 +90,8 @@ system = 'linux'
 cpu_family = '%s'
 cpu = '%s'
 endian = '%s'
-`, o.Arch.ID, staging, staging, staging, staging, staging, staging,
+`, o.Arch.ID, staging, staging,
+		staging, staging, staging, staging,
+		staging, staging, staging, staging,
 		bin, t, bin, t, bin, t, bin, t, cpu, o.Arch.ID, o.Arch.Endian)
 }

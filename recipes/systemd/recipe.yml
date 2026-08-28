@@ -1,19 +1,33 @@
-# systemd - the init for the full and slim profiles. NOT YET BUILDING.
+# systemd - the init for the full and slim profiles.
 #
-# State as of 2026-08-27: meson configures cleanly and 1021 of 1495 objects
-# compile. It then fails linking libsystemd-core-257.so and
-# libsystemd-shared-257.so with undefined references to libmount and libblkid
-# symbols -- mnt_free_iter, mnt_monitor_get_fd, blkid_new_probe and others.
+# This was blocked for a long time on what looked like a missing library, and
+# was not one. Recorded because the diagnosis was wrong in an instructive way.
 #
-# What has been ruled out:
-#   - the libraries are staged, and nm shows they export those exact symbols
-#   - pkg-config reports the right thing: -L<staging>/usr/lib -lmount
-#   - meson's own log shows "Run-time dependency mount found: YES 2.40.4"
-#   - it is not --default-library static; removing that changed nothing
+# The symptom: linking systemd and systemd-executor failed with
 #
-# So dependency resolution is correct and the failure is in how those targets
-# are linked. The next step is to capture the full link command for
-# libsystemd-core-257.so from ninja -v and see what is actually on it.
+#	warning: libmount.so.1, needed by libsystemd-core-257.so, not found
+#	libsystemd-shared-257.so: undefined reference to `mnt_free_iter'
+#
+# Everything checked out. libmount was staged and exported those symbols,
+# pkg-config reported the right flags, meson found the dependency, and
+# libsystemd-core-257.so itself linked without complaint. All true, and all
+# beside the point.
+#
+# -L finds a library named on the command line. It does not find that library's
+# own dependencies: for a DT_NEEDED recorded inside a shared object, GNU ld
+# searches -rpath-link, then -rpath, then the defaults, and never the -L paths.
+# So the shared libraries linked fine and the executables that link against
+# them could not resolve libmount, one level down. The fix is -rpath-link in
+# the build environment, in internal/pkgbuild -- general, not systemd-specific:
+# any package linking an executable against a staged shared library that needs
+# another staged shared library has the same problem. systemd was simply the
+# first one big enough to have that shape.
+#
+# Two things made this take longer than it should have. The error names the
+# intermediate library, so it reads as a broken library rather than a linker
+# that was never told where to look. And the earlier notes here recorded the
+# failing targets as the libraries; they are the executables, which is what
+# points at transitive resolution rather than at the libraries themselves.
 #
 # The minimal profile does not run this: it is too large for the boards that
 # tier exists for, which is why recipes declare services abstractly and both

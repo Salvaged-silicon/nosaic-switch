@@ -76,7 +76,22 @@ func buildEnv(o Options) []string {
 		"OBJDUMP=" + t + "-objdump",
 		"CFLAGS=-O2 -pipe -I" + filepath.Join(staging, "usr", "include"),
 		"CXXFLAGS=-O2 -pipe -I" + filepath.Join(staging, "usr", "include"),
-		"LDFLAGS=-L" + filepath.Join(staging, "usr", "lib"),
+		// -L finds a library named on the command line. It does NOT find that
+		// library's own dependencies: for a DT_NEEDED recorded inside a shared
+		// object, GNU ld searches -rpath-link, then -rpath, then the defaults,
+		// and never the -L paths. Without -rpath-link, linking an executable
+		// against a staged .so that itself needs another staged .so fails --
+		// and the error blames the intermediate library rather than the
+		// missing search path:
+		//
+		//	warning: libmount.so.1, needed by libsystemd-core-257.so, not found
+		//	libsystemd-shared-257.so: undefined reference to `mnt_free_iter'
+		//
+		// which reads as a broken library rather than a linker that was never
+		// told where to look. It cost a long time on systemd.
+		"LDFLAGS=-L" + filepath.Join(staging, "usr", "lib") +
+			" -Wl,-rpath-link=" + filepath.Join(staging, "usr", "lib") +
+			" -Wl,-rpath-link=" + filepath.Join(staging, "lib"),
 		// Reproducibility: anything embedding a build timestamp must use
 		// this rather than the clock.
 		"SOURCE_DATE_EPOCH=" + strconv.FormatInt(effectiveEpoch(o), 10),
