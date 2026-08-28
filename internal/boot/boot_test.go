@@ -488,3 +488,34 @@ func TestAbootBoot0ExtractsAndUsesKernelParams(t *testing.T) {
 		t.Error("boot0 does not read the extracted kernel-params")
 	}
 }
+
+// The vendor's boot0 cycles the management interface around the kexec, for two
+// documented reasons: bringing it up copies the MAC from the SCD mailbox into
+// the NIC register, where the next kernel's tg3 looks for it, and bringing it
+// down stops the NIC DMA-ing into memory the next kernel has not initialised.
+//
+// Our first boot on the 7050SX2 did neither: tg3 aborted with "Could not
+// obtain valid ethernet address", and the kernel hung shortly after handover.
+func TestAbootBoot0CyclesTheManagementInterface(t *testing.T) {
+	img, dir := fixture(t)
+	b, _ := For("aboot")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boot0, err := exec.Command("unzip", "-p", out, "boot0").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(boot0)
+
+	up := strings.Index(script, `ip link set "$NETDEV" up`)
+	down := strings.Index(script, `ip link set "$NETDEV" down`)
+	load := strings.Index(script, "kexec --load")
+	if up < 0 || down < 0 {
+		t.Fatal("boot0 does not cycle the management interface; tg3 will find no MAC")
+	}
+	if !(up < down && down < load) {
+		t.Errorf("the interface must go up, then down, then kexec (up=%d down=%d load=%d)", up, down, load)
+	}
+}

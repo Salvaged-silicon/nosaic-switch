@@ -89,6 +89,24 @@ if [ -f /tmp/kernel-params ]; then
 fi
 echo "NOSaic: cmdline: $CMDLINE"
 
+# Two things the vendor's own boot0 does around the kexec, both learned from
+# its comments rather than guessed.
+#
+# Bringing the management interface up makes Aboot's tg3 copy the MAC out of
+# the SCD mailbox into the NIC's MAC register, which is where the next kernel's
+# driver will look for it. Arista does not keep the address in the NIC's own
+# EEPROM, so without this a fresh tg3 probe reports "Could not obtain valid
+# ethernet address" and aborts -- which is exactly what our first boot on the
+# 7050SX2 did.
+#
+# Bringing it back down before jumping is the other half, and it is not
+# cosmetic: the vendor records the NIC DMA-ing into memory before the next
+# kernel has initialised it, showing up as corruption or "Bad page state".
+# Leaving it up is a plausible way to hang a kernel shortly after handover.
+NETDEV="${NETDEV:-ma1}"
+ip link set "$NETDEV" up 2>/dev/null || true
+ip link set "$NETDEV" down 2>/dev/null || true
+
 kexec --load /tmp/nosaic-kernel \
       --initrd=/tmp/nosaic-initrd \
       --append="$CMDLINE"

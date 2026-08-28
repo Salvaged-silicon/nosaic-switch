@@ -46,9 +46,12 @@ data_mib: 512
 # reboot=p,force for AP cores that wedge post-kexec; this box reboots cleanly
 # and does not need it.
 #
-# nosmp is a conservative first-boot default carried over from the 7150 work.
-# It costs three of the four cores and should be dropped once this board is
-# known to survive a kexec with them enabled.
+# nosmp was carried over from the 7150 as a conservative default and is now
+# dropped. It was a workaround for AP cores that wedge post-kexec on that box;
+# this one reboots cleanly, and it costs three of the four cores. The first
+# boot here hung shortly after systemd started, and the likelier cause is the
+# management interface being left up across the kexec -- which boot0 now
+# handles the way the vendor's does.
 #
 # memmap reserves the pool the userspace BDE claims through /dev/mem, and
 # iomem=relaxed is what permits that mapping at all. 0xd0000000 rather than
@@ -57,7 +60,7 @@ data_mib: 512
 # Not yet included: EOS passes dmamem=136M on this platform (platform=magpie;
 # PortolaSPlus is not in the 272M SID list). Irrelevant while the ASIC is dark,
 # required once the datapath does DMA.
-kernel_params: "earlyprintk=serial,ttyS0,9600 rdinit=/init panic=10 nosmp reboot=p memmap=64M$0xd0000000 iomem=relaxed"
+kernel_params: "earlyprintk=serial,ttyS0,9600 rdinit=/init panic=10 reboot=p memmap=64M$0xd0000000 iomem=relaxed"
 
 status: planned
 

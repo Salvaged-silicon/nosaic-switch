@@ -43,7 +43,46 @@ Restore the original `boot-config`, or at the Aboot prompt boot the EOS SWI
 directly. Aboot itself is not modified by any of this, which is what makes the
 switch recoverable.
 
+## Aboot has no network of its own
+
+It is a separate environment from EOS and comes up with nothing configured, so
+an HTTP boot fails with "Network is unreachable" before it fetches anything:
+
+```
+initnetdev
+ifconfig ma1 <addr> netmask 255.255.255.0 up
+route add default gw <gateway> dev ma1
+ping -c 3 <build host>          # wait for it: the first attempt fails on ARP
+```
+
+Configure it at the prompt rather than setting NETIP and NETGW in boot-config,
+which writes flash. A runtime address disappears at the next reboot, which is
+what you want for a test.
+
+## Arm the watchdog before booting anything experimental
+
+The SCD watchdog is the recovery path: nothing in NOSaic punches it, so a
+wedged image is supposed to reset the board back into EOS. **It is not armed by
+default.** It is a register somebody sets, and its state varies -- read it back
+with `scdreset status`, where `0x00000000` means disarmed.
+
+Assuming it was live is how the first NOSaic boot on this board ended in a hung
+switch and a trip to the PDU. Aboot punching the watchdog during its own boot
+does not mean it stays armed across a kexec into something that never touches
+the SCD.
+
 ## When it does not work
 
-Unwritten, deliberately. The failures that belong here are the ones seen on this
-board, and there have not been any yet.
+**`The SWI is too old. Please use a SWI with version of at least 4.14.7`** --
+Aboot 6.1.2 parses SWI_VERSION as EOS's series.major.minor. NOSaic ships 4.99.0
+there and carries its own version as NOSAIC_VERSION.
+
+**`tg3: Could not obtain valid ethernet address, aborting`** -- the MAC is in
+the board's prefdl and reaches the NIC through an SCD mailbox, not the NIC's
+own EEPROM. boot0 brings the management interface up before the kexec so that
+Aboot's driver copies it into the MAC register, and down again before jumping.
+
+**The kernel boots and then hangs shortly after init starts** -- check that the
+management interface was brought back down before the kexec. The vendor records
+the NIC DMA-ing into memory the next kernel has not initialised yet, appearing
+as corruption or "Bad page state".
