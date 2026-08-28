@@ -205,19 +205,35 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", "DESTDIR="+stage, "install")
 
 	case "make":
+		// The compiler is passed as a make variable, not through the
+		// environment, because these packages define it themselves. busybox's
+		// Makefile says
+		//
+		//	CC = $(CROSS_COMPILE)gcc
+		//
+		// and an unconditional assignment in a Makefile beats the environment,
+		// so CC=<triple>-gcc in env is simply ignored. A command-line variable
+		// beats both.
+		//
+		// Without this the build silently uses the host's compiler. On x86_64
+		// that produces a working package and nothing looks wrong, which is
+		// exactly how it went unnoticed: it took the first aarch64 cross-build
+		// to surface it, as an x86_64 busybox in a package targeting arm64.
+		cross := "CROSS_COMPILE=" + o.Arch.Triple + "-"
+
 		// Some packages configure through kconfig exactly as the kernel does.
 		// Sharing that path means their configuration is a reviewable fragment
 		// too, rather than a committed generated file.
 		if err := applyKconfig(o, srcDir, env); err != nil {
 			return err
 		}
-		args := append([]string{jobs}, b.Targets...)
+		args := append([]string{jobs, cross}, b.Targets...)
 		if err := run(o, srcDir, env, "make", args...); err != nil {
 			return err
 		}
-		install := []string{"DESTDIR=" + stage, "install"}
+		install := []string{cross, "DESTDIR=" + stage, "install"}
 		if len(b.InstallArgs) > 0 {
-			install = nil
+			install = []string{cross}
 			for _, a := range b.InstallArgs {
 				install = append(install, strings.ReplaceAll(expand(o, a), "${DESTDIR}", stage))
 			}

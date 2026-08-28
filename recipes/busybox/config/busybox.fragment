@@ -55,3 +55,18 @@ CONFIG_FINDFS=y
 # a current sysroot. Nothing here wants busybox's tc: traffic control belongs to
 # iproute2, and on a switch it belongs to the datapath.
 # CONFIG_TC is not set
+
+# busybox 1.37's SHA hardware acceleration is x86-only in the code and
+# unconditional in the configuration, which is an upstream bug rather than
+# something to configure around: SHA1_HWACCEL defaults to y with no dependency
+# on the architecture (libbb/Config.src:67), the declarations of
+# sha1_process_block64_shaNI and friends sit behind
+# `defined(__i386__) || defined(__x86_64__)` (libbb/hash_md5_sha.c:17), and the
+# call site is guarded by ENABLE_SHA1_HWACCEL alone (:1193). So every non-x86
+# target fails to compile libbb.
+#
+# Turned off everywhere rather than only where it breaks. Keeping it on x86
+# would mean one architecture running different hash code from the others for
+# ~590 bytes and a faster sha1sum, which no switch is waiting on.
+# CONFIG_SHA1_HWACCEL is not set
+# CONFIG_SHA256_HWACCEL is not set

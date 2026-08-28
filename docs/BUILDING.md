@@ -74,6 +74,17 @@ JOBS   = 8
 # DOCKER_NETWORK = host
 ```
 
+**The toolchain needs about 6 GB.** Building gcc links `lto1`, which is the
+single largest allocation in the whole build; at 4.5 GB it is killed and the
+error names neither memory nor the limit:
+
+```
+collect2: fatal error: ld terminated with signal 9 [Killed]
+```
+
+If you see that, raise `MEMORY` — and lower `JOBS`, which controls how many of
+those links can peak at the same time.
+
 Set `MEMORY` **below** your available RAM, not above it. A cap higher than what
 the host actually has is not a cap: the host starts swapping long before the
 container limit is ever reached, which is the failure it was meant to prevent.
