@@ -225,7 +225,24 @@ func Extract(path, dst string) (*Manifest, error) {
 			if err := os.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
 				return nil, err
 			}
-			out, err := os.OpenFile(clean, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(h.Mode))
+			// Unlink first. O_TRUNC on a path that is a symlink follows it and
+			// truncates what it points AT, so a package installing a real file
+			// where an earlier package left a symlink destroys the symlink's
+			// target instead of replacing the link.
+			//
+			// This is not hypothetical. busybox installs /bin/ip as a symlink
+			// to busybox; iproute2 is extracted afterwards and writes its own
+			// /bin/ip, which landed on /bin/busybox. The image then had the ip
+			// binary named busybox, and the initramfs -- which takes busybox
+			// from the composed image -- panicked at boot with "Failed to
+			// execute /init (error -2)", because /bin/sh pointed at a
+			// dynamically linked binary whose loader was not there.
+			//
+			// The symlink case below already removes first. This one did not.
+			if err := os.Remove(clean); err != nil && !os.IsNotExist(err) {
+				return nil, err
+			}
+			out, err := os.OpenFile(clean, os.O_CREATE|os.O_EXCL|os.O_WRONLY, os.FileMode(h.Mode))
 			if err != nil {
 				return nil, err
 			}

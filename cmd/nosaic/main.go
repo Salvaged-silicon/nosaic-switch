@@ -115,9 +115,20 @@ func main() {
 	case "build":
 		root := repoRoot()
 		target := ""
-		if len(args) > 1 {
-			target = args[1]
-		} else {
+		profileOverride := ""
+		rest := args[1:]
+		for i := 0; i < len(rest); i++ {
+			switch {
+			case rest[i] == "--profile" && i+1 < len(rest):
+				profileOverride = rest[i+1]
+				i++
+			case strings.HasPrefix(rest[i], "--profile="):
+				profileOverride = strings.TrimPrefix(rest[i], "--profile=")
+			default:
+				target = rest[i]
+			}
+		}
+		if target == "" {
 			// No board named. Rather than an unhelpful usage line, show what
 			// there is to choose from -- and offer to choose, but only when a
 			// person is actually at a terminal. Prompting in a script or in CI
@@ -129,7 +140,7 @@ func main() {
 			}
 			target = chosen
 		}
-		if err := buildImage(root, target); err != nil {
+		if err := buildImage(root, target, profileOverride); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
 		}
@@ -320,7 +331,15 @@ func printManifest(m *nospkg.Manifest, verified bool) {
 	w.Flush()
 }
 
-func buildImage(root, boardID string) error {
+// buildImage assembles a board's image. profileOverride is empty for a normal
+// build, where the board's own profile is used.
+//
+// The override exists so a tier can be built and booted for a board that does
+// not declare it. Without it there was no way to test the systemd tiers at
+// all, and no way for CI to build every profile -- which the design names as
+// the thing keeping the abstract services: stanza honest, since a recipe
+// reaching for a systemd-specific feature breaks the s6 tier first.
+func buildImage(root, boardID, profileOverride string) error {
 	b, err := board.Load(filepath.Join(root, "platform", boardID, "board.yml"))
 	if err != nil {
 		return err
@@ -329,7 +348,11 @@ func buildImage(root, boardID string) error {
 	if err != nil {
 		return err
 	}
-	pr, err := profile.Load(root, b.Profile)
+	want := b.Profile
+	if profileOverride != "" {
+		want = profileOverride
+	}
+	pr, err := profile.Load(root, want)
 	if err != nil {
 		return err
 	}

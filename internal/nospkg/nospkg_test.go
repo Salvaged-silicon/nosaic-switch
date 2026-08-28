@@ -216,3 +216,67 @@ func TestRelativeDestinationRejected(t *testing.T) {
 		t.Fatal("a relative install path should be rejected")
 	}
 }
+
+// Installing a real file where an earlier package left a symlink must replace
+// the link, not write through it.
+//
+// This is how the slim profile's first image came out unbootable. busybox
+// installs /bin/ip as a symlink to busybox; iproute2 installs a real /bin/ip.
+// Extraction opened the path with O_TRUNC, which follows a symlink, so
+// iproute2's binary landed on /bin/busybox. The image then had the ip binary
+// named busybox, and the box panicked at boot with "Failed to execute /init".
+//
+// Nothing about that failure points at package extraction, which is why it is
+// pinned here.
+func TestInstallingOverASymlinkDoesNotWriteThroughIt(t *testing.T) {
+	dst := t.TempDir()
+
+	// First package: a real binary plus a symlink pointing at it.
+	first := build(t, manifest(), []Entry{
+		{Dst: "/bin/busybox", Src: srcFile(t, "busybox", "THE REAL BUSYBOX"), Mode: 0o755},
+		{Dst: "/bin/ip", Link: "busybox"},
+	})
+	if _, err := Extract(writeTemp(t, first), dst); err != nil {
+		t.Fatalf("extract first: %v", err)
+	}
+
+	// Second package: a real file at the path the symlink occupies.
+	second := build(t, manifest(), []Entry{
+		{Dst: "/bin/ip", Src: srcFile(t, "ip", "IPROUTE2 IP BINARY"), Mode: 0o755},
+	})
+	if _, err := Extract(writeTemp(t, second), dst); err != nil {
+		t.Fatalf("extract second: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dst, "bin", "busybox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "THE REAL BUSYBOX" {
+		t.Errorf("/bin/busybox was overwritten through the symlink: got %q", got)
+	}
+	ip, err := os.ReadFile(filepath.Join(dst, "bin", "ip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(ip) != "IPROUTE2 IP BINARY" {
+		t.Errorf("/bin/ip is %q, want the second package's file", ip)
+	}
+	// And it must be a real file now, not still a link.
+	fi, err := os.Lstat(filepath.Join(dst, "bin", "ip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Error("/bin/ip is still a symlink")
+	}
+}
+
+func writeTemp(t *testing.T, pkg []byte) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "pkg.nos")
+	if err := os.WriteFile(p, pkg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

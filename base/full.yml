@@ -1,0 +1,32 @@
+# The largest tier: everything slim has, and the pieces that are only worth
+# carrying when flash is not the constraint.
+#
+# It shares slim's init, its units and its recipes. The difference is the
+# package set, which is the only axis a tier is allowed to differ on -- the
+# moment a tier needs its own code path, there are two systems rather than one
+# system in two sizes.
+name: full
+init: systemd
+
+packages:
+  - linux
+  - glibc
+  - util-linux
+  - libcap
+  - libxcrypt
+  - systemd
+  - busybox
+  - iproute2
+  - zlib
+  # The supervision suite is present here as well as in minimal. It costs
+  # little and it is what the recovery path uses on a box whose systemd will
+  # not start, which is exactly the box you cannot afford to lose.
+  - skalibs
+  - execline
+  - s6
+  - s6-rc
+
+slots: 2
+description: >
+  systemd and the full tool set, for boards with flash to spare. Same init and
+  the same generated units as slim; it simply carries more.

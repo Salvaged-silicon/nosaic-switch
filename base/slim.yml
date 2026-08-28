@@ -1,0 +1,31 @@
+# The middle tier: systemd, and the tools to run and debug a switch.
+#
+# The distinction from full is deliberately about what is installed, not about
+# what works. Both run systemd and both use the same generated units; slim
+# leaves out what a production box does not need in flash. A tier that behaved
+# differently rather than merely carrying less would be a second system to
+# support.
+name: slim
+init: systemd
+
+packages:
+  - linux
+  - glibc
+  # systemd's libraries need libmount and libblkid at run time, not only at
+  # link time. Leaving util-linux out produces an image that builds cleanly and
+  # cannot start PID 1.
+  - util-linux
+  - libcap
+  - libxcrypt
+  - systemd
+  # A shell and the core utilities. busybox rather than coreutils: it is one
+  # static binary, and on a switch the difference in behaviour does not pay for
+  # the difference in size.
+  - busybox
+  - iproute2
+  - zlib
+
+slots: 2
+description: >
+  systemd, a shell, and the networking tools. The tier for boards with enough
+  flash for a real init but no room for anything optional.
