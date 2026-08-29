@@ -86,6 +86,35 @@ static void nosaic_write(soc_cm_dev_t *dev, uint32 addr, uint32 data)
 	*(volatile uint32 *)((volatile char *)b->bar + addr) = data;
 }
 
+/*
+ * 64-bit register access.
+ *
+ * Some registers are 64 bits wide and the SDK reaches them through these
+ * rather than through two 32-bit accesses -- which would not be equivalent on
+ * a device where reading the low half latches the high one.
+ */
+static uint64 nosaic_read64(soc_cm_dev_t *dev, uint32 addr)
+{
+	struct nosaic_bde *b = bde_of(dev);
+
+	if ((size_t)addr + 8 > b->bar_len) {
+		fprintf(stderr, "nosd-td2p: 64-bit read past BAR0: %#x\n", addr);
+		return ~(uint64)0;
+	}
+	return *(volatile uint64 *)((volatile char *)b->bar + addr);
+}
+
+static void nosaic_write64(soc_cm_dev_t *dev, uint32 addr, uint64 data)
+{
+	struct nosaic_bde *b = bde_of(dev);
+
+	if ((size_t)addr + 8 > b->bar_len) {
+		fprintf(stderr, "nosd-td2p: 64-bit write past BAR0: %#x\n", addr);
+		return;
+	}
+	*(volatile uint64 *)((volatile char *)b->bar + addr) = data;
+}
+
 /* PCI configuration space, through sysfs rather than port I/O. */
 static uint32 nosaic_pci_conf_read(soc_cm_dev_t *dev, uint32 addr)
 {
@@ -309,6 +338,8 @@ int nosaic_sdk_attach(struct nosaic_bde *b, uint16 dev_id, uint16 rev_id)
 	v.sinval               = nosaic_sinval;
 	v.l2p                  = nosaic_l2p;
 	v.p2l                  = nosaic_p2l;
+	v.read64               = nosaic_read64;
+	v.write64              = nosaic_write64;
 
 	/*
 	 * This is where the SDK takes over. soc_cm_device_init installs the
@@ -363,6 +394,8 @@ int nosaic_sdk_attach(struct nosaic_bde *b, uint16 dev_id, uint16 rev_id)
  */
 extern int soc_init(int unit);
 extern int soc_reset_init(int unit);
+extern int soc_misc_init(int unit);
+extern int soc_mmu_init(int unit);
 
 /*
  * Bring the SOC layer up, resetting the chip on the way.
@@ -401,8 +434,44 @@ int nosaic_sdk_bcm_init(int unit)
 {
 	int rv;
 
+	/*
+	 * Two SOC-layer steps come between the chip reset and the BCM layer, and
+	 * skipping them is why port probing failed with "Feature not initialized":
+	 * the ports were probed against a device whose memory bounds and MMU had
+	 * never been set up.
+	 *
+	 *   soc_misc_init  populates the memory-state index bounds
+	 *   soc_mmu_init   _soc_trident2_mmu_init and soc_td2_lls_init -- the
+	 *                  Trident2 MMU and link-list scheduler, and precisely the
+	 *                  sequences that hand-reproduction failed to match on
+	 *                  this silicon. Running the vendor's own is the reason
+	 *                  the BDE exists.
+	 */
+	printf("  soc_misc_init...\n");
+	rv = soc_misc_init(unit);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: soc_misc_init(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+
+	printf("  soc_mmu_init...\n");
+	rv = soc_mmu_init(unit);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: soc_mmu_init(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+
+	/*
+	 * type MUST be NULL. bcm_attach selects the driver family itself from the
+	 * SOC_IS_* macros and falls through to "esw" for this chip. Passing a
+	 * name here is how it gets rejected -- and "esw" happening to be the right
+	 * family did not save it, because the last argument matters too: it is
+	 * the remote unit, and it is the unit itself, not zero.
+	 */
 	printf("  bcm_attach...\n");
-	rv = bcm_attach(unit, "esw", NULL, 0);
+	rv = bcm_attach(unit, NULL, NULL, unit);
 	if (rv < 0) {
 		fprintf(stderr, "nosd-td2p: bcm_attach(%d) returned %d (%s)\n",
 			unit, rv, bcm_errmsg(rv));

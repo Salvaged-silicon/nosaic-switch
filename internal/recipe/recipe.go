@@ -156,6 +156,16 @@ type Build struct {
 	// them anywhere.
 	Stage []StagePath `yaml:"stage"`
 
+	// After runs shell commands in the source directory once the build has
+	// finished, before anything is staged.
+	//
+	// It exists for a build that has to produce something about itself. The
+	// case it was added for: a package whose compile-time defines must be
+	// known to whatever links against it later. Transcribing those by hand is
+	// how an ABI mismatch gets introduced silently -- so the build captures
+	// its own, and the consumer reads the file rather than a copy of it.
+	After []string `yaml:"after"`
+
 	// Env overrides build environment variables. The cross-compilation
 	// variables are set for you; this is for a package's own quirks.
 	Env map[string]string `yaml:"env"`

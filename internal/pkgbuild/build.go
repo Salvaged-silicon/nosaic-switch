@@ -265,6 +265,10 @@ func runBuild(o Options, srcDir, stage string) error {
 		if err := run(o, srcDir, env, "make", args...); err != nil {
 			return err
 		}
+		if err := runAfter(o, srcDir, env); err != nil {
+			return err
+		}
+
 		// A build that stages by copying has no install target to run.
 		if len(b.Stage) > 0 {
 			return stagePaths(o, srcDir, stage)
@@ -437,4 +441,16 @@ func rawMode(info fs.FileInfo) uint32 {
 		return st.Mode & 0o7777
 	}
 	return uint32(info.Mode().Perm())
+}
+
+// runAfter executes a recipe's after: commands in the build directory.
+func runAfter(o Options, srcDir string, env []string) error {
+	for _, c := range o.Recipe.Build.After {
+		cmd := expand(o, c)
+		fmt.Fprintf(o.Log, "    $ %s\n", cmd)
+		if err := run(o, srcDir, env, "sh", "-c", cmd); err != nil {
+			return fmt.Errorf("after: %s: %w", cmd, err)
+		}
+	}
+	return nil
 }

@@ -21,27 +21,33 @@ OBJS = main.o bde.o props.o
 # include/openbcm and its archives in lib/openbcm, so both get that suffix --
 # the SDK's own #includes are <sal/types.h>, relative to that directory.
 ifneq ($(SDK_DIR),)
-# THESE MUST MATCH WHAT THE SDK LIBRARIES WERE BUILT WITH.
+# THE SDK'S OWN DEFINES, CAPTURED BY ITS BUILD.
 #
-# Several SDK feature flags change struct layouts, so a mismatch is an ABI
-# mismatch, and it is silent: the code compiles, links and runs, and the
-# library reads every field of a struct one slot away from where it was
-# written.
+# Anything linking against the SDK must compile with the same set. The headers
+# are shared, so a define set for the library and not for us silently changes
+# struct layouts and enum values -- with no compile error, no link error and no
+# log line:
 #
-# INCLUDE_RCPU is the one that bites here. It adds a pointer to
-# soc_cm_device_vectors_t (include/soc/cmtypes.h) immediately after bus_type,
-# so without it every function pointer from config_var_get onward lands in the
-# wrong slot. The symptom is soc_cm_device_init returning SOC_E_PARAM with no
-# log line at all, because the check that fails is a macro that returns
-# without saying anything -- and every vector looks correctly set from this
-# side.
+#   INCLUDE_RCPU    adds a pointer to soc_cm_device_vectors_t after bus_type,
+#                   so every function pointer after it lands one slot off. That
+#                   cost a round: soc_cm_device_init returned SOC_E_PARAM from
+#                   a macro that returns without saying anything, with every
+#                   vector correctly set from this side.
+#   BCM_ALL_CHIPS   decides which chips' memories are in soc_mem_t, so every
+#                   memory ID and NUM_SOC_MEM differ without it.
 #
-# The list comes from _ESW_FEATURE_LIST in the SDK's make/Make.config, which
-# make/Make.config:1117 turns into -DINCLUDE_<feature>. If the openbcm recipe's
-# build flags change, this has to change with them.
-SDK_FEATURES = L3 I2C MEM_SCAN EDITLINE RCPU OOB_RCPU CUSTOMER \
-               TEST CHASSIS CINT PTP BFD TCB PSTATS
-CFLAGS  += $(foreach f,$(SDK_FEATURES),-DINCLUDE_$(f))
+# This file is written by the openbcm package's own build from the compile line
+# the SDK used, so it cannot drift from the libraries. An earlier version of
+# this makefile listed the feature flags by hand, which was wrong in kind
+# rather than degree: it named fourteen, and the real set is a hundred and
+# five.
+SDK_DEFINES_FILE = $(SDK_DIR)/lib/openbcm/sdk-defines.txt
+ifeq ($(wildcard $(SDK_DEFINES_FILE)),)
+$(error $(SDK_DEFINES_FILE) is missing. It is produced by the openbcm package; \
+build that first. Guessing these defines is not a workable fallback -- a wrong \
+set compiles, links, runs and corrupts every struct the SDK shares with us.)
+endif
+CFLAGS  += $(shell cat $(SDK_DEFINES_FILE))
 CFLAGS  += -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
 # The SDK is a set of static archives with circular references between them,
 # so they go inside --start-group; listing them once in dependency order is a
