@@ -267,6 +267,20 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 		return err
 	}
 
+	// The board's own description travels with the image. Without it the CLI
+	// would have to be told which board it is running on, on the one machine
+	// that has no excuse not to know -- and the platform HAL would be
+	// addressing registers from a board id typed at a prompt.
+	if src := filepath.Join(o.Board.Path, "board.yml"); o.Board.Path != "" {
+		yml, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("reading the board description to place in the image: %w", err)
+		}
+		if err := writeFile(rootfs, "/etc/nosaic/board.yml", string(yml), 0o644); err != nil {
+			return err
+		}
+	}
+
 	// The account exists with no password, per base/identity.yml. An empty
 	// password field is not "any password will do": it means no password is
 	// required, and with no network login enabled the console is the only way

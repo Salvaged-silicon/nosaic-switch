@@ -67,6 +67,15 @@ data_mib: 512
 # required once the datapath does DMA.
 kernel_params: "earlyprintk=serial,ttyS0,9600 rdinit=/init panic=10 reboot=p memmap=64M$0xd0000000 iomem=relaxed"
 
+# The board's own hardware -- reset lines, watchdog, sensors -- is behind
+# Arista's SCD, an FPGA on the PCI bus. It holds the Trident2+ in reset from
+# power-on, which is why the ASIC's address is stated here: until the SCD is
+# told to let go, 01:00.0 is not on the bus to be discovered.
+platform_hal:
+  driver: scd
+  pci: "0000:05:00.0"
+  asic_pci: "0000:01:00.0"
+
 status: planned
 
 notes: >

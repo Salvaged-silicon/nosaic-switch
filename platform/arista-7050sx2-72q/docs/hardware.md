@@ -182,6 +182,132 @@ obvious SEEPROM addresses on buses 0 through 3 -- 0 and 1 answered with
 establishing properly rather than guessing, which on an SMBus carrying PSU
 controllers and thermal sensors is worth doing carefully.
 
+## The SCD, and how the ASIC gets onto the bus
+
+The System Control Device is an FPGA at `0000:05:00.0` (`3475:0001`) that owns
+everything on this board that is not forwarding: reset lines, GPIO, LEDs, the
+watchdog, and the SMBus reaching the fan controller and the transceivers.
+
+**It holds the Trident2+ in reset from power-on.** On a freshly booted NOSaic
+there is no `0000:01:00.0` on the PCI bus at all — not a chip that fails to
+respond, but no device. That is the expected state, and it is why the datapath
+is gated on SCD bring-up rather than on the ASIC.
+
+NOSaic drives it from `internal/platformhal/scd`, reached as
+`nosaic platform`.
+
+### Where these numbers come from
+
+Arista publishes `sonic-platform-modules-arista` under GPL-2.0, written by the
+authors of the EOS driver for this same FPGA. **The register offsets are read
+from that tree** — `arista/drivers/scd/watchdog.py`,
+`arista/components/denali/linecard.py` and its siblings — with credit due to
+those drivers. No code was copied; only register maps were read. That makes
+this a documentation result rather than a reverse-engineering one, which is
+worth stating because it is much stronger evidence.
+
+**The per-board bit assignment is not from that tree**, because this board is
+not in it: `aristanetworks/sonic` returns nothing for `7050SX2`, `Portola` or
+`72Q`. It is a 2017-era EOS-only box. Those values were established by reading
+our own hardware, and are recorded below with how they were established.
+
+### Register layout
+
+Each reset block is three ports onto the same state, on a 0x10 stride:
+
+| Offset | Access | Meaning |
+|---|---|---|
+| `addr + 0x00` | read / write-1-to-**set** | current state; writing a 1 **asserts** that reset |
+| `addr + 0x10` | write-1-to-**clear** | writing a 1 **releases** that reset |
+| `addr + 0x20` | read | status |
+
+A bit reading **1 means that reset is asserted**. The switch-chip reset block
+is at `0x4000` on every Arista platform in the GPL tree, from Trident2 to
+Tomahawk4; only the bits vary.
+
+Note that SCD registers are 4 bytes wide but the address decode ignores bits
+`[3:2]`, so each register aliases across its 16-byte slot — `0x3000`, `0x3004`,
+`0x3008` and `0x300c` all read identically.
+
+### The reset bits: 0 and 1, not 2
+
+Other platforms in the GPL tree put the PCIe reset on **bit 2**. Taking that
+number here would be silently fatal, and it is worth spelling out why, because
+the failure is invisible:
+
+> Bit 2 is unimplemented on this board, and unimplemented bits read as 1.
+> Clearing it writes to nothing. The chip never enumerates, `ResetState`
+> reports it held in reset for ever, and the code that wrote the bit reports
+> success.
+
+What is attested is a live read of `0x4000` with the ASIC demonstrably running:
+
+```
+BAR0+0x004000: fffffffc
+```
+
+Exactly bits 0 and 1 are cleared. With the chip running, exactly two resets are
+released — the core/PCIe pair every other platform declares.
+
+⚠️ **Which of bit 0 and bit 1 is core and which is PCIe is not established.**
+The majority convention (core = 0, pcie = 1) is what NOSaic uses. This is safe
+for releasing the chip, because both end up cleared and only the 500 ms between
+them is ordered. It would matter for asserting one reset selectively, which
+nothing does yet.
+
+### The release sequence
+
+From Arista's `SwitchChip._resetOut()`. The ordering and the delays are the
+hardware's contract, which is why `ReleaseSwitchChip` is one call rather than a
+sequence the caller assembles:
+
+1. clear the core reset bit
+2. sleep 500 ms
+3. clear the PCIe reset bit
+4. wait ~1 s, then `echo 1 > /sys/bus/pci/rescan` — the kernel enumerated while
+   the device was still in reset and found nothing, so it must be told
+5. poll for the ASIC's sysfs node, then yield 2 s before touching it
+
+### The watchdog — and the trap in it
+
+`0x0120`, the same register the 7150 uses. Bit 31 enables; bits `[30:29]` are
+the action, and **2 means power cycle** rather than a warm reset. That is what
+makes it a real recovery path: a warm reset leaves a wedged chip wedged, where
+a power cycle brings the board back through Aboot.
+
+**It is not armed when NOSaic starts.** Aboot punches it during boot and leaves
+it disarmed on handover, so a custom NOS begins with no recovery net at all.
+Assuming otherwise is how a hung image became a trip to the PDU.
+
+⚠️ **The timeout is not where the GPL driver writes it.** That driver puts the
+timeout in the low 16 bits. On this SCD revision it lives in bits `[28:16]` in
+units of 100 ms. This was established by measurement, not by reading:
+
+| | |
+|---|---|
+| Live read on EOS | `0xc3e8157c` — enabled, action 2, hi = 1000, low16 = 5500 |
+| Armed with hi = 500 | board power-cycled itself in **40–50 s** |
+| hi = 500 at 100 ms units | 50 s ✅ |
+| low16 = 6000 as ms | 600 s ❌ |
+
+So arm with `(1<<31) | (2<<29) | (deciseconds << 16)`. Writing the GPL field
+instead leaves the real timeout at whatever it already held — arming that
+reports success and protects nothing. `internal/platformhal/scd` has a test
+pinning the measured encoding, including the exact `0xc1f41770` read off this
+board, so a future edit back to the obvious-looking layout fails loudly.
+
+The low 16 bits are preserved rather than zeroed: their meaning is unknown, and
+both Aboot and EOS leave a value there.
+
+The field is 13 bits, so the longest window is 8191 deciseconds — about 819 s.
+50 s is far too short to work in; arm for several minutes and pet it.
+
+```sh
+nosaic platform watchdog arm 300000     # 5 minutes
+nosaic platform status
+nosaic platform release-asic
+```
+
 ## Quirks
 
 - **Everything proven so far was proven after `kexec` from EOS**, and `kexec`
@@ -189,6 +315,11 @@ controllers and thermal sensors is worth doing carefully.
   different state, so prove standalone boot before the datapath work depends on
   it.
 - **The SCD must be up before the ASIC answers.** Reset is released through it.
+- **The PCIe reset is bit 1 here, not bit 2.** Bit 2 is unimplemented and
+  reads as 1, so using another platform's number releases nothing and says
+  it worked. See above.
+- **The watchdog is disarmed when NOSaic starts**, and its timeout is in bits
+  `[28:16]`, not the low 16 bits the GPL driver uses.
 - **Fan readings are garbage.** See above.
 
 ## Reverse engineering

@@ -161,9 +161,10 @@ func main() {
 		}
 
 	case "platform":
-		fmt.Fprintf(os.Stderr, "nosaic: %q is not implemented yet\n", args[0])
-		fmt.Fprintln(os.Stderr, "see docs/DESIGN.md for which milestone lands it")
-		os.Exit(3)
+		if err := platformCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "nosaic: unknown command %q\n\n", args[0])

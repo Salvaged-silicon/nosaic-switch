@@ -78,6 +78,13 @@ type Board struct {
 	// with prefdl. Defaults to 1, which covers the 7050SX2.
 	AbootMaxHWEpoch string `yaml:"aboot_max_hwepoch"`
 
+	// PlatformHAL names the driver for the board's own hardware -- resets,
+	// watchdog, sensors -- and where it lives. It is board data rather than
+	// something the driver guesses because two switches with the same silicon
+	// can have entirely different controllers, and because a PCI address hunted
+	// for at runtime is a PCI address that can be found wrong.
+	PlatformHAL PlatformHAL `yaml:"platform_hal"`
+
 	Notes string `yaml:"notes"`
 
 	Path string `yaml:"-"`
@@ -237,4 +244,16 @@ func oneOf(v string, valid []string) bool {
 		}
 	}
 	return false
+}
+
+// PlatformHAL is a board's platform-hardware driver and its addresses.
+type PlatformHAL struct {
+	// Driver selects the implementation; empty means the board has none yet.
+	Driver string `yaml:"driver"`
+	// PCI is where the controller is, in full domain:bus:dev.fn form.
+	PCI string `yaml:"pci"`
+	// ASICPCI is where the switch chip appears once released from reset. It
+	// is absent from the bus until then, which is why it is stated here
+	// rather than discovered.
+	ASICPCI string `yaml:"asic_pci"`
 }
