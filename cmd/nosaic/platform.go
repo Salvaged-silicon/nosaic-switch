@@ -20,6 +20,7 @@ const platformUsage = `usage: nosaic platform <command>
   status               what the board reports about itself
   release-asic         take the switch chip out of reset and wait for it
   asic                 what the switch chip says about itself (read-only)
+  transceivers         which front-panel cages have modules in them
   schan selftest       prove S-Channel reaches the chip (read-only)
   schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed
@@ -63,6 +64,8 @@ func platformCmd(args []string) error {
 		return probeASIC(hal)
 	case "schan":
 		return schanCmd(b, rest[1:])
+	case "transceivers", "xcvr":
+		return showTransceivers(hal)
 	case "watchdog":
 		return watchdogCmd(hal, rest[1:])
 	}
@@ -357,4 +360,52 @@ func countInteresting(ws []uint32) int {
 		}
 	}
 	return n
+}
+
+// showTransceivers reports which cages are populated.
+//
+// Read from the board controller, not the switch chip, so it works with the
+// ASIC dark and owes nothing to the port map -- which is what makes it useful
+// for establishing one. A cage with a module in it is a cage that should have
+// link once the right logical port is pointed at it.
+func showTransceivers(hal platformhal.HAL) error {
+	t, ok := hal.(interface{ Transceivers() ([]scd.Cage, error) })
+	if !ok {
+		return fmt.Errorf("%w: this board cannot report its cages", platformhal.ErrUnsupported)
+	}
+	cages, err := t.Transceivers()
+	if err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "cage\ttype\tstate\traw")
+	var populated, empty, unknown int
+	for _, c := range cages {
+		switch c.State {
+		case scd.PresenceEmpty:
+			empty++
+			continue
+		case scd.PresenceUnknown:
+			unknown++
+		default:
+			populated++
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%#08x\n", c.Index, c.Kind, c.State, c.Raw)
+	}
+	w.Flush()
+
+	fmt.Printf("\n%d populated, %d empty, %d undetermined, of %d cages.\n",
+		populated, empty, unknown, len(cages))
+
+	if unknown > 0 {
+		// Worth saying plainly rather than leaving the reader to notice.
+		fmt.Println("\nThe undetermined cages read words this driver has no meaning for.\n" +
+			"The three it knows were measured while the vendor OS was driving the\n" +
+			"board controller, and it is not driving it now -- so these are most\n" +
+			"likely the table in some other state rather than modules that are\n" +
+			"present. Presence cannot be told from this until the words are\n" +
+			"established for a board the vendor OS has not touched.")
+	}
+	return nil
 }
