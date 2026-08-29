@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include "bde.h"
+#include "props.h"
 #include "sdk.h"
 
 /* The SDK's own headers. Included last: they define types with names general
@@ -190,18 +191,20 @@ static int nosaic_interrupt_disconnect(soc_cm_dev_t *dev)
 /*
  * Configuration properties.
  *
- * This is where a config.bcm would be answered from: port maps, per-port
- * settings, feature overrides. Returning NULL means "not set", so the SDK uses
- * its own defaults for this chip.
+ * This is Broadcom's config.bcm mechanism seen from the inside: port maps,
+ * per-port settings, feature overrides. NULL means "not set", which the SDK
+ * reads as "use the default for this chip".
  *
- * That is correct for bring-up and will not stay correct. The port map for
- * this board is not the SDK's default, and the 48 SFP+ cages and 24 QSFP lanes
- * follow different rules -- so this returning NULL is a placeholder with a
- * known expiry, not a finished decision.
+ * The answers come from a file the board supplies, not from this code. A port
+ * map is a fact about how one switch is wired, and every board with this ASIC
+ * wires it differently -- compiling one in would make the thing that must vary
+ * per board the one thing that cannot.
  */
 static char *nosaic_config_var_get(soc_cm_dev_t *dev, const char *name)
 {
-	return NULL;
+	/* The SDK's own prototype is not const-correct; the value is not
+	 * modified, and casting here keeps that fact in one place. */
+	return (char *)nosaic_props_get(name);
 }
 
 /*

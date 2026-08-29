@@ -451,6 +451,79 @@ when `MSG_START` is already set — on a board where the vendor OS may have been
 driving this chip minutes earlier, stomping an in-flight transaction is not
 hypothetical.
 
+## Chip initialisation: the SDK does it
+
+```
+doas nosd-td2p --attach 0000:01:00.0 /etc/nosaic/asic.conf
+config     55 properties from /etc/nosaic/asic.conf
+SOC unit 0 attached to PCI device BCM56860_A1
+SDK unit   0
+chip init complete; the SDK has the device.
+```
+
+`soc_attach` **is** chip initialisation. Reaching this means the Broadcom SDK
+brought the Trident2+ up through NOSaic's userspace BDE, from a standalone
+Aboot boot, with EOS never having run.
+
+Chip init is deliberately not NOSaic's code. The Trident2 MMU and LLS sequences
+are exactly what hand-reproduction repeatedly failed to match on this silicon,
+and the design decision is to use the vendor SDK where the licence permits. The
+BDE exists so that decision is available.
+
+### Three things it needed, none of them obvious
+
+**A port map that respects the quad budget.** The chip is four quads of 32
+physical ports, each with a line-rate budget of its quarter of device bandwidth
+— 240 Gb here. Numbering the 72 lanes 1..72 puts 320 Gb in each of the first
+two quads and nothing in the other two:
+
+```
+PGW_CL0 and PGW_CL1 total line rate bandwidth (320 Gb) exceeds 240 Gb
+```
+
+Ports group in fours — 4 lanes per XLP, 4 XLPs per PGW, 2 PGWs per quad — and
+every XLP this board uses carries 40 Gb whether it is four 10G SFP+ lanes or
+one 40G QSFP cage. So the 18 XLPs needed are dealt round-robin across the four
+quads, 5/5/4/4, giving 200/200/160/160 Gb. See `config/asic.conf`.
+
+**Polled interrupts.** NOSaic's BDE has no interrupt to connect: it reaches the
+chip by mapping the PCI BAR from userspace, and no kernel driver is bound to
+route a vector to it. Without `polled_irq_mode=1` the SDK takes the IRQ path
+and stops at `soc_attach: could not connect interrupt line`. The SDK's own
+poller is the supported alternative, so this selects a path it offers rather
+than working around it.
+
+**Matching feature flags.** Several SDK flags change struct layouts, and
+`INCLUDE_RCPU` adds a pointer to `soc_cm_device_vectors_t` immediately after
+`bus_type`. The libraries are built with it; code that is not gets every
+function pointer one slot off. It compiles, links and runs, and fails as
+`SOC_E_PARAM` from a macro that returns without logging anything — with every
+vector correctly set from the caller's side.
+
+⚠️ **Wire BSL to stderr before anything else.** Every failure inside the SDK
+reports through its log and then returns a small negative number. With no sink
+you get the number and none of the sentence: `-4` instead of
+`Port config error !!`.
+
+### The mapping must outlive the call
+
+`soc_attach` starts threads of the SDK's own, and in polled mode `bcmPOLL`
+reads the BAR continuously through our vectors. Tearing the BDE down after
+attaching unmapped it underneath them, and `bcmPOLL` segfaulted on its next
+register read while the attach was busy reporting success:
+
+```
+bcmPOLL[458]: segfault at 7fbfd3f6a400 ip 0000000000405974 ... in nosd-td2p
+```
+
+The device handed to the SDK is therefore static, not a local: the cookie
+passed to `soc_cm_device_create` comes back in every vector call for the life
+of the device, from threads that outlive the function that created it.
+
+`--attach` holds for ten seconds before exiting, which is what makes this
+visible at all — a run that returns immediately cannot tell a healthy poller
+from one that is about to die.
+
 ## Quirks
 
 - **Everything proven so far was proven after `kexec` from EOS**, and `kexec`

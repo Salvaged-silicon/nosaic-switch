@@ -15,7 +15,7 @@ CFLAGS  ?= -O2 -g
 CFLAGS  += -Wall -Wextra -Wno-unused-parameter
 LDFLAGS ?=
 
-OBJS = main.o bde.o
+OBJS = main.o bde.o props.o
 
 # SDK_DIR points at the staged prefix. The openbcm package puts its headers in
 # include/openbcm and its archives in lib/openbcm, so both get that suffix --
@@ -65,9 +65,10 @@ strip: nosd-td2p
 	$(CROSS_COMPILE)strip $<
 	@echo "    stripped to $$(stat -c%s nosd-td2p) bytes"
 
-main.o: main.c bde.h sdk.h
+main.o: main.c bde.h sdk.h props.h
 bde.o: bde.c bde.h
-sdk.o: sdk.c bde.h sdk.h
+sdk.o: sdk.c bde.h sdk.h props.h
+props.o: props.c props.h
 
 clean:
 	rm -f nosd-td2p *.o
