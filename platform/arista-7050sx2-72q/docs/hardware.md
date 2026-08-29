@@ -321,6 +321,65 @@ nosaic platform status
 nosaic platform release-asic
 ```
 
+## Being on the bus is not the same as answering
+
+After `release-asic` the chip enumerates — `14e4:b860`, BAR0 assigned at
+`0xf4000000`, 256 KiB — and every MMIO read still returns `0xffffffff`.
+
+That is not a chip fault. A device brought up by `echo 1 > /sys/bus/pci/rescan`
+is enumerated and has its BARs assigned, but nothing calls `pci_enable_device`
+on it: that happens when a driver binds, and no driver binds to the switch
+chip. Its PCI `COMMAND` register therefore stays `0x0000` and it decodes
+nothing.
+
+The comparison that makes it obvious is on the same board:
+
+| device | `COMMAND` | |
+|---|---|---|
+| switch chip `01:00.0` | `0x0000` | decodes nothing |
+| management NIC `04:00.0` | `0x0406` | memory space, bus master, INTx disabled — `tg3` bound and enabled it |
+
+So the release sequence ends by setting the memory-space bit and reading it
+back. **Bus mastering is deliberately left off.** Nothing does DMA yet, and
+giving a chip that has not been initialised the ability to write host memory is
+not a default worth having; the datapath will set it when it needs it.
+
+⚠️ The symptom is worth recognising because it is so misleading: an all-ones
+BAR is exactly what a chip still held in reset looks like, and exactly what a
+failed mapping looks like. `nosaic platform asic` calls it out by name rather
+than printing `0xffffffff` as though it were data.
+
+## Talking to the chip
+
+```
+nosaic platform asic
+```
+
+```
+pci         0000:01:00.0
+id          14e4:b860  revision 02
+bar0        0xf4000000  256 KiB
+dev_rev_id  0x0002b860  matches the BCM56860 at revision 02
+```
+
+`CMIC_DEV_REV_ID` at BAR0+`0x010224` is the chip's own identity: device
+`0xb860` is the BCM56860 and revision `0x02`. It is read as a **named
+register** rather than by widening a sweep — the response to needing one value
+further out is to name that value, not to read more of a device whose registers
+can have side effects. It is also a real check rather than a plausible-looking
+number, because PCI configuration space reports the same identity from a
+completely separate path on the same box.
+
+Reads of the first 4 KiB of BAR0 are bounded to that window on purpose. Blind
+MMIO sweeps have reset this board twice.
+
+**This was done from a standalone Aboot boot, with EOS never having run.** That
+matters more than it sounds: everything previously established about this ASIC
+was learned after a `kexec` from EOS, which leaves the chip in a state a
+standalone boot does not reproduce, and `kexec` is separately known to reset
+the SerDes here. "It answered last time" was not evidence for the path NOSaic
+takes. It is now.
+
 ## Quirks
 
 - **Everything proven so far was proven after `kexec` from EOS**, and `kexec`
@@ -328,6 +387,8 @@ nosaic platform release-asic
   different state, so prove standalone boot before the datapath work depends on
   it.
 - **The SCD must be up before the ASIC answers.** Reset is released through it.
+- **A rescanned device decodes nothing until its PCI COMMAND says so.** All-ones
+  MMIO after a successful release is this, not a dead chip. See above.
 - **The PCIe reset is bit 1 here, not bit 2.** Bit 2 is unimplemented and
   reads as 1, so using another platform's number releases nothing and says
   it worked. See above.

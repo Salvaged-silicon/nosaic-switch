@@ -12,13 +12,14 @@ import (
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
-	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/scd"
+	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/scd"
 )
 
 const platformUsage = `usage: nosaic platform <command>
 
   status               what the board reports about itself
   release-asic         take the switch chip out of reset and wait for it
+  asic                 what the switch chip says about itself (read-only)
   watchdog status      whether the hardware watchdog is armed
   watchdog arm <ms>    arm it; the action is a power cycle
   watchdog disarm      stop it -- only with a console attached
@@ -56,6 +57,8 @@ func platformCmd(args []string) error {
 		return platformStatus(hal, b)
 	case "release-asic":
 		return releaseASIC(hal)
+	case "asic":
+		return probeASIC(hal)
 	case "watchdog":
 		return watchdogCmd(hal, rest[1:])
 	}
@@ -281,4 +284,73 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// probeASIC reports the switch chip's identity and whether it answers MMIO.
+//
+// The question it exists to answer is narrow and worth stating: everything
+// known about this ASIC was learned after a kexec from the vendor OS, which
+// leaves it in a state a standalone boot does not reproduce. "It answered last
+// time" is not evidence for the path NOSaic takes.
+func probeASIC(hal platformhal.HAL) error {
+	p, ok := hal.(interface {
+		ProbeASIC() (*scd.ASICProbe, error)
+	})
+	if !ok {
+		return fmt.Errorf("%w: this board has no ASIC probe", platformhal.ErrUnsupported)
+	}
+	r, err := p.ProbeASIC()
+	if err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "pci\t%s\n", r.PCI)
+	fmt.Fprintf(w, "id\t%04x:%04x  revision %02x\n", r.Vendor, r.Device, r.Revision)
+	fmt.Fprintf(w, "bar0\t%#x  %d KiB\n", r.BAR0, r.BAR0Size/1024)
+	switch {
+	case r.DevRevOK:
+		fmt.Fprintf(w, "dev_rev_id\t%#08x  matches the BCM56860 at revision 02\n", r.DevRevID)
+	case r.DevRevID != 0:
+		// Worth failing loudly on: the chip answered, with the wrong identity.
+		fmt.Fprintf(w, "dev_rev_id\t%#08x  UNEXPECTED, want %#08x\n", r.DevRevID, 0x0002b860)
+	}
+	w.Flush()
+
+	if r.AllOnes {
+		// Every read returning 0xffffffff is what the host bridge gives back
+		// when nothing answers. Reporting it as data would be reporting the
+		// absence of a chip as the presence of one.
+		return fmt.Errorf("every word of BAR0 read back as 0xffffffff, which is what " +
+			"a PCI read returns when nothing answers: the chip is on the bus but not " +
+			"responding to MMIO")
+	}
+
+	fmt.Printf("\nBAR0 +0x000 .. +%#05x, first non-trivial words:\n", len(r.Words)*4)
+	shown := 0
+	for i, v := range r.Words {
+		if v == 0 || v == 0xffffffff {
+			continue
+		}
+		fmt.Printf("  +%#05x  %#08x\n", i*4, v)
+		if shown++; shown >= 16 {
+			fmt.Printf("  ... (%d more non-zero words)\n", countInteresting(r.Words)-shown)
+			break
+		}
+	}
+	if shown == 0 {
+		fmt.Println("  (all zero -- the chip answers, but this window reads as zeroes)")
+	}
+	fmt.Printf("\nthe chip answers MMIO from a standalone boot.\n")
+	return nil
+}
+
+func countInteresting(ws []uint32) int {
+	n := 0
+	for _, v := range ws {
+		if v != 0 && v != 0xffffffff {
+			n++
+		}
+	}
+	return n
 }

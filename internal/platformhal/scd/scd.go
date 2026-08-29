@@ -218,6 +218,16 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 	before := s.read32(resetBase)
 	s.trace("reset register before: %#08x", before)
 
+	// An already-released chip is not an error, and must not be driven
+	// through the release sequence again: the writes would be no-ops, the
+	// register would not change, and the check below would report a mapping
+	// problem on hardware that is working. Skip to enabling it.
+	held := before & ((1 << bitSwitchCore) | (1 << bitSwitchPCIe))
+	if held == 0 {
+		s.trace("both resets are already released; enabling only")
+		return s.enableAndWait(ctx)
+	}
+
 	s.write32(resetClear, 1<<bitSwitchCore)
 	s.trace("after clearing core (bit %d): %#08x", bitSwitchCore, s.read32(resetBase))
 	if err := sleepCtx(ctx, pcieResetDelay); err != nil {
@@ -237,18 +247,41 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 		return err
 	}
 
-	// The chip is on the bus now but the kernel does not know: it enumerated
-	// while the device was still in reset and found nothing.
-	if err := os.WriteFile("/sys/bus/pci/rescan", []byte("1\n"), 0o200); err != nil {
-		return fmt.Errorf("rescanning the PCI bus: %w", err)
-	}
+	return s.enableAndWaitFrom(ctx, before)
+}
 
+// enableAndWait waits for the chip to appear and enables its memory decoding.
+func (s *SCD) enableAndWait(ctx context.Context) error {
+	return s.enableAndWaitFrom(ctx, s.read32(resetBase))
+}
+
+func (s *SCD) enableAndWaitFrom(ctx context.Context, before uint32) error {
 	node := "/sys/bus/pci/devices/" + s.asic
+	if _, err := os.Stat(node); err != nil {
+		// The kernel enumerated while the device was in reset and found
+		// nothing, so it must be told to look again.
+		if err := os.WriteFile("/sys/bus/pci/rescan", []byte("1\n"), 0o200); err != nil {
+			return fmt.Errorf("rescanning the PCI bus: %w", err)
+		}
+	}
 	deadline := time.Now().Add(waitForASIC)
 	for {
 		if _, err := os.Stat(node); err == nil {
 			// Arista wait after the device appears before touching it.
-			return sleepCtx(ctx, asicYieldTime)
+			if err := sleepCtx(ctx, asicYieldTime); err != nil {
+				return err
+			}
+			// Being on the bus is not the same as answering. A device
+			// enumerated by a rescan has no driver bound, so nothing has
+			// called pci_enable_device and its COMMAND register is 0x0000 --
+			// it decodes nothing, and every MMIO read comes back 0xffffffff,
+			// which looks exactly like a chip still held in reset.
+			before, after, err := enableMemorySpace(s.asic)
+			if err != nil {
+				return err
+			}
+			s.trace("pci COMMAND: %#04x -> %#04x (memory space enabled)", before, after)
+			return nil
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("the switch chip did not appear at %s within %s of releasing "+
