@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
 	"github.com/salvaged-silicon/nosaic-switch/internal/svcgen"
@@ -307,7 +308,7 @@ func collect(o Options, stage string) ([]nospkg.Entry, error) {
 		}
 		switch {
 		case d.IsDir():
-			entries = append(entries, nospkg.Entry{Dst: dst, Dir: true, Mode: uint32(info.Mode().Perm())})
+			entries = append(entries, nospkg.Entry{Dst: dst, Dir: true, Mode: rawMode(info)})
 		case info.Mode()&os.ModeSymlink != 0:
 			target, err := os.Readlink(p)
 			if err != nil {
@@ -315,7 +316,7 @@ func collect(o Options, stage string) ([]nospkg.Entry, error) {
 			}
 			entries = append(entries, nospkg.Entry{Dst: dst, Link: target})
 		case info.Mode().IsRegular():
-			entries = append(entries, nospkg.Entry{Dst: dst, Src: p, Mode: uint32(info.Mode().Perm())})
+			entries = append(entries, nospkg.Entry{Dst: dst, Src: p, Mode: rawMode(info)})
 		default:
 			// Sockets, devices and the like have no business in a package.
 			return fmt.Errorf("%s: unsupported file type %v", dst, info.Mode().Type())
@@ -411,8 +412,29 @@ func stagePaths(o Options, srcDir, stage string) error {
 		if err != nil {
 			return fmt.Errorf("stage %s: %w", sp.Src, err)
 		}
+		if sp.Mode != "" {
+			m, err := strconv.ParseUint(sp.Mode, 8, 32)
+			if err != nil {
+				return fmt.Errorf("stage %s: mode %q is not octal", sp.Src, sp.Mode)
+			}
+			if err := syscall.Chmod(to, uint32(m)); err != nil {
+				return fmt.Errorf("stage %s: setting mode %s: %w", sp.Src, sp.Mode, err)
+			}
+		}
 		n += c
 	}
 	fmt.Fprintf(o.Log, "    staged %d files\n", n)
 	return nil
+}
+
+// rawMode returns a file's permission bits including set-id and sticky.
+//
+// FileMode.Perm() masks those off, so a package built from a staged tree lost
+// the setuid bit on anything that had one -- silently, and only visible on the
+// switch as a privilege helper that runs and does nothing.
+func rawMode(info fs.FileInfo) uint32 {
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return st.Mode & 0o7777
+	}
+	return uint32(info.Mode().Perm())
 }

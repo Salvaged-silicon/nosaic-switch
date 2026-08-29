@@ -8,9 +8,14 @@
 name: slim
 init: systemd
 
+# sudo, which is what an operator expects to find on a switch with room for
+# it. The minimal profile takes doas instead.
+privilege: sudo
+
 packages:
   - linux
   - glibc
+  - sudo
   # systemd's libraries need libmount and libblkid at run time, not only at
   # link time. Leaving util-linux out produces an image that builds cleanly and
   # cannot start PID 1.

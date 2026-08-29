@@ -19,11 +19,20 @@ var validInit = []string{"systemd", "s6", "busybox"}
 
 // Profile is one base system tier.
 type Profile struct {
-	Name        string   `yaml:"name"`
-	Init        string   `yaml:"init"`
-	Packages    []string `yaml:"packages"`
-	Slots       int      `yaml:"slots"`
-	Description string   `yaml:"description"`
+	Name     string   `yaml:"name"`
+	Init     string   `yaml:"init"`
+	Packages []string `yaml:"packages"`
+	Slots    int      `yaml:"slots"`
+
+	// Privilege is how the login account becomes root on this tier. It is per
+	// profile rather than global because the tiers genuinely differ: sudo is
+	// the expected answer and does not fit a profile built for boards with
+	// little flash, where doas does the same job in a fraction of the size.
+	//
+	// Empty means "take the default from base/identity.yml", so a profile only
+	// states this when it differs.
+	Privilege   string `yaml:"privilege"`
+	Description string `yaml:"description"`
 
 	Path string `yaml:"-"`
 }
@@ -85,6 +94,14 @@ func (p *Profile) Validate() []string {
 	// Two slots is what makes an upgrade reversible. One is legitimate on a
 	// board with no room for two, but it must be a stated choice rather than
 	// an omission, because it silently removes rollback.
+	// "none" is deliberately not accepted here. A profile with no privilege
+	// path is a switch that cannot touch its own hardware -- the platform HAL
+	// needs root to reach the board controller -- and it is a state that has
+	// already shipped once by accident, because base/identity.yml declared
+	// sudo and nothing packaged it.
+	if p.Privilege != "" && !oneOf(p.Privilege, []string{"sudo", "doas"}) {
+		bad("privilege %q must be sudo or doas", p.Privilege)
+	}
 	if p.Slots != 1 && p.Slots != 2 {
 		bad("slots must be 1 or 2, got %d — 1 means upgrades are not atomic and cannot roll back", p.Slots)
 	}

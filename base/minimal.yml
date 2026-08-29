@@ -9,6 +9,11 @@
 name: minimal
 init: s6
 
+# doas rather than sudo, because this tier is for boards where systemd does not
+# fit and sudo is a megabyte of setuid C with a configuration language. The
+# job is the same and the account is the same; only the binary differs.
+privilege: doas
+
 # Everything the image contains. Dependencies are resolved from here, so this
 # lists what the profile is *for*, not the transitive closure.
 packages:
@@ -16,6 +21,7 @@ packages:
   - glibc
   - busybox
   - s6-rc
+  - opendoas
 
 # Two slots plus a shared data partition. The smallest boards may not have room
 # for two, and there the upgrade path degrades to non-atomic and says so.

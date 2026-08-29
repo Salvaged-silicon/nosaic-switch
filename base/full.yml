@@ -8,6 +8,10 @@
 name: full
 init: systemd
 
+# sudo, which is what an operator expects to find on a switch with room for
+# it. The minimal profile takes doas instead.
+privilege: sudo
+
 packages:
   - linux
   - glibc
@@ -18,6 +22,7 @@ packages:
   - busybox
   - iproute2
   - zlib
+  - sudo
   # The supervision suite is present here as well as in minimal. It costs
   # little and it is what the recovery path uses on a box whose systemd will
   # not start, which is exactly the box you cannot afford to lose.

@@ -299,6 +299,18 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 		return err
 	}
 
+	// How the account becomes root. The profile decides -- sudo where there is
+	// room for it, doas on the tier built for boards where there is not -- and
+	// this refuses to build an image where the declared answer is not actually
+	// present and setuid.
+	privilege := o.Profile.Privilege
+	if privilege == "" {
+		privilege = id.Privilege
+	}
+	if err := writePrivilege(rootfs, id.Account, privilege, o.Log); err != nil {
+		return err
+	}
+
 	// A self-test that runs only when asked for on the kernel command line.
 	//
 	// Reaching a login prompt proves the boot path; it does not prove the
@@ -333,6 +345,19 @@ say() { echo "NOSAIC-SELFTEST $*"; }
 if su -s /bin/sh -c "touch /tmp/.nosaic-selftest" %[1]s 2>/dev/null; then
     say "/tmp writable by %[1]s"; rm -f /tmp/.nosaic-selftest
 else say "FAIL /tmp is not writable by %[1]s"; fail=1; fi
+
+# A path to root. Without one the switch cannot reach its own hardware -- the
+# platform HAL opens PCI resources that are root-only -- and every minimal
+# image shipped that way until the first real board hit it. Checked as a real
+# elevation, not as "the binary exists": a helper that is not setuid exists
+# perfectly well and does nothing.
+priv=""
+[ -u /usr/bin/doas ] && priv=/usr/bin/doas
+[ -u /usr/bin/sudo ] && priv=/usr/bin/sudo
+if [ -z "$priv" ]; then say "FAIL no setuid privilege helper"; fail=1
+elif [ "$(su -s /bin/sh -c "$priv -n id -u" %[1]s 2>/dev/null)" = 0 ]; then
+    say "privilege $priv elevates to root"
+else say "FAIL $priv did not elevate"; fail=1; fi
 
 # The overlay is what makes a read-only image usable. If it is not writable the
 # system boots and then fails the first time anything tries to save state.

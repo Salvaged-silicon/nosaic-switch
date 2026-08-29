@@ -56,6 +56,11 @@ type Source struct {
 type StagePath struct {
 	Src string `yaml:"src"`
 	Dst string `yaml:"dst"`
+	// Mode, if set, is applied to the copied file as an octal string. State
+	// it for anything setuid: inheriting the bit from whatever the upstream
+	// makefile happened to do puts the most security-relevant fact about a
+	// package somewhere no reviewer of this recipe will see it.
+	Mode string `yaml:"mode"`
 }
 
 type Install struct {

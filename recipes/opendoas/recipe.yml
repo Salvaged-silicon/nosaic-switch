@@ -1,0 +1,53 @@
+# opendoas — the privilege path on the minimal profile.
+#
+# doas rather than sudo here for one reason: size. This tier exists for boards
+# where systemd does not fit, and sudo is a megabyte-plus of setuid C with a
+# configuration language. doas is a few thousand lines and one config file with
+# one rule in it. On a tier already built around busybox and s6 that is the
+# consistent choice, and base/identity.yml has always listed doas as a valid
+# privilege value.
+#
+# The full and slim profiles take sudo instead, because they have the room and
+# sudo is what an operator expects to find.
+name: opendoas
+version: "6.8.2"
+summary: doas — run a command as another user, the small alternative to sudo
+
+license: ISC
+redistributable: true
+
+source:
+  # A GitHub-generated tag archive rather than a release asset, because upstream
+  # publishes no tarball. The hash below is what that URL served; our own mirror
+  # is listed first among the fallbacks precisely because it is the copy we
+  # control if GitHub ever regenerates the archive differently.
+  url: https://github.com/Duncaen/OpenDoas/archive/refs/tags/v6.8.2.tar.gz
+  sha256: 6da058a0e70b7543bc60624389b0b00b686189ec933828c522bf8b2600495a67
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/opendoas-6.8.2.tar.gz
+
+depends: [glibc, libxcrypt]
+
+build:
+  system: configure
+  configure:
+    - --prefix=/usr
+    # No PAM in this image, and pulling it in for one binary on the tier built
+    # for small flash would defeat the reason doas was chosen over sudo.
+    # Authentication is against /etc/shadow, which is where the account's
+    # password lives once one is set.
+    - --without-pam
+    - --with-timestamp
+  # Built but not installed by its own makefile: that install target runs chown
+  # to root, which fails in an unprivileged build container, and it decides the
+  # setuid bit somewhere a reader of this recipe would never look.
+  stage:
+    - src: doas
+      dst: /usr/bin/doas
+      # Setuid root. This is the whole point of the package and the most
+      # security-relevant line in it, so it is stated here rather than
+      # inherited: a doas that is not setuid runs, fails, and looks like a
+      # configuration problem.
+      mode: "4755"
+    - src: doas.1
+      dst: /usr/share/man/man1/doas.1

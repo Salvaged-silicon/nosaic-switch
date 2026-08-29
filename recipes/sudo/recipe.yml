@@ -1,0 +1,40 @@
+# sudo — the privilege path on the full and slim profiles.
+#
+# What an operator expects to find on a switch that has room for it. The
+# minimal profile takes opendoas instead, because a megabyte of setuid C with
+# its own configuration language does not belong on a tier built for boards
+# where systemd does not fit.
+name: sudo
+version: "1.9.17p2"
+summary: Execute a command as another user
+
+license: ISC
+redistributable: true
+
+source:
+  url: https://www.sudo.ws/dist/sudo-1.9.17p2.tar.gz
+  # Checked against the checksum upstream publishes on its own download page,
+  # not merely against what arrived. A mirror serving a 200 with the wrong
+  # content is a real failure mode here and has already cost this project a
+  # build.
+  sha256: 4a38a1ab3adb1199257edc2a7c4a2bd714665eb605b04368843b06dada2cfcfb
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/sudo-1.9.17p2.tar.gz
+
+depends: [glibc, libxcrypt]
+
+build:
+  system: autotools
+  configure:
+    - --prefix=/usr
+    - --sysconfdir=/etc
+    # No PAM in the image; authenticate against /etc/shadow.
+    - --without-pam
+    - --disable-root-mailer
+    # Nothing here reads sudo's logs and a switch has better places to put
+    # them; the audit trail that matters is the one the NOS keeps.
+    - --without-sendmail
+    - --disable-nls
+    # sudo probes the build machine for these and cannot when cross-compiling.
+    # Left to guess it configures for the builder rather than the switch.
+    - --with-tzdir=/usr/share/zoneinfo

@@ -210,7 +210,13 @@ func Extract(path, dst string) (*Manifest, error) {
 		}
 		switch h.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(clean, os.FileMode(h.Mode)); err != nil {
+			if err := os.MkdirAll(clean, 0o755); err != nil {
+				return nil, err
+			}
+			// Same reasoning as for files, and it matters here for the sticky
+			// bit: a /tmp extracted as 0755 is a /tmp no unprivileged process
+			// can write to.
+			if err := chmodRaw(clean, h.Mode); err != nil {
 				return nil, err
 			}
 		case tar.TypeSymlink:
@@ -251,6 +257,18 @@ func Extract(path, dst string) (*Manifest, error) {
 				return nil, err
 			}
 			if err := out.Close(); err != nil {
+				return nil, err
+			}
+			// The mode passed to OpenFile is not enough, for two reasons that
+			// both end in a file with the wrong bits and no error.
+			//
+			// Go's os.FileMode is not a Unix mode: setuid is 1<<23 there, not
+			// 0o4000, so a raw 0o4755 loses its setuid bit silently on the way
+			// through. And open(2) applies the umask regardless. A doas or
+			// sudo that is not setuid is a privilege path that exists, runs,
+			// and does nothing -- which is the failure this whole change is
+			// about.
+			if err := chmodRaw(clean, h.Mode); err != nil {
 				return nil, err
 			}
 		}

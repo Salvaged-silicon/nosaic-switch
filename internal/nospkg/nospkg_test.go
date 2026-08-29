@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -279,4 +280,49 @@ func writeTemp(t *testing.T, pkg []byte) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// A setuid binary must come out of a package setuid.
+//
+// This is not a hypothetical: a privilege helper is the reason the package
+// format needs it, and one that extracts as 0755 runs, exits 1, and looks like
+// a configuration problem rather than a packaging one. The old code passed the
+// mode to os.OpenFile as an os.FileMode, where Unix 0o4755 does not mean
+// setuid at all -- Go spells that 1<<23 -- so the bit vanished with no error
+// anywhere.
+func TestSetuidAndStickyBitsSurviveAPackage(t *testing.T) {
+	src := srcFile(t, "doas", "#!/bin/sh\nexec \"$@\"\n")
+	pkg := build(t, manifest(), []Entry{
+		{Dst: "/usr/bin/doas", Src: src, Mode: 0o4755},
+		{Dst: "/tmp", Dir: true, Mode: 0o1777},
+	})
+
+	dir := t.TempDir()
+	pkgPath := filepath.Join(dir, "priv.nos")
+	if err := os.WriteFile(pkgPath, pkg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if _, err := Extract(pkgPath, root); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+
+	fi, err := os.Stat(filepath.Join(root, "usr/bin/doas"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read the raw bits rather than Go's FileMode names, because the raw bits
+	// are what the kernel acts on.
+	if got := fi.Sys().(*syscall.Stat_t).Mode & 0o7777; got != 0o4755 {
+		t.Errorf("doas extracted as %04o, want 4755 — a doas that is not setuid "+
+			"runs and does nothing", got)
+	}
+
+	fi, err = os.Stat(filepath.Join(root, "tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Sys().(*syscall.Stat_t).Mode & 0o7777; got != 0o1777 {
+		t.Errorf("/tmp extracted as %04o, want 1777", got)
+	}
 }
