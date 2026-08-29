@@ -31,7 +31,7 @@
 
 /* How long --attach holds the device before exiting. Long enough for the SDK's
  * own threads to run and fault if they are going to. */
-#define HOLD_SECONDS 10
+#define HOLD_SECONDS 60
 
 static void usage(void)
 {
@@ -43,6 +43,10 @@ static void usage(void)
 		"            conf defaults to " DEFAULT_ASIC_CONF ", which carries the\n"
 		"            board's port map; without one the SDK cannot attach.\n"
 		"            Built only when the SDK is staged (SDK_DIR).\n"
+		"  --soc-init <bdf> [conf]\n"
+		"            attach and run soc_init, then stop and hold. The point\n"
+		"            between the SOC layer coming up and the BCM layer's\n"
+		"            first table write, so the chip can be examined there.\n"
 		"  --init <bdf> [conf]\n"
 		"            attach, then finish initialisation and survey which\n"
 		"            ports have link. Link is the only evidence there is for\n"
@@ -133,9 +137,24 @@ static int attach(const char *bdf, const char *conf, int full)
 	 * immediately cannot tell a healthy poller from one that is about to
 	 * die. The daemon will hold it for good once it serves the socket.
 	 */
-	if (full) {
-		printf("\nfinishing initialisation...\n");
-		if (nosaic_sdk_init(unit) != 0)
+	/*
+	 * full is how far to take initialisation:
+	 *   0  attach only
+	 *   1  attach + soc_init, then stop -- a deliberate halfway point, so
+	 *      the chip's state can be examined between the SOC layer coming up
+	 *      and the BCM layer's first table write, which is where this
+	 *      currently fails
+	 *   2  the whole sequence, then survey the ports
+	 */
+	if (full >= 1) {
+		printf("\nsoc_reset_init (resets the chip, then initialises)...\n");
+		if (nosaic_sdk_soc_init(unit) != 0)
+			return 1;
+		printf("the SOC layer is up.\n");
+	}
+	if (full >= 2) {
+		printf("\nbcm_attach and bcm_init...\n");
+		if (nosaic_sdk_bcm_init(unit) != 0)
 			return 1;
 		printf("the chip is initialised and running.\n");
 		nosaic_sdk_ports(unit);
@@ -171,8 +190,12 @@ int main(int argc, char **argv)
 	if (argc == 4 && strcmp(argv[1], "--attach") == 0)
 		return attach(argv[2], argv[3], 0);
 	if (argc == 3 && strcmp(argv[1], "--init") == 0)
-		return attach(argv[2], DEFAULT_ASIC_CONF, 1);
+		return attach(argv[2], DEFAULT_ASIC_CONF, 2);
 	if (argc == 4 && strcmp(argv[1], "--init") == 0)
+		return attach(argv[2], argv[3], 2);
+	if (argc == 3 && strcmp(argv[1], "--soc-init") == 0)
+		return attach(argv[2], DEFAULT_ASIC_CONF, 1);
+	if (argc == 4 && strcmp(argv[1], "--soc-init") == 0)
 		return attach(argv[2], argv[3], 1);
 #endif
 	if (argc == 2 && strcmp(argv[1], "--version") == 0) {

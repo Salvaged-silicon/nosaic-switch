@@ -362,18 +362,44 @@ int nosaic_sdk_attach(struct nosaic_bde *b, uint16 dev_id, uint16 rev_id)
  * confined to this one function.
  */
 extern int soc_init(int unit);
+extern int soc_reset_init(int unit);
 
-int nosaic_sdk_init(int unit)
+/*
+ * Bring the SOC layer up, resetting the chip on the way.
+ *
+ * soc_reset_init rather than soc_init, and the difference is the whole
+ * problem. Both call soc_do_init (src/soc/common/drv.c:361,489); soc_init
+ * passes FALSE for the reset argument and soc_reset_init passes TRUE.
+ *
+ * soc_init therefore initialises a chip it assumes is already reset. On a
+ * switch running the vendor OS, or one where the SDK's kernel BDE loaded, that
+ * assumption holds. Here nothing has ever reset this chip: NOSaic released it
+ * from the board controller's reset and mapped it, and no kernel driver is
+ * bound to it at all. Its pipeline blocks are still held.
+ *
+ * The symptom was that everything appeared to work and nothing answered.
+ * soc_init returned success after twenty-six thousand lines of initialisation,
+ * and then the first table write in bcm_attach got no SBUS acknowledgement --
+ * which reads as broken silicon or a bad port map. Two independent paths
+ * agreeing that blocks were silent is what pointed here: S-Channel found no
+ * block answering either, before and after soc_init alike.
+ */
+int nosaic_sdk_soc_init(int unit)
 {
 	int rv;
 
-	printf("  soc_init...\n");
-	rv = soc_init(unit);
+	rv = soc_reset_init(unit);
 	if (rv < 0) {
-		fprintf(stderr, "nosd-td2p: soc_init(%d) returned %d (%s)\n",
+		fprintf(stderr, "nosd-td2p: soc_reset_init(%d) returned %d (%s)\n",
 			unit, rv, soc_errmsg(rv));
 		return -1;
 	}
+	return 0;
+}
+
+int nosaic_sdk_bcm_init(int unit)
+{
+	int rv;
 
 	printf("  bcm_attach...\n");
 	rv = bcm_attach(unit, "esw", NULL, 0);
