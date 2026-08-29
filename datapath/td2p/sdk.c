@@ -36,12 +36,14 @@
 #include <sal/types.h>
 #include <sal/core/boot.h>
 #include <sal/appl/sal.h>
+#include <sal/core/time.h>
 #include <soc/cm.h>
 #include <soc/cmext.h>
 #include <soc/cmtypes.h>
 #include <soc/error.h>
 #include <bcm/init.h>
 #include <bcm/port.h>
+#include <bcm/link.h>
 #include <bcm/error.h>
 #include <shared/bsltypes.h>
 #include <shared/bslext.h>
@@ -498,11 +500,14 @@ int nosaic_sdk_bcm_init(int unit)
  * anybody has to be told. A cage with a cable in it lights up; the logical
  * port that reports it is the one wired to that cage.
  */
+/* How long to wait for link after enabling ports. */
+#define LINK_SETTLE_SECONDS 8
+
 int nosaic_sdk_ports(int unit)
 {
 	bcm_port_config_t cfg;
 	bcm_port_t port;
-	int rv, up = 0, total = 0;
+	int rv, up = 0, total = 0, enable_failures = 0;
 
 	bcm_port_config_t_init(&cfg);
 	rv = bcm_port_config_get(unit, &cfg);
@@ -511,6 +516,43 @@ int nosaic_sdk_ports(int unit)
 			rv, bcm_errmsg(rv));
 		return -1;
 	}
+
+	/*
+	 * Linkscan, and the ports enabled, before asking anything about link.
+	 *
+	 * Without these a survey reports every port down and means nothing by it.
+	 * A disabled port cannot come up, and link state is not read from the
+	 * hardware on demand -- linkscan is the thread that polls the PHYs and
+	 * maintains it, so with linkscan stopped the answer is whatever the
+	 * software last believed, which after init is "down" for everything.
+	 *
+	 * It matters beyond this survey: the transmit path ANDs its port bitmap
+	 * with the link bitmap that only linkscan populates, and returns success
+	 * having built no descriptor when that is empty. Every transmit then
+	 * silently vanishes.
+	 */
+	rv = bcm_linkscan_enable_set(unit, 250000);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: bcm_linkscan_enable_set returned %d (%s)\n",
+			rv, bcm_errmsg(rv));
+		return -1;
+	}
+
+	BCM_PBMP_ITER(cfg.port, port) {
+		int erv = bcm_port_enable_set(unit, port, 1);
+
+		if (erv < 0 && enable_failures++ == 0)
+			fprintf(stderr, "nosd-td2p: bcm_port_enable_set(port %d) returned "
+				"%d (%s); further failures not reported\n",
+				port, erv, bcm_errmsg(erv));
+	}
+
+	/* Give the PHYs time to negotiate. A cage with a cable in it does not
+	 * report link the instant it is enabled, and a survey run immediately
+	 * finds nothing and looks like a wrong port map. */
+	printf("linkscan running, ports enabled; waiting %d s for negotiation\n",
+	       LINK_SETTLE_SECONDS);
+	sal_sleep(LINK_SETTLE_SECONDS);
 
 	printf("\n%-8s %-8s %-8s %s\n", "port", "link", "speed", "note");
 	BCM_PBMP_ITER(cfg.port, port) {
@@ -531,7 +573,10 @@ int nosaic_sdk_ports(int unit)
 			       "a cable is in this cage");
 		}
 	}
-	printf("\n%d of %d ports have link.\n", up, total);
+	printf("\n%d of %d ports have link", up, total);
+	if (enable_failures)
+		printf("  (%d ports refused to enable)", enable_failures);
+	printf(".\n");
 	if (up == 0)
 		printf("No link anywhere. Either nothing is plugged in, or the port map\n"
 		       "does not reach the cages that are -- which is exactly what this\n"

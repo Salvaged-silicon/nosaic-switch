@@ -524,6 +524,52 @@ of the device, from threads that outlive the function that created it.
 visible at all — a run that returns immediately cannot tell a healthy poller
 from one that is about to die.
 
+## Why no port has link yet, and what it will take
+
+The full initialisation runs and every port answers the port API. Linkscan is
+running, every port enables without complaint, and **no port has link.** That
+is expected, and it is not evidence that the port map is wrong.
+
+Two board facts stand between an initialised chip and a working port here, and
+NOSaic has neither yet.
+
+### The PCB swaps P/N pairs, per lane
+
+This board has differential pairs swapped on the printed circuit board, lane by
+lane, on both transmit and receive. The SerDes has to be told, through
+`phy_xaui_tx_polarity_flip_<port>` and `phy_xaui_rx_polarity_flip_<port>`
+properties, or the link comes up and carries nothing.
+
+An inverted 64b/66b stream is uniquely deceptive, which is why this took a long
+time to find:
+
+| observed | why inversion explains it |
+|---|---|
+| block SYNC achieved, `HI_BER=0` | sync keys on the 2-bit header, and inverting `01` gives `10`, also valid |
+| no frames decode, and no error counters either | every block descrambles to garbage, and garbage that never forms a frame is never counted as a bad one |
+| PRBS never locks | inversion breaks PRBS outright |
+| light arrives at −2.18 dBm, LOS clear | inversion is a data property, not an optical one |
+| MAC and PHY loopbacks pass 100/100 | internal loopback is symmetric, so the inversion cancels |
+| the vendor OS works on the same port and fibre | it applies the board's polarity from its own platform data |
+
+A switch that looks healthy at every layer and moves no traffic is the failure
+this produces.
+
+### Neither the port map nor the polarity table can be copied
+
+Both are facts about how this particular board is wired. Both exist in
+EOS-derived form in the reverse-engineering repository, and both are marked
+non-publishable there — so NOSaic has to derive them rather than copy them.
+
+That is tractable, because **link is its own oracle**: a cage with a cable in
+it either comes up or does not, and the answer is a fact the chip reports.
+`nosd-td2p --init` surveys every port and prints those that have link, which is
+the instrument for the derivation rather than a diagnostic afterthought.
+
+What it needs to become a real measurement is knowing which cages have cables
+in them, so that "no link" can be told apart from "nothing plugged in". Module
+presence is readable independently of link, and that is the next piece.
+
 ## Quirks
 
 - **Everything proven so far was proven after `kexec` from EOS**, and `kexec`
@@ -531,6 +577,8 @@ from one that is about to die.
   different state, so prove standalone boot before the datapath work depends on
   it.
 - **The SCD must be up before the ASIC answers.** Reset is released through it.
+- **P/N pairs are swapped on the PCB, per lane.** Without the polarity
+  properties a port links and carries nothing. See above.
 - **A rescanned device decodes nothing until its PCI COMMAND says so.** All-ones
   MMIO after a successful release is this, not a dead chip. See above.
 - **The PCIe reset is bit 1 here, not bit 2.** Bit 2 is unimplemented and
