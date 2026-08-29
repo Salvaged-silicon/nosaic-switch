@@ -30,7 +30,10 @@ static void usage(void)
 		"\n"
 		"  --probe   map the device and report what is there, then exit.\n"
 		"            Requires the DMA region reserved on the kernel command\n"
-		"            line (memmap=64M$0x100000000) and root for /dev/mem.\n");
+		"            line and root for /dev/mem. On the 7050SX2 that is\n"
+		"            memmap=64M$0xd0000000 iomem=relaxed -- not 0x100000000,\n"
+		"            which is past the end of that board's 3844 MB.\n"
+		"            NOSAIC_DMA_BASE and NOSAIC_DMA_SIZE override it.\n");
 }
 
 static int probe(const char *bdf)

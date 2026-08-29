@@ -49,6 +49,21 @@ type Source struct {
 	// is abandoned. Because every source is pinned by hash, a mirror cannot
 	// substitute different content — so falling back costs nothing in trust.
 	Mirrors []string `yaml:"mirrors"`
+
+	// Local is a directory in this repository, relative to its root, built in
+	// place of a fetched archive.
+	//
+	// NOSaic's own components are packaged by the same machinery as everything
+	// else -- the datapath daemons especially, since a board's image resolves
+	// `nosd` to one of them exactly as it resolves any other dependency.
+	// Making them a special case outside the package system would mean the
+	// component most likely to need a careful upgrade path is the one with
+	// none.
+	//
+	// A local source is not hashed. The hash exists to prove a download was
+	// not tampered with in transit; a directory in the tree is already covered
+	// by the repository's own history.
+	Local string `yaml:"local"`
 }
 
 // Install maps one built file into the image.
@@ -252,13 +267,26 @@ func (r *Recipe) Validate() []string {
 	}
 
 	if r.Source != nil {
-		if r.Source.URL == "" {
-			bad("source.url is required when source is present")
-		}
-		if r.Source.SHA256 == "" {
-			bad("source.sha256 is required — sources are pinned by hash")
-		} else if len(r.Source.SHA256) != 64 {
-			bad("source.sha256 must be 64 hex characters, got %d", len(r.Source.SHA256))
+		switch {
+		case r.Source.Local != "" && r.Source.URL != "":
+			bad("source has both local and url; a recipe builds one or the other")
+		case r.Source.Local != "":
+			if strings.HasPrefix(r.Source.Local, "/") || strings.Contains(r.Source.Local, "..") {
+				bad("source.local %q must be a path inside the repository", r.Source.Local)
+			}
+			if r.Source.SHA256 != "" {
+				bad("source.local does not take a sha256: a directory in this " +
+					"repository is covered by its history, and a hash there would " +
+					"be a value nobody can recompute")
+			}
+		case r.Source.URL == "":
+			bad("source needs either url or local")
+		default:
+			if r.Source.SHA256 == "" {
+				bad("source.sha256 is required — sources are pinned by hash")
+			} else if len(r.Source.SHA256) != 64 {
+				bad("source.sha256 must be 64 hex characters, got %d", len(r.Source.SHA256))
+			}
 		}
 	}
 

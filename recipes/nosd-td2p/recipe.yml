@@ -1,0 +1,36 @@
+# nosd-td2p — the Trident2+ datapath daemon.
+#
+# One of several providers of the virtual name `nosd`. The board's ASIC decides
+# which provider its image gets, so nothing central maps boards to daemons: it
+# falls out of the silicon. `conflicts: [nosd]` is what stops two datapath
+# daemons co-installing and fighting over one chip.
+#
+# STATE: bring-up. This builds the userspace BDE and reports what it maps; it
+# does not attach the device or serve the switch-api socket yet.
+name: nosd-td2p
+version: "0.1.0"
+summary: Trident2+ (BCM56860) datapath daemon
+
+license: Apache-2.0
+redistributable: true
+
+provides: [nosd]
+conflicts: [nosd]
+
+# Built from this repository rather than fetched, so there is no source: stanza.
+# The BDE is ours; the SDK it will drive is the openbcm package, staged rather
+# than shipped.
+source:
+  local: datapath/td2p
+
+depends: [glibc]
+
+build:
+  system: make
+  targets: [nosd-td2p]
+  # No install target in the makefile: it is three files, and stating where
+  # the binary lands here keeps that decision in the recipe where a reader
+  # looks for it.
+  stage:
+    - src: nosd-td2p
+      dst: /usr/sbin/nosd-td2p

@@ -36,7 +36,7 @@
  * pages, which is fine for one descriptor and not for a pool, so the region is
  * reserved on the kernel command line instead:
  *
- *     memmap=64M$0x100000000
+ *     memmap=64M$0xd0000000 iomem=relaxed      (on the 7050SX2)
  *
  * The dollar marks it reserved, so the kernel never touches it and physical
  * addresses are base plus offset. An image that omits that argument will

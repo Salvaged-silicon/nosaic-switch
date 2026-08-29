@@ -84,7 +84,23 @@ func Build(o Options) (*Result, error) {
 	}
 
 	var srcDir string
-	if r.Source != nil {
+	switch {
+	case r.Source != nil && r.Source.Local != "":
+		// Copied into the work tree rather than built in place, so a build
+		// cannot leave objects in the repository and two architectures cannot
+		// collide in the same directory.
+		from := filepath.Join(o.Root, r.Source.Local)
+		if _, err := os.Stat(from); err != nil {
+			return nil, fmt.Errorf("source.local %q is not in this repository: %w",
+				r.Source.Local, err)
+		}
+		srcDir = filepath.Join(work, filepath.Base(r.Source.Local))
+		if _, err := copyTree(from, srcDir); err != nil {
+			return nil, fmt.Errorf("copying %s: %w", r.Source.Local, err)
+		}
+		fmt.Fprintf(o.Log, "==> building %s from this repository\n", r.Source.Local)
+
+	case r.Source != nil:
 		tarball, err := fetch(o, r)
 		if err != nil {
 			return nil, err
