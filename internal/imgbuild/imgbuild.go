@@ -306,7 +306,7 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 	// a writable overlay, its own identity, the login account -- and then
 	// powers off, so an automated boot terminates on success rather than
 	// sitting at a prompt until a timeout it cannot distinguish from a hang.
-	selftest := `#!/bin/sh
+	selftest := fmt.Sprintf(`#!/bin/sh
 grep -q nosaic.selftest /proc/cmdline || exit 0
 
 # Run alongside getty rather than before it, so one boot proves both that the
@@ -321,6 +321,18 @@ say() { echo "NOSAIC-SELFTEST $*"; }
 [ "$ID" = nosaic ] && say "identity $PRETTY_NAME" || { say "FAIL no os-release"; fail=1; }
 
 [ -f /etc/nosaic/image.json ] && say "manifest present" || { say "FAIL no image manifest"; fail=1; }
+
+# The image must know what hardware it is on without the source tree. The
+# platform HAL addresses registers from this file, so a switch that cannot say
+# what board it is cannot safely touch its own hardware.
+[ -f /etc/nosaic/board.yml ] && say "board description present" || { say "FAIL no board description"; fail=1; }
+
+# /tmp must be writable by an ordinary user. It was root-owned and 0755 on the
+# first real board, which no test caught because everything in this script runs
+# as root -- so it is checked as the login account, not as whoever runs this.
+if su -s /bin/sh -c "touch /tmp/.nosaic-selftest" %[1]s 2>/dev/null; then
+    say "/tmp writable by %[1]s"; rm -f /tmp/.nosaic-selftest
+else say "FAIL /tmp is not writable by %[1]s"; fail=1; fi
 
 # The overlay is what makes a read-only image usable. If it is not writable the
 # system boots and then fails the first time anything tries to save state.
@@ -398,7 +410,7 @@ fi
 [ "$fail" = 0 ] && say "OK" || say "FAILED"
 sync
 poweroff -f
-`
+`, id.Account)
 	if err := writeFile(rootfs, "/etc/nosaic/selftest.sh", selftest, 0o755); err != nil {
 		return err
 	}
@@ -409,8 +421,27 @@ poweroff -f
 	// returns early for an s6 profile -- so that profile got no /proc, /sys or
 	// /dev, and its init reported three mounts failing with "No such file or
 	// directory". Shared setup belongs before the branch, not after it.
-	for _, d := range []string{"/proc", "/sys", "/dev", "/run", "/tmp", "/root", "/home/" + id.Account, "/mnt", "/etc/nosaic"} {
-		if err := os.MkdirAll(filepath.Join(rootfs, d), 0o755); err != nil {
+	// Modes matter here and 0755 is not right for all of them. /tmp at 0755
+	// and owned by root means no unprivileged process can write a temporary
+	// file -- which on the first real board presented as "wget: can't open
+	// /tmp/x: Permission denied" and looks nothing like a missing sticky bit.
+	// /root at 0755 is world-readable, which it should not be.
+	dirs := map[string]os.FileMode{
+		"/proc": 0o755, "/sys": 0o755, "/dev": 0o755, "/run": 0o755,
+		"/tmp":                0o1777, // sticky and world-writable, as everywhere else
+		"/root":               0o700,
+		"/home/" + id.Account: 0o755,
+		"/mnt":                0o755,
+		"/etc/nosaic":         0o755,
+	}
+	for d, mode := range dirs {
+		full := filepath.Join(rootfs, d)
+		if err := os.MkdirAll(full, mode); err != nil {
+			return err
+		}
+		// MkdirAll applies the process umask, and a parent that already exists
+		// keeps whatever mode it had, so the mode is set explicitly.
+		if err := os.Chmod(full, mode); err != nil {
 			return err
 		}
 	}
