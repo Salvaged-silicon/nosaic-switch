@@ -21,10 +21,17 @@ type watchdog struct{ s *SCD }
 // Watchdog returns the board's watchdog.
 func (s *SCD) Watchdog() (platformhal.Watchdog, error) { return &watchdog{s}, nil }
 
+// Raw returns the watchdog register verbatim.
+//
+// The decoded view depends on a timeout model that is measured rather than
+// documented -- Arista's GPL driver puts the timeout somewhere this SCD
+// revision does not -- so the raw value is what any check of that model has to
+// start from.
+func (w *watchdog) Raw() uint32 { return w.s.read32(watchdogReg) }
+
 func (w *watchdog) Armed() (bool, int, error) {
 	v := w.s.read32(watchdogReg)
-	ds := int(v>>wdTimeoutShift) & wdTimeoutMax
-	return v&wdEnable != 0, ds * wdTimeoutUnitMS, nil
+	return v&wdEnable != 0, int(v&wdTimeoutMask) * wdTimeoutUnitMS, nil
 }
 
 // Arm starts the watchdog with a timeout in milliseconds.
@@ -34,7 +41,7 @@ func (w *watchdog) Armed() (bool, int, error) {
 // applies to arming: a caller that believes it is protected and is not is
 // worse off than one that knows it is not.
 func (w *watchdog) Arm(timeoutMS int) error {
-	maxMS := wdTimeoutMax * wdTimeoutUnitMS
+	maxMS := wdTimeoutMask * wdTimeoutUnitMS
 	if timeoutMS < wdTimeoutUnitMS || timeoutMS > maxMS {
 		return fmt.Errorf("watchdog timeout %d ms is outside %d..%d ms",
 			timeoutMS, wdTimeoutUnitMS, maxMS)
@@ -46,14 +53,13 @@ func (w *watchdog) Arm(timeoutMS int) error {
 		return fmt.Errorf("watchdog timeout %d ms is not a multiple of %d ms, "+
 			"which is this register's resolution", timeoutMS, wdTimeoutUnitMS)
 	}
-	ds := uint32(timeoutMS / wdTimeoutUnitMS)
+	count := uint32(timeoutMS / wdTimeoutUnitMS)
 
-	// The low half is preserved. Its meaning is not known -- both Aboot and
-	// EOS leave a value in it -- and clearing a field whose purpose is unknown
-	// on the device that power-cycles the board is not a good trade for
-	// tidiness.
-	low := w.s.read32(watchdogReg) & wdLowMask
-	w.s.write32(watchdogReg, wdEnable|wdActionPowerCycle|(ds<<wdTimeoutShift)|low)
+	// Bits [28:16] are preserved. Aboot leaves 500 there, its meaning is not
+	// known, and clearing an unknown field on the device that power-cycles the
+	// board is not a good trade for tidiness.
+	high := w.s.read32(watchdogReg) & wdHighMask
+	w.s.write32(watchdogReg, wdEnable|wdActionPowerCycle|count|high)
 
 	armed, got, err := w.Armed()
 	if err != nil {
@@ -89,4 +95,21 @@ func (w *watchdog) Pet() error {
 	}
 	w.s.write32(watchdogReg, v)
 	return nil
+}
+
+// WriteRaw writes the watchdog register verbatim and returns what it reads
+// back.
+//
+// This exists because the timeout encoding on this SCD revision is not settled.
+// Arista's GPL driver puts the timeout in the low 16 bits; the board notes for
+// this switch concluded it lives in bits [28:16] in units of 100 ms, from an
+// experiment that only ever changed the enable bit -- which cannot separate
+// the two, because both fields kept the values Aboot left. Establishing it
+// needs the fields varied independently, and that needs this.
+//
+// It is a bring-up primitive, not part of the Watchdog contract. Arm is what
+// callers should use, once Arm is known to be right.
+func (w *watchdog) WriteRaw(v uint32) uint32 {
+	w.s.write32(watchdogReg, v)
+	return w.s.read32(watchdogReg)
 }

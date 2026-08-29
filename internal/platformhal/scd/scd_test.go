@@ -45,12 +45,12 @@ func TestArmingTheWatchdogSelectsAPowerCycle(t *testing.T) {
 	if armed, _, _ := w.Armed(); armed {
 		t.Fatal("a zeroed register should read as disarmed")
 	}
-	if err := w.Arm(50_000); err != nil {
+	if err := w.Arm(60_000); err != nil {
 		t.Fatalf("arm: %v", err)
 	}
 	armed, timeout, _ := w.Armed()
-	if !armed || timeout != 50_000 {
-		t.Errorf("armed=%v timeout=%d, want true/50000", armed, timeout)
+	if !armed || timeout != 60_000 {
+		t.Errorf("armed=%v timeout=%d, want true/60000", armed, timeout)
 	}
 	// A warm reset would leave a wedged chip wedged; the whole value of this
 	// watchdog is that it power-cycles.
@@ -65,34 +65,49 @@ func TestArmingTheWatchdogSelectsAPowerCycle(t *testing.T) {
 	}
 }
 
-// The timeout lives in bits [28:16] in units of 100 ms on this SCD revision,
-// NOT in the low 16 bits where Arista's GPL driver writes it. That was
-// established by measurement: arming with 500 in the high field power-cycled
-// the board in 40-50 s, matching 50 s, where the low half's value would have
-// meant ten times that.
+// The timeout is the low 16 bits in units of 10 ms, established by measurement
+// on this board rather than taken from either the GPL driver or the board
+// notes -- which disagreed, and only one of them was right.
 //
-// This test exists because the GPL layout is the obvious-looking one and
-// writing it would leave the real timeout at whatever it already held --
-// arming that reports success and protects nothing.
-func TestTheTimeoutIsInTheHighFieldInDeciseconds(t *testing.T) {
+// The board notes said bits [28:16] at 100 ms, from an experiment that armed
+// by setting only the enable bit: both fields kept the values Aboot left, so
+// the 40-50 s it measured fits [28:16] = 500 at 100 ms and equally fits
+// low16 = 6000 at 10 ms. Varying them independently settles it:
+//
+//	hi = 0,    low16 = 6000   ->  ~60 s
+//	hi = 0,    low16 = 12000  ->  ~120 s
+//	hi = 3000, low16 = 6000   ->  ~60 s
+//
+// Writing the high field leaves the real timeout at Aboot's leftover, so the
+// board power-cycles on someone else's schedule while reporting the value it
+// was asked for. That happened twice here, mid-bring-up.
+func TestTheTimeoutIsTheLowSixteenBitsInTensOfMilliseconds(t *testing.T) {
 	s := fake(0x8000)
-	// Aboot leaves a value in the low half; it must survive.
-	s.write32(watchdogReg, 0x1770)
+	// The value Aboot actually leaves on this board: enable clear, bits
+	// [28:16] = 500, low16 = 6000.
+	s.write32(watchdogReg, 0x41f41770)
 	w, _ := s.Watchdog()
 
-	if err := w.Arm(50_000); err != nil { // 50 s = 500 deciseconds
+	if armed, _, _ := w.Armed(); armed {
+		t.Error("Aboot leaves the watchdog disarmed; this should read as disarmed")
+	}
+
+	if err := w.Arm(120_000); err != nil { // 120 s = 12000 counts of 10 ms
 		t.Fatalf("arm: %v", err)
 	}
 	v := s.read32(watchdogReg)
-	if got := (v >> wdTimeoutShift) & wdTimeoutMax; got != 500 {
-		t.Errorf("high field is %d, want 500 deciseconds", got)
+	if got := v & wdTimeoutMask; got != 12000 {
+		t.Errorf("low 16 bits are %d, want 12000", got)
 	}
-	if got := v & wdLowMask; got != 0x1770 {
-		t.Errorf("low half is %#x, want the preserved 0x1770", got)
+	if got := (v & wdHighMask) >> 16; got != 500 {
+		t.Errorf("bits [28:16] are %d, want Aboot's 500 preserved", got)
 	}
-	// The exact value measured on the board, for good measure.
-	if v != 0xc1f41770 {
-		t.Errorf("register is %#08x, want 0xc1f41770 as measured live", v)
+	if v != 0xc1f42ee0 {
+		t.Errorf("register is %#08x, want 0xc1f42ee0", v)
+	}
+	// And the decode is the inverse of the encode.
+	if _, ms, _ := w.Armed(); ms != 120_000 {
+		t.Errorf("Armed reports %d ms, want 120000", ms)
 	}
 }
 
@@ -102,10 +117,14 @@ func TestTheTimeoutIsInTheHighFieldInDeciseconds(t *testing.T) {
 // it.
 func TestUnrepresentableTimeoutsAreRefused(t *testing.T) {
 	w, _ := fake(0x8000).Watchdog()
-	for _, ms := range []int{0, -1, 50, 5550, 900_000} {
+	for _, ms := range []int{0, -1, 5, 1005, 700_000} {
 		if err := w.Arm(ms); err == nil {
 			t.Errorf("Arm(%d) was accepted; it cannot be represented exactly", ms)
 		}
+	}
+	// 655350 ms is the longest window the 16-bit field can express.
+	if err := w.Arm(655_350); err != nil {
+		t.Errorf("Arm(655350) is the maximum and should be accepted: %v", err)
 	}
 }
 

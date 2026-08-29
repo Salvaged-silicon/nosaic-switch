@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -21,6 +22,7 @@ const platformUsage = `usage: nosaic platform <command>
   watchdog status      whether the hardware watchdog is armed
   watchdog arm <ms>    arm it; the action is a power cycle
   watchdog disarm      stop it -- only with a console attached
+  watchdog raw <hex>   write the register verbatim (bring-up only)
 
 Reads the running board's id from /etc/nosaic/board, or --board <id>.
 `
@@ -212,6 +214,11 @@ func watchdogCmd(hal platformhal.HAL, args []string) error {
 		if err != nil {
 			return err
 		}
+		// The raw value first, because the decode rests on a timeout model
+		// established by measurement rather than from the vendor's driver.
+		if r, ok := wd.(interface{ Raw() uint32 }); ok {
+			fmt.Printf("register  %#08x\n", r.Raw())
+		}
 		if armed {
 			fmt.Printf("armed, %d ms, power-cycles on expiry\n", ms)
 		} else {
@@ -236,6 +243,25 @@ func watchdogCmd(hal platformhal.HAL, args []string) error {
 			return fmt.Errorf("armed the watchdog but it does not read back as armed")
 		}
 		fmt.Printf("armed, %d ms. It must be petted before then or the board power-cycles.\n", got)
+		return nil
+
+	case "raw":
+		// Deliberately awkward to reach and loudly labelled. Writing this
+		// register wrong either removes the recovery net or power-cycles the
+		// box under whoever is working on it.
+		if len(args) < 2 {
+			return fmt.Errorf("watchdog raw needs a 32-bit value in hex, e.g. 0xc0001770")
+		}
+		v, err := strconv.ParseUint(strings.TrimPrefix(args[1], "0x"), 16, 32)
+		if err != nil {
+			return fmt.Errorf("%q is not a 32-bit hex value", args[1])
+		}
+		rw, ok := wd.(interface{ WriteRaw(uint32) uint32 })
+		if !ok {
+			return fmt.Errorf("%w: this board's watchdog has no raw access", platformhal.ErrUnsupported)
+		}
+		fmt.Printf("writing %#08x to the watchdog register\n", uint32(v))
+		fmt.Printf("readback  %#08x\n", rw.WriteRaw(uint32(v)))
 		return nil
 
 	case "disarm":

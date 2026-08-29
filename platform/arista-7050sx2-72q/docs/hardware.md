@@ -279,31 +279,44 @@ a power cycle brings the board back through Aboot.
 it disarmed on handover, so a custom NOS begins with no recovery net at all.
 Assuming otherwise is how a hung image became a trip to the PDU.
 
-⚠️ **The timeout is not where the GPL driver writes it.** That driver puts the
-timeout in the low 16 bits. On this SCD revision it lives in bits `[28:16]` in
-units of 100 ms. This was established by measurement, not by reading:
+⚠️ **The timeout is the low 16 bits, in units of 10 ms** — which is where
+Arista's GPL driver puts it. An earlier version of this page said it lived in
+bits `[28:16]` at 100 ms, and NOSaic shipped a driver that believed it. That
+was wrong, and the way it was wrong is worth keeping.
 
-| | |
-|---|---|
-| Live read on EOS | `0xc3e8157c` — enabled, action 2, hi = 1000, low16 = 5500 |
-| Armed with hi = 500 | board power-cycled itself in **40–50 s** |
-| hi = 500 at 100 ms units | 50 s ✅ |
-| low16 = 6000 as ms | 600 s ❌ |
+The original experiment armed the watchdog by setting **only the enable bit**
+on the value Aboot leaves behind. Both fields kept their existing values, so
+the 40–50 s it fired in was consistent with either being the timeout — bits
+`[28:16]` = 500 at 100 ms is 50 s, and the low 16 bits = 6000 at 10 ms is 60 s.
+One experiment, two models, no way to tell them apart. The conclusion was
+recorded as settled anyway.
 
-So arm with `(1<<31) | (2<<29) | (deciseconds << 16)`. Writing the GPL field
-instead leaves the real timeout at whatever it already held — arming that
-reports success and protects nothing. `internal/platformhal/scd` has a test
-pinning the measured encoding, including the exact `0xc1f41770` read off this
-board, so a future edit back to the obvious-looking layout fails loudly.
+Varying the fields independently settles it:
 
-The low 16 bits are preserved rather than zeroed: their meaning is unknown, and
-both Aboot and EOS leave a value there.
+| bits `[28:16]` | low 16 bits | fired after |
+|---|---|---|
+| 0 | 6000 | ~60 s |
+| 0 | 12000 | ~120 s |
+| 3000 | 6000 | ~60 s |
+| 8000 | 6000 | ~60 s |
 
-The field is 13 bits, so the longest window is 8191 deciseconds — about 819 s.
-50 s is far too short to work in; arm for several minutes and pet it.
+The high field contributes nothing, and the time is linear in the low one.
+
+So arm with `(1<<31) | (2<<29) | centiseconds`. Writing the high field instead
+leaves the real timeout at Aboot's leftover: the watchdog reports the value it
+was asked for, reads it back, and then fires on somebody else's schedule. It
+did exactly that here, twice, in the middle of releasing the ASIC from reset —
+a nominal 300 s and a nominal 800 s window that both expired in about a minute.
+
+Bits `[28:16]` are preserved rather than cleared. Aboot leaves 500 there and
+nothing here knows what it means; guessing at an unknown field on the device
+that power-cycles the board is not worth the tidiness.
+
+`internal/platformhal/scd` has a test pinning this, including the exact
+`0x41f41770` Aboot leaves and the `0xc1f42ee0` a 120 s arm should produce.
 
 ```sh
-nosaic platform watchdog arm 300000     # 5 minutes
+nosaic platform watchdog arm 300000     # 5 minutes; 655350 is the maximum
 nosaic platform status
 nosaic platform release-asic
 ```

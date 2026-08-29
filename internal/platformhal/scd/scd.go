@@ -71,13 +71,28 @@ const (
 
 // Watchdog register fields.
 //
-// The timeout is NOT where Arista's GPL driver writes it. That driver puts it
-// in the low 16 bits; this SCD revision keeps it in bits [28:16] in units of
-// 100 ms, which was established by measurement rather than read: arming with
-// bits [28:16] = 500 power-cycled the board in 40-50 s, matching 50 s, where
-// the low half's 6000 would have meant 600 s. Writing the GPL field would
-// leave the real timeout at whatever was already there -- a caller that
-// believes it is protected and is not.
+// The timeout is the low 16 bits, in units of 10 ms -- which is where Arista's
+// GPL driver puts it, and this driver got it wrong for a while by trusting a
+// board note that said otherwise.
+//
+// That note concluded the timeout lived in bits [28:16] in units of 100 ms,
+// from an experiment that armed the watchdog by setting ONLY the enable bit on
+// the value Aboot leaves behind. Both fields kept their existing values, so
+// the result was consistent with either field being the timeout and could not
+// separate them. It fired in 40-50 s, which fits bits [28:16] = 500 at 100 ms
+// and equally fits the low 16 bits = 6000 at 10 ms.
+//
+// Measured on this board by varying the fields independently:
+//
+//	hi = 0,    low16 = 6000   ->  ~60 s     (hi is not the timeout)
+//	hi = 0,    low16 = 12000  ->  ~120 s    (linear in low16)
+//	hi = 3000, low16 = 6000   ->  ~60 s     (hi does not contribute)
+//	hi = 8000, low16 = 6000   ->  ~60 s
+//
+// Writing bits [28:16] and expecting a timeout leaves the real one at whatever
+// it already held: an arm that reports success, reads back the value it wrote,
+// and fires whenever Aboot's leftover says. Which it did, twice, in the middle
+// of bringing the ASIC up.
 const (
 	wdEnable     = 1 << 31
 	wdActionMask = 0x3 << 29
@@ -86,14 +101,15 @@ const (
 	// leaves a wedged chip wedged.
 	wdActionPowerCycle = 2 << 29
 
-	// wdTimeoutShift and wdTimeoutMax describe the 13-bit deciseconds field.
-	wdTimeoutShift = 16
-	wdTimeoutMax   = 0x1fff // 8191 deciseconds, about 819 s
-	// wdTimeoutUnitMS is 100 ms per count.
-	wdTimeoutUnitMS = 100
-	// wdLowMask is the low half, whose meaning is unknown. EOS and Aboot both
-	// leave a value there, so it is preserved rather than zeroed.
-	wdLowMask = 0xffff
+	// wdTimeoutMask is the 16-bit timeout field, and wdTimeoutUnitMS its
+	// resolution.
+	wdTimeoutMask   = 0xffff
+	wdTimeoutUnitMS = 10
+
+	// wdHighMask is bits [28:16]. Aboot leaves 500 there and its meaning is
+	// not known, so it is preserved rather than cleared -- guessing at a field
+	// on the device that power-cycles the board is not worth the tidiness.
+	wdHighMask = 0x1fff << 16
 )
 
 // Timing from Arista's own SwitchChip._resetOut(). These are the hardware's
