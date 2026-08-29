@@ -16,6 +16,11 @@ boot: aboot
 # 4.20 on the same family ships SWI_MAX_HWEPOCH=2; 4.14 has no such field.
 aboot_max_hwepoch: "1"
 
+# The console. 9600 is what this box runs and what Aboot uses; a getty at any
+# other speed reconfigures the port and everything after it is unreadable.
+console: ttyS0
+console_baud: 9600
+
 # systemd, because this box has flash to spare and no reason to run the tier
 # built for boards that do not.
 profile: full

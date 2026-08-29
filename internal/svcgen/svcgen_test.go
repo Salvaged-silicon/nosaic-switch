@@ -162,3 +162,46 @@ func keys(m map[string]string) []string {
 	}
 	return out
 }
+
+// A service that must not restart has to be a oneshot. s6-rc supervises a
+// longrun and starts it again whenever it exits, so a service that configures
+// something and returns runs forever -- which is what the network service did
+// on the first switch it ran on, flooding the console it reports to.
+func TestS6NeverRestartIsAOneshot(t *testing.T) {
+	files, err := s6{}.Generate(Service{
+		Name: "network-config", Exec: "/etc/nosaic/apply-network.sh", Restart: "never",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, f := range files {
+		got[f.Path] = f.Content
+	}
+	if ty := got["/etc/s6-rc/source/network-config/type"]; ty != "oneshot\n" {
+		t.Errorf("type is %q, want oneshot: a longrun is restarted every time it exits", ty)
+	}
+	if _, ok := got["/etc/s6-rc/source/network-config/run"]; ok {
+		t.Error("a oneshot is described by up, not run")
+	}
+	up := got["/etc/s6-rc/source/network-config/up"]
+	if !strings.Contains(up, "/etc/nosaic/apply-network.sh") {
+		t.Errorf("up does not run the service: %q", up)
+	}
+	if strings.HasPrefix(up, "#!") {
+		t.Error("s6-rc reads up with execline, so a shebang is wrong")
+	}
+}
+
+// The ordinary case must stay a supervised longrun.
+func TestS6DefaultIsALongrun(t *testing.T) {
+	files, err := s6{}.Generate(Service{Name: "nosd", Exec: "/usr/sbin/nosd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, "/type") && f.Content != "longrun\n" {
+			t.Errorf("type is %q, want longrun", f.Content)
+		}
+	}
+}

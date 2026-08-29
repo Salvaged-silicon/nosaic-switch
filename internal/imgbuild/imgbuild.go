@@ -420,9 +420,15 @@ poweroff -f
 		})
 	}
 
+	// The console a login is offered on. Getting this wrong does not fail: the
+	// getty starts, reconfigures the port, and every byte after it is noise at
+	// the speed anyone is actually watching. On this fleet's Aristas that made
+	// a working switch look hung, twice, and cost two power cycles.
+	consoleDev, consoleBaud := o.Board.ConsolePort()
+
 	consoleGetty := svcgen.Service{
 		Name:  "getty-console",
-		Exec:  "/sbin/getty -L ttyS0 115200 vt100",
+		Exec:  fmt.Sprintf("/sbin/getty -L %s %d vt100", consoleDev, consoleBaud),
 		After: []string{"network"},
 	}
 	services = append(services, consoleGetty)
@@ -448,7 +454,7 @@ poweroff -f
 ::sysinit:/bin/hostname nosaic
 ::sysinit:/bin/echo "NOSAIC-BOOT userspace reached"
 ::once:/etc/nosaic/selftest.sh
-` + fmt.Sprintf("::respawn:/sbin/getty -L %s 115200 vt100\n", "ttyS0") +
+` + fmt.Sprintf("::respawn:/sbin/getty -L %s %d vt100\n", consoleDev, consoleBaud) +
 		`::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
 `

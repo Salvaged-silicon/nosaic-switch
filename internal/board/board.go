@@ -66,6 +66,14 @@ type Board struct {
 	// installer. Board data because they describe this box's memory map.
 	KernelParams string `yaml:"kernel_params"`
 
+	// Console is the serial device and speed a login is offered on. Board data
+	// because it is a property of the box: this fleet's Aristas run their
+	// consoles at 9600, and a getty at any other speed reconfigures the port
+	// and makes everything after it unreadable. Empty means ttyS0 at 115200,
+	// which suits a VM.
+	Console     string `yaml:"console"`
+	ConsoleBaud int    `yaml:"console_baud"`
+
 	// AbootMaxHWEpoch is board data for Arista boards; read it off the switch
 	// with prefdl. Defaults to 1, which covers the 7050SX2.
 	AbootMaxHWEpoch string `yaml:"aboot_max_hwepoch"`
@@ -122,6 +130,18 @@ func LoadAll(root string) ([]*Board, error) {
 }
 
 // Validate returns every problem with this board port.
+// ConsolePort returns the console device and speed, with defaults.
+func (b *Board) ConsolePort() (dev string, baud int) {
+	dev, baud = b.Console, b.ConsoleBaud
+	if dev == "" {
+		dev = "ttyS0"
+	}
+	if baud == 0 {
+		baud = 115200
+	}
+	return
+}
+
 // Layout returns the flash layout in MiB, with defaults for anything the board
 // does not state.
 func (b *Board) Layout() (boot, slot, data int) {
