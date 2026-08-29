@@ -24,6 +24,9 @@ source:
     - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/linux-6.12.105.tar.xz
     - https://mirrors.edge.kernel.org/pub/linux/kernel/v6.x/linux-6.12.105.tar.xz
 
+patches:
+  - patches/0001-tg3-probe-without-an-nvram-address.patch
+
 build:
   system: kernel
   # The defconfig comes from the architecture, which names its own.

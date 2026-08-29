@@ -40,10 +40,25 @@ while read -r kind name rest; do
     esac
     addr=$(echo "$rest" | awk '{print $1}')
     mtu=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
+    mac=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="mac") print $(i+1)}')
 
     if ! ip link show "$name" >/dev/null 2>&1; then
         say "$name absent, skipped (no datapath yet?)"
         continue
+    fi
+    # The address, before the interface comes up. A board states one when its
+    # hardware does not carry it anywhere the driver can find: on these
+    # switches the MAC lives in board data on an i2c SEEPROM, and the driver
+    # only probes at all because it falls back to a random address. Leaving
+    # that random address in place would mean a switch whose identity changes
+    # every boot.
+    if [ -n "$mac" ]; then
+        ip link set dev "$name" down 2>/dev/null
+        if ip link set dev "$name" address "$mac" 2>/dev/null; then
+            say "$name mac $mac"
+        else
+            say "$name FAILED to set mac $mac"
+        fi
     fi
     [ -n "$mtu" ] && ip link set dev "$name" mtu "$mtu" 2>/dev/null
     ip link set dev "$name" up 2>/dev/null

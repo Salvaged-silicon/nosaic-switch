@@ -91,6 +91,11 @@ notes: >
   instead, over an mmap of the ASIC's BAR0, which is how EOS reaches the chip
   on this box too. See kernel_params below for what that needs.
 
+  The management MAC is not in the NIC. It lives in prefdl on an i2c SEEPROM,
+  so tg3 aborts its probe on a stock kernel; NOSaic patches it to fall back to
+  a random address and applies the real one from config/network.conf. Reading
+  prefdl properly is outstanding work and also gates the ASIC core voltage.
+
   Do not use fanset, and do not trust fanread: it returns garbage on this
   board. Temperature (three sensors), PSU presence and PSU status all read
   correctly. Reaching the fan CPLD at all needs CONFIG_I2C_PIIX4.

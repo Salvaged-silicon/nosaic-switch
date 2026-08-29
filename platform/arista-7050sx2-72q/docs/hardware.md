@@ -149,6 +149,39 @@ What is known to work, and what is not:
 control loop built on it would be a control loop built on noise — on hardware
 whose thermal failure mode is silent.
 
+## Board data, and the MAC
+
+The board keeps its identity in a `prefdl` structure on an i2c SEEPROM: the
+SID, the serial, the ASIC core voltage, and the MAC base. Aboot reads it with
+`readprefdl`, whose usage names the location plainly:
+
+```
+Usage: readprefdl [-a i2cAddr -b i2cBusNum] [-f inputFileName] [-do]
+```
+
+**Nothing in NOSaic reads it yet, and three things need it.**
+
+`tg3` is the visible one. Arista does not keep the management MAC in the NIC,
+so a stock driver finds nothing and aborts the probe, leaving the switch with
+no management interface at all. NOSaic currently patches tg3 to fall back to a
+random address so the device exists, and the board states its real MAC in
+`config/network.conf` for the network service to apply. That works and is
+honest about being a stopgap: a configuration file asserting hardware identity
+is a configuration file that will be wrong on the next switch.
+
+The other two are not optional for M6. `Trident0CoreVdd` is the ASIC's core
+voltage and comes from board data; the chip cannot be brought up correctly
+without it. And the platform HAL's identity -- model, serial, revision --
+belongs to the same structure.
+
+So the real work is a `prefdl` reader: find the bus and address, parse the
+structure, and publish it early enough that the network configuration and the
+datapath can both use it. Searching for it from Aboot did not find it at the
+obvious SEEPROM addresses on buses 0 through 3 -- 0 and 1 answered with
+"data format unsupported", 2 and 3 said nothing -- so the location needs
+establishing properly rather than guessing, which on an SMBus carrying PSU
+controllers and thermal sensors is worth doing carefully.
+
 ## Quirks
 
 - **Everything proven so far was proven after `kexec` from EOS**, and `kexec`

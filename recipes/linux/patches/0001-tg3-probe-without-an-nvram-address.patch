@@ -1,0 +1,78 @@
+Let tg3 probe when the board keeps its address elsewhere.
+
+Arista keeps a switch's MAC in board data on an i2c SEEPROM, not in the NIC.
+A stock tg3 aborts the probe and the machine has no management interface at
+all:
+
+    tg3 0000:04:00.0: Could not obtain valid ethernet address, aborting
+    tg3 0000:04:00.0: probe with driver tg3 failed with error -2
+
+Two paths reach that, and the second is the one this hardware takes. The NVRAM
+does not hold nothing -- it holds Broadcom's default address, which is valid
+enough to pass is_valid_ether_addr. The driver then asks the device tree or
+ACPI for the real one, finds nothing there either on a board that keeps it in
+its own i2c data, and returns that error. Patching only the invalid-address
+path leaves the abort exactly as it was, which is what the first attempt here
+did.
+
+A random address lets the device exist. It is deliberately not the right one:
+the board's real address is applied from its configuration afterwards, and that
+cannot happen while there is no interface to apply it to. Both fallbacks warn,
+because a machine that silently invents a MAC is one that moves on the network
+for reasons nobody can see.
+
+This is a stopgap. Reading the address from the board's own prefdl is the real
+fix and belongs in board support, not in this driver.
+
+Note for anyone editing this file: no line of this preamble may begin with a
+plus or minus, or patch reads it as diff content.
+
+--- a/drivers/net/ethernet/broadcom/tg3.c
++++ b/drivers/net/ethernet/broadcom/tg3.c
+@@ -17091,11 +17091,42 @@
+ 		}
+ 	}
+ 
+-	if (!is_valid_ether_addr(addr))
+-		return -EINVAL;
++	if (!is_valid_ether_addr(addr)) {
++		/*
++		 * NOSaic: some boards do not keep the address anywhere this
++		 * driver looks. Arista keeps it in board data on an i2c
++		 * SEEPROM, so a stock probe finds nothing and aborts, and the
++		 * machine comes up with no management interface at all.
++		 *
++		 * A random address lets the device probe. It is not the right
++		 * address and is not meant to be: the board's real one is
++		 * applied from its configuration once the interface exists,
++		 * which cannot happen if there is no interface. Announced
++		 * loudly, because an unannounced random MAC is a machine that
++		 * moves on the network for no visible reason.
++		 */
++		eth_random_addr(addr);
++		dev_warn(&tp->pdev->dev,
++			 "no address in NVRAM; using a random one until the board supplies its own\n");
++		return 0;
++	}
+ 
+-	if (tg3_is_default_mac_address(addr))
+-		return device_get_mac_address(&tp->pdev->dev, addr);
++	if (tg3_is_default_mac_address(addr)) {
++		/*
++		 * The NVRAM holds Broadcom's default rather than this board's
++		 * address, so the driver asks the device tree or ACPI for one.
++		 * On a board that keeps its address in its own i2c board data
++		 * there is nothing there either, and the error from here is
++		 * what aborts the probe -- which is the path this hardware
++		 * actually takes, not the invalid-address one above.
++		 */
++		if (device_get_mac_address(&tp->pdev->dev, addr)) {
++			eth_random_addr(addr);
++			dev_warn(&tp->pdev->dev,
++				 "only a default address available; using a random one until the board supplies its own\n");
++		}
++		return 0;
++	}
+ 
+ 	return 0;
+ }
