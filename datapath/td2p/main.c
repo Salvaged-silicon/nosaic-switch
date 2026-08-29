@@ -40,8 +40,10 @@ static void usage(void)
 		"\n"
 		"  --attach <bdf> [conf]\n"
 		"            create the SDK device over the BDE and attach the chip.\n"
-		"            conf defaults to " DEFAULT_ASIC_CONF ", which carries the\n"
-		"            board's port map; without one the SDK cannot attach.\n"
+		"            One or more property files; defaults to\n"
+		"            " DEFAULT_ASIC_CONF ". The board ships generic settings\n"
+		"            there and the generated port map goes beside it, so give\n"
+		"            both: asic.conf portmap.conf\n"
 		"            Built only when the SDK is staged (SDK_DIR).\n"
 		"  --soc-init <bdf> [conf]\n"
 		"            attach and run soc_init, then stop and hold. The point\n"
@@ -93,7 +95,27 @@ static int probe(const char *bdf)
  */
 static struct nosaic_bde attached_dev;
 
-static int attach(const char *bdf, const char *conf, int full)
+/* Load one or more property files. Later files add to earlier ones, which is
+ * what lets the board ship its generic settings and the operator supply the
+ * generated port map beside them rather than editing one file. */
+static int load_confs(char **confs, int n)
+{
+	int i, total = 0;
+
+	for (i = 0; i < n; i++) {
+		int c = nosaic_props_load(confs[i]);
+
+		if (c < 0) {
+			fprintf(stderr, "nosd-td2p: cannot read %s\n", confs[i]);
+			return -1;
+		}
+		printf("config     %d properties from %s\n", c, confs[i]);
+		total += c;
+	}
+	return total;
+}
+
+static int attach(const char *bdf, char **confs, int nconf, int full)
 {
 	struct nosaic_bde *b = &attached_dev;
 	int unit, n;
@@ -104,15 +126,15 @@ static int attach(const char *bdf, const char *conf, int full)
 	/* The board's own ASIC configuration. Without it the SDK has no port map,
 	 * and port configuration fails during attach with "Port config error !!"
 	 * -- which names the symptom and not the cause. */
-	n = nosaic_props_load(conf);
+	n = load_confs(confs, nconf);
 	if (n < 0) {
-		fprintf(stderr, "nosd-td2p: no ASIC configuration at %s\n"
-			"  the SDK needs a port map to attach; this board's is in\n"
-			"  platform/<board>/config/asic.conf\n", conf);
 		nosaic_bde_close(b);
 		return 1;
 	}
-	printf("config     %d properties from %s\n", n, conf);
+	if (nosaic_props_get("portmap_1") == NULL)
+		fprintf(stderr, "nosd-td2p: warning: no portmap_1 property. The SDK cannot\n"
+			"  attach without a port map, and this board's is generated rather\n"
+			"  than shipped -- see platform/<board>/tools/mkportmap.sh\n");
 
 	unit = nosaic_sdk_attach(b, TD2P_DEVICE, 0x02);
 	if (unit < 0) {
@@ -185,18 +207,19 @@ int main(int argc, char **argv)
 	if (argc == 3 && strcmp(argv[1], "--probe") == 0)
 		return probe(argv[2]);
 #ifdef NOSAIC_WITH_SDK
-	if (argc == 3 && strcmp(argv[1], "--attach") == 0)
-		return attach(argv[2], DEFAULT_ASIC_CONF, 0);
-	if (argc == 4 && strcmp(argv[1], "--attach") == 0)
-		return attach(argv[2], argv[3], 0);
-	if (argc == 3 && strcmp(argv[1], "--init") == 0)
-		return attach(argv[2], DEFAULT_ASIC_CONF, 2);
-	if (argc == 4 && strcmp(argv[1], "--init") == 0)
-		return attach(argv[2], argv[3], 2);
-	if (argc == 3 && strcmp(argv[1], "--soc-init") == 0)
-		return attach(argv[2], DEFAULT_ASIC_CONF, 1);
-	if (argc == 4 && strcmp(argv[1], "--soc-init") == 0)
-		return attach(argv[2], argv[3], 1);
+	{
+		static char *defconf[] = { (char *)DEFAULT_ASIC_CONF };
+		int full = -1;
+
+		if (strcmp(argv[1], "--attach") == 0)   full = 0;
+		if (strcmp(argv[1], "--soc-init") == 0) full = 1;
+		if (strcmp(argv[1], "--init") == 0)     full = 2;
+		if (full >= 0 && argc >= 3) {
+			if (argc == 3)
+				return attach(argv[2], defconf, 1, full);
+			return attach(argv[2], &argv[3], argc - 3, full);
+		}
+	}
 #endif
 	if (argc == 2 && strcmp(argv[1], "--version") == 0) {
 		printf("nosd-td2p (bring-up) for BCM%04x, Broadcom vendor %#06x\n",
