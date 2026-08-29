@@ -20,6 +20,8 @@ const platformUsage = `usage: nosaic platform <command>
   status               what the board reports about itself
   release-asic         take the switch chip out of reset and wait for it
   asic                 what the switch chip says about itself (read-only)
+  schan selftest       prove S-Channel reaches the chip (read-only)
+  schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed
   watchdog arm <ms>    arm it; the action is a power cycle
   watchdog disarm      stop it -- only with a console attached
@@ -59,6 +61,8 @@ func platformCmd(args []string) error {
 		return releaseASIC(hal)
 	case "asic":
 		return probeASIC(hal)
+	case "schan":
+		return schanCmd(b, rest[1:])
 	case "watchdog":
 		return watchdogCmd(hal, rest[1:])
 	}

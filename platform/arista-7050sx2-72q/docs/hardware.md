@@ -380,6 +380,77 @@ standalone boot does not reproduce, and `kexec` is separately known to reset
 the SerDes here. "It answered last time" was not evidence for the path NOSaic
 takes. It is now.
 
+## S-Channel: the engine runs, the blocks do not answer yet
+
+MMIO on the ASIC's BAR reaches the CMIC, the chip's host interface. Everything
+behind it — registers inside the forwarding blocks, table memories — goes
+through S-Channel: write a command word and an address into the message
+registers, set `MSG_START`, poll for `MSG_DONE`, read the response back out of
+the same registers.
+
+```
+0x031000  CMIC_CMC0_SCHAN_CTRL
+0x031004  CMIC_CMC0_SCHAN_ACK_DATA_BEAT_COUNT
+0x031008  CMIC_CMC0_SCHAN_ERR
+0x03100c  CMIC_CMC0_SCHAN_MESSAGE0 … MESSAGE22
+```
+
+CMC1 and CMC2 mirror this at `0x032000` and `0x033000`. CMC0 is the active one
+here — a live read finds CMC0 populated and CMC1 entirely zero, which is what a
+single-unit system looks like.
+
+`SCHAN_CTRL` bits: `MSG_START` 0, `MSG_DONE` 1, `ABORT` 2, `SER_CHECK_FAIL` 20,
+`NACK` 21, `TIMEOUT` 22, `SCHAN_ERROR` 23.
+
+### What NOSaic has established
+
+```
+nosaic platform schan selftest
+```
+
+Reading `TOP_DEV_REV_ID` (block 57, `0x02030000`), whose correct answer
+`0x0002b860` is already known from two other paths on this board:
+
+- **The message registers are writable**, and read back exactly what was
+  written. This is checked before every transaction, because without it
+  `MSG_DONE`-with-`TIMEOUT` is ambiguous in a way that matters: a BAR write
+  that never lands looks identical to a block that does not answer, and the two
+  need completely different work.
+- **The engine runs.** It accepts `MSG_START` and raises `MSG_DONE` after
+  around 14 polls, with `SCHAN_CTRL = 0x00400002` — done, plus `TIMEOUT`.
+- **No block answers**, under either header variant and every access value.
+
+That last point is not a failure of S-Channel. The engine is the CPU's side of
+the interface and comes up with the CMIC; the blocks behind it are held in
+reset until chip initialisation releases them. **Chip initialisation is the next
+work, not S-Channel.**
+
+### The header, and the ambiguity that is now settled by measurement
+
+```
+[31:26] opcode   [25:20] block   [16:14] access   [13:7] length
+```
+
+Confirmed against a command word captured from the vendor's driver:
+`OPC=7 DPORT=1 ACC=3 DLEN=4` encodes to `0x1c10c200`.
+
+The chip supports a second header format selected by a runtime feature flag,
+which places the block field in **7** bits at `[25:19]` instead of 6 at
+`[25:20]`. The reverse-engineering work could not settle which is active — the
+flag is runtime state, and a captured word decodes plausibly under both — so
+NOSaic tries both against a read whose answer is known. Neither reaches a block
+in the current chip state, so **the ambiguity remains open**; what has been
+established is that it is not the reason nothing answers.
+
+### Reads only
+
+This code issues `READ_REG_CMD` and `READ_MEM_CMD` and refuses every other
+opcode, including at the API rather than by convention. A bad read of a
+forwarding ASIC is recoverable; a bad write is not. It also refuses to start
+when `MSG_START` is already set — on a board where the vendor OS may have been
+driving this chip minutes earlier, stomping an in-flight transaction is not
+hypothetical.
+
 ## Quirks
 
 - **Everything proven so far was proven after `kexec` from EOS**, and `kexec`
