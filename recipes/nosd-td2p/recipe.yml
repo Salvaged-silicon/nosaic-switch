@@ -23,11 +23,18 @@ conflicts: [nosd]
 source:
   local: datapath/td2p
 
-depends: [glibc]
+depends: [glibc, openbcm]
 
 build:
   system: make
-  targets: [nosd-td2p]
+  targets: [nosd-td2p, strip]
+  env:
+    # Where the staged SDK is. Its headers land under include/openbcm and its
+    # archives under lib/openbcm, so this points at the parent of both and the
+    # makefile appends. Without it the build still succeeds and produces the
+    # BDE and its probe -- which is deliberate: a contributor without a 1.8 GB
+    # vendor tree can still build, test and change everything else here.
+    SDK_DIR: "${STAGING}/usr"
   # No install target in the makefile: it is three files, and stating where
   # the binary lands here keeps that decision in the recipe where a reader
   # looks for it.

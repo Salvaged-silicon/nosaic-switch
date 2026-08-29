@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "bde.h"
+#include "sdk.h"
 
 /* The Trident2+ this daemon is for. Broadcom's own identifier, so a build for
  * the wrong silicon is visible rather than mysterious. */
@@ -28,6 +29,8 @@ static void usage(void)
 	fprintf(stderr,
 		"usage: nosd-td2p [--probe <pci-bdf>]\n"
 		"\n"
+		"  --attach  create the SDK device over the BDE and report the unit.\n"
+		"            Built only when the SDK is staged (SDK_DIR).\n"
 		"  --probe   map the device and report what is there, then exit.\n"
 		"            Requires the DMA region reserved on the kernel command\n"
 		"            line and root for /dev/mem. On the 7050SX2 that is\n"
@@ -52,10 +55,42 @@ static int probe(const char *bdf)
 	return 0;
 }
 
+#ifdef NOSAIC_WITH_SDK
+/* Hand the chip to the SDK.
+ *
+ * This is the point of the whole exercise: once the vectors are installed, the
+ * SDK owns chip initialisation -- which is deliberately not ours to write,
+ * because the Trident2 MMU and LLS sequences are exactly what hand-
+ * reproduction repeatedly failed to match on this silicon. */
+static int attach(const char *bdf)
+{
+	struct nosaic_bde b;
+	int unit;
+
+	if (nosaic_bde_open(&b, bdf) != 0)
+		return 1;
+
+	unit = nosaic_sdk_attach(&b, TD2P_DEVICE, 0x02);
+	if (unit < 0) {
+		nosaic_bde_close(&b);
+		return 1;
+	}
+	printf("SDK unit   %d\n", unit);
+	printf("the SDK has the device; chip init is next.\n");
+
+	nosaic_bde_close(&b);
+	return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
 	if (argc == 3 && strcmp(argv[1], "--probe") == 0)
 		return probe(argv[2]);
+#ifdef NOSAIC_WITH_SDK
+	if (argc == 3 && strcmp(argv[1], "--attach") == 0)
+		return attach(argv[2]);
+#endif
 	if (argc == 2 && strcmp(argv[1], "--version") == 0) {
 		printf("nosd-td2p (bring-up) for BCM%04x, Broadcom vendor %#06x\n",
 		       TD2P_DEVICE, TD2P_VENDOR);

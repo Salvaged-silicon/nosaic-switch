@@ -189,6 +189,33 @@ size_t nosaic_bde_bar_size(const char *bdf, int bar)
  * the SAL signatures are fixed by the SDK and carry no context. */
 static struct nosaic_bde *sal_dev;
 
+/*
+ * PCI configuration space, through sysfs.
+ *
+ * pread/pwrite rather than lseek plus read: the SDK may call these from more
+ * than one thread, and a shared file offset would make two accesses interleave
+ * into each other's addresses. That failure is intermittent and looks like
+ * flaky hardware.
+ */
+uint32_t nosaic_bde_cfg_read(struct nosaic_bde *b, uint32_t addr)
+{
+	uint32_t v = 0xffffffff;
+
+	if (pread(b->cfg_fd, &v, sizeof(v), (off_t)addr) != (ssize_t)sizeof(v)) {
+		fprintf(stderr, "nosd-td2p: PCI config read at %#x failed: %s\n",
+			addr, strerror(errno));
+		return 0xffffffff;
+	}
+	return v;
+}
+
+void nosaic_bde_cfg_write(struct nosaic_bde *b, uint32_t addr, uint32_t data)
+{
+	if (pwrite(b->cfg_fd, &data, sizeof(data), (off_t)addr) != (ssize_t)sizeof(data))
+		fprintf(stderr, "nosd-td2p: PCI config write at %#x failed: %s\n",
+			addr, strerror(errno));
+}
+
 void nosaic_bde_set_sal_device(struct nosaic_bde *b) { sal_dev = b; }
 
 void *sal_dma_alloc(unsigned int size, char *name)

@@ -23,4 +23,12 @@ size_t nosaic_bde_bar_size(const char *bdf, int bar);
  * set once, here, before the SDK is initialised. */
 void nosaic_bde_set_sal_device(struct nosaic_bde *b);
 
+uint32_t nosaic_bde_cfg_read(struct nosaic_bde *b, uint32_t addr);
+void     nosaic_bde_cfg_write(struct nosaic_bde *b, uint32_t addr, uint32_t data);
+
+/* The SAL DMA hooks the SDK calls. Declared here so the vector layer can pass
+ * them through rather than duplicating the allocator. */
+void *sal_dma_alloc(unsigned int size, char *name);
+void  sal_dma_free(void *ptr);
+
 #endif
