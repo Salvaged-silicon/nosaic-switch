@@ -214,6 +214,30 @@ func fetch(o Options, r *recipe.Recipe) (string, error) {
 				lastErr = err
 				continue
 			}
+
+			// Check the hash here, not after the loop. A host that answers
+			// with the wrong bytes is exactly what the mirror list is for, and
+			// checking afterwards meant a successful download of bad content
+			// ended the build with mirrors left untried. CI failed that way
+			// intermittently on zlib while the same URL served correct content
+			// from elsewhere.
+			//
+			// The bad file is removed rather than left: it is indistinguishable
+			// from a good one by name, and the next build would find it
+			// cached and fail without even trying to fetch.
+			sum, err := sha256File(path)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			if sum != r.Source.SHA256 {
+				fmt.Fprintf(o.Log, "    checksum mismatch, discarding and trying the next source\n")
+				_ = os.Remove(path)
+				lastErr = fmt.Errorf("%s from %s: checksum mismatch\n  expected %s\n  got      %s",
+					name, u, r.Source.SHA256, sum)
+				continue
+			}
+
 			lastErr = nil
 			break
 		}
