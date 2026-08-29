@@ -89,11 +89,20 @@ int nosaic_props_load(const char *path)
 	return n;
 }
 
+/*
+ * Look up a property. The LAST definition wins.
+ *
+ * Files are loaded in the order given, so a later one overrides an earlier
+ * one -- which is what makes layering work: the board ships its defaults and
+ * the operator's generated map, or a local override, comes after. Returning
+ * the first match instead would mean a later file could be loaded, counted,
+ * and quietly ignored.
+ */
 const char *nosaic_props_get(const char *name)
 {
 	int i;
 
-	for (i = 0; i < nprops; i++)
+	for (i = nprops - 1; i >= 0; i--)
 		if (strcmp(props[i].name, name) == 0)
 			return props[i].value;
 	return NULL;

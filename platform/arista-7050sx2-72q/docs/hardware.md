@@ -524,7 +524,67 @@ of the device, from threads that outlive the function that created it.
 visible at all — a run that returns immediately cannot tell a healthy poller
 from one that is about to die.
 
-## Why no port has link yet, and what it will take
+## The port map, and why it cannot be guessed
+
+The SDK cannot bring up a port without knowing which logical port is wired to
+which physical SerDes lane. Read off this board with EOS's own
+`show platform trident system detail`:
+
+| front panel | logical | physical lanes |
+|---|---|---|
+| Ethernet1..20 | 1..20 | 13..32 |
+| Ethernet21..48 | 21..48 | 41..68 |
+| Ethernet49/1..4 | 49..52 | 73..76 |
+| Ethernet50/1..4 | 53..56 | **69..72** |
+| Ethernet54/1..4 | 69..72 | 97..100 |
+
+Ethernet50 sits *below* Ethernet49. The cages are not in physical order and
+nothing about the layout follows from the front panel.
+
+⚠️ **A wrong port map is not rejected — it is silently inert.** A sequential
+map satisfies every bandwidth rule the chip enforces, initialises completely,
+and brings up nothing. That is how this port reached "full chip initialisation
+works" while being wrong about every port on the board.
+
+### The QSFP cages are either one 40G port or four 10G ports
+
+That choice changes the map, and EOS names the cage accordingly:
+
+| cage configured as | EOS calls it | map entry |
+|---|---|---|
+| 4 × 10G breakout | `Ethernet49/1` … `/4` | four ports at `:10` |
+| 1 × 40G | `Ethernet49` | one port at `:40` |
+
+So `tools/mkportmap.sh` takes the speed from how the cage is configured rather
+than from the cage type: a slashed name is one 10G lane of a breakout, and an
+unslashed name above the SFP+ range is a whole 40G cage. Mapping a 40G cage as
+four 10G lanes spends four logical ports on hardware that has one, and the chip
+accepts it without complaint.
+
+**Regenerate the map after changing any breakout**, because the logical
+numbering moves with it.
+
+### It is generated, not shipped
+
+The numbers are the vendor's, read from the machine that already has them, so
+NOSaic ships the generator and not its output:
+
+```sh
+tools/mkportmap.sh <switch-ip> > portmap.conf
+tools/mkportmap.sh --stdin < captured.txt > portmap.conf   # e.g. from a console
+nosd-td2p --init 0000:01:00.0 asic.conf portmap.conf
+```
+
+Later files override earlier ones, so the generated map layers over the board's
+shipped defaults rather than being pasted into them.
+
+This is the arrangement EdgeNOS uses on this board and the approach is taken
+from its `tools/mkconfigbcm.sh`; its `PROVENANCE.md` sets out which parts of a
+platform may be published and why.
+
+## Why most ports still have no link
+
+
 
 The full initialisation runs and every port answers the port API. Linkscan is
 running, every port enables without complaint, and **no port has link.** That

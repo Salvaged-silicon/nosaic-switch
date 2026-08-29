@@ -30,12 +30,18 @@
 #   ./mkportmap.sh <switch-ip> > portmap.conf     # over the network, needs sshpass
 #   ./mkportmap.sh --stdin < captured.txt > portmap.conf
 #
+# Environment: SFP_CAGES (default 48) is how many front-panel cages are SFP+.
+#
 # The second form takes the command's output from anywhere -- a serial console
 # session, for instance, which is how it is done on a switch with no management
 # address configured.
 #
 # Environment: SW_USER (default admin), SW_PW (default arista).
 set -u
+
+# How many front-panel cages are SFP+. Above this they are QSFP+, which is
+# board data and the reason this generator lives in the board directory.
+SFP_CAGES=${SFP_CAGES:-48}
 
 emit() {
     # EOS prints one row per logical port:
@@ -45,15 +51,47 @@ emit() {
     #   Ethernet49/1 Linecard0/0     1      49        73     66
     #
     # Logical is the SDK's port number and Physical is the lane it wants in
-    # portmap_<logical>=<physical>:<speed>. Unconnected ports are the chip's
-    # own spares and are skipped: they have no cage and configuring them would
-    # spend quad bandwidth on nothing.
-    awk '
+    # portmap_<logical>=<physical>:<speed>.
+    #
+    # SPEED COMES FROM HOW THE CAGE IS CONFIGURED, NOT FROM THE CAGE TYPE.
+    # A QSFP+ cage is either one 40G port or four 10G ports, and EOS names it
+    # accordingly: Ethernet49/1..4 when broken out, plain Ethernet49 when it is
+    # a single 40G. So a slashed name is one 10G lane of a breakout, and an
+    # unslashed name above the SFP+ range is a whole 40G cage.
+    #
+    # This matters because the two are not interchangeable. Mapping a 40G cage
+    # as four 10G lanes spends four logical ports on hardware that has one, and
+    # the chip accepts it -- a wrong port map is silently inert rather than
+    # rejected.
+    #
+    # Regenerate after changing any breakout, because the logical numbering
+    # moves with it.
+    awk -v sfp="$SFP_CAGES" '
         $1 ~ /^Ethernet[0-9]/ && NF >= 6 {
             intf = $1; logical = $(NF-2); physical = $(NF-1); mmu = $NF
             if (logical !~ /^[0-9]+$/ || physical !~ /^[0-9]+$/) next
-            # A slashed name is one lane of a breakout cage; both are 10G here.
-            printf "portmap_%s=%s:10\t# %s (mmu %s)\n", logical, physical, intf, mmu
+
+            cage = intf; sub(/^Ethernet/, "", cage); sub(/\/.*/, "", cage)
+            if (intf ~ /\//) {
+                speed = 10; kind = "breakout lane"
+            } else if (cage + 0 > sfp + 0) {
+                speed = 40; kind = "40G cage"; forty++
+            } else {
+                speed = 10; kind = "SFP+"
+            }
+            # A logical port appearing twice means the input is not a single
+            # consistent view of the switch -- a spliced capture, or two runs
+            # concatenated. It would produce two portmap_ lines for one port,
+            # and only one of them can be right.
+            if (logical in seen) {
+                printf "mkportmap: logical port %s appears twice (%s and %s); the input is not one consistent capture\n",
+                       logical, seen[logical], intf > "/dev/stderr"
+                bad++
+            }
+            seen[logical] = intf
+
+            printf "portmap_%s=%s:%d\t# %s, %s (mmu %s)\n",
+                   logical, physical, speed, intf, kind, mmu
             n++
         }
         END {
@@ -61,7 +99,14 @@ emit() {
                 print "mkportmap: no port rows found in the input" > "/dev/stderr"
                 exit 1
             }
-            printf "# %d ports\n", n
+            if (bad) {
+                printf "mkportmap: %d duplicate logical port(s); refusing to emit a map that cannot be right\n",
+                       bad > "/dev/stderr"
+                exit 1
+            }
+            printf "# %d ports", n
+            if (forty) printf ", %d of them 40G cages", forty
+            printf "\n"
         }
     '
 }
