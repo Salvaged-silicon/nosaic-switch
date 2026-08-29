@@ -283,6 +283,15 @@ func (r *Recipe) Validate() []string {
 		}
 	}
 
+	// stage: is only honoured by the make build system. Declared anywhere else
+	// it does nothing at all, silently -- and the thing people put there is
+	// the setuid mode of a privilege helper, which is exactly the stanza that
+	// must not quietly have no effect.
+	if r.Build != nil && len(r.Build.Stage) > 0 && r.Build.System != "make" {
+		bad("build.stage is set but build.system is %q; stage: is only applied by "+
+			"the make system, and would be silently ignored here", r.Build.System)
+	}
+
 	for i, in := range r.Install {
 		if in.Src == "" || in.Dst == "" {
 			bad("install[%d]: both src and dst are required", i)

@@ -71,7 +71,7 @@ func TestBuildRefusesAPrivilegeHelperThatIsNotSetuid(t *testing.T) {
 // parses and permits nobody is a privilege path that exists and refuses.
 func TestGeneratedPrivilegeConfigPermitsTheAccount(t *testing.T) {
 	for _, tc := range []struct{ priv, file, want string }{
-		{"doas", "etc/doas.conf", "permit persist admin as root"},
+		{"doas", "etc/doas.conf", "permit nopass admin as root"},
 		{"sudo", "etc/sudoers", "admin\tALL=(ALL:ALL) ALL"},
 	} {
 		root := t.TempDir()
@@ -93,6 +93,36 @@ func TestGeneratedPrivilegeConfigPermitsTheAccount(t *testing.T) {
 		}
 		if !strings.Contains(string(b), tc.want) {
 			t.Errorf("%s: %s does not contain %q:\n%s", tc.priv, tc.file, tc.want, b)
+		}
+	}
+}
+
+// The sticky bit must survive onto /tmp.
+//
+// os.Chmod takes an os.FileMode, where sticky is 1<<20 and not 0o1000, so
+// os.Chmod(p, 0o1777) yields 0777: world-writable with no sticky bit, letting
+// any user delete another's files. It is invisible to testing because 0777
+// passes every "is /tmp writable" check there is -- it was caught by reading
+// `ls -ld /tmp` on the switch, not by a test.
+func TestStickyAndSetuidBitsSurviveChmodRaw(t *testing.T) {
+	dir := t.TempDir()
+	for _, mode := range []uint32{0o1777, 0o700, 0o4755, 0o2755} {
+		p := filepath.Join(dir, "x")
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := chmodRaw(p, mode); err != nil {
+			t.Fatalf("chmodRaw %04o: %v", mode, err)
+		}
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Sys().(*syscall.Stat_t).Mode & 0o7777; got != mode {
+			t.Errorf("chmodRaw(%04o) produced %04o", mode, got)
+		}
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
 		}
 	}
 }

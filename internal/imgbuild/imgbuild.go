@@ -271,7 +271,8 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 	// would have to be told which board it is running on, on the one machine
 	// that has no excuse not to know -- and the platform HAL would be
 	// addressing registers from a board id typed at a prompt.
-	if src := filepath.Join(o.Board.Path, "board.yml"); o.Board.Path != "" {
+	// Board.Path is the board.yml file itself, not the directory holding it.
+	if src := o.Board.Path; src != "" {
 		yml, err := os.ReadFile(src)
 		if err != nil {
 			return fmt.Errorf("reading the board description to place in the image: %w", err)
@@ -451,7 +452,7 @@ poweroff -f
 	// file -- which on the first real board presented as "wget: can't open
 	// /tmp/x: Permission denied" and looks nothing like a missing sticky bit.
 	// /root at 0755 is world-readable, which it should not be.
-	dirs := map[string]os.FileMode{
+	dirs := map[string]uint32{
 		"/proc": 0o755, "/sys": 0o755, "/dev": 0o755, "/run": 0o755,
 		"/tmp":                0o1777, // sticky and world-writable, as everywhere else
 		"/root":               0o700,
@@ -461,12 +462,18 @@ poweroff -f
 	}
 	for d, mode := range dirs {
 		full := filepath.Join(rootfs, d)
-		if err := os.MkdirAll(full, mode); err != nil {
+		if err := os.MkdirAll(full, os.FileMode(mode&0o777)); err != nil {
 			return err
 		}
-		// MkdirAll applies the process umask, and a parent that already exists
-		// keeps whatever mode it had, so the mode is set explicitly.
-		if err := os.Chmod(full, mode); err != nil {
+		// MkdirAll applies the process umask, and a parent that already
+		// exists keeps whatever mode it had, so the mode is set explicitly --
+		// with a raw chmod, because os.Chmod takes an os.FileMode and Go
+		// spells sticky 1<<20 rather than 0o1000. Passing 0o1777 to os.Chmod
+		// produces 0777: world-writable with no sticky bit, so any user can
+		// delete another's files in /tmp. That is precisely the bug this map
+		// was added to fix, made a second time in the fix itself, and it was
+		// invisible because 0777 passes every "is /tmp writable" check.
+		if err := chmodRaw(full, uint32(mode)); err != nil {
 			return err
 		}
 	}

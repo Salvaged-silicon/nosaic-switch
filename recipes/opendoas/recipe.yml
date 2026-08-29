@@ -38,16 +38,12 @@ build:
     # password lives once one is set.
     - --without-pam
     - --with-timestamp
-  # Built but not installed by its own makefile: that install target runs chown
-  # to root, which fails in an unprivileged build container, and it decides the
-  # setuid bit somewhere a reader of this recipe would never look.
-  stage:
-    - src: doas
-      dst: /usr/bin/doas
-      # Setuid root. This is the whole point of the package and the most
-      # security-relevant line in it, so it is stated here rather than
-      # inherited: a doas that is not setuid runs, fails, and looks like a
-      # configuration problem.
-      mode: "4755"
-    - src: doas.1
-      dst: /usr/share/man/man1/doas.1
+  # Its own install target places the binary setuid root and both man pages,
+  # and works: the builder container runs as root, so the chown it does
+  # succeeds. There is deliberately no stage: block restating mode 4755 here,
+  # because on a configure build it would be silently ignored -- recipe
+  # validation now rejects that rather than letting it read as enforcement.
+  #
+  # The setuid bit is verified where it cannot be missed instead: the image
+  # build refuses to produce an image whose declared privilege helper is
+  # absent or not setuid root, and the boot self-test checks a real elevation.

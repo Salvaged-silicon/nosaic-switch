@@ -176,10 +176,13 @@ kernel-boot: $(BUILDER_DEP)
 	@test -n "$(ARCH)" || { echo "usage: make kernel-boot ARCH=<one of: $(ARCHES)>"; exit 2; }
 	@$(RUN) boot/virt/smoketest.sh $(ARCH)
 
-## image: assemble a board's image, e.g. make image BOARD=virt-x86_64 [PROFILE=slim]
+## image: assemble a board's image, e.g. make image BOARD=virt-x86_64 [PROFILE=slim] [ARGS=--ram-boot]
+# ARGS passes flags straight through to `nosaic build`. Without it the CLI's
+# own options were unreachable from make, which is how a --ram-boot image got
+# built without RAM boot and failed at the initramfs with "unknown slot".
 image: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image BOARD=<board>"; exit 2; }
-	@$(RUN) go run ./cmd/nosaic build $(BOARD) $(if $(PROFILE),--profile $(PROFILE),)
+	@$(RUN) go run ./cmd/nosaic build $(BOARD) $(if $(PROFILE),--profile $(PROFILE),) $(ARGS)
 
 ## dataplane-test: drive the veth datapath with real interfaces
 # Needs NET_ADMIN and SYS_ADMIN: it creates interfaces, in a private network
