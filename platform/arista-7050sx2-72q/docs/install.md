@@ -55,21 +55,57 @@ route add default gw <gateway> dev ma1
 ping -c 3 <build host>          # wait for it: the first attempt fails on ARP
 ```
 
+Then boot the image straight off a web server, leaving flash untouched:
+
+```
+boot http://<build host>:8080/nosaic.swi
+```
+
 Configure it at the prompt rather than setting NETIP and NETGW in boot-config,
 which writes flash. A runtime address disappears at the next reboot, which is
 what you want for a test.
 
+**Wait for the link before the fetch.** The first ping after `ifconfig up`
+regularly fails while a gigabit link negotiates; a script that treats that as
+an error turns an expected few seconds into a failed boot. Check for a reply
+rather than for the absence of a known error string -- "Network is unreachable"
+came back from `sendto`, not from the packet-loss line, so a check written
+against "100% packet loss" passed and the real failure arrived one step later
+where it was harder to read.
+
+Build the image with `--ram-boot` for this. Without it the initramfs looks for
+on-disk slots that a net-booted board does not have and stops with
+`NOSAIC-INITRAMFS-FAIL unknown slot 'a'`:
+
+```
+make image BOARD=arista-7050sx2-72q PROFILE=minimal ARGS=--ram-boot
+```
+
 ## Arm the watchdog before booting anything experimental
 
-The SCD watchdog is the recovery path: nothing in NOSaic punches it, so a
-wedged image is supposed to reset the board back into EOS. **It is not armed by
-default.** It is a register somebody sets, and its state varies -- read it back
-with `scdreset status`, where `0x00000000` means disarmed.
+The SCD watchdog is the recovery path: nothing punches it unless you do, so a
+wedged image resets the board back into EOS on its own. **It is not armed when
+NOSaic starts.** Aboot punches it during its own boot and leaves it disarmed on
+handover, so a custom NOS begins with no recovery net at all -- and assuming
+otherwise is how the first NOSaic boot here ended in a hung switch and a trip
+to the PDU.
 
-Assuming it was live is how the first NOSaic boot on this board ended in a hung
-switch and a trip to the PDU. Aboot punching the watchdog during its own boot
-does not mean it stays armed across a kexec into something that never touches
-the SCD.
+NOSaic drives it:
+
+```
+nosaic platform watchdog status         # register value and whether it is armed
+nosaic platform watchdog arm 300000     # 5 minutes; 655350 ms is the maximum
+nosaic platform release-asic
+```
+
+`arm` reads the register back and fails if it did not take. That matters more
+here than it sounds: an earlier version wrote the timeout into the wrong field,
+so it reported the value it was asked for, read back exactly that, and then
+fired about a minute later on the value Aboot had left behind -- twice, in the
+middle of releasing the ASIC. See the watchdog section in `hardware.md` for the
+encoding and how it was established.
+
+Disarm only with the console attached; it removes the automatic recovery.
 
 ## When it does not work
 
