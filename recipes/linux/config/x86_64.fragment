@@ -4,3 +4,24 @@
 # way in before the network works. It is never a module.
 CONFIG_SERIAL_8250=y
 CONFIG_SERIAL_8250_CONSOLE=y
+
+# SMBus, and the pieces that make board data readable from it.
+#
+# Arista keeps a switch's identity in a SEEPROM on the SMBus -- the prefdl,
+# carrying the board SID, the ASIC core voltage and the MAC base. Without a
+# controller driver there is no bus at all, so none of it can be read.
+#
+# This is a real difference from the EdgeNOS kernel that runs on the 7050SX2,
+# which carries I2C_PIIX4. Our first boot there had tg3 abort with "Could not
+# obtain valid ethernet address": the driver loaded and bound the device, and
+# the address it wanted was on a bus the kernel could not see.
+#
+# I2C_PIIX4 is the AMD/Intel SMBus controller. CHARDEV exposes /dev/i2c-* so
+# userspace can read the SEEPROM directly, which is how the platform HAL will
+# get the board's identity. AT24 is the SEEPROM part itself.
+#
+# The same bus reaches the fan CPLD, which is documented as unreachable without
+# this driver.
+CONFIG_I2C_PIIX4=y
+CONFIG_I2C_CHARDEV=y
+CONFIG_EEPROM_AT24=y
