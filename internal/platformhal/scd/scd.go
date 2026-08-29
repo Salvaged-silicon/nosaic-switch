@@ -104,11 +104,19 @@ const (
 	pcieResetDelay = 500 * time.Millisecond
 	rescanDelay    = 1 * time.Second
 	asicYieldTime  = 2 * time.Second
+	// waitForASIC is how long the device node is waited for. Arista's own
+	// tooling allows 60 s; ten was this driver's own invention and is not
+	// long enough to distinguish "slow" from "never".
+	waitForASIC = 60 * time.Second
 )
 
 // barWindow is how much of BAR0 is mapped. Every register this driver knows
 // is well inside it.
 const barWindow = 0x10000
+
+// Trace, if set, receives a line for each register access that changes state.
+// Reset bring-up fails in ways that are indistinguishable without it.
+type Trace func(string, ...any)
 
 // SCD is one System Control Device.
 type SCD struct {
@@ -117,6 +125,15 @@ type SCD struct {
 	pci   string
 	asic  string
 	close func() error
+
+	// Trace is optional; nil means say nothing.
+	Trace Trace
+}
+
+func (s *SCD) trace(f string, a ...any) {
+	if s.Trace != nil {
+		s.Trace(f, a...)
+	}
 }
 
 // Open maps the SCD's BAR0. pciAddr is the SCD's PCI address, asicAddr the
@@ -176,11 +193,30 @@ func (s *SCD) ResetState(r platformhal.Reset) (bool, error) {
 // uses; the reverse order is what puts a chip back into reset. The delays are
 // theirs too.
 func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
+	// Every step is recorded, because the two ways this fails need completely
+	// different work and the failure looks identical from outside: either the
+	// writes are not reaching the register, or they are and something else
+	// gates enumeration. Without the before/after values there is no way to
+	// tell which, and guessing means writing more registers on an FPGA that
+	// owns the reset lines.
+	before := s.read32(resetBase)
+	s.trace("reset register before: %#08x", before)
+
 	s.write32(resetClear, 1<<bitSwitchCore)
+	s.trace("after clearing core (bit %d): %#08x", bitSwitchCore, s.read32(resetBase))
 	if err := sleepCtx(ctx, pcieResetDelay); err != nil {
 		return err
 	}
 	s.write32(resetClear, 1<<bitSwitchPCIe)
+	after := s.read32(resetBase)
+	s.trace("after clearing pcie (bit %d): %#08x", bitSwitchPCIe, after)
+	s.trace("status register: %#08x", s.read32(resetStatus))
+
+	if after == before {
+		return fmt.Errorf("the reset register did not change: it read %#08x before and "+
+			"after both writes, so the writes are not reaching the device. This is a "+
+			"mapping or addressing problem, not a chip problem", before)
+	}
 	if err := sleepCtx(ctx, rescanDelay); err != nil {
 		return err
 	}
@@ -192,15 +228,18 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 	}
 
 	node := "/sys/bus/pci/devices/" + s.asic
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(waitForASIC)
 	for {
 		if _, err := os.Stat(node); err == nil {
 			// Arista wait after the device appears before touching it.
 			return sleepCtx(ctx, asicYieldTime)
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("the switch chip did not appear at %s after releasing reset; "+
-				"check the reset state with ResetState", s.asic)
+			return fmt.Errorf("the switch chip did not appear at %s within %s of releasing "+
+				"reset. The reset register went %#08x -> %#08x, so the writes did land; "+
+				"either these are not both the switch resets on this board, or something "+
+				"beyond reset gates enumeration",
+				s.asic, waitForASIC, before, s.read32(resetBase))
 		}
 		if err := sleepCtx(ctx, 100*time.Millisecond); err != nil {
 			return err
@@ -228,3 +267,6 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
+
+// SetTrace attaches a sink for the register trace.
+func (s *SCD) SetTrace(f func(string, ...any)) { s.Trace = f }

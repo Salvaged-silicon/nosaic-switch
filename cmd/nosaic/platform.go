@@ -179,6 +179,15 @@ func releaseASIC(hal platformhal.HAL) error {
 		}
 	}
 
+	// Wire the driver's trace to the console. This is bring-up on hardware
+	// that is not in the vendor's own open tree, so what the registers did is
+	// the result, not a debugging aid.
+	if t, ok := hal.(interface{ SetTrace(func(string, ...any)) }); ok {
+		t.SetTrace(func(f string, a ...any) {
+			fmt.Printf("  scd: "+f+"\n", a...)
+		})
+	}
+
 	fmt.Println("releasing the switch chip from reset...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
