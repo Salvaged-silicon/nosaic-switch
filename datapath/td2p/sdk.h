@@ -9,4 +9,10 @@ struct nosaic_bde;
  * Returns the SDK unit number, or -1. */
 int nosaic_sdk_attach(struct nosaic_bde *b, uint16_t dev_id, uint16_t rev_id);
 
+/* Finish initialisation: soc_init, bcm_attach, bcm_init. */
+int nosaic_sdk_init(int unit);
+
+/* Report which ports have link. */
+int nosaic_sdk_ports(int unit);
+
 #endif

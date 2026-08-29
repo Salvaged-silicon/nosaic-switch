@@ -34,10 +34,15 @@
 /* The SDK's own headers. Included last: they define types with names general
  * enough to collide with anything declared after them. */
 #include <sal/types.h>
+#include <sal/core/boot.h>
+#include <sal/appl/sal.h>
 #include <soc/cm.h>
 #include <soc/cmext.h>
 #include <soc/cmtypes.h>
 #include <soc/error.h>
+#include <bcm/init.h>
+#include <bcm/port.h>
+#include <bcm/error.h>
 #include <shared/bsltypes.h>
 #include <shared/bslext.h>
 
@@ -250,6 +255,28 @@ int nosaic_sdk_attach(struct nosaic_bde *b, uint16 dev_id, uint16 rev_id)
 	nosaic_bde_set_sal_device(b);
 	nosaic_bsl_start();
 
+	/*
+	 * The SDK's own abstraction layer, before anything that uses it.
+	 *
+	 * Nothing above works without this and the failure is not obviously
+	 * related: soc_cm_init and soc_attach both complete, and soc_init then
+	 * dies on an assertion deep in the lock implementation --
+	 *
+	 *   Assertion failed: (sl) at src/sal/core/unix/sync.c:972
+	 *
+	 * because a spinlock it takes was never created. The SDK's own startup
+	 * does this first (systems/linux/user/common/socdiag.c:263) and so must
+	 * anything else that drives it.
+	 */
+	if (sal_core_init() < 0) {
+		fprintf(stderr, "nosd-td2p: sal_core_init failed\n");
+		return -1;
+	}
+	if (sal_appl_init() < 0) {
+		fprintf(stderr, "nosd-td2p: sal_appl_init failed\n");
+		return -1;
+	}
+
 	if (soc_cm_init() < 0) {
 		fprintf(stderr, "nosd-td2p: soc_cm_init failed\n");
 		return -1;
@@ -303,4 +330,117 @@ int nosaic_sdk_attach(struct nosaic_bde *b, uint16 dev_id, uint16 rev_id)
 		return -1;
 	}
 	return unit;
+}
+
+/*
+ * Finish bringing the chip up, and survey its ports.
+ *
+ * soc_attach leaves the device initialised but not running. The rest of the
+ * sequence is the SDK's own, in the order its diagnostic shell uses
+ * (src/appl/diag/dev.c:202, src/appl/diag/shell.c:4836):
+ *
+ *     soc_init(unit)                     the SOC layer
+ *     bcm_attach(unit, "esw", NULL, 0)   the BCM layer for a switch device
+ *     bcm_init(unit)                     the software layer above it
+ *
+ * "esw" is the driver family for every Ethernet switch device in this SDK, the
+ * Trident2+ included; the alternatives in that switch statement are for
+ * Tomahawk3.
+ */
+/*
+ * soc_init is declared here rather than by including <soc/drv.h>.
+ *
+ * That header is written for the SDK's own translation units and needs the
+ * generated per-chip register database -- SOC_MAX_NUM_BLKS, NUM_SOC_REG and
+ * the rest -- which only exists once the SDK's full chip-selection defines are
+ * in scope. Pulling that in to reach one function would mean replicating the
+ * SDK's build configuration here and keeping it in step, which is a larger and
+ * more fragile dependency than the declaration itself.
+ *
+ * The signature is from include/soc/drv.h:6537. If it ever changes the linker
+ * will not notice, which is the cost of doing it this way and the reason it is
+ * confined to this one function.
+ */
+extern int soc_init(int unit);
+
+int nosaic_sdk_init(int unit)
+{
+	int rv;
+
+	printf("  soc_init...\n");
+	rv = soc_init(unit);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: soc_init(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+
+	printf("  bcm_attach...\n");
+	rv = bcm_attach(unit, "esw", NULL, 0);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: bcm_attach(%d) returned %d (%s)\n",
+			unit, rv, bcm_errmsg(rv));
+		return -1;
+	}
+
+	printf("  bcm_init...\n");
+	rv = bcm_init(unit);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: bcm_init(%d) returned %d (%s)\n",
+			unit, rv, bcm_errmsg(rv));
+		return -1;
+	}
+	printf("  init complete\n");
+	return 0;
+}
+
+/*
+ * Report every port the chip believes it has, and whether it has link.
+ *
+ * This is the measurement the port map needs. The configured map satisfies the
+ * chip's constraints but says nothing about which physical lane reaches which
+ * front-panel cage -- and link is a fact the chip reports rather than one
+ * anybody has to be told. A cage with a cable in it lights up; the logical
+ * port that reports it is the one wired to that cage.
+ */
+int nosaic_sdk_ports(int unit)
+{
+	bcm_port_config_t cfg;
+	bcm_port_t port;
+	int rv, up = 0, total = 0;
+
+	bcm_port_config_t_init(&cfg);
+	rv = bcm_port_config_get(unit, &cfg);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: bcm_port_config_get returned %d (%s)\n",
+			rv, bcm_errmsg(rv));
+		return -1;
+	}
+
+	printf("\n%-8s %-8s %-8s %s\n", "port", "link", "speed", "note");
+	BCM_PBMP_ITER(cfg.port, port) {
+		int status = 0, speed = 0;
+
+		total++;
+		if (bcm_port_link_status_get(unit, port, &status) < 0)
+			status = -1;
+		if (bcm_port_speed_get(unit, port, &speed) < 0)
+			speed = -1;
+
+		/* Only linked ports are printed. Fifty-four lines of "down" is
+		 * not a survey, it is a haystack -- and what matters here is the
+		 * short list of cages that actually have something in them. */
+		if (status == BCM_PORT_LINK_STATUS_UP) {
+			up++;
+			printf("%-8d %-8s %-8d %s\n", port, "UP", speed,
+			       "a cable is in this cage");
+		}
+	}
+	printf("\n%d of %d ports have link.\n", up, total);
+	if (up == 0)
+		printf("No link anywhere. Either nothing is plugged in, or the port map\n"
+		       "does not reach the cages that are -- which is exactly what this\n"
+		       "survey exists to tell apart, and it cannot until something is\n"
+		       "known to be connected.\n");
+	return 0;
 }

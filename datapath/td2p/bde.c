@@ -107,6 +107,38 @@ int nosaic_bde_open(struct nosaic_bde *b, const char *bdf)
 		return -1;
 	}
 
+	/*
+	 * Bus mastering, so the chip can reach host memory.
+	 *
+	 * The SDK programs most tables through SBUS DMA: it builds a descriptor
+	 * in the DMA pool and has the chip fetch it. A device that cannot master
+	 * the bus never fetches anything, and the symptom is not "DMA is off" --
+	 * it is a table write that times out and an abort that then also fails:
+	 *
+	 *   SOURCE_TRUNK_MAP_MODBASE[0].ipipe0 polling timeout
+	 *   Fatal error: CMC 0 channel 1 abort failed, cold boot might be needed
+	 *
+	 * which reads as broken silicon.
+	 *
+	 * The reset path deliberately leaves this bit clear: it enables memory
+	 * decoding only, because letting a chip that has not been initialised
+	 * write host memory is not a good default. This is the point at which
+	 * something genuinely needs it.
+	 */
+	{
+		uint16_t cmd = (uint16_t)nosaic_bde_cfg_read(b, 0x04);
+
+		if (!(cmd & (1 << 2))) {
+			nosaic_bde_cfg_write(b, 0x04, cmd | (1 << 2));
+			if (!(nosaic_bde_cfg_read(b, 0x04) & (1 << 2))) {
+				fprintf(stderr, "nosd-td2p: bus mastering did not enable; "
+					"COMMAND reads %#06x\n",
+					(unsigned)nosaic_bde_cfg_read(b, 0x04));
+				return -1;
+			}
+		}
+	}
+
 	/* The DMA pool. Not allocated -- claimed, from a region the kernel was
 	 * told to leave alone. */
 	b->dma_phys = env_u64("NOSAIC_DMA_BASE", DMA_BASE_DEFAULT);

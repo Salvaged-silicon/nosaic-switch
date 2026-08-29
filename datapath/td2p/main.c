@@ -43,6 +43,10 @@ static void usage(void)
 		"            conf defaults to " DEFAULT_ASIC_CONF ", which carries the\n"
 		"            board's port map; without one the SDK cannot attach.\n"
 		"            Built only when the SDK is staged (SDK_DIR).\n"
+		"  --init <bdf> [conf]\n"
+		"            attach, then finish initialisation and survey which\n"
+		"            ports have link. Link is the only evidence there is for\n"
+		"            which physical lane reaches which front-panel cage.\n"
 		"  --probe   map the device and report what is there, then exit.\n"
 		"            Requires the DMA region reserved on the kernel command\n"
 		"            line and root for /dev/mem. On the 7050SX2 that is\n"
@@ -85,7 +89,7 @@ static int probe(const char *bdf)
  */
 static struct nosaic_bde attached_dev;
 
-static int attach(const char *bdf, const char *conf)
+static int attach(const char *bdf, const char *conf, int full)
 {
 	struct nosaic_bde *b = &attached_dev;
 	int unit, n;
@@ -129,7 +133,15 @@ static int attach(const char *bdf, const char *conf)
 	 * immediately cannot tell a healthy poller from one that is about to
 	 * die. The daemon will hold it for good once it serves the socket.
 	 */
-	printf("holding the device for %d seconds so the SDK's threads can run\n",
+	if (full) {
+		printf("\nfinishing initialisation...\n");
+		if (nosaic_sdk_init(unit) != 0)
+			return 1;
+		printf("the chip is initialised and running.\n");
+		nosaic_sdk_ports(unit);
+	}
+
+	printf("\nholding the device for %d seconds so the SDK's threads can run\n",
 	       HOLD_SECONDS);
 	sleep(HOLD_SECONDS);
 	printf("still attached after %d seconds\n", HOLD_SECONDS);
@@ -139,13 +151,29 @@ static int attach(const char *bdf, const char *conf)
 
 int main(int argc, char **argv)
 {
+	/*
+	 * Unbuffered, because this program can abort inside the SDK.
+	 *
+	 * Redirected to a file, stdout is fully buffered, so everything printed
+	 * before an abort is discarded with the buffer -- and what is left is the
+	 * SDK's own writes, which go to stderr, ending at whatever it happened to
+	 * say last. That makes the abort look like it happened somewhere it did
+	 * not.
+	 */
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
+
 	if (argc == 3 && strcmp(argv[1], "--probe") == 0)
 		return probe(argv[2]);
 #ifdef NOSAIC_WITH_SDK
 	if (argc == 3 && strcmp(argv[1], "--attach") == 0)
-		return attach(argv[2], DEFAULT_ASIC_CONF);
+		return attach(argv[2], DEFAULT_ASIC_CONF, 0);
 	if (argc == 4 && strcmp(argv[1], "--attach") == 0)
-		return attach(argv[2], argv[3]);
+		return attach(argv[2], argv[3], 0);
+	if (argc == 3 && strcmp(argv[1], "--init") == 0)
+		return attach(argv[2], DEFAULT_ASIC_CONF, 1);
+	if (argc == 4 && strcmp(argv[1], "--init") == 0)
+		return attach(argv[2], argv[3], 1);
 #endif
 	if (argc == 2 && strcmp(argv[1], "--version") == 0) {
 		printf("nosd-td2p (bring-up) for BCM%04x, Broadcom vendor %#06x\n",
