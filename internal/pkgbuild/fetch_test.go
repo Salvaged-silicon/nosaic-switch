@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
@@ -81,5 +82,31 @@ func TestABadDownloadIsNotLeftCached(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "dl", "example-1.tar.gz")); err == nil {
 		t.Error("the bad download was left in dl/, where the next build will trust it")
+	}
+}
+
+// A checksum failure has to say what arrived. The hash alone does not
+// distinguish a truncated download from an error page from a changed upstream,
+// and CI failed twice on zlib with no way to tell which it was.
+func TestAChecksumFailureDescribesWhatArrived(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"an error page served with a 200", "<html>not found</html>", "text"},
+		{"a truncated archive", "\x1f\x8b\x08\x00truncated", "gzip"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "x.tar.gz")
+			if err := os.WriteFile(p, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got := describe(p)
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("describe() = %q, want it to mention %q", got, tc.want)
+			}
+			if !strings.Contains(got, fmt.Sprintf("%d bytes", len(tc.body))) {
+				t.Errorf("describe() = %q, want the size", got)
+			}
+		})
 	}
 }

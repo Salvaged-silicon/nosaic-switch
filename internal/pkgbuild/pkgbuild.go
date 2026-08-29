@@ -184,6 +184,45 @@ func Build(o Options) (*Result, error) {
 // and "now" is the one input guaranteed to differ.
 const defaultEpoch = 1000000000 // 2001-09-09T01:46:40Z
 
+// describe summarises a file that failed its checksum, so the next occurrence
+// is diagnosable rather than merely reported.
+func describe(path string) string {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "unreadable: " + err.Error()
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Sprintf("%d bytes, unreadable", fi.Size())
+	}
+	defer f.Close()
+	head := make([]byte, 96)
+	n, _ := f.Read(head)
+	head = head[:n]
+
+	kind := "unrecognised"
+	switch {
+	case n >= 2 && head[0] == 0x1f && head[1] == 0x8b:
+		kind = "gzip (so probably truncated rather than wrong)"
+	case n >= 6 && string(head[:6]) == "\xfd7zXZ\x00":
+		kind = "xz"
+	case n >= 1 && (head[0] == '<' || head[0] == '{'):
+		kind = "text: an error page or a redirect served with a 200"
+	}
+
+	printable := true
+	for _, b := range head {
+		if b < 9 || (b > 13 && b < 32) {
+			printable = false
+			break
+		}
+	}
+	if printable && n > 0 {
+		return fmt.Sprintf("%d bytes, %s, starts %q", fi.Size(), kind, string(head))
+	}
+	return fmt.Sprintf("%d bytes, %s", fi.Size(), kind)
+}
+
 func fetch(o Options, r *recipe.Recipe) (string, error) {
 	dl := filepath.Join(o.Root, "dl")
 	if err := os.MkdirAll(dl, 0o755); err != nil {
@@ -231,7 +270,13 @@ func fetch(o Options, r *recipe.Recipe) (string, error) {
 				continue
 			}
 			if sum != r.Source.SHA256 {
-				fmt.Fprintf(o.Log, "    checksum mismatch, discarding and trying the next source\n")
+				// Say what arrived, not just that it was wrong. A hash tells
+				// you nothing about the cause; a size and the first bytes
+				// separate a truncated download from an error page from a
+				// genuinely changed upstream, and this failed twice in CI with
+				// no way to tell which.
+				fmt.Fprintf(o.Log, "    checksum mismatch: %s\n", describe(path))
+				fmt.Fprintf(o.Log, "    discarding and trying the next source\n")
 				_ = os.Remove(path)
 				lastErr = fmt.Errorf("%s from %s: checksum mismatch\n  expected %s\n  got      %s",
 					name, u, r.Source.SHA256, sum)
