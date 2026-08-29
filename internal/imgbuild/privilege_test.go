@@ -72,7 +72,7 @@ func TestBuildRefusesAPrivilegeHelperThatIsNotSetuid(t *testing.T) {
 func TestGeneratedPrivilegeConfigPermitsTheAccount(t *testing.T) {
 	for _, tc := range []struct{ priv, file, want string }{
 		{"doas", "etc/doas.conf", "permit nopass admin as root"},
-		{"sudo", "etc/sudoers", "admin\tALL=(ALL:ALL) ALL"},
+		{"sudo", "etc/sudoers", "admin\tALL=(ALL:ALL) NOPASSWD: ALL"},
 	} {
 		root := t.TempDir()
 		bin := filepath.Join(root, "usr/bin")
