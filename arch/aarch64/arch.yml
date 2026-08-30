@@ -9,6 +9,10 @@ name: AArch64
 triple: aarch64-nosaic-linux-gnu
 endian: little
 bits: 64
+# GOARCH for NOSaic's own Go binaries, stated rather than derived: the
+# names agree with the id here by luck, not by rule.
+go_arch: arm64
+
 kernel_arch: arm64
 ctng_sample: aarch64-unknown-linux-gnu
 

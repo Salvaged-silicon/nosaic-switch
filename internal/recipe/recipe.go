@@ -78,6 +78,14 @@ type StagePath struct {
 	Mode string `yaml:"mode"`
 }
 
+// Link is a symlink the package installs.
+type Link struct {
+	// Target is what the link points at, as written into the link.
+	Target string `yaml:"target"`
+	// Path is where the link is created, absolute within the image.
+	Path string `yaml:"path"`
+}
+
 type Install struct {
 	Src  string `yaml:"src"`
 	Dst  string `yaml:"dst"`
@@ -166,6 +174,15 @@ type Build struct {
 	// its own, and the consumer reads the file rather than a copy of it.
 	After []string `yaml:"after"`
 
+	// Links are symlinks the package installs. Target is what the link points
+	// at; Path is where the link goes in the image.
+	//
+	// This is how a package claims a virtual name without shipping the binary
+	// twice: nosd-td2p installs /usr/sbin/nosd-td2p and a /usr/sbin/nosd
+	// pointing at it, and everything above the datapath only ever says `nosd`.
+	// Copying instead would put 151 MB in the image twice.
+	Links []Link `yaml:"links"`
+
 	// Env overrides build environment variables. The cross-compilation
 	// variables are set for you; this is for a package's own quirks.
 	Env map[string]string `yaml:"env"`
@@ -195,9 +212,20 @@ type Recipe struct {
 	Source  *Source  `yaml:"source"`
 	Patches []string `yaml:"patches"`
 
-	Depends   []string `yaml:"depends"`
-	Provides  []string `yaml:"provides"`
-	Conflicts []string `yaml:"conflicts"`
+	// Depends are needed at RUN time and are installed into the image.
+	Depends []string `yaml:"depends"`
+
+	// BuildDepends are needed only to compile this package. They are staged
+	// into the build sysroot and are NOT installed.
+	//
+	// The distinction is not bookkeeping. The Broadcom SDK is 874 MB of static
+	// archives and headers that a datapath daemon links against and an image
+	// must never carry: without this it resolved as a runtime dependency and
+	// took the image from 31 MB to 794 MB, past the board's 768 MB slot. The
+	// slot check caught it, which is the only reason it was not shipped.
+	BuildDepends []string `yaml:"build_depends"`
+	Provides     []string `yaml:"provides"`
+	Conflicts    []string `yaml:"conflicts"`
 
 	Build    *Build    `yaml:"build"`
 	Install  []Install `yaml:"install"`
@@ -328,6 +356,27 @@ func (r *Recipe) Validate() []string {
 	if r.Build != nil && len(r.Build.Stage) > 0 && r.Build.System != "make" {
 		bad("build.stage is set but build.system is %q; stage: is only applied by "+
 			"the make system, and would be silently ignored here", r.Build.System)
+	}
+
+	if r.Build != nil {
+		for i, l := range r.Build.Links {
+			if l.Target == "" || l.Path == "" {
+				bad("build.links[%d]: both target and path are required", i)
+			}
+			if l.Path != "" && !strings.HasPrefix(l.Path, "/") {
+				bad("build.links[%d]: path %q must be absolute within the image", i, l.Path)
+			}
+		}
+	}
+
+	for _, d := range r.BuildDepends {
+		for _, r2 := range r.Depends {
+			if d == r2 {
+				bad("%s is in both depends and build_depends; it would be "+
+					"installed as well as staged, which defeats the point of "+
+					"saying build_depends", d)
+			}
+		}
 	}
 
 	for i, in := range r.Install {

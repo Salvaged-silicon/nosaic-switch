@@ -176,7 +176,36 @@ func selectPackages(o Options) ([]pkgRef, error) {
 		byName[m.Name] = e.Name()
 	}
 
-	order, err := depsolve.Resolve(available, o.Profile.Packages)
+	// What the profile asks for, plus the board's datapath.
+	//
+	// A board with forwarding silicon needs a daemon that can drive it, and
+	// which one falls out of the silicon rather than from a list somebody
+	// maintains: the board says `asic: td2p` and that resolves to whichever
+	// package provides `nosd` for it. Nothing central maps boards to daemons,
+	// which is the point -- adding a switch with an already-supported ASIC
+	// should not mean editing anything but the board directory.
+	//
+	// The virtual platform is not a special case: it declares `asic: virt` and
+	// gets nosd-virt by the same route.
+	wanted := append([]string(nil), o.Profile.Packages...)
+	if datapath := o.Board.DatapathPackage(); datapath != "" {
+		if _, ok := byName[datapath]; ok {
+			wanted = append(wanted, datapath)
+		} else {
+			// Loud rather than fatal. A board whose datapath is not built yet
+			// is a normal state during a port -- the virtual platform is in it
+			// -- and refusing to build would stop the boot testing that gets a
+			// board to the point of having one. But an image with no datapath
+			// is a switch that cannot switch, and that must not be something
+			// anyone discovers on the hardware.
+			fmt.Fprintf(o.Log, "  WARNING: no datapath. Board %s has asic %q, "+
+				"which wants %s, and no such package is built.\n"+
+				"           This image will boot and will not forward anything.\n",
+				o.Board.ID, o.Board.ASIC, datapath)
+		}
+	}
+
+	order, err := depsolve.Resolve(available, wanted)
 	if err != nil {
 		return nil, err
 	}
@@ -298,6 +327,35 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 	group := fmt.Sprintf("root:x:0:\n%s:x:1000:\n", id.Account)
 	if err := writeFile(rootfs, "/etc/group", group, 0o644); err != nil {
 		return err
+	}
+
+	// The CLI, which the cooling loop and the operator both need.
+	if err := installCLI(o.Root, rootfs, o.Arch.GoArch, o.Log); err != nil {
+		return err
+	}
+
+	// The board's own configuration files.
+	//
+	// A datapath daemon is useless without them: the port map, the SerDes
+	// polarity and the SDK properties are what turn an initialised chip into
+	// one that carries traffic, and they are per board. Anything in the
+	// board's config/ directory is placed under /etc/nosaic, which is where
+	// everything on the running system looks for it.
+	//
+	// Some of these are generated rather than shipped -- a port map read from
+	// your own switch is not in this repository -- so a board directory that
+	// has none is normal and not an error. What is not normal is discovering
+	// on the hardware that the image had none, which is why the count is
+	// reported.
+	if o.Board.Path != "" {
+		cfgDir := filepath.Join(filepath.Dir(o.Board.Path), "config")
+		n, err := copyBoardConfig(cfgDir, rootfs)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			fmt.Fprintf(o.Log, "    %d board configuration file(s) into /etc/nosaic\n", n)
+		}
 	}
 
 	// How the account becomes root. The profile decides -- sudo where there is
@@ -503,6 +561,71 @@ poweroff -f
 	// a working switch look hung, twice, and cost two power cycles.
 	consoleDev, consoleBaud := o.Board.ConsolePort()
 
+	// Cooling, before anything that makes the box work harder.
+	//
+	// Every switch has fans, and a switch running without a control loop is
+	// running on whatever duty its firmware left behind. That is survivable
+	// for a bring-up session with someone watching and is not a way to leave a
+	// machine: this board's thermal failure mode is silent.
+	//
+	// Started for any board whose HAL can drive fans. A board that cannot says
+	// so at runtime and the service exits saying it, which is louder than
+	// never having existed.
+	//
+	// Restart "always" on purpose. The loop sets the fans to full on the way
+	// out, so a crash leaves the box cool and noisy rather than cool and
+	// unmanaged -- but noisy-forever is a bad resting state, and something has
+	// to bring regulation back.
+	if o.Board.PlatformHAL.Driver != "" {
+		services = append(services, svcgen.Service{
+			Name:    "thermal",
+			Exec:    "/usr/bin/nosaic platform thermal",
+			After:   []string{"network"},
+			Restart: "always",
+		})
+	}
+
+	// The switch chip, released from the board controller's reset.
+	//
+	// A separate oneshot rather than something the datapath does for itself,
+	// because it is platform work and not datapath work: the chip is held in
+	// reset by the board, and which board is a different question from which
+	// silicon. A board whose chip needs no releasing simply has no HAL driver
+	// and gets no service.
+	if o.Board.PlatformHAL.Driver != "" && o.Board.DatapathPackage() != "" {
+		services = append(services, svcgen.Service{
+			Name:    "asic-release",
+			Exec:    "/usr/bin/nosaic platform release-asic",
+			Restart: "never",
+		})
+	}
+
+	// The datapath.
+	//
+	// Named `nosd` rather than nosd-td2p: the unit, the CLI and the docs only
+	// ever say `nosd`, and which chip is behind it is the image builder's
+	// business. That is what makes a board with different silicon the same
+	// system from here up.
+	//
+	// After asic-release, because the chip is not on the PCI bus until then
+	// and the daemon would find nothing to open.
+	if o.Board.DatapathPackage() != "" {
+		after := []string{"network"}
+		if o.Board.PlatformHAL.Driver != "" {
+			after = append(after, "asic-release")
+		}
+		services = append(services, svcgen.Service{
+			Name:    "nosd",
+			Exec:    "/usr/sbin/nosd",
+			After:   after,
+			Restart: "always",
+			// The SDK writes tens of thousands of lines bringing the chip up.
+			// On a console at 9600 baud that is ten minutes of unusable
+			// console for a few seconds of work.
+			Verbose: true,
+		})
+	}
+
 	consoleGetty := svcgen.Service{
 		Name:  "getty-console",
 		Exec:  fmt.Sprintf("/sbin/getty -L %s %d vt100", consoleDev, consoleBaud),
@@ -540,4 +663,30 @@ poweroff -f
 	}
 
 	return writeFile(rootfs, "/etc/hostname", "nosaic\n", 0o644)
+}
+
+// copyBoardConfig places a board's config/ directory under /etc/nosaic.
+func copyBoardConfig(dir, rootfs string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return n, err
+		}
+		if err := writeFile(rootfs, "/etc/nosaic/"+e.Name(), string(b), 0o644); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
 }

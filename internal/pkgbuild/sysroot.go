@@ -27,7 +27,10 @@ import (
 // longer reproducible from its config.
 func stageDependencies(o Options) (string, error) {
 	sysroot := filepath.Join(o.Root, ".cache", "sysroot", o.Arch.ID)
-	if len(o.Recipe.Depends) == 0 {
+	// Everything this package needs to compile: what it links against at run
+	// time, plus what it only needs while building.
+	need := append(append([]string(nil), o.Recipe.Depends...), o.Recipe.BuildDepends...)
+	if len(need) == 0 {
 		return sysroot, os.MkdirAll(sysroot, 0o755)
 	}
 
@@ -59,7 +62,7 @@ func stageDependencies(o Options) (string, error) {
 	// The transitive closure, in install order. Resolving rather than taking
 	// the literal list means a dependency's own dependencies are staged too,
 	// which is the difference between this working and working for one level.
-	order, err := depsolve.Resolve(available, o.Recipe.Depends)
+	order, err := depsolve.Resolve(available, need)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w — build its dependencies first", o.Recipe.Name, err)
 	}

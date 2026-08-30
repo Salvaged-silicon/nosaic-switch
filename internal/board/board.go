@@ -275,3 +275,15 @@ type Thermal struct {
 	// IntervalSeconds between samples.
 	IntervalSeconds int `yaml:"interval_seconds"`
 }
+
+// DatapathPackage is the package providing this board's `nosd`.
+//
+// Derived from the ASIC rather than stated, so one package serves every switch
+// with a given chip and a board port does not have to name it. A board with no
+// forwarding silicon returns the empty string.
+func (b *Board) DatapathPackage() string {
+	if b.ASIC == "" || b.ASIC == "none" {
+		return ""
+	}
+	return "nosd-" + b.ASIC
+}

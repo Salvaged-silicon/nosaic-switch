@@ -37,6 +37,12 @@ type Arch struct {
 
 	KernelArch string `yaml:"kernel_arch"`
 
+	// GoArch is this architecture's GOARCH, for the Go tools that build
+	// NOSaic's own binaries. Stated rather than derived from the id: they
+	// agree for x86_64/amd64 by luck and not by rule, and a mapping that is
+	// right by coincidence is one that breaks on the third architecture.
+	GoArch string `yaml:"go_arch"`
+
 	// CtngSample is the upstream crosstool-NG sample the defconfig is seeded
 	// from. Recorded so the config can be regenerated rather than being a
 	// hand-tuned artifact nobody dares touch.

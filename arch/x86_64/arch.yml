@@ -10,6 +10,10 @@ name: x86-64
 triple: x86_64-nosaic-linux-gnu
 endian: little
 bits: 64
+# GOARCH for NOSaic's own Go binaries, stated rather than derived: the
+# names agree with the id here by luck, not by rule.
+go_arch: amd64
+
 kernel_arch: x86
 ctng_sample: x86_64-unknown-linux-gnu
 

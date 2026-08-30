@@ -29,6 +29,9 @@
  * places it there from platform/<board>/config/asic.conf. */
 #define DEFAULT_ASIC_CONF "/etc/nosaic/asic.conf"
 
+/* Where the switch chip appears once the board controller releases it. */
+#define DEFAULT_ASIC_BDF "0000:01:00.0"
+
 /* How long --attach holds the device before exiting. Long enough for the SDK's
  * own threads to run and fault if they are going to. */
 #define HOLD_SECONDS 60
@@ -98,6 +101,24 @@ static struct nosaic_bde attached_dev;
 /* Load one or more property files. Later files add to earlier ones, which is
  * what lets the board ship its generic settings and the operator supply the
  * generated port map beside them rather than editing one file. */
+/* Like load_confs but tolerant of a file that is not there: the generated
+ * ones are absent on a switch nobody has generated them for yet, and that
+ * should say so once rather than failing on the first missing name. */
+static int load_confs_optional(char **confs, int n)
+{
+	int i, total = 0;
+
+	for (i = 0; i < n; i++) {
+		int c = nosaic_props_load(confs[i]);
+
+		if (c < 0)
+			continue;
+		printf("config     %d properties from %s\n", c, confs[i]);
+		total += c;
+	}
+	return total;
+}
+
 static int load_confs(char **confs, int n)
 {
 	int i, total = 0;
@@ -191,6 +212,53 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
 }
 #endif
 
+#ifdef NOSAIC_WITH_SDK
+/* Bring the chip up and stay running.
+ *
+ * Missing configuration is fatal rather than a warning: a datapath that comes
+ * up without its port map initialises a chip that reaches no cage, and
+ * reporting that as success is how a switch looks healthy and forwards
+ * nothing. Better to fail here, where the service log says why.
+ */
+static int run_daemon(const char *bdf, char **confs, int nconf)
+{
+	struct nosaic_bde *b = &attached_dev;
+	int unit, n;
+
+	if (nosaic_bde_open(b, bdf) != 0)
+		return 1;
+
+	n = load_confs_optional(confs, nconf);
+	if (n <= 0) {
+		fprintf(stderr, "nosd: no configuration in /etc/nosaic; the port map "
+			"and polarity table are generated per switch -- see the board's "
+			"tools/mkportmap.sh and tools/mkpolarity.sh\n");
+		return 1;
+	}
+	if (nosaic_props_get("portmap_1") == NULL) {
+		fprintf(stderr, "nosd: no port map. The chip would initialise and reach "
+			"no front-panel cage.\n");
+		return 1;
+	}
+
+	unit = nosaic_sdk_attach(b, TD2P_DEVICE, 0x02);
+	if (unit < 0)
+		return 1;
+	if (nosaic_sdk_soc_init(unit) != 0)
+		return 1;
+	if (nosaic_sdk_bcm_init(unit) != 0)
+		return 1;
+	nosaic_sdk_ports(unit);
+
+	printf("nosd: the datapath is up on unit %d\n", unit);
+	fflush(stdout);
+
+	/* The SDK's threads do the work from here. */
+	for (;;)
+		pause();
+}
+#endif
+
 int main(int argc, char **argv)
 {
 	/*
@@ -208,7 +276,11 @@ int main(int argc, char **argv)
 	if (argc == 3 && strcmp(argv[1], "--probe") == 0)
 		return probe(argv[2]);
 #ifdef NOSAIC_WITH_SDK
-	{
+	/* argv[1] is only there to compare against if there IS one. Reaching
+	 * strcmp with argc == 1 dereferences NULL, which is how the daemon mode
+	 * added below crashed in libc before printing a single line -- a segfault
+	 * with no output looks like a broken binary rather than a missing guard. */
+	if (argc >= 2) {
 		static char *defconf[] = { (char *)DEFAULT_ASIC_CONF };
 		int full = -1;
 
@@ -227,6 +299,28 @@ int main(int argc, char **argv)
 		       TD2P_DEVICE, TD2P_VENDOR);
 		return 0;
 	}
+	/*
+	 * No arguments: run as the datapath daemon.
+	 *
+	 * Bring the chip all the way up from the board's own configuration and
+	 * then stay running. Staying is not idleness -- the SDK's own threads live
+	 * in this process, linkscan among them, and link state stops being
+	 * maintained the moment it exits. A datapath that initialises and returns
+	 * leaves ports that come up once and never change again.
+	 *
+	 * It does not serve the switch-api socket yet, which is the next piece of
+	 * work rather than something this pretends to do.
+	 */
+	if (argc == 1) {
+		char *confs[] = {
+			(char *)DEFAULT_ASIC_CONF,
+			(char *)"/etc/nosaic/portmap.conf",
+			(char *)"/etc/nosaic/polarity.conf",
+		};
+		return run_daemon(DEFAULT_ASIC_BDF, confs,
+				  (int)(sizeof(confs) / sizeof(confs[0])));
+	}
+
 	usage();
 	return 2;
 }

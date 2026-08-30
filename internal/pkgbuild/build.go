@@ -427,6 +427,23 @@ func stagePaths(o Options, srcDir, stage string) error {
 		}
 		n += c
 	}
+
+	// Symlinks the package installs. Created in the staging root so collect()
+	// picks them up as links rather than as copies of their target.
+	for _, l := range o.Recipe.Build.Links {
+		to := filepath.Join(stage, filepath.Clean("/"+expand(o, l.Path)))
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			return err
+		}
+		if err := os.Remove(to); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if err := os.Symlink(expand(o, l.Target), to); err != nil {
+			return fmt.Errorf("link %s -> %s: %w", l.Path, l.Target, err)
+		}
+		n++
+	}
+
 	fmt.Fprintf(o.Log, "    staged %d files\n", n)
 	return nil
 }

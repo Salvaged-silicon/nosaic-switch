@@ -23,7 +23,12 @@ conflicts: [nosd]
 source:
   local: datapath/td2p
 
-depends: [glibc, openbcm]
+depends: [glibc]
+
+# The SDK is linked against and never shipped: 874 MB of static archives and
+# headers that belong in a build tree and not on a switch. Declared as a build
+# dependency so it is staged for the compiler and stays out of the image.
+build_depends: [openbcm]
 
 build:
   system: make
@@ -41,3 +46,9 @@ build:
   stage:
     - src: nosd-td2p
       dst: /usr/sbin/nosd-td2p
+
+  # The virtual name everything above the datapath uses. A symlink rather than
+  # a second copy: the binary carries the SDK and is 151 MB.
+  links:
+    - target: nosd-td2p
+      path: /usr/sbin/nosd
