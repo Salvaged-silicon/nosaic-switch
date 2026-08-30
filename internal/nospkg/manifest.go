@@ -57,6 +57,27 @@ type Service struct {
 	Restart string   `json:"restart,omitempty"`
 }
 
+// User is a system account a package needs in order to run.
+//
+// Declared by the package rather than known to the image builder: a daemon
+// that drops privilege needs an account to drop to, and which account that is
+// belongs next to the daemon. Putting it in the image builder instead means a
+// central list that has to be edited every time a package is added, which is
+// the pattern this project exists to avoid.
+//
+// UID and GID are fixed, not allocated. A package overlay installed onto a
+// running switch has to produce the same ownership as the image did, and an
+// allocator would not: the same package would get a different number depending
+// on what else happened to be installed first, and files written before the
+// upgrade would belong to somebody else after it.
+type User struct {
+	Name  string `json:"name"`
+	UID   int    `json:"uid"`
+	GID   int    `json:"gid"`
+	Home  string `json:"home,omitempty"`
+	Shell string `json:"shell,omitempty"`
+}
+
 // BuildInfo records how this package was produced.
 type BuildInfo struct {
 	// Epoch is SOURCE_DATE_EPOCH: the timestamp stamped into every archive
@@ -115,6 +136,7 @@ type Manifest struct {
 	Depends []string `json:"depends,omitempty"`
 
 	Services []Service `json:"services,omitempty"`
+	Users    []User    `json:"users,omitempty"`
 	Files    []File    `json:"files"`
 
 	// PayloadSHA256 covers data.tar.gz as a whole.

@@ -29,6 +29,8 @@ packages:
   - busybox
   - iproute2
   - zlib
+  # The routing stack.
+  - frr
 
 slots: 2
 description: >

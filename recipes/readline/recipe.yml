@@ -1,0 +1,26 @@
+# readline — line editing for vtysh, FRR's integrated shell.
+name: readline
+version: "8.2"
+summary: Command line editing library
+
+license: GPL-3.0-or-later
+redistributable: true
+
+depends: [glibc, ncurses]
+
+source:
+  url: https://ftp.gnu.org/gnu/readline/readline-8.2.tar.gz
+  sha256: 3feb7171f16a84ee82ca18a36d7b9be109a52c04f492a053331d7d1095007c35
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/readline-8.2.tar.gz
+
+build:
+  system: autotools
+  configure:
+    - --disable-static
+    # readline's configure finds no terminal library when cross-compiling and
+    # then links one that is not there. Naming it is the documented fix.
+    - --with-curses
+  env:
+    # bash_cv_wcwidth_broken cannot be probed without running a test program.
+    bash_cv_wcwidth_broken: "no"

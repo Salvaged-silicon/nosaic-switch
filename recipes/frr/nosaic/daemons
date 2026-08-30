@@ -1,0 +1,18 @@
+# Which FRR daemons run. watchfrr starts and supervises the ones marked yes.
+#
+# Only zebra and ospfd for now: zebra owns the kernel routing table, ospfd is
+# what the lab neighbour speaks. bgpd is built and installed but not started,
+# because a daemon with no configuration and no peer is a listening socket
+# nobody asked for.
+zebra=yes
+ospfd=yes
+bgpd=no
+ospf6d=no
+ripd=no
+ripngd=no
+isisd=no
+staticd=yes
+
+zebra_options="  -A 127.0.0.1 -s 90000000"
+ospfd_options=" -A 127.0.0.1"
+staticd_options="-A 127.0.0.1"

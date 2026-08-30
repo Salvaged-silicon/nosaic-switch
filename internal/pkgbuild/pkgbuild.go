@@ -169,6 +169,12 @@ func Build(o Options) (*Result, error) {
 			Triple: o.Arch.Triple,
 		},
 	}
+	for _, u := range r.Users {
+		m.Users = append(m.Users, nospkg.User{
+			Name: u.Name, UID: u.UID, GID: u.GID,
+			Home: u.Home, Shell: u.Shell,
+		})
+	}
 	for _, s := range r.Services {
 		m.Services = append(m.Services, nospkg.Service{
 			Name: s.Name, Exec: s.Exec, After: s.After,

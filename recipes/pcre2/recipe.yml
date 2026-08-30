@@ -1,0 +1,28 @@
+# pcre2 — Perl-compatible regular expressions.
+#
+# Here only because libyang needs it for its pattern restrictions; nothing in
+# NOSaic uses it directly.
+name: pcre2
+version: "10.44"
+summary: Perl-compatible regular expression library
+
+license: BSD-3-Clause
+redistributable: true
+
+depends: [glibc]
+
+source:
+  url: https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/pcre2-10.44.tar.bz2
+  sha256: d34f02e113cf7193a1ebf2770d3ac527088d485d4e047ed10e5d217c6ef5de96
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/pcre2-10.44.tar.bz2
+
+build:
+  system: autotools
+  configure:
+    # libyang links libpcre2-8 specifically; the 16- and 32-bit widths are
+    # nothing anything here asks for.
+    - --enable-pcre2-8
+    - --disable-pcre2-16
+    - --disable-pcre2-32
+    - --disable-static

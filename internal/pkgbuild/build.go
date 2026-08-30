@@ -99,6 +99,18 @@ func buildEnv(o Options) []string {
 		"LC_ALL=C",
 		"TZ=UTC",
 	}
+	// Appended, not assigned: these add to the cross-compilation flags above
+	// rather than replacing them.
+	for i, v := range env {
+		name, _, _ := strings.Cut(v, "=")
+		switch name {
+		case "CFLAGS", "CXXFLAGS":
+			env[i] = v + flagSuffix(o, o.Recipe.Build.CFlags)
+		case "LDFLAGS":
+			env[i] = v + flagSuffix(o, o.Recipe.Build.LDFlags)
+		}
+	}
+
 	for k, v := range o.Recipe.Build.Env {
 		env = append(env, k+"="+expand(o, v))
 	}
@@ -184,12 +196,19 @@ func runBuild(o Options, srcDir, stage string) error {
 	env := buildEnv(o)
 	jobs := "-j" + strconv.Itoa(o.Jobs)
 
+	if err := runPrepare(o, srcDir, env); err != nil {
+		return err
+	}
+
 	switch b.System {
 	case "kernel":
 		return runKernelBuild(o, srcDir, stage)
 
 	case "meson":
 		return runMesonBuild(o, srcDir, stage)
+
+	case "cmake":
+		return runCMakeBuild(o, srcDir, stage)
 
 	case "kernel-headers":
 		return runKernelHeaders(o, stage)
@@ -215,13 +234,24 @@ func runBuild(o Options, srcDir, stage string) error {
 		for _, a := range b.Configure {
 			args = append(args, expand(o, a))
 		}
-		if err := run(o, srcDir, env, "./configure", args...); err != nil {
+
+		// Where configure runs, and what it is called from there.
+		runDir, configure := srcDir, "./configure"
+		if b.OutOfTree {
+			runDir = filepath.Join(srcDir, "build")
+			if err := os.MkdirAll(runDir, 0o755); err != nil {
+				return err
+			}
+			configure = "../configure"
+		}
+
+		if err := run(o, runDir, env, configure, args...); err != nil {
 			return err
 		}
-		if err := run(o, srcDir, env, "make", jobs); err != nil {
+		if err := run(o, runDir, env, "make", jobs); err != nil {
 			return err
 		}
-		return run(o, srcDir, env, "make", "DESTDIR="+stage, "install")
+		return run(o, runDir, env, "make", "DESTDIR="+stage, "install")
 
 	case "make":
 		// Directories the build writes into but does not create.
@@ -284,7 +314,7 @@ func runBuild(o Options, srcDir, stage string) error {
 		return run(o, srcDir, env, "make", install...)
 
 	default:
-		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, meson, kernel, kernel-headers, sysroot-libc, none)", b.System)
+		return fmt.Errorf("unknown build system %q (known: configure, autotools, make, cmake, meson, kernel, kernel-headers, sysroot-libc, none)", b.System)
 	}
 }
 
@@ -461,6 +491,28 @@ func rawMode(info fs.FileInfo) uint32 {
 }
 
 // runAfter executes a recipe's after: commands in the build directory.
+// flagSuffix renders recipe-supplied flags for appending to an existing value.
+func flagSuffix(o Options, flags []string) string {
+	var b strings.Builder
+	for _, f := range flags {
+		b.WriteString(" ")
+		b.WriteString(expand(o, f))
+	}
+	return b.String()
+}
+
+// runPrepare generates a build system that the source archive does not carry.
+func runPrepare(o Options, srcDir string, env []string) error {
+	for _, c := range o.Recipe.Build.Prepare {
+		cmd := expand(o, c)
+		fmt.Fprintf(o.Log, "    $ %s\n", cmd)
+		if err := run(o, srcDir, env, "sh", "-c", cmd); err != nil {
+			return fmt.Errorf("prepare: %s: %w", cmd, err)
+		}
+	}
+	return nil
+}
+
 func runAfter(o Options, srcDir string, env []string) error {
 	for _, c := range o.Recipe.Build.After {
 		cmd := expand(o, c)

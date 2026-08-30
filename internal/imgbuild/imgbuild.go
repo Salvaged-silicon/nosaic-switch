@@ -80,6 +80,7 @@ func Build(o Options) (*Result, error) {
 
 	var names []string
 	var kernel string
+	var users []nospkg.User
 	for _, p := range selected {
 		file := filepath.Join(o.PackageDir, p.file)
 		fmt.Fprintf(o.Log, "    + %s %s\n", p.Name, p.Version)
@@ -88,6 +89,7 @@ func Build(o Options) (*Result, error) {
 			return nil, fmt.Errorf("%s: %w", p.Name, err)
 		}
 		names = append(names, m.Name+"-"+m.Version)
+		users = append(users, m.Users...)
 	}
 
 	// Merge /usr before anything reads paths out of the tree: the kernel
@@ -105,7 +107,7 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 
-	if err := stamp(o, rootfs, id, names); err != nil {
+	if err := stamp(o, rootfs, id, names, users); err != nil {
 		return nil, err
 	}
 
@@ -269,7 +271,7 @@ func writeFile(root, path, content string, mode os.FileMode) error {
 
 // stamp writes the identity of the image into it: what it is, what it
 // contains, and who may log in.
-func stamp(o Options, rootfs string, id *identity.Identity, packages []string) error {
+func stamp(o Options, rootfs string, id *identity.Identity, packages []string, users []nospkg.User) error {
 	osRelease := fmt.Sprintf(`NAME="NOSaic"
 ID=nosaic
 VERSION="%s"
@@ -317,14 +319,31 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 	// in until one is set.
 	passwd := fmt.Sprintf("root:x:0:0:root:/root:/bin/sh\n%s:x:1000:1000:NOSaic:/home/%s:/bin/sh\n",
 		id.Account, id.Account)
+	shadow := fmt.Sprintf("root:*:::::::\n%s::::::::\n", id.Account)
+	group := fmt.Sprintf("root:x:0:\n%s:x:1000:\n", id.Account)
+
+	// Accounts the installed packages asked for. They are locked: these exist
+	// for a daemon to run as, and one that can also be logged into is a way in
+	// that nobody chose to open.
+	for _, u := range dedupeUsers(users, id.Account) {
+		home, sh := u.Home, u.Shell
+		if home == "" {
+			home = "/"
+		}
+		if sh == "" {
+			sh = "/sbin/nologin"
+		}
+		passwd += fmt.Sprintf("%s:x:%d:%d:%s:%s:%s\n", u.Name, u.UID, u.GID, u.Name, home, sh)
+		shadow += fmt.Sprintf("%s:!:::::::\n", u.Name)
+		group += fmt.Sprintf("%s:x:%d:\n", u.Name, u.GID)
+	}
+
 	if err := writeFile(rootfs, "/etc/passwd", passwd, 0o644); err != nil {
 		return err
 	}
-	shadow := fmt.Sprintf("root:*:::::::\n%s::::::::\n", id.Account)
 	if err := writeFile(rootfs, "/etc/shadow", shadow, 0o600); err != nil {
 		return err
 	}
-	group := fmt.Sprintf("root:x:0:\n%s:x:1000:\n", id.Account)
 	if err := writeFile(rootfs, "/etc/group", group, 0o644); err != nil {
 		return err
 	}
@@ -720,4 +739,27 @@ func copyBoardConfig(dir, rootfs string) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// dedupeUsers returns the accounts to add, in a stable order, having removed
+// duplicates and anything that would shadow an account the image already has.
+//
+// Two packages asking for the same account is normal -- a suite split across
+// several packages shares one -- and the same name twice in /etc/passwd is not
+// an error anybody notices, it just means the second entry is never reached.
+// A package colliding with root or the login account is a different matter and
+// is refused rather than silently applied, because that one locks the operator
+// out of their own switch.
+func dedupeUsers(users []nospkg.User, account string) []nospkg.User {
+	seen := map[string]bool{"root": true, account: true}
+	var out []nospkg.User
+	for _, u := range users {
+		if u.Name == "" || seen[u.Name] {
+			continue
+		}
+		seen[u.Name] = true
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

@@ -1,0 +1,28 @@
+# json-c — JSON parsing, needed by FRR.
+#
+# The first cmake package in the tree. json-c has no autotools build any more,
+# which is why the cmake backend exists at all.
+name: json-c
+version: "0.18"
+summary: JSON manipulation library
+
+license: MIT
+redistributable: true
+
+depends: [glibc]
+
+source:
+  url: https://github.com/json-c/json-c/archive/refs/tags/json-c-0.18-20240915.tar.gz
+  sha256: 3112c1f25d39eca661fe3fc663431e130cc6e2f900c081738317fba49d29e298
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/json-c-0.18-20240915.tar.gz
+
+build:
+  system: cmake
+  configure:
+    # The test suite runs what it builds, which a cross-build cannot do.
+    - -DBUILD_TESTING=OFF
+    # FRR links json-c into every daemon; shared keeps one copy in the image
+    # rather than one per daemon.
+    - -DBUILD_SHARED_LIBS=ON
+    - -DDISABLE_WERROR=ON

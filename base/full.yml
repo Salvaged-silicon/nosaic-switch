@@ -30,6 +30,8 @@ packages:
   - execline
   - s6
   - s6-rc
+  # The routing stack.
+  - frr
 
 slots: 2
 description: >

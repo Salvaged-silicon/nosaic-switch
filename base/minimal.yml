@@ -22,11 +22,18 @@ packages:
   - busybox
   - s6-rc
   - opendoas
+  # The routing stack. It is the largest thing in this tier by some way, and it
+  # is here because a switch that boots and forwards but cannot run a routing
+  # protocol is not a smaller switch, it is an incomplete one -- and this tier
+  # is what the oldest boards, the ones most likely to be doing the routing,
+  # will run.
+  - frr
 
 # Two slots plus a shared data partition. The smallest boards may not have room
 # for two, and there the upgrade path degrades to non-atomic and says so.
 slots: 2
 
 description: >
-  A bootable system with a shell, a console login and nothing else. Enough to
-  bring a board up, prove the datapath, and be recovered over serial.
+  A bootable system with a shell, a console login and the routing stack.
+  Enough to bring a board up, prove the datapath, route, and be recovered over
+  serial.

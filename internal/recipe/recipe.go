@@ -104,9 +104,20 @@ type Service struct {
 	Restart string   `yaml:"restart"`
 }
 
+// User is a system account the package needs. See nospkg.User for why the
+// numbers are fixed rather than allocated.
+type User struct {
+	Name  string `yaml:"name"`
+	UID   int    `yaml:"uid"`
+	GID   int    `yaml:"gid"`
+	Home  string `yaml:"home"`
+	Shell string `yaml:"shell"`
+}
+
 // Build describes how the package is compiled.
 type Build struct {
-	// System is how the package is built: configure, autotools, make, or none.
+	// System is how the package is built: configure, autotools, make, cmake,
+	// meson, kernel, kernel-headers, sysroot-libc, or none.
 	System string `yaml:"system"`
 
 	// Configure are extra arguments; --prefix is supplied automatically.
@@ -133,6 +144,16 @@ type Build struct {
 	// Fragments are applied in order after the defconfig. ${ARCH} is
 	// substituted, so one recipe covers every architecture.
 	Fragments []string `yaml:"fragments"`
+
+	// OutOfTree runs configure and make in a subdirectory rather than in the
+	// source root.
+	//
+	// Autotools has always supported this; a few projects require it. FRR is
+	// one: cross-compiling it means building its clippy code generator for the
+	// build machine as well as the target, and it puts that native build in a
+	// subdirectory of the source root -- which it refuses to do if the target
+	// build is already there. Its configure says so outright and stops.
+	OutOfTree bool `yaml:"out_of_tree"`
 
 	// NoPrefix stops --prefix being passed to configure. Several projects
 	// ship a hand-written configure that does not accept it and fails; that is
@@ -164,6 +185,17 @@ type Build struct {
 	// them anywhere.
 	Stage []StagePath `yaml:"stage"`
 
+	// Prepare runs shell commands in the source directory before the build
+	// system is invoked.
+	//
+	// It exists for a project that ships no configure script. FRR is
+	// distributed only as a git tag archive, so autotools has to be run over
+	// it first -- and that has to happen with the build machine's autoconf,
+	// not the target's, which is why it cannot be expressed as a configure
+	// argument. Keep it to generating the build system: anything that shapes
+	// what the package contains belongs in the recipe where it is visible.
+	Prepare []string `yaml:"prepare"`
+
 	// After runs shell commands in the source directory once the build has
 	// finished, before anything is staged.
 	//
@@ -182,6 +214,16 @@ type Build struct {
 	// pointing at it, and everything above the datapath only ever says `nosd`.
 	// Copying instead would put 151 MB in the image twice.
 	Links []Link `yaml:"links"`
+
+	// CFlags and LDFlags are appended to the cross-compilation flags rather
+	// than replacing them.
+	//
+	// Env can set CFLAGS, but only by replacing the whole value -- which
+	// silently drops the staging include and library paths that make a
+	// cross-build work at all. These exist so a package can add one flag
+	// without having to restate the toolchain.
+	CFlags  []string `yaml:"cflags"`
+	LDFlags []string `yaml:"ldflags"`
 
 	// Env overrides build environment variables. The cross-compilation
 	// variables are set for you; this is for a package's own quirks.
@@ -214,6 +256,9 @@ type Recipe struct {
 
 	// Depends are needed at RUN time and are installed into the image.
 	Depends []string `yaml:"depends"`
+
+	// Users are system accounts this package needs in order to run.
+	Users []User `yaml:"users"`
 
 	// BuildDepends are needed only to compile this package. They are staged
 	// into the build sysroot and are NOT installed.

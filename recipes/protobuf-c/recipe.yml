@@ -1,0 +1,35 @@
+# protobuf-c — the C protobuf runtime, for FRR.
+#
+# FRR 10.2 does not let this be configured away. --disable-protobuf exists, but
+# configure.ac checks for protoc-c before consulting it ("Enable Protobuf by
+# default at all times") and fails outright when it is missing, so this is a
+# hard dependency rather than a feature.
+#
+# Only the runtime library is built here. The protoc-c compiler is a build-time
+# tool that has to run on the build machine, and building it would mean the
+# whole protobuf C++ implementation; the builder image carries Ubuntu's
+# instead. That splits the version in two, which is safe in this direction:
+# generated code carries a #if guard on PROTOBUF_C_VERSION_NUMBER, so a runtime
+# older than the compiler is a compile error rather than a silent ABI mismatch.
+# Keeping this newer than any host compiler keeps it on the safe side.
+name: protobuf-c
+version: "1.5.0"
+summary: Protocol Buffers runtime for C
+
+license: BSD-2-Clause
+redistributable: true
+
+depends: [glibc]
+
+source:
+  url: https://github.com/protobuf-c/protobuf-c/releases/download/v1.5.0/protobuf-c-1.5.0.tar.gz
+  sha256: 7b404c63361ed35b3667aec75cc37b54298d56dd2bcf369de3373212cc06fd98
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/protobuf-c-1.5.0.tar.gz
+
+build:
+  system: autotools
+  configure:
+    # Without this the build wants protobuf's C++ library to compile protoc-c.
+    - --disable-protoc
+    - --disable-static

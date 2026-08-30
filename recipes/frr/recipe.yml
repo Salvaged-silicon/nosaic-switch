@@ -1,0 +1,97 @@
+# FRR — the routing stack.
+#
+# Not Quagga. Quagga has been unmaintained since 2018, and EdgeNOS shipped it
+# with bgpd disabled; FRR is where that codebase actually continued.
+#
+# zebra owns the kernel routing table and is what the datapath daemon will
+# follow to program the chip: routes learned here land in the kernel FIB, and
+# the FIB is what gets mirrored into hardware. Without that mirror the CPU
+# punts every forwarded packet, which works and is roughly a thousand times
+# too slow.
+name: frr
+version: "10.2"
+summary: Routing daemon suite (zebra, ospfd, bgpd)
+
+license: GPL-2.0-or-later
+redistributable: true
+
+depends: [glibc, json-c, libyang, readline, ncurses, libcap, protobuf-c]
+
+# zebra and ospfd drop to this account after binding their sockets, keeping
+# only the capabilities they need to write routes. Fixed numbers, because a
+# package installed onto a running switch has to produce the same ownership
+# the image did.
+users:
+  - {name: frr, uid: 101, gid: 101, home: /var/run/frr, shell: /sbin/nologin}
+
+source:
+  url: https://github.com/FRRouting/frr/archive/refs/tags/frr-10.2.tar.gz
+  sha256: f9212701a8bba9ce32b4f2d361149db7778bb7bdc053bfb27415ec1948d83a47
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/frr-10.2.tar.gz
+
+build:
+  system: autotools
+  # See the note on OutOfTree: FRR's configure refuses to cross-compile in the
+  # source root, because that is where it wants to put its native clippy build.
+  out_of_tree: true
+  # FRR publishes no release tarball -- only the git tag archive, which has no
+  # configure script in it.
+  prepare:
+    - ./bootstrap.sh
+  configure:
+    - --sysconfdir=/etc/frr
+    - --localstatedir=/var
+    - --sbindir=/usr/lib/frr
+    - --enable-vtysh
+    - --enable-user=frr
+    - --enable-group=frr
+    - --enable-vty-group=frr
+    # Documentation needs sphinx and a texinfo toolchain, produces nothing a
+    # switch runs, and is the single largest part of the build.
+    - --disable-doc
+    - --disable-doc-html
+    # Nothing here speaks these, and each one is a daemon in the image.
+    - --disable-babeld
+    - --disable-eigrpd
+    - --disable-fabricd
+    - --disable-ldpd
+    - --disable-nhrpd
+    - --disable-pimd
+    - --disable-pim6d
+    - --disable-vrrpd
+    - --disable-pathd
+    # Draws in libunwind and libdw for a backtrace we would not read.
+    - --disable-backtrace
+    # No systemd on the minimal tier; the notify socket would be absent and
+    # every daemon would sit waiting to be told it had started.
+    - --disable-systemd
+    - --disable-static
+  # Position independent, which is both the hardening every distribution
+  # applies to these daemons and, here, load bearing: our toolchain does not
+  # default to it, and FRR's own xref extractor cannot read the resulting
+  # binaries. It walks each executable's xref_array to collect the log message
+  # metadata, and against a non-PIE image it computes an absolute address where
+  # it wants a section offset and dies with "OverflowError: Python int too
+  # large to convert to C ssize_t". The shared libraries built alongside are
+  # already position independent and read fine, which is what points at this.
+  cflags: [-fPIE]
+  ldflags: [-pie]
+
+  env:
+    # configure cannot run a test program when cross-compiling, and its
+    # fallback for these is the wrong answer rather than a refusal.
+    ac_cv_file__proc_net_dev: "yes"
+    ac_cv_file__proc_net_if_inet6: "yes"
+
+install:
+  - {src: nosaic/frr.conf, dst: /etc/frr/frr.conf, mode: "0640"}
+  - {src: nosaic/daemons, dst: /etc/frr/daemons, mode: "0640"}
+
+services:
+  - name: frr
+    # No -d. watchfrr's -d forks and returns, which under a supervisor reads
+    # as "the service exited" -- so it is restarted, forever.
+    exec: /usr/lib/frr/watchfrr -F traditional zebra ospfd
+    after: [nosd]
+    restart: always

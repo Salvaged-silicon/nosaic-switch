@@ -1,0 +1,50 @@
+# ncurses — terminal handling, underneath readline, underneath vtysh.
+name: ncurses
+version: "6.5"
+summary: Terminal control library
+
+license: X11
+redistributable: true
+
+depends: [glibc]
+
+source:
+  url: https://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz
+  sha256: 136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/ncurses-6.5.tar.gz
+
+build:
+  system: autotools
+  configure:
+    - --with-shared
+    - --without-debug
+    - --without-ada
+    - --without-tests
+    # The C++ binding fails to cross-compile and nothing here is C++.
+    - --without-cxx
+    - --without-cxx-binding
+    # Not widec, and stated rather than left to the default: ncurses 6.5
+    # turned wide characters on by default, and it renames the library --
+    # libncursesw, not libncurses. FRR searches for tputs in exactly
+    # "tinfo ncurses curses termcap" and never in ncursesw, so it finds
+    # nothing and reports "libreadline (needed for vtysh) not found", which
+    # names the wrong library entirely. Nothing in this image draws a UTF-8
+    # TUI. Not a separate termlib either, for the same naming reason.
+    - --disable-widec
+    - --enable-overwrite
+    # No terminfo database in the image, and none compiled during the build.
+    #
+    # Installing it means running tic to compile the descriptions, and a
+    # cross-build cannot run the tic it just built. Pointing at the builder's
+    # tic does not help either: ncurses runs it with LD_LIBRARY_PATH aimed at
+    # the freshly built libraries, so the host binary loads the target
+    # libtinfow.so.6 and dies on a missing GLIBC_2.42.
+    #
+    # The descriptions are compiled into the library instead. A switch needs
+    # exactly one terminal to work -- whatever is on the serial console -- and
+    # this covers that without shipping a 7 MB tree of files.
+    - --disable-db-install
+    - --with-fallbacks=linux,vt100,vt102,vt220,xterm,xterm-256color,ansi,dumb
+    - --with-tic-path=/usr/bin/tic
+    - --with-infocmp-path=/usr/bin/infocmp

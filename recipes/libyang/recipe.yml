@@ -1,0 +1,29 @@
+# libyang — YANG parser and data tree, mandatory for FRR since 8.0.
+#
+# FRR's northbound layer is built on it: every daemon loads its YANG modules at
+# startup and refuses to run without them, so this is not an optional feature
+# that can be configured away.
+name: libyang
+version: "2.1.148"
+summary: YANG data modelling library
+
+license: BSD-3-Clause
+redistributable: true
+
+depends: [glibc, pcre2]
+
+source:
+  url: https://github.com/CESNET/libyang/archive/refs/tags/v2.1.148.tar.gz
+  sha256: 77a0aaaeb3df720aeb70d6896e32e2c2be099d48df73e3cfb52567051af3e44b
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/libyang-2.1.148.tar.gz
+
+build:
+  system: cmake
+  configure:
+    - -DENABLE_TESTS=OFF
+    - -DENABLE_VALGRIND_TESTS=OFF
+    # yanglint and yangre are development tools; a switch has no use for them
+    # and they are the only part of this package that is not a library.
+    - -DENABLE_TOOLS=OFF
+    - -DBUILD_SHARED_LIBS=ON
