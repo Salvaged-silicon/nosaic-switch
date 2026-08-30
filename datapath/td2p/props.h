@@ -9,6 +9,10 @@ int nosaic_props_load(const char *path);
  * default for this chip". */
 const char *nosaic_props_get(const char *name);
 
+/* Load every *.conf in a directory, in name order. Returns how many
+ * properties were read, or -1 if the directory is not there. */
+int nosaic_props_load_dir(const char *dir);
+
 int nosaic_props_count(void);
 
 /* Print any properties the SDK never asked for. Call after initialisation. */

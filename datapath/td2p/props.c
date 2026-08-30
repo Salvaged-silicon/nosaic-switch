@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 
 #include "props.h"
 
@@ -155,4 +156,60 @@ void nosaic_props_report_unused(void)
 int nosaic_props_count(void)
 {
 	return nprops;
+}
+
+static int cmp_names(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/*
+ * Load every *.conf in a directory, in name order.
+ *
+ * Name order rather than readdir order so two switches with the same files
+ * load them the same way. Later files override earlier ones, so the ordering
+ * is not cosmetic: a directory read in whatever sequence the filesystem
+ * happens to return would give different configuration on different boots of
+ * the same machine.
+ *
+ * A directory that is not there is not an error. The shipped defaults and the
+ * operator's generated files live in different places and either may be
+ * absent.
+ */
+int nosaic_props_load_dir(const char *dir)
+{
+	char *names[256];
+	int nn = 0, total = 0, i;
+	struct dirent *e;
+	DIR *d;
+
+	d = opendir(dir);
+	if (d == NULL)
+		return -1;
+	while ((e = readdir(d)) != NULL && nn < (int)(sizeof(names) / sizeof(names[0]))) {
+		size_t len = strlen(e->d_name);
+
+		if (len < 6 || strcmp(e->d_name + len - 5, ".conf") != 0)
+			continue;
+		names[nn] = strdup(e->d_name);
+		if (names[nn] == NULL)
+			break;
+		nn++;
+	}
+	closedir(d);
+
+	qsort(names, (size_t)nn, sizeof(names[0]), cmp_names);
+	for (i = 0; i < nn; i++) {
+		char path[512];
+		int c;
+
+		snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+		c = nosaic_props_load(path);
+		if (c >= 0) {
+			printf("config     %d properties from %s\n", c, path);
+			total += c;
+		}
+		free(names[i]);
+	}
+	return total;
 }

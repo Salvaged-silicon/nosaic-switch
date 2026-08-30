@@ -21,7 +21,7 @@ const platformUsage = `usage: nosaic platform <command>
   release-asic         take the switch chip out of reset and wait for it
   asic                 what the switch chip says about itself (read-only)
   transceivers         which front-panel cages have modules in them
-  tx <cage> on|off     turn a cage's transmitter on or off
+  tx <cage|all> on|off turn transmitters on or off
   thermal [--once] [--interval N]
                        run the cooling loop: fans track the hottest sensor,
                        fail to full cooling, and are left at full on exit
@@ -463,9 +463,14 @@ func setCageTX(hal platformhal.HAL, args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: nosaic platform tx <cage> on|off")
 	}
-	cage, err := strconv.Atoi(args[0])
-	if err != nil {
-		return fmt.Errorf("%q is not a cage number", args[0])
+	all := args[0] == "all"
+	cage := 0
+	if !all {
+		var err error
+		cage, err = strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("%q is not a cage number or \"all\"", args[0])
+		}
 	}
 	var on bool
 	switch args[1] {
@@ -477,14 +482,51 @@ func setCageTX(hal platformhal.HAL, args []string) error {
 		return fmt.Errorf("expected on or off, got %q", args[1])
 	}
 
-	before, after, err := t.SetTX(cage, on)
-	if err != nil {
-		return err
-	}
 	state := "off"
 	if on {
 		state = "on"
 	}
-	fmt.Printf("cage %d transmitter %s: %#08x -> %#08x\n", cage, state, before, after)
+
+	if !all {
+		before, after, err := t.SetTX(cage, on)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("cage %d transmitter %s: %#08x -> %#08x\n", cage, state, before, after)
+		return nil
+	}
+
+	// Every cage.
+	//
+	// An empty cage has no laser to light, so turning them all on is not the
+	// blunt instrument it sounds like -- it is the equivalent of every port
+	// being administratively up, which is what a switch that has just booted
+	// should be. Leaving them dark instead produces a link that is up from
+	// this end and absent from the other, which is the hardest kind of fault
+	// to see.
+	c, ok := hal.(interface{ Transceivers() ([]scd.Cage, error) })
+	if !ok {
+		return fmt.Errorf("%w: this board cannot enumerate its cages", platformhal.ErrUnsupported)
+	}
+	cages, err := c.Transceivers()
+	if err != nil {
+		return err
+	}
+	changed, failed := 0, 0
+	for _, cg := range cages {
+		if _, _, err := t.SetTX(cg.Index, on); err != nil {
+			failed++
+			continue
+		}
+		changed++
+	}
+	fmt.Printf("%d of %d transmitters %s", changed, len(cages), state)
+	if failed > 0 {
+		fmt.Printf(", %d refused", failed)
+	}
+	fmt.Println(".")
+	if failed > 0 {
+		return fmt.Errorf("%d cage(s) would not change", failed)
+	}
 	return nil
 }

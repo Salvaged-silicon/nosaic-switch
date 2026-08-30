@@ -52,6 +52,12 @@ if [ -f /nosaic-rootfs.sqsh ]; then
     echo "NOSAIC-BOOT-SLOT ram"
     mount -t tmpfs tmpfs /mnt/data 2>/dev/null || true
     mkdir -p /mnt/data/slot-ram/upper/etc/nosaic /mnt/data/slot-ram/work
+    # The generated per-switch configuration lives here on a real install. It
+    # is created on a RAM boot too so the path is the same either way -- an
+    # operator should not have to know which kind of boot this is to know where
+    # a port map goes. Nothing here survives the reboot, and that is what
+    # stateless means.
+    mkdir -p /mnt/data/config
     # Tells the booted system it has no persistence by design, so its self-test
     # does not report the absence as a fault.
     : > /mnt/data/slot-ram/upper/etc/nosaic/ramboot
@@ -60,6 +66,20 @@ if [ -f /nosaic-rootfs.sqsh ]; then
         /mnt/root || fail "cannot assemble the overlay"
     echo "NOSAIC-INITRAMFS overlay assembled (persistent=no)"
     [ -x /mnt/root/sbin/init ] || fail "the image has no /sbin/init"
+
+    # Carry the data mount and /dev across, exactly as the disk path does.
+    #
+    # Without this the running system has no /mnt/data at all: it is mounted
+    # here, used to build the overlay, and then left behind by switch_root.
+    # Everything that looks for per-switch configuration there finds nothing,
+    # and the failure is silent -- the directory is simply absent, which reads
+    # as "nothing has been configured" rather than as a boot path that dropped
+    # it. On a RAM boot the contents do not survive a reboot, but the PATH must
+    # be the same either way or nothing can be written to work on both.
+    mkdir -p /mnt/root/mnt/data
+    mount --move /mnt/data /mnt/root/mnt/data 2>/dev/null
+    mount --move /dev /mnt/root/dev 2>/dev/null
+
     echo "NOSAIC-BOOT userspace reached (ram)"
     echo "NOSAIC-INITRAMFS handing over to /sbin/init"
     exec switch_root /mnt/root /sbin/init || fail "switch_root failed"

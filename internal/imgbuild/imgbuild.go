@@ -405,6 +405,18 @@ if su -s /bin/sh -c "touch /tmp/.nosaic-selftest" %[1]s 2>/dev/null; then
     say "/tmp writable by %[1]s"; rm -f /tmp/.nosaic-selftest
 else say "FAIL /tmp is not writable by %[1]s"; fail=1; fi
 
+# The persistent configuration directory must exist and be writable.
+#
+# It is where per-switch configuration lives -- a port map read from this
+# board, the SerDes polarity table -- and it is carried across from the
+# initramfs. A boot path that mounts it, uses it and then leaves it behind
+# produces a running system with no /mnt/data at all, and the failure is
+# silent: the directory is simply absent, which reads as "nothing has been
+# configured yet" rather than as a bug. That is exactly what the RAM boot did.
+if [ -d /mnt/data/config ] && touch /mnt/data/config/.selftest 2>/dev/null; then
+    say "persistent config directory present"; rm -f /mnt/data/config/.selftest
+else say "FAIL no writable /mnt/data/config"; fail=1; fi
+
 # A path to root. Without one the switch cannot reach its own hardware -- the
 # platform HAL opens PCI resources that are root-only -- and every minimal
 # image shipped that way until the first real board hit it. Checked as a real
@@ -596,6 +608,25 @@ poweroff -f
 		services = append(services, svcgen.Service{
 			Name:    "asic-release",
 			Exec:    "/usr/bin/nosaic platform release-asic",
+			Restart: "never",
+		})
+	}
+
+	// The front-panel transmitters.
+	//
+	// The board gates each cage's laser and leaves them all off from power-on.
+	// A switch that has booted should have its ports up, and a dark
+	// transmitter produces the least visible fault there is: the link reads UP
+	// from this end, because we lock onto the neighbour's light, while the
+	// neighbour sees no carrier at all.
+	//
+	// Separate from asic-release because it is a different question -- one
+	// concerns the switch chip, the other the optics in front of it -- and a
+	// board might well want one without the other.
+	if o.Board.PlatformHAL.Driver != "" {
+		services = append(services, svcgen.Service{
+			Name:    "transceivers",
+			Exec:    "/usr/bin/nosaic platform tx all on",
 			Restart: "never",
 		})
 	}

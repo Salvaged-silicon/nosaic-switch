@@ -25,9 +25,31 @@
 #define TD2P_VENDOR 0x14e4
 #define TD2P_DEVICE 0xb860
 
-/* Where the board's ASIC configuration lives on a running switch. The image
- * places it there from platform/<board>/config/asic.conf. */
-#define DEFAULT_ASIC_CONF "/etc/nosaic/asic.conf"
+/* Where the board's ASIC configuration lives on a running switch.
+ *
+ * Two directories, in this order, because they hold different kinds of thing:
+ *
+ *   /etc/nosaic        shipped with the image, the same on every switch of
+ *                      this model -- SDK properties, interrupt mode
+ *   /mnt/data/config   generated on THIS switch and belonging to it -- the
+ *                      port map and the SerDes polarity table, which are read
+ *                      from the machine itself and are not in any image
+ *
+ * The persistent directory is read second so it wins, and it is on the shared
+ * data partition rather than in a slot: a port map must survive an upgrade and
+ * a rollback, because it describes the board and not the software.
+ */
+#define SHIPPED_CONF_DIR "/etc/nosaic"
+#define PERSIST_CONF_DIR "/mnt/data/config"
+#define DEFAULT_ASIC_CONF SHIPPED_CONF_DIR "/asic.conf"
+
+/* The configuration files this daemon owns, loaded from the shipped directory
+ * and then the persistent one so the second overrides the first. */
+static const char *const datapath_conf[] = {
+	"asic.conf",      /* shipped: SDK properties for this board model */
+	"portmap.conf",   /* generated: which lane reaches which cage */
+	"polarity.conf",  /* generated: which lanes the PCB inverts */
+};
 
 /* Where the switch chip appears once the board controller releases it. */
 #define DEFAULT_ASIC_BDF "0000:01:00.0"
@@ -223,21 +245,54 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
 static int run_daemon(const char *bdf, char **confs, int nconf)
 {
 	struct nosaic_bde *b = &attached_dev;
-	int unit, n;
+	int unit, n, c, i;
 
 	if (nosaic_bde_open(b, bdf) != 0)
 		return 1;
 
-	n = load_confs_optional(confs, nconf);
+	/*
+	 * Named files rather than every *.conf in the directory.
+	 *
+	 * /etc/nosaic holds more than the datapath's configuration -- the network
+	 * addresses are there too -- and reading a file that was never meant as
+	 * SDK properties is harmless right up until somebody writes a line with an
+	 * equals sign in it. Then a network setting silently becomes a chip
+	 * property. Naming the files this daemon owns costs nothing and removes
+	 * that entirely.
+	 */
+	(void)confs; (void)nconf;
+	n = 0;
+	for (i = 0; i < (int)(sizeof(datapath_conf) / sizeof(datapath_conf[0])); i++) {
+		char path[512];
+
+		snprintf(path, sizeof(path), "%s/%s", SHIPPED_CONF_DIR, datapath_conf[i]);
+		if ((c = nosaic_props_load(path)) > 0) {
+			printf("config     %d properties from %s\n", c, path);
+			n += c;
+		}
+		snprintf(path, sizeof(path), "%s/%s", PERSIST_CONF_DIR, datapath_conf[i]);
+		if ((c = nosaic_props_load(path)) > 0) {
+			printf("config     %d properties from %s\n", c, path);
+			n += c;
+		}
+	}
 	if (n <= 0) {
-		fprintf(stderr, "nosd: no configuration in /etc/nosaic; the port map "
-			"and polarity table are generated per switch -- see the board's "
-			"tools/mkportmap.sh and tools/mkpolarity.sh\n");
+		fprintf(stderr, "nosd: no configuration in %s or %s\n",
+			SHIPPED_CONF_DIR, PERSIST_CONF_DIR);
 		return 1;
 	}
 	if (nosaic_props_get("portmap_1") == NULL) {
-		fprintf(stderr, "nosd: no port map. The chip would initialise and reach "
-			"no front-panel cage.\n");
+		fprintf(stderr,
+			"nosd: no port map, so the chip would initialise and reach no\n"
+			"      front-panel cage. The map is generated from your own switch\n"
+			"      and is not shipped -- it describes this board's wiring:\n"
+			"\n"
+			"        tools/mkportmap.sh <switch-ip>  > %s/portmap.conf\n"
+			"        tools/mkpolarity.sh <switch-ip> > %s/polarity.conf\n"
+			"\n"
+			"      That directory is on the data partition, so they survive an\n"
+			"      upgrade and a rollback.\n",
+			PERSIST_CONF_DIR, PERSIST_CONF_DIR);
 		return 1;
 	}
 
