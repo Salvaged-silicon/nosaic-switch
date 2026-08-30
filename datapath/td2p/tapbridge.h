@@ -20,7 +20,23 @@ struct tap_spec {
 /* Create the taps and start receiving. Returns how many were created. */
 int nosaic_tap_start(int unit, const struct tap_spec *specs, int n);
 
-/* Pump frames from Linux to the wire. Does not return. */
-void nosaic_tap_pump(void);
+/* How many taps exist, and what each one is.
+ *
+ * The chip has to be programmed to match the interface: same MAC, same VLAN,
+ * same MTU. Reading it back from here rather than re-deriving it from the
+ * properties means the two cannot disagree -- and a router interface whose MAC
+ * differs from the tap's is a switch that answers ARP and then drops
+ * everything sent to the address it answered with.
+ */
+int nosaic_tap_count(void);
+int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
+		    unsigned char mac[6]);
+
+/* Pump frames from Linux to the wire. Does not return.
+ *
+ * tick is called every tick_ms milliseconds, for work that has to happen
+ * whether or not there is traffic -- mirroring the routing table, in
+ * particular, which must not wait for a packet to arrive. */
+void nosaic_tap_pump(void (*tick)(void), int tick_ms);
 
 #endif

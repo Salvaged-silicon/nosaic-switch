@@ -87,10 +87,12 @@
 #define RX_PRIORITY    100
 
 struct tap {
-	char        name[IFNAMSIZ];
-	int         fd;
-	bcm_port_t  port;
-	int         vlan;
+	char          name[IFNAMSIZ];
+	int           fd;
+	bcm_port_t    port;
+	int           vlan;
+	int           mtu;
+	unsigned char mac[6];
 };
 
 static struct tap taps[MAX_TAPS];
@@ -209,6 +211,7 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 		ifr.ifr_hwaddr.sa_data[0] = 0x02;
 		ifr.ifr_hwaddr.sa_data[5] = (char)(0x50 + index);
 		ioctl(sock, SIOCSIFHWADDR, &ifr);
+		memcpy(t->mac, ifr.ifr_hwaddr.sa_data, 6);
 
 		/* It has to match the neighbour. OSPF carries the MTU in its
 		 * database description packets and refuses the adjacency when the
@@ -219,6 +222,7 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
 		ifr.ifr_mtu = mtu > 0 ? mtu : 1500;
 		ioctl(sock, SIOCSIFMTU, &ifr);
+		t->mtu = ifr.ifr_mtu;
 
 		memset(&ifr, 0, sizeof(ifr));
 		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
@@ -336,6 +340,7 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 		if (tap_frame_max(unit, specs[i].port, specs[i].mtu) != 0)
 			return -1;
 		taps[ntaps].vlan = specs[i].vlan;
+		taps[ntaps].mtu = specs[i].mtu;
 		if (tap_vlan_setup(unit, &taps[ntaps], specs[i].vlan) != 0)
 			return -1;
 		printf("tap: %s <-> port %d\n", taps[ntaps].name, taps[ntaps].port);
@@ -360,7 +365,30 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 	return ntaps;
 }
 
-void nosaic_tap_pump(void)
+int nosaic_tap_count(void)
+{
+	return ntaps;
+}
+
+int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
+		    unsigned char mac[6])
+{
+	if (i < 0 || i >= ntaps)
+		return -1;
+	if (name != NULL)
+		*name = taps[i].name;
+	if (port != NULL)
+		*port = taps[i].port;
+	if (vlan != NULL)
+		*vlan = taps[i].vlan;
+	if (mtu != NULL)
+		*mtu = taps[i].mtu;
+	if (mac != NULL)
+		memcpy(mac, taps[i].mac, 6);
+	return 0;
+}
+
+void nosaic_tap_pump(void (*tick)(void), int tick_ms)
 {
 	struct pollfd fds[MAX_TAPS];
 	unsigned char buf[TAP_MTU];
@@ -372,11 +400,13 @@ void nosaic_tap_pump(void)
 			fds[i].events = POLLIN;
 			fds[i].revents = 0;
 		}
-		if (poll(fds, (nfds_t)ntaps, -1) < 0) {
+		if (poll(fds, (nfds_t)ntaps, tick != NULL ? tick_ms : -1) < 0) {
 			if (errno == EINTR)
 				continue;
 			return;
 		}
+		if (tick != NULL)
+			tick();
 		for (i = 0; i < ntaps; i++) {
 			ssize_t len;
 

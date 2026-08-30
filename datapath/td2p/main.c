@@ -19,6 +19,7 @@
 #include "bde.h"
 #include "props.h"
 #include "sdk.h"
+#include "l3sync.h"
 #include "tapbridge.h"
 
 /* The Trident2+ this daemon is for. Broadcom's own identifier, so a build for
@@ -359,13 +360,35 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 			return 1;
 		}
 
+		/* Give the chip a router interface matching each tap, so the routes
+		 * the kernel learns can be programmed into it. Read back from the
+		 * bridge rather than from the properties again: a router interface
+		 * whose MAC differs from the tap's answers ARP and then drops
+		 * everything sent to the address it answered with. */
+		for (i = 0; i < nosaic_tap_count(); i++) {
+			const char *name;
+			unsigned char mac[6];
+			int port, vlan, mtu;
+
+			if (nosaic_tap_info(i, &name, &port, &vlan, &mtu, mac) != 0)
+				continue;
+			if (vlan <= 0) {
+				printf("l3: %s has no vlan, so it gets no router "
+				       "interface\n", name);
+				continue;
+			}
+			nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
+		}
+
 		printf("nosd: the datapath is up on unit %d\n", unit);
 		fflush(stdout);
 
 		if (ntap > 0) {
 			/* Pumping is this thread's job from here; the SDK's own threads
 			 * handle the other direction. */
-			nosaic_tap_pump();
+			/* The routing table has to be mirrored whether or not any
+			 * packet arrives, so it runs on the pump's timeout. */
+			nosaic_tap_pump(nosaic_l3_poll, 1000);
 			return 1;   /* pump only returns on failure */
 		}
 	}
