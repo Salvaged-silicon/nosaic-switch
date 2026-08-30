@@ -1,6 +1,10 @@
 package scd
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
+)
 
 // Thermal sensors and the fan controller, both behind the SCD's SMBus.
 //
@@ -65,55 +69,39 @@ func (s *SCD) Temperatures() (map[string]int, error) {
 	return out, nil
 }
 
-// Fan is one fan tray.
-type Fan struct {
-	Index   int
-	Present bool
-	RPM     int
-	// PWM is the commanded duty, 0..255.
-	PWM byte
-	ID  byte
-	// Tach is the raw tachometer count the RPM is derived from, and
-	// PresentRaw the whole presence register -- both kept so a reading that
-	// looks wrong can be checked against what it was decoded from.
-	Tach       int
-	PresentRaw byte
-}
-
 // Fans reports the fan trays: presence, speed and commanded duty.
 //
 // Read-only. Driving them is deliberately not implemented here -- see the note
 // on SetFanPWM.
-func (s *SCD) Fans() ([]Fan, error) {
+func (s *SCD) Fans() ([]platformhal.Fan, error) {
 	present, err := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowPresentReg)
 	if err != nil {
 		return nil, fmt.Errorf("fan controller (CPLD %#02x): %w", crowAddr, err)
 	}
 
-	fans := make([]Fan, 0, crowFanCount)
+	fans := make([]platformhal.Fan, 0, crowFanCount)
 	for i := 0; i < crowFanCount; i++ {
 		// PRESENCE IS ACTIVE LOW: a set bit means the tray is missing. Reading
 		// it the other way round reports every fan absent on a switch that is
 		// running perfectly well, which is what this did first.
-		f := Fan{Index: i + 1, Present: present&(1<<uint(i)) == 0, PresentRaw: present}
+		f := platformhal.Fan{Index: i + 1, Present: present&(1<<uint(i)) == 0}
 		lo, err1 := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowTachReg(i))
 		hi, err2 := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowTachReg(i)+1)
+		tach := 0
 		if err1 == nil && err2 == nil {
-			f.Tach = int(lo) | int(hi)<<8
+			tach = int(lo) | int(hi)<<8
 			// RPM = 6000000 / tach, from the published driver. A tach of zero
 			// is no pulses at all -- a stopped fan -- and dividing by it, or
 			// by the driver's substituted 1, reports six million rpm for a fan
 			// that is not turning. Zero is the honest answer.
-			if f.Tach > 0 && f.Tach != 0xffff {
-				f.RPM = 6000000 / f.Tach
+			if tach > 0 && tach != 0xffff {
+				f.RPM = 6000000 / tach
 			}
 		}
 		if v, err := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowPWMReg(i)); err == nil {
-			f.PWM = v
+			f.Percent = int(v) * 100 / 255
 		}
-		if v, err := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowIDReg(i)); err == nil {
-			f.ID = v
-		}
+		f.Raw = fmt.Sprintf("presence %#02x, tach %d", present, tach)
 		fans = append(fans, f)
 	}
 	return fans, nil
@@ -141,7 +129,7 @@ const FanFloorPercent = 30
 // Anything below the floor is clamped rather than obeyed, and the clamp is
 // reported so a caller asking for something impossible learns that it did not
 // get it.
-func (s *SCD) SetFanPercent(fan, pct int) (clamped bool, err error) {
+func (s *SCD) setOneFanPercent(fan, pct int) (clamped bool, err error) {
 	if fan < 0 || fan >= crowFanCount {
 		return false, fmt.Errorf("fan %d is outside 0..%d", fan, crowFanCount-1)
 	}
@@ -158,11 +146,17 @@ func (s *SCD) SetFanPercent(fan, pct int) (clamped bool, err error) {
 	return clamped, nil
 }
 
-// SetAllFansPercent commands every fan, returning how many refused.
-func (s *SCD) SetAllFansPercent(pct int) (failed int, err error) {
+// FanFloorPercent is the lowest duty this board will command.
+func (s *SCD) FanFloorPercent() int { return FanFloorPercent }
+
+// FanCount is how many fan bays this board has.
+func (s *SCD) FanCount() int { return crowFanCount }
+
+// SetFanPercent commands every fan, returning how many refused.
+func (s *SCD) SetFanPercent(pct int) (failed int, err error) {
 	var first error
 	for i := 0; i < crowFanCount; i++ {
-		if _, e := s.SetFanPercent(i, pct); e != nil {
+		if _, e := s.setOneFanPercent(i, pct); e != nil {
 			failed++
 			if first == nil {
 				first = e
@@ -171,6 +165,3 @@ func (s *SCD) SetAllFansPercent(pct int) (failed int, err error) {
 	}
 	return failed, first
 }
-
-// FanCount is how many fan bays this board has.
-func FanCount() int { return crowFanCount }

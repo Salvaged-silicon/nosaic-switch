@@ -73,7 +73,7 @@ func platformCmd(args []string) error {
 	case "tx":
 		return setCageTX(hal, rest[1:])
 	case "thermal":
-		return thermalCmd(hal, rest[1:])
+		return thermalCmd(hal, b, rest[1:])
 	case "watchdog":
 		return watchdogCmd(hal, rest[1:])
 	}
@@ -165,23 +165,22 @@ func platformStatus(hal platformhal.HAL, b *board.Board) error {
 			fmt.Fprintf(w, "fan controller\tCPLD revision %#02x\n", rev)
 		}
 	}
-	if f, ok := hal.(interface{ Fans() ([]scd.Fan, error) }); ok {
+	if f, ok := hal.(platformhal.Cooling); ok {
 		if fans, err := f.Fans(); err != nil {
 			fmt.Fprintf(w, "fans\t— %v\n", err)
 		} else {
 			for _, fan := range fans {
 				if !fan.Present {
-					fmt.Fprintf(w, "fan %d\tabsent (presence %#02x)\n",
-						fan.Index, fan.PresentRaw)
+					fmt.Fprintf(w, "fan %d\tabsent (%s)\n", fan.Index, fan.Raw)
 					continue
 				}
 				if fan.RPM == 0 {
-					fmt.Fprintf(w, "fan %d\tPRESENT BUT STOPPED, duty %d/255 "+
-						"(tach %d)\n", fan.Index, fan.PWM, fan.Tach)
+					fmt.Fprintf(w, "fan %d\tPRESENT BUT STOPPED, duty %d%% (%s)\n",
+						fan.Index, fan.Percent, fan.Raw)
 					continue
 				}
-				fmt.Fprintf(w, "fan %d\t%d rpm, duty %d/255\n",
-					fan.Index, fan.RPM, fan.PWM)
+				fmt.Fprintf(w, "fan %d\t%d rpm, duty %d%%\n",
+					fan.Index, fan.RPM, fan.Percent)
 			}
 		}
 	}

@@ -76,6 +76,18 @@ platform_hal:
   pci: "0000:05:00.0"
   asic_pci: "0000:01:00.0"
 
+# The cooling curve. Established on this board by EdgeNOS: at or below 35 °C
+# the fans sit at the controller's floor, at or above 65 °C they are flat out.
+#
+# Falling duty is limited because reacting instantly downward makes the fans
+# oscillate around a threshold; rising is immediate because the opposite
+# asymmetry is a thermal risk.
+thermal:
+  min_c: 35
+  max_c: 65
+  slew_down_percent: 5
+  interval_seconds: 10
+
 status: planned
 
 notes: >

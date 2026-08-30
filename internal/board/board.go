@@ -85,6 +85,12 @@ type Board struct {
 	// for at runtime is a PCI address that can be found wrong.
 	PlatformHAL PlatformHAL `yaml:"platform_hal"`
 
+	// Thermal is where this board wants its fans. Board data because it
+	// varies with airflow and silicon: a chassis that wants full cooling at
+	// 65 °C and one that wants it at 55 °C are the same code and different
+	// numbers.
+	Thermal Thermal `yaml:"thermal"`
+
 	Notes string `yaml:"notes"`
 
 	Path string `yaml:"-"`
@@ -256,4 +262,16 @@ type PlatformHAL struct {
 	// is absent from the bus until then, which is why it is stated here
 	// rather than discovered.
 	ASICPCI string `yaml:"asic_pci"`
+}
+
+// Thermal is a board's cooling curve.
+type Thermal struct {
+	// MinC and below sits at the fan floor; MaxC and above is flat out.
+	MinC int `yaml:"min_c"`
+	MaxC int `yaml:"max_c"`
+	// SlewDownPercent is how much the duty may fall in one interval. Rises
+	// are immediate; falling fast makes fans oscillate around a threshold.
+	SlewDownPercent int `yaml:"slew_down_percent"`
+	// IntervalSeconds between samples.
+	IntervalSeconds int `yaml:"interval_seconds"`
 }
