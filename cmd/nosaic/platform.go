@@ -153,6 +153,34 @@ func platformStatus(hal platformhal.HAL, b *board.Board) error {
 		fmt.Fprintf(w, "watchdog\tNOT armed\n")
 	}
 
+	if r, ok := hal.(interface{ FanControllerRevision() (byte, error) }); ok {
+		if rev, err := r.FanControllerRevision(); err != nil {
+			fmt.Fprintf(w, "fan controller\t— %v\n", err)
+		} else {
+			fmt.Fprintf(w, "fan controller\tCPLD revision %#02x\n", rev)
+		}
+	}
+	if f, ok := hal.(interface{ Fans() ([]scd.Fan, error) }); ok {
+		if fans, err := f.Fans(); err != nil {
+			fmt.Fprintf(w, "fans\t— %v\n", err)
+		} else {
+			for _, fan := range fans {
+				if !fan.Present {
+					fmt.Fprintf(w, "fan %d\tabsent (presence %#02x)\n",
+						fan.Index, fan.PresentRaw)
+					continue
+				}
+				if fan.RPM == 0 {
+					fmt.Fprintf(w, "fan %d\tPRESENT BUT STOPPED, duty %d/255 "+
+						"(tach %d)\n", fan.Index, fan.PWM, fan.Tach)
+					continue
+				}
+				fmt.Fprintf(w, "fan %d\t%d rpm, duty %d/255\n",
+					fan.Index, fan.RPM, fan.PWM)
+			}
+		}
+	}
+
 	temps, err := hal.Temperatures()
 	if err != nil && len(temps) == 0 {
 		fmt.Fprintf(w, "temperature\t— %v\n", err)
