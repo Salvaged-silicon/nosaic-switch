@@ -124,3 +124,53 @@ func (s *SCD) Fans() ([]Fan, error) {
 func (s *SCD) FanControllerRevision() (byte, error) {
 	return s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowRevReg)
 }
+
+// FanFloorPercent is the lowest duty this driver will command.
+//
+// The vendor's own thermal control never goes below this and neither does
+// this. A fan controller that can be told to stop is a fan controller that
+// will eventually be told to stop by a bug.
+const FanFloorPercent = 30
+
+// SetFanPercent commands one fan's duty, as a percentage.
+//
+// The ONLY register this writes is the fan's own PWM at 0x10+n, taken from
+// Arista's published driver. That restraint is not fastidiousness: two earlier
+// attempts to find this register by sweeping the CPLD powered the switch off.
+//
+// Anything below the floor is clamped rather than obeyed, and the clamp is
+// reported so a caller asking for something impossible learns that it did not
+// get it.
+func (s *SCD) SetFanPercent(fan, pct int) (clamped bool, err error) {
+	if fan < 0 || fan >= crowFanCount {
+		return false, fmt.Errorf("fan %d is outside 0..%d", fan, crowFanCount-1)
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	if pct < FanFloorPercent {
+		pct, clamped = FanFloorPercent, true
+	}
+	duty := byte(pct * 255 / 100)
+	if err := s.SMBusWriteByte(crowAccel, crowBus, crowAddr, crowPWMReg(fan), duty); err != nil {
+		return clamped, fmt.Errorf("setting fan %d to %d%%: %w", fan+1, pct, err)
+	}
+	return clamped, nil
+}
+
+// SetAllFansPercent commands every fan, returning how many refused.
+func (s *SCD) SetAllFansPercent(pct int) (failed int, err error) {
+	var first error
+	for i := 0; i < crowFanCount; i++ {
+		if _, e := s.SetFanPercent(i, pct); e != nil {
+			failed++
+			if first == nil {
+				first = e
+			}
+		}
+	}
+	return failed, first
+}
+
+// FanCount is how many fan bays this board has.
+func FanCount() int { return crowFanCount }

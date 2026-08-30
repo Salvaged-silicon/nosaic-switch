@@ -136,3 +136,44 @@ func (s *SCD) SMBusReadByte(accel, bus, addr, reg int) (byte, error) {
 	}
 	return byte(resp & 0xff), nil
 }
+
+// SMBusWriteByte writes one register on one device.
+//
+// Three request words rather than four: address and write bit, register
+// index, data. There is no read phase and no repeated start.
+func (s *SCD) SMBusWriteByte(accel, bus, addr, reg int, val byte) error {
+	base := smbBase(accel)
+	if base+smbRespOff+4 > len(s.bar) {
+		return fmt.Errorf("SMBus accelerator %d is past the mapped BAR", accel)
+	}
+	if err := s.smbEnter(base); err != nil {
+		return err
+	}
+
+	const ss = 3
+	b := uint32(bus)
+	s.write32(base+smbReqOff, smbReq(uint32(addr)<<1, ss, 0, 0, smbParamT, 0, 0, 1, 1, b, 0))
+	s.write32(base+smbReqOff, smbReq(uint32(reg)&0xff, 0, 0, 0, smbParamT, 0, 0, 1, 0, b, 1))
+	s.write32(base+smbReqOff, smbReq(uint32(val), 0, smbParamED, 0, smbParamT, 1, 0, 1, 0, b, 2))
+
+	var cs uint32
+	for i := 0; i < 200; i++ {
+		cs = s.read32(base + smbCSOff)
+		if csNRS(cs) >= ss {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cs = s.read32(base + smbCSOff)
+	if csNRS(cs) == 0 {
+		return fmt.Errorf("SMBus a%d b%d %#02x reg %#02x: no response to write, cs=%#08x",
+			accel, bus, addr, reg, cs)
+	}
+	for i := uint32(0); i < csNRS(cs) && i < 8; i++ {
+		resp := s.read32(base + smbRespOff)
+		if resp>>8&1 != 0 || resp>>9&1 != 0 || resp>>10&1 != 0 {
+			return fmt.Errorf("SMBus %#02x reg %#02x: write not acknowledged", addr, reg)
+		}
+	}
+	return nil
+}

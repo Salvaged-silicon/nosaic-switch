@@ -22,6 +22,9 @@ const platformUsage = `usage: nosaic platform <command>
   asic                 what the switch chip says about itself (read-only)
   transceivers         which front-panel cages have modules in them
   tx <cage> on|off     turn a cage's transmitter on or off
+  thermal [--once] [--interval N]
+                       run the cooling loop: fans track the hottest sensor,
+                       fail to full cooling, and are left at full on exit
   schan selftest       prove S-Channel reaches the chip (read-only)
   schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed
@@ -69,6 +72,8 @@ func platformCmd(args []string) error {
 		return showTransceivers(hal)
 	case "tx":
 		return setCageTX(hal, rest[1:])
+	case "thermal":
+		return thermalCmd(hal, rest[1:])
 	case "watchdog":
 		return watchdogCmd(hal, rest[1:])
 	}
