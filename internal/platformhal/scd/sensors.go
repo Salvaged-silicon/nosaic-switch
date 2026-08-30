@@ -68,21 +68,6 @@ func (s *SCD) Temperatures() (map[string]int, error) {
 	return out, nil
 }
 
-// PSUPresent reports which supplies are fitted.
-//
-// Presence is a GPIO, not a reading from the supply itself -- which is the
-// point: it answers for a slot that is empty or holds a dead supply, where
-// PMBus can only answer for one that is alive enough to talk.
-//
-// The bit positions differ per platform and have not been read off this board,
-// so this reports ErrUnsupported rather than a guess. A wrong bit here reads a
-// present supply as missing, and the response to that is someone walking to
-// the rack.
-func (s *SCD) PSUPresent() (map[string]bool, error) {
-	return nil, fmt.Errorf("%w: PSU presence GPIO bits are not established for this board",
-		platformhal.ErrUnsupported)
-}
-
 func readTrim(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {

@@ -166,6 +166,9 @@ func platformStatus(hal platformhal.HAL, b *board.Board) error {
 		fmt.Fprintf(w, "temp %s\t%.1f °C\n", n, float64(temps[n])/1000)
 	}
 
+	if r, ok := hal.(interface{ PSURaw() uint32 }); ok {
+		fmt.Fprintf(w, "psu register\t%#08x\n", r.PSURaw())
+	}
 	if psus, err := hal.PSUPresent(); err != nil {
 		fmt.Fprintf(w, "psu\t— %v\n", err)
 	} else {
