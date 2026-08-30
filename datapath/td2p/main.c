@@ -178,7 +178,8 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
 		printf("\nbcm_attach and bcm_init...\n");
 		if (nosaic_sdk_bcm_init(unit) != 0)
 			return 1;
-		printf("the chip is initialised and running.\n");
+		printf("the chip is initialised and running.\n\n");
+		nosaic_props_report_unused();
 		nosaic_sdk_ports(unit);
 	}
 

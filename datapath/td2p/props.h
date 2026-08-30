@@ -11,4 +11,7 @@ const char *nosaic_props_get(const char *name);
 
 int nosaic_props_count(void);
 
+/* Print any properties the SDK never asked for. Call after initialisation. */
+void nosaic_props_report_unused(void);
+
 #endif

@@ -26,6 +26,10 @@
 struct prop {
 	char *name;
 	char *value;
+	/* Whether the SDK ever asked for this one. A property nobody reads is
+	 * indistinguishable from one that took effect, and both look like a
+	 * correctly configured switch right up until the traffic does not flow. */
+	int used;
 };
 
 static struct prop props[MAX_PROPS];
@@ -103,9 +107,49 @@ const char *nosaic_props_get(const char *name)
 	int i;
 
 	for (i = nprops - 1; i >= 0; i--)
-		if (strcmp(props[i].name, name) == 0)
+		if (strcmp(props[i].name, name) == 0) {
+			props[i].used = 1;
 			return props[i].value;
+		}
 	return NULL;
+}
+
+/*
+ * Report properties the SDK never asked for.
+ *
+ * This exists because a misspelt or mistimed property is silent. It is loaded,
+ * counted, reported as configuration, and never read -- and the switch then
+ * behaves exactly as if it had not been set, which for something like a
+ * polarity flip means links that come up carrying garbage. Sixty-two polarity
+ * properties that the SDK never looked at and sixty-two that it applied are
+ * the same picture from outside, and this is the difference.
+ */
+void nosaic_props_report_unused(void)
+{
+	int i, unused = 0;
+
+	for (i = 0; i < nprops; i++)
+		if (!props[i].used)
+			unused++;
+	if (unused == 0) {
+		printf("config     all %d properties were read by the SDK\n", nprops);
+		return;
+	}
+
+	printf("config     %d of %d properties were NEVER read by the SDK:\n",
+	       unused, nprops);
+	for (i = 0; i < nprops; i++) {
+		if (props[i].used)
+			continue;
+		printf("             %s\n", props[i].name);
+		/* Enough to identify the pattern without pages of output. */
+		if (--unused == 0)
+			break;
+		if (i > 0 && (i % 400) == 0)
+			break;
+	}
+	printf("           A property the SDK does not read has no effect, and\n"
+	       "           looks identical to one that worked.\n");
 }
 
 int nosaic_props_count(void)
