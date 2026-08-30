@@ -21,6 +21,7 @@ const platformUsage = `usage: nosaic platform <command>
   release-asic         take the switch chip out of reset and wait for it
   asic                 what the switch chip says about itself (read-only)
   transceivers         which front-panel cages have modules in them
+  tx <cage> on|off     turn a cage's transmitter on or off
   schan selftest       prove S-Channel reaches the chip (read-only)
   schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed
@@ -66,6 +67,8 @@ func platformCmd(args []string) error {
 		return schanCmd(b, rest[1:])
 	case "transceivers", "xcvr":
 		return showTransceivers(hal)
+	case "tx":
+		return setCageTX(hal, rest[1:])
 	case "watchdog":
 		return watchdogCmd(hal, rest[1:])
 	}
@@ -407,5 +410,46 @@ func showTransceivers(hal platformhal.HAL) error {
 			"present. Presence cannot be told from this until the words are\n" +
 			"established for a board the vendor OS has not touched.")
 	}
+	return nil
+}
+
+// setCageTX turns a front-panel cage's laser on or off.
+//
+// The board controller gates it, not the switch chip, so this is the one thing
+// no amount of correct datapath configuration can do. A cage left disabled
+// produces a link that is up from this end and absent from the other.
+func setCageTX(hal platformhal.HAL, args []string) error {
+	t, ok := hal.(interface {
+		SetTX(int, bool) (uint32, uint32, error)
+	})
+	if !ok {
+		return fmt.Errorf("%w: this board cannot gate its transmitters", platformhal.ErrUnsupported)
+	}
+	if len(args) < 2 {
+		return fmt.Errorf("usage: nosaic platform tx <cage> on|off")
+	}
+	cage, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("%q is not a cage number", args[0])
+	}
+	var on bool
+	switch args[1] {
+	case "on":
+		on = true
+	case "off":
+		on = false
+	default:
+		return fmt.Errorf("expected on or off, got %q", args[1])
+	}
+
+	before, after, err := t.SetTX(cage, on)
+	if err != nil {
+		return err
+	}
+	state := "off"
+	if on {
+		state = "on"
+	}
+	fmt.Printf("cage %d transmitter %s: %#08x -> %#08x\n", cage, state, before, after)
 	return nil
 }

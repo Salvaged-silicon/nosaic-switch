@@ -44,6 +44,7 @@
 #include <bcm/init.h>
 #include <bcm/port.h>
 #include <bcm/link.h>
+#include <bcm/stat.h>
 #include <bcm/error.h>
 #include <shared/bsltypes.h>
 #include <shared/bslext.h>
@@ -503,11 +504,91 @@ int nosaic_sdk_bcm_init(int unit)
 /* How long to wait for link after enabling ports. */
 #define LINK_SETTLE_SECONDS 8
 
+/* How long to count for. Long enough that a neighbour sending periodic
+ * protocol traffic -- OSPF hellos every 10 s, say -- is certain to appear. */
+#define COUNT_SECONDS 25
+
+static uint64 stat_of(int unit, bcm_port_t port, bcm_stat_val_t t)
+{
+	uint64 v = 0;
+
+	if (bcm_stat_get(unit, port, t, &v) < 0)
+		return 0;
+	return v;
+}
+
+/*
+ * What a linked port has actually received and sent.
+ *
+ * This is the measurement polarity exists for. A link comes up whether or not
+ * the lane is inverted -- inverting a 64b/66b stream turns the sync header 01
+ * into 10, which is also legal -- so "UP" says nothing about whether frames
+ * arrive intact. Only the counters do:
+ *
+ *   good packets rising, errors flat   the lane is the right way round
+ *   errors rising, or nothing at all   it is not, whatever the link says
+ *
+ * The far end has to be sending something, which on a live network it always
+ * is; a silent neighbour looks the same as a broken one here and the totals
+ * being zero is reported rather than glossed.
+ */
+struct pcounters {
+	uint64 rxpkt, rxoct, rxerr, crc, txpkt;
+};
+
+static void sample(int unit, bcm_port_t port, struct pcounters *c)
+{
+	c->rxpkt = stat_of(unit, port, snmpIfInUcastPkts);
+	c->rxoct = stat_of(unit, port, snmpIfInOctets);
+	c->rxerr = stat_of(unit, port, snmpIfInErrors);
+	c->crc   = stat_of(unit, port, snmpEtherStatsCRCAlignErrors);
+	c->txpkt = stat_of(unit, port, snmpIfOutUcastPkts);
+}
+
+/*
+ * What a linked port received over an interval.
+ *
+ * Deltas rather than totals, because totals taken moments after a chip reset
+ * say almost nothing: the link is still coming up, the neighbour has just seen
+ * its own port bounce, and a handful of CRC errors during that is ordinary. It
+ * is whether errors keep arriving that distinguishes a lane that is the wrong
+ * way round from one that merely started badly.
+ *
+ * This is the measurement polarity exists for. A link comes up whether or not
+ * the lane is inverted -- inverting a 64b/66b stream turns the sync header 01
+ * into 10, which is also legal -- so "UP" says nothing about whether frames
+ * arrive intact. Only the counters do.
+ */
+static void report_delta(bcm_port_t port, const struct pcounters *a,
+			 const struct pcounters *b, int secs)
+{
+	unsigned long long dpkt = b->rxpkt - a->rxpkt;
+	unsigned long long doct = b->rxoct - a->rxoct;
+	unsigned long long derr = b->rxerr - a->rxerr;
+	unsigned long long dcrc = b->crc - a->crc;
+	unsigned long long dtx  = b->txpkt - a->txpkt;
+
+	printf("         over %ds: rx %llu pkts / %llu octets, %llu errors, "
+	       "%llu CRC; tx %llu pkts\n", secs, dpkt, doct, derr, dcrc, dtx);
+
+	if (doct == 0)
+		printf("         nothing arrived. Either the neighbour is silent, or\n"
+		       "         this lane receives nothing intelligible at all.\n");
+	else if (derr > 0 || dcrc > 0)
+		printf("         STILL ERRORING: frames keep arriving damaged. On this\n"
+		       "         board that is what a wrong RX polarity looks like --\n"
+		       "         the link is up and the content is not.\n");
+	else
+		printf("         clean: %llu frames arrived intact, so this lane is the\n"
+		       "         right way round.\n", dpkt);
+}
+
 int nosaic_sdk_ports(int unit)
 {
 	bcm_port_config_t cfg;
 	bcm_port_t port;
 	int rv, up = 0, total = 0, enable_failures = 0;
+	bcm_port_t linked[16];
 
 	bcm_port_config_t_init(&cfg);
 	rv = bcm_port_config_get(unit, &cfg);
@@ -568,11 +649,32 @@ int nosaic_sdk_ports(int unit)
 		 * not a survey, it is a haystack -- and what matters here is the
 		 * short list of cages that actually have something in them. */
 		if (status == BCM_PORT_LINK_STATUS_UP) {
+			if (up < (int)(sizeof(linked) / sizeof(linked[0])))
+				linked[up] = port;
 			up++;
 			printf("%-8d %-8s %-8d %s\n", port, "UP", speed,
 			       "a cable is in this cage");
 		}
 	}
+	/* Measure over an interval rather than reporting the totals that a chip
+	 * reset left behind. */
+	if (up > 0) {
+		int n = up < (int)(sizeof(linked) / sizeof(linked[0]))
+			? up : (int)(sizeof(linked) / sizeof(linked[0]));
+		struct pcounters before[16], after[16];
+		int i;
+
+		printf("\nsampling the linked ports for %d s...\n", COUNT_SECONDS);
+		for (i = 0; i < n; i++)
+			sample(unit, linked[i], &before[i]);
+		sal_sleep(COUNT_SECONDS);
+		for (i = 0; i < n; i++) {
+			sample(unit, linked[i], &after[i]);
+			printf("port %d\n", linked[i]);
+			report_delta(linked[i], &before[i], &after[i], COUNT_SECONDS);
+		}
+	}
+
 	printf("\n%d of %d ports have link", up, total);
 	if (enable_failures)
 		printf("  (%d ports refused to enable)", enable_failures);

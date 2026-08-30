@@ -111,3 +111,43 @@ func (s *SCD) Transceivers() ([]Cage, error) {
 // Known reports whether a cage word is one of the values measured on this
 // board.
 func (c Cage) Known() bool { return c.State != PresenceUnknown }
+
+// TXEnabled reports whether a cage's transmitter is turned on.
+func (c Cage) TXEnabled() bool { return c.Raw&xcvrTXDisable == 0 }
+
+// SetTX turns a cage's transmitter on or off.
+//
+// The laser is gated by the board controller, not by the switch chip, so no
+// amount of correct datapath configuration lights it. On a board the vendor OS
+// has not run, every SFP+ cage here reads 0xff -- TX_DISABLE asserted -- and
+// the result is a link that looks healthy from this end and does not exist
+// from the other: we lock onto the neighbour's light, the neighbour sees no
+// carrier at all.
+//
+// Only bit 6 is touched. The rest of the word means things this driver has not
+// established, and clearing bits whose purpose is unknown on the device that
+// gates the lasers is not a trade worth making.
+func (s *SCD) SetTX(cage int, on bool) (before, after uint32, err error) {
+	if cage < 1 || cage > xcvrCount {
+		return 0, 0, fmt.Errorf("cage %d is outside 1..%d", cage, xcvrCount)
+	}
+	off := xcvrBase + (cage-1)*xcvrStride
+	if off+4 > len(s.bar) {
+		return 0, 0, fmt.Errorf("cage %d is past the mapped BAR", cage)
+	}
+
+	before = s.read32(off)
+	v := before | xcvrTXDisable
+	if on {
+		v = before &^ uint32(xcvrTXDisable)
+	}
+	s.write32(off, v)
+	after = s.read32(off)
+
+	if (after&xcvrTXDisable == 0) != on {
+		return before, after, fmt.Errorf(
+			"cage %d transmitter did not change: %#08x -> %#08x, TX_DISABLE still %v",
+			cage, before, after, after&xcvrTXDisable != 0)
+	}
+	return before, after, nil
+}
