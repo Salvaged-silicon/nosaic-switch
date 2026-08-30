@@ -6,6 +6,9 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
 )
 
+// The SMBus master is in its own GPL-2.0 package. Everything here stays
+// Apache-2.0: what this file uses is a register map, which carries no licence.
+
 // Thermal sensors and the fan controller, both behind the SCD's SMBus.
 //
 // Neither is on the PCI bus and neither is on the CPU's own i2c controller,
@@ -49,7 +52,7 @@ func (s *SCD) Temperatures() (map[string]int, error) {
 	}
 
 	// The MAX6658's local temperature is one byte of whole degrees.
-	if v, err := s.SMBusReadByte(max6658Accel, max6658Bus, max6658Addr, 0x00); err != nil {
+	if v, err := s.smb().ReadReg(max6658Accel, max6658Bus, max6658Addr, 0x00); err != nil {
 		note(fmt.Errorf("board sensor (MAX6658 %#02x): %w", max6658Addr, err))
 	} else {
 		out["board"] = int(int8(v)) * 1000
@@ -57,7 +60,7 @@ func (s *SCD) Temperatures() (map[string]int, error) {
 
 	// The LM73's temperature is 16 bits; the high byte is whole degrees, which
 	// is the resolution anything here acts on.
-	if v, err := s.SMBusReadByte(lm73Accel, lm73Bus, lm73Addr, 0x00); err != nil {
+	if v, err := s.smb().ReadReg(lm73Accel, lm73Bus, lm73Addr, 0x00); err != nil {
 		note(fmt.Errorf("front-panel sensor (LM73 %#02x): %w", lm73Addr, err))
 	} else {
 		out["front-panel"] = int(int8(v)) * 1000
@@ -74,7 +77,7 @@ func (s *SCD) Temperatures() (map[string]int, error) {
 // Read-only. Driving them is deliberately not implemented here -- see the note
 // on SetFanPWM.
 func (s *SCD) Fans() ([]platformhal.Fan, error) {
-	present, err := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowPresentReg)
+	present, err := s.smb().ReadReg(crowAccel, crowBus, crowAddr, crowPresentReg)
 	if err != nil {
 		return nil, fmt.Errorf("fan controller (CPLD %#02x): %w", crowAddr, err)
 	}
@@ -85,8 +88,8 @@ func (s *SCD) Fans() ([]platformhal.Fan, error) {
 		// it the other way round reports every fan absent on a switch that is
 		// running perfectly well, which is what this did first.
 		f := platformhal.Fan{Index: i + 1, Present: present&(1<<uint(i)) == 0}
-		lo, err1 := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowTachReg(i))
-		hi, err2 := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowTachReg(i)+1)
+		lo, err1 := s.smb().ReadReg(crowAccel, crowBus, crowAddr, crowTachReg(i))
+		hi, err2 := s.smb().ReadReg(crowAccel, crowBus, crowAddr, crowTachReg(i)+1)
 		tach := 0
 		if err1 == nil && err2 == nil {
 			tach = int(lo) | int(hi)<<8
@@ -98,7 +101,7 @@ func (s *SCD) Fans() ([]platformhal.Fan, error) {
 				f.RPM = 6000000 / tach
 			}
 		}
-		if v, err := s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowPWMReg(i)); err == nil {
+		if v, err := s.smb().ReadReg(crowAccel, crowBus, crowAddr, crowPWMReg(i)); err == nil {
 			f.Percent = int(v) * 100 / 255
 		}
 		f.Raw = fmt.Sprintf("presence %#02x, tach %d", present, tach)
@@ -110,7 +113,7 @@ func (s *SCD) Fans() ([]platformhal.Fan, error) {
 // FanControllerRevision identifies the CPLD, which is the cheapest check that
 // the SMBus path reaches it at all.
 func (s *SCD) FanControllerRevision() (byte, error) {
-	return s.SMBusReadByte(crowAccel, crowBus, crowAddr, crowRevReg)
+	return s.smb().ReadReg(crowAccel, crowBus, crowAddr, crowRevReg)
 }
 
 // FanFloorPercent is the lowest duty this driver will command.
@@ -140,7 +143,7 @@ func (s *SCD) setOneFanPercent(fan, pct int) (clamped bool, err error) {
 		pct, clamped = FanFloorPercent, true
 	}
 	duty := byte(pct * 255 / 100)
-	if err := s.SMBusWriteByte(crowAccel, crowBus, crowAddr, crowPWMReg(fan), duty); err != nil {
+	if err := s.smb().WriteReg(crowAccel, crowBus, crowAddr, crowPWMReg(fan), duty); err != nil {
 		return clamped, fmt.Errorf("setting fan %d to %d%%: %w", fan+1, pct, err)
 	}
 	return clamped, nil
