@@ -78,6 +78,7 @@
 #include <bcm/tx.h>
 #include <bcm/port.h>
 #include <bcm/vlan.h>
+#include <bcm/stat.h>
 
 #include "tapbridge.h"
 
@@ -93,6 +94,8 @@ struct tap {
 	int           vlan;
 	int           mtu;
 	unsigned char mac[6];
+	unsigned long tx_ok;
+	unsigned long tx_err;
 };
 
 static struct tap taps[MAX_TAPS];
@@ -145,6 +148,7 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 {
 	unsigned char *frame;
+	int rv;
 
 	if (tx_pkt == NULL || len < 12 || len + 4 > TAP_MTU)
 		return -1;
@@ -175,8 +179,12 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 	BCM_PBMP_CLEAR(tx_pkt->tx_upbmp);
 	BCM_PBMP_PORT_ADD(tx_pkt->tx_upbmp, t->port);  /* leave the wire untagged */
 
-	if (bcm_tx(tap_unit, tx_pkt, NULL) != BCM_E_NONE)
+	rv = bcm_tx(tap_unit, tx_pkt, NULL);
+	if (rv != BCM_E_NONE) {
+		t->tx_err++;
 		return -1;
+	}
+	t->tx_ok++;
 	return 0;
 }
 
@@ -363,6 +371,67 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 		}
 	}
 	return ntaps;
+}
+
+/*
+ * What the chip did with each bridged port.
+ *
+ * "We called bcm_tx and it returned success" is not the same claim as "the
+ * chip put a frame on the wire", and this project has been caught by the
+ * difference more than once -- a transmit bitmap ANDed to nothing returns
+ * BCM_E_NONE having built no descriptor. The egress discard and error columns
+ * are the ones worth watching: they separate "the chip never sent it" from
+ * "the chip sent it and the far end did not like it", which look identical
+ * from here otherwise.
+ */
+void nosaic_tap_stats(void)
+{
+	static const struct {
+		const char    *name;
+		bcm_stat_val_t val;
+	} want[] = {
+		{ "in",       snmpIfInUcastPkts },
+		{ "out",      snmpIfOutUcastPkts },
+		{ "in-disc",  snmpIfInDiscards },
+		{ "out-disc", snmpIfOutDiscards },
+		{ "in-err",   snmpIfInErrors },
+		{ "out-err",  snmpIfOutErrors },
+	};
+	int i, j;
+
+	bcm_stat_sync(tap_unit);
+	for (i = 0; i < ntaps; i++) {
+		int link = -1;
+
+		/* Link state as LINKSCAN sees it, which is the state that matters:
+		 * the transmit path ANDs its port bitmap with linkscan's, and a port
+		 * missing from that bitmap gets no descriptor built and no error
+		 * returned. The far end can report the link up while this says
+		 * otherwise, and then every frame vanishes silently. */
+		bcm_port_link_status_get(tap_unit, taps[i].port, &link);
+		printf("port: %s (port %d) link=%d tx-ok=%lu tx-err=%lu",
+		       taps[i].name, taps[i].port, link,
+		       taps[i].tx_ok, taps[i].tx_err);
+		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {
+			uint64 v;
+			int rv;
+
+			/* A counter this chip does not keep is reported, not skipped.
+			 * Silently dropping it leaves a diagnostic that looks like it
+			 * ran and answered, which is worse than one that admits it
+			 * could not. */
+			rv = bcm_stat_get(tap_unit, taps[i].port, want[j].val, &v);
+			if (rv != BCM_E_NONE) {
+				printf("  %s=?(%d)", want[j].name, rv);
+				continue;
+			}
+			printf("  %s=%llu", want[j].name,
+			       (unsigned long long)COMPILER_64_LO(v) |
+			       ((unsigned long long)COMPILER_64_HI(v) << 32));
+		}
+		printf("\n");
+	}
+	fflush(stdout);
 }
 
 int nosaic_tap_count(void)

@@ -22,6 +22,17 @@
 #include "l3sync.h"
 #include "tapbridge.h"
 
+/* Runs once a second from the pump, whether or not there is traffic. */
+static void datapath_tick(void)
+{
+	static unsigned long ticks;
+
+	nosaic_l3_poll();
+	if (++ticks % 60 == 0)
+		nosaic_tap_stats();
+}
+
+
 /* The Trident2+ this daemon is for. Broadcom's own identifier, so a build for
  * the wrong silicon is visible rather than mysterious. */
 #define TD2P_VENDOR 0x14e4
@@ -388,7 +399,7 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 			 * handle the other direction. */
 			/* The routing table has to be mirrored whether or not any
 			 * packet arrives, so it runs on the pump's timeout. */
-			nosaic_tap_pump(nosaic_l3_poll, 1000);
+			nosaic_tap_pump(datapath_tick, 1000);
 			return 1;   /* pump only returns on failure */
 		}
 	}

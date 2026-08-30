@@ -32,6 +32,10 @@ int nosaic_tap_count(void);
 int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
 		    unsigned char mac[6]);
 
+/* Print what the chip did with each bridged port: frames in and out, and the
+ * discards and errors that separate "never sent" from "sent and rejected". */
+void nosaic_tap_stats(void);
+
 /* Pump frames from Linux to the wire. Does not return.
  *
  * tick is called every tick_ms milliseconds, for work that has to happen
