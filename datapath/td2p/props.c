@@ -213,3 +213,19 @@ int nosaic_props_load_dir(const char *dir)
 	}
 	return total;
 }
+
+/* Iterate the loaded properties, so a caller can find every property matching
+ * a prefix without this file knowing what prefixes mean. */
+const char *nosaic_props_name(int i)
+{
+	if (i < 0 || i >= nprops)
+		return NULL;
+	return props[i].name;
+}
+
+const char *nosaic_props_value(int i)
+{
+	if (i < 0 || i >= nprops)
+		return NULL;
+	return props[i].value;
+}

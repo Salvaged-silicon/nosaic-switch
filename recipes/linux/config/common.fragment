@@ -50,3 +50,12 @@ CONFIG_VETH=m
 CONFIG_BRIDGE=m
 CONFIG_BRIDGE_VLAN_FILTERING=y
 CONFIG_VLAN_8021Q=m
+
+# TUN/TAP, for putting hardware switch ports on the Linux network stack.
+#
+# A switch chip's ports are not network interfaces to Linux: the SDK owns them.
+# The datapath bridges each one to a tap device -- frames received by the chip
+# are written to the tap, frames written by the kernel are handed to the chip
+# -- so an ordinary routing daemon can run over them. Without this there is no
+# /dev/net/tun and nothing above the datapath can see a port at all.
+CONFIG_TUN=y

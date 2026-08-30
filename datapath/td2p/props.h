@@ -15,6 +15,10 @@ int nosaic_props_load_dir(const char *dir);
 
 int nosaic_props_count(void);
 
+/* Iterate the loaded properties by index. */
+const char *nosaic_props_name(int i);
+const char *nosaic_props_value(int i);
+
 /* Print any properties the SDK never asked for. Call after initialisation. */
 void nosaic_props_report_unused(void);
 

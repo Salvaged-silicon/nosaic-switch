@@ -19,6 +19,7 @@
 #include "bde.h"
 #include "props.h"
 #include "sdk.h"
+#include "tapbridge.h"
 
 /* The Trident2+ this daemon is for. Broadcom's own identifier, so a build for
  * the wrong silicon is visible rather than mysterious. */
@@ -305,8 +306,64 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 		return 1;
 	nosaic_sdk_ports(unit);
 
-	printf("nosd: the datapath is up on unit %d\n", unit);
-	fflush(stdout);
+	/*
+	 * Put the routed ports on the Linux network stack.
+	 *
+	 * Which ports and under what names is board configuration, not a decision
+	 * for this daemon: a switch's front panel is wired to its chip in a way
+	 * only the board knows. Stated as
+	 *
+	 *     tap_et1=1
+	 *     tap_et2=2
+	 *
+	 * so the name is the interface a routing daemon will be configured
+	 * against and the value is the logical port behind it.
+	 */
+	{
+		struct tap_spec specs[8];
+		char names[8][32];
+		int ntap = 0, i;
+
+		for (i = 0; i < nosaic_props_count() && ntap < 8; i++) {
+			const char *name = nosaic_props_name(i);
+			const char *val = nosaic_props_value(i);
+
+			if (name == NULL || strncmp(name, "tap_", 4) != 0)
+				continue;
+			snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
+			specs[ntap].name = names[ntap];
+			/* "<port>" or "<port>:<vlan>" */
+			specs[ntap].port = atoi(val);
+			specs[ntap].vlan = 0;
+			{
+				const char *colon = strchr(val, ':');
+
+				if (colon != NULL)
+					specs[ntap].vlan = atoi(colon + 1);
+			}
+			ntap++;
+		}
+
+		if (ntap == 0) {
+			printf("nosd: no tap_<name>=<port> properties, so no port is on "
+			       "the Linux stack.\n"
+			       "      A routing daemon has nothing to run over until "
+			       "there is at least one.\n");
+		} else if (nosaic_tap_start(unit, specs, ntap) < 0) {
+			fprintf(stderr, "nosd: could not bridge ports to Linux\n");
+			return 1;
+		}
+
+		printf("nosd: the datapath is up on unit %d\n", unit);
+		fflush(stdout);
+
+		if (ntap > 0) {
+			/* Pumping is this thread's job from here; the SDK's own threads
+			 * handle the other direction. */
+			nosaic_tap_pump();
+			return 1;   /* pump only returns on failure */
+		}
+	}
 
 	/* The SDK's threads do the work from here. */
 	for (;;)
