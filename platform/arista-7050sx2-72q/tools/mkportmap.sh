@@ -122,10 +122,56 @@ cat <<'HDR'
 # logical-to-physical mapping moves with it.
 HDR
 
+# Everything below is derived from the port list rather than read from the
+# switch, so it is emitted alongside the map rather than shipped: it depends on
+# how many ports this switch has and how they are numbered.
+derived() {
+    awk '
+        /^portmap_/ {
+            split($1, a, "=");  logical = substr(a[1], 9)
+            ports[++n] = logical
+            if (logical + 0 > max) max = logical + 0
+        }
+        END {
+            if (n == 0) exit 0
+            print ""
+            print "# Which logical ports are 10G (xe). The SDK wants a bitmap,"
+            print "# bit N meaning logical port N. Derived from the map above so"
+            print "# a board with a different port count still comes out right."
+            # awk has no shifts portable enough to trust here, so build the hex
+            # digits directly: nibble i holds bits 4i..4i+3.
+            for (i = 1; i <= n; i++) nib[int(ports[i] / 4)] += 2 ^ (ports[i] % 4)
+            hex = ""
+            for (i = int(max / 4); i >= 0; i--) {
+                v = nib[i] + 0
+                hex = hex substr("0123456789abcdef", v + 1, 1)
+            }
+            sub(/^0+/, "", hex)
+            printf "pbmp_xport_xe=0x%s\n", hex
+
+            print ""
+            print "# Per-lane SerDes: decision-feedback equalisation on, optical"
+            print "# media. Not board-specific and not read from the switch --"
+            print "# every front-panel cage here is SFP+ or QSFP optical, and DFE"
+            print "# is what the SDK wants for a passive optical link. Without it"
+            print "# a link comes up and the frames arriving over it do not"
+            print "# decode."
+            for (i = 1; i <= n; i++) {
+                printf "serdes_lane_config_dfe_%s=on\n", ports[i]
+                printf "serdes_lane_config_media_type_%s=optics\n", ports[i]
+            }
+        }
+    '
+}
+
 if [ "${1:-}" = "--stdin" ]; then
-    emit
+    TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
+    emit > "$TMP" || exit 1
+    cat "$TMP"; derived < "$TMP"
+    exit 0
 else
     SW=${1:?usage: mkportmap.sh <switch-ip>   |   mkportmap.sh --stdin < captured.txt}
+    TMP0=$(mktemp)
     USER=${SW_USER:-admin}
     PW=${SW_PW:-arista}
     sshpass -p "$PW" ssh \
@@ -135,5 +181,8 @@ else
         -o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1 \
         "$USER@$SW" "enable
 terminal length 0
-show platform trident system detail" 2>/dev/null | tr -d '\r' | emit
+show platform trident system detail" 2>/dev/null | tr -d '\r' > "$TMP0"
+    TMP=$(mktemp); trap 'rm -f "$TMP" "$TMP0"' EXIT
+    emit < "$TMP0" > "$TMP" || exit 1
+    cat "$TMP"; derived < "$TMP"
 fi
