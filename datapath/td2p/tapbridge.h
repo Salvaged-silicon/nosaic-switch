@@ -10,6 +10,11 @@ struct tap_spec {
 	 * Without one the chip tags what it sends and a routed neighbour drops it
 	 * -- counted as both received and dropped at the far end. */
 	int         vlan;
+	/* Interface MTU, or 0 for whatever the kernel gives a new tap. It has to
+	 * match the neighbour: OSPF carries the MTU in its database description
+	 * packets and refuses an adjacency when the two disagree, leaving it
+	 * stuck in ExStart with no message saying why. */
+	int         mtu;
 };
 
 /* Create the taps and start receiving. Returns how many were created. */

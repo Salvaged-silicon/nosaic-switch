@@ -81,6 +81,7 @@ func Build(o Options) (*Result, error) {
 	var names []string
 	var kernel string
 	var users []nospkg.User
+	var pkgServices []nospkg.Service
 	for _, p := range selected {
 		file := filepath.Join(o.PackageDir, p.file)
 		fmt.Fprintf(o.Log, "    + %s %s\n", p.Name, p.Version)
@@ -90,6 +91,7 @@ func Build(o Options) (*Result, error) {
 		}
 		names = append(names, m.Name+"-"+m.Version)
 		users = append(users, m.Users...)
+		pkgServices = append(pkgServices, m.Services...)
 	}
 
 	// Merge /usr before anything reads paths out of the tree: the kernel
@@ -107,7 +109,7 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 
-	if err := stamp(o, rootfs, id, names, users); err != nil {
+	if err := stamp(o, rootfs, id, names, users, pkgServices); err != nil {
 		return nil, err
 	}
 
@@ -271,7 +273,7 @@ func writeFile(root, path, content string, mode os.FileMode) error {
 
 // stamp writes the identity of the image into it: what it is, what it
 // contains, and who may log in.
-func stamp(o Options, rootfs string, id *identity.Identity, packages []string, users []nospkg.User) error {
+func stamp(o Options, rootfs string, id *identity.Identity, packages []string, users []nospkg.User, pkgServices []nospkg.Service) error {
 	osRelease := fmt.Sprintf(`NAME="NOSaic"
 ID=nosaic
 VERSION="%s"
@@ -578,6 +580,28 @@ poweroff -f
 		return err
 	}
 	var services []svcgen.Service
+
+	// Services the installed packages declared.
+	//
+	// The package already carries the rendered service files -- they are
+	// generated when it is built, so that installing it onto a running switch
+	// brings its unit with it. What the package cannot do is enrol itself in
+	// whatever starts things at boot, because that is the image's business:
+	// under s6-rc it is membership of the "default" bundle, under systemd a
+	// link from multi-user.target.wants, and neither exists yet when the
+	// package is built. Re-declaring them here does that. It also rewrites the
+	// same files from the same generator, which is harmless.
+	//
+	// Left out, a package's service is present, correct, and never started --
+	// s6-svstat reports it as "down (not started yet)", which reads like a
+	// service that failed rather than one nothing ever asked for.
+	for _, s := range pkgServices {
+		services = append(services, svcgen.Service{
+			Name: s.Name, Exec: s.Exec, After: s.After,
+			Wants: s.Wants, Restart: s.Restart,
+		})
+	}
+
 	if hasNet {
 		services = append(services, svcgen.Service{
 			Name:    "network-config",

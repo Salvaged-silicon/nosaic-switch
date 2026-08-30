@@ -332,14 +332,19 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				continue;
 			snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
 			specs[ntap].name = names[ntap];
-			/* "<port>" or "<port>:<vlan>" */
+			/* "<port>", "<port>:<vlan>" or "<port>:<vlan>:<mtu>" */
 			specs[ntap].port = atoi(val);
 			specs[ntap].vlan = 0;
+			specs[ntap].mtu = 0;
 			{
 				const char *colon = strchr(val, ':');
 
-				if (colon != NULL)
+				if (colon != NULL) {
 					specs[ntap].vlan = atoi(colon + 1);
+					colon = strchr(colon + 1, ':');
+					if (colon != NULL)
+						specs[ntap].mtu = atoi(colon + 1);
+				}
 			}
 			ntap++;
 		}

@@ -179,7 +179,8 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 }
 
 /* Create one tap device, up, with its own MAC. */
-static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index)
+static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
+		    int mtu)
 {
 	struct ifreq ifr;
 	int fd, sock;
@@ -209,9 +210,14 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index)
 		ifr.ifr_hwaddr.sa_data[5] = (char)(0x50 + index);
 		ioctl(sock, SIOCSIFHWADDR, &ifr);
 
+		/* It has to match the neighbour. OSPF carries the MTU in its
+		 * database description packets and refuses the adjacency when the
+		 * two disagree -- it sits in ExStart, having already exchanged
+		 * Hellos, and says nothing about why. A 1500 default against a
+		 * neighbour at 1600 is exactly that. */
 		memset(&ifr, 0, sizeof(ifr));
 		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
-		ifr.ifr_mtu = 1500;
+		ifr.ifr_mtu = mtu > 0 ? mtu : 1500;
 		ioctl(sock, SIOCSIFMTU, &ifr);
 
 		memset(&ifr, 0, sizeof(ifr));
@@ -226,6 +232,29 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index)
 	snprintf(t->name, sizeof(t->name), "%s", name);
 	t->fd = fd;
 	t->port = port;
+	return 0;
+}
+
+/*
+ * Let the chip carry what the interface will send.
+ *
+ * The port's maximum frame is a separate setting from the interface MTU, and
+ * the two failing to agree does not look like a size problem: small packets
+ * pass, an adjacency forms, and then anything large disappears. Headroom is
+ * the Ethernet header, the FCS, and the VLAN tag this bridge adds.
+ */
+static int tap_frame_max(int unit, bcm_port_t port, int mtu)
+{
+	int rv;
+
+	if (mtu <= 0)
+		return 0;
+
+	rv = bcm_port_frame_max_set(unit, port, mtu + 14 + 4 + 4);
+	if (rv != BCM_E_NONE && rv != BCM_E_UNAVAIL) {
+		fprintf(stderr, "tap: bcm_port_frame_max_set %d: %d\n", mtu, rv);
+		return -1;
+	}
 	return 0;
 }
 
@@ -301,7 +330,10 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 	}
 
 	for (i = 0; i < n; i++) {
-		if (tap_open(&taps[ntaps], specs[i].name, specs[i].port, ntaps) != 0)
+		if (tap_open(&taps[ntaps], specs[i].name, specs[i].port, ntaps,
+			     specs[i].mtu) != 0)
+			return -1;
+		if (tap_frame_max(unit, specs[i].port, specs[i].mtu) != 0)
 			return -1;
 		taps[ntaps].vlan = specs[i].vlan;
 		if (tap_vlan_setup(unit, &taps[ntaps], specs[i].vlan) != 0)

@@ -86,12 +86,39 @@ build:
 
 install:
   - {src: nosaic/frr.conf, dst: /etc/frr/frr.conf, mode: "0640"}
-  - {src: nosaic/daemons, dst: /etc/frr/daemons, mode: "0640"}
+  - {src: nosaic/vtysh.conf, dst: /etc/frr/vtysh.conf, mode: "0640"}
 
+# One service per daemon, not watchfrr.
+#
+# watchfrr is FRR's own supervisor: it starts the daemons, watches them, and
+# restarts what dies. Every one of those jobs is already being done by whatever
+# init this profile runs, and running a supervisor under a supervisor means two
+# things with an opinion about whether zebra should be alive. It also assumes
+# the distribution's shell scripts for the restarting, which are not here.
+#
+# So the daemons are declared the way everything else is, and the ones that
+# matter are the ones an operator would name.
 services:
-  - name: frr
-    # No -d. watchfrr's -d forks and returns, which under a supervisor reads
-    # as "the service exited" -- so it is restarted, forever.
-    exec: /usr/lib/frr/watchfrr -F traditional zebra ospfd
-    after: [nosd]
+  # The run directory is on a tmpfs, so it does not survive a boot and cannot
+  # simply be shipped in the image with the right ownership.
+  - name: frr-dirs
+    # /var/lib/frr holds the northbound configuration state and /var/tmp/frr
+    # the crash log; without them every daemon reports a failed mkdir at
+    # startup and runs on with less than it should have.
+    exec: /bin/sh -c "mkdir -p /var/run/frr /var/lib/frr /var/tmp/frr /var/log && chown frr:frr /var/run/frr /var/lib/frr /var/tmp/frr && chmod 0755 /var/run/frr /var/lib/frr /var/tmp/frr"
+    restart: never
+
+  # zebra owns the kernel routing table. Everything else talks to it.
+  #
+  # No -d: it would fork and return, which a supervisor reads as the service
+  # having exited. Started as root and drops to the frr user itself, keeping
+  # the capabilities it needs to write routes.
+  - name: zebra
+    exec: /usr/lib/frr/zebra -A 127.0.0.1 -f /etc/frr/frr.conf
+    after: [frr-dirs, nosd]
+    restart: always
+
+  - name: ospfd
+    exec: /usr/lib/frr/ospfd -A 127.0.0.1 -f /etc/frr/frr.conf
+    after: [zebra]
     restart: always
