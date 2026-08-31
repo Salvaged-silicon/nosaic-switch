@@ -323,7 +323,32 @@ static int tap_vlan_setup(int unit, struct tap *t, int vid)
 		fprintf(stderr, "tap: bcm_port_untagged_vlan_set %d: %d\n", vid, rv);
 		return -1;
 	}
-	printf("tap: %s port %d in vlan %d, untagged\n", t->name, t->port, vid);
+
+	/*
+	 * Spanning-tree state, and what it was before we set it.
+	 *
+	 * A port can be enabled, linked and a member of the right VLAN and still
+	 * forward nothing, because the STP state for its group is BLOCK or
+	 * DISABLE. None of the things anybody checks first -- link, speed,
+	 * membership, the port map -- shows it, and the symptom is a port that
+	 * is up by every measure and silent on the wire.
+	 *
+	 * NOSaic runs no spanning tree, so the only correct state for a routed
+	 * port is FORWARD. Setting it unconditionally is right; printing what it
+	 * was is what tells the next person whether this line was load-bearing.
+	 */
+	{
+		int stp = -1, ena = -1;
+
+		bcm_port_stp_get(unit, t->port, &stp);
+		bcm_port_enable_get(unit, t->port, &ena);
+		rv = bcm_port_stp_set(unit, t->port, BCM_PORT_STP_FORWARD);
+		if (rv != BCM_E_NONE)
+			fprintf(stderr, "tap: bcm_port_stp_set %s: %d (%s)\n",
+				t->name, rv, bcm_errmsg(rv));
+		printf("tap: %s port %d in vlan %d, untagged (was stp=%d enable=%d)\n",
+		       t->name, t->port, vid, stp, ena);
+	}
 	return 0;
 }
 
@@ -390,8 +415,10 @@ void nosaic_tap_stats(void)
 		const char    *name;
 		bcm_stat_val_t val;
 	} want[] = {
-		{ "in",       snmpIfInUcastPkts },
-		{ "out",      snmpIfOutUcastPkts },
+		{ "in-uc",    snmpIfInUcastPkts },
+		{ "in-nuc",   snmpIfInNUcastPkts },
+		{ "out-uc",   snmpIfOutUcastPkts },
+		{ "out-nuc",  snmpIfOutNUcastPkts },
 		{ "in-disc",  snmpIfInDiscards },
 		{ "out-disc", snmpIfOutDiscards },
 		{ "in-err",   snmpIfInErrors },
@@ -409,9 +436,29 @@ void nosaic_tap_stats(void)
 		 * returned. The far end can report the link up while this says
 		 * otherwise, and then every frame vanishes silently. */
 		bcm_port_link_status_get(tap_unit, taps[i].port, &link);
-		printf("port: %s (port %d) link=%d tx-ok=%lu tx-err=%lu",
-		       taps[i].name, taps[i].port, link,
-		       taps[i].tx_ok, taps[i].tx_err);
+
+		/*
+		 * Unicast counters alone cannot answer "is this port receiving".
+		 * ARP is broadcast, so a port that never resolves a neighbour
+		 * shows in-uc=0 whether frames are arriving or not -- the counter
+		 * and the fault produce the same number. in-nuc is the one that
+		 * distinguishes them.
+		 *
+		 * Loopback is here for the same reason: a port in MAC loopback
+		 * reports link, because the PHY still sends idles and the far end
+		 * still locks, and passes no traffic in either direction. Every
+		 * status the SDK offers says that port is healthy.
+		 */
+		{
+			int lb = -1, fmax = -1;
+
+			bcm_port_loopback_get(tap_unit, taps[i].port, &lb);
+			bcm_port_frame_max_get(tap_unit, taps[i].port, &fmax);
+			printf("port: %s (port %d) link=%d lb=%d fmax=%d "
+			       "tx-ok=%lu tx-err=%lu",
+			       taps[i].name, taps[i].port, link, lb, fmax,
+			       taps[i].tx_ok, taps[i].tx_err);
+		}
 		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {
 			uint64 v;
 			int rv;

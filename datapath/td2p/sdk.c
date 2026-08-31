@@ -489,6 +489,28 @@ int nosaic_sdk_bcm_init(int unit)
 			unit, rv, bcm_errmsg(rv));
 		return -1;
 	}
+	/*
+	 * Counter collection, which nothing was starting.
+	 *
+	 * bcm_stat_get reads a software cache that the SDK's counter thread
+	 * fills; without bcm_stat_init that thread never runs and every counter
+	 * on every port reads zero. That is the worst possible failure for a
+	 * diagnostic, because zero is also what a genuinely idle port reads --
+	 * so the numbers looked like an answer and were not one. On this board
+	 * it cost a diagnosis: a 40G port carrying nothing and a 10G port
+	 * carrying pings reported identical counters, and the 10G port was the
+	 * control that proved the counters wrong rather than the port right.
+	 *
+	 * bcm_init does not do this. The SDK's own diag shell calls it
+	 * separately, which is easy to miss when the init sequence is assembled
+	 * by hand.
+	 */
+	printf("  bcm_stat_init...\n");
+	rv = bcm_stat_init(unit);
+	if (rv < 0)
+		fprintf(stderr, "nosd-td2p: bcm_stat_init(%d) returned %d (%s); "
+			"port counters will read zero\n", unit, rv, bcm_errmsg(rv));
+
 	printf("  init complete\n");
 	return 0;
 }
@@ -654,28 +676,29 @@ static void bring_up_40g(int unit, bcm_port_t port)
 			       port, smax, nlanes);
 	}
 
-	rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_XGMII);
-	if (rv < 0) {
-		fprintf(stderr, "nosd-td2p: port %d interface_set(XGMII): %d (%s)\n",
-			port, rv, bcm_errmsg(rv));
-		return;
-	}
-	/* Not fatal. The port map's ":40" may already have set the speed, in
-	 * which case forcing it again is refused -- and that refusal must not
-	 * skip the duplex and autoneg settings below, which was the first
-	 * version's mistake. */
-	rv = bcm_port_speed_set(unit, port, 40000);
-	if (rv < 0)
-		fprintf(stderr, "nosd-td2p: port %d speed_set(40000): %d (%s); "
-			"continuing\n", port, rv, bcm_errmsg(rv));
-
-	bcm_port_duplex_set(unit, port, BCM_PORT_DUPLEX_FULL);
-	bcm_port_autoneg_set(unit, port, 0);
-
+	/*
+	 * Nothing is set here any more, and that is the point.
+	 *
+	 * This function used to force interface, speed, duplex and autoneg on
+	 * every 40G port. It was written when the cages were dark and the cause
+	 * was unknown, and it never brought a port up: the cages were switched
+	 * off at the board controller, and the fix was in the SCD driver.
+	 *
+	 * What it did do is reconfigure a port the chip had already brought up
+	 * correctly from port_init_speed. bcm_port_interface_set and
+	 * bcm_port_speed_set take the XLPORT MAC through reset to apply a
+	 * change, and applying a change the port already had left both 40G
+	 * ports linked at the PCS and deaf at the MAC -- zero frames in, zero
+	 * frames out, no FCS errors, while every status the SDK reports said
+	 * the port was up at 40000. The two 10G ports, which this function
+	 * never touched, forwarded throughout.
+	 *
+	 * The port map's ":40" and port_init_speed are enough. A port that the
+	 * chip configured at init does not want configuring again.
+	 */
 	if (bcm_port_speed_get(unit, port, &rv) == BCM_E_NONE)
-		printf("port %d brought up as 40G (XGMII), speed now %d\n", port, rv);
-	else
-		printf("port %d brought up as 40G (XGMII)\n", port);
+		printf("port %d: 40G cage, speed %d, left as the chip initialised it\n",
+		       port, rv);
 }
 
 
