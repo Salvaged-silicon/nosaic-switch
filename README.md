@@ -3,25 +3,66 @@
 A network operating system for **end-of-service-life switches and routers** — hardware
 the vendor has abandoned, given a modern, open, maintained OS.
 
-> **Status: early. Nothing is supported yet.**
-> This README advertises only what is merged and working. Right now that is the build
-> skeleton and its checks. See [docs/DESIGN.md](docs/DESIGN.md) for where it is going
-> and [docs/MILESTONES.md](docs/MILESTONES.md) for what lands when.
+> **Status: early. No board is supported yet.**
+> This README advertises only what is merged, working and finished. "Supported" means a
+> board somebody else can install and run — see [Where it has got to](#where-it-has-got-to)
+> for what actually runs today, which is more than that table shows.
+> [docs/DESIGN.md](docs/DESIGN.md) is where it is going and
+> [docs/MILESTONES.md](docs/MILESTONES.md) is what lands when.
 
 ## Supported hardware
 
-None yet. The first board will be `virt-x86_64` — a virtual platform that boots under
-QEMU — followed by real silicon.
+None yet.
 
-Boards appear in this table when they boot, forward traffic, and pass CI. Not before.
+A board reaches this table when it installs itself, survives a power cycle, and passes
+CI — not when it works on the bench. Two are in bring-up and neither has cleared that
+bar; both are in [docs/switches.md](docs/switches.md).
 
 | Board | Arch | ASIC | Boot | Status |
 |-------|------|------|------|--------|
 | _none_ | | | | |
 
-Every board that lands carries three pages — **install**, **build** and a deep
-**hardware** reference with its architecture, port map and registers. They live in the
-board's own directory, and [docs/switches.md](docs/switches.md) indexes them.
+Every board carries at least three pages — **install**, **build** and a deep
+**hardware** reference with its architecture, port map and registers — and may add more.
+They live in the board's own directory, and [docs/switches.md](docs/switches.md) indexes
+them from what each directory actually contains.
+
+## Where it has got to
+
+The first real board is the **[Arista DCS-7050SX2-72Q-R](platform/arista-7050sx2-72q/)** —
+Broadcom Trident2+ (BCM56860), x86_64, Aboot. On that switch, measured rather than
+assumed:
+
+- it boots NOSaic built entirely from source, over the network into RAM;
+- the switch chip comes out of reset and initialises, driven from userspace with **no
+  Broadcom kernel modules**;
+- front-panel ports appear on the Linux stack, and **FRR holds OSPFv2 and OSPFv3
+  adjacencies** with two different vendors' routers;
+- the kernel routing table is mirrored into the ASIC — 96 route entries, by the chip's
+  own accounting;
+- **forwarding happens in silicon**: 100 packets routed through the box raised the chip's
+  port counter by 101 and the CPU's by 44, which is the background protocol traffic and
+  nothing like 100;
+- fans, temperatures, PSUs and transceivers read and control through the platform HAL,
+  with a closed-loop fan curve.
+
+Two things stand between that and a supported board.
+
+It cannot install itself: everything above is a RAM boot, and the A/B slots, trial boot
+and rollback are built and CI-tested on the virtual platform but unexercised on this
+switch.
+
+And the switch was configured with `ip` and `vtysh` rather than with NOSaic's own CLI.
+The `nosaic show ports`, `interface` and `route` commands exist and run against the
+virtual datapath in CI; they have not been run against silicon. Until the same commands
+work unmodified on both, the claim below about one CLI everywhere is a design commitment
+rather than a demonstrated fact — which is exactly why it is the gate on this board
+rather than something to be assumed.
+
+How it all works, with diagrams, is in
+**[architecture](platform/arista-7050sx2-72q/docs/architecture.md)**; the development
+loop that produced it is in
+**[running](platform/arista-7050sx2-72q/docs/running.md)**.
 
 ## Bootloaders
 
@@ -45,6 +86,9 @@ board that hangs with nothing on the console. A board that omits them is rejecte
 the build starts rather than after it.
 
 ## What makes it different
+
+These are the commitments the design is built on. Where one is already load-bearing the
+section above says so; where it is not yet demonstrated on silicon, it says that too.
 
 - **Built from source.** NOSaic builds its own toolchain and its own base system. It does
   not capture someone else's root filesystem and inherit their assumptions.
@@ -74,8 +118,9 @@ lists what there is to choose from, and offers to pick if you are at a terminal:
 ```
 $ nosaic build
 Which switch?
-      BOARD        INSTALLS BY                                       STATUS
-  1.  virt-x86_64  no installer: QEMU is given the kernel...         bringup
+      BOARD               INSTALLS BY                                        STATUS
+  1.  arista-7050sx2-72q  a SWI booted by Aboot: copy to flash and point...  bringup
+  2.  virt-x86_64         no installer: QEMU is given the kernel...          bringup
 
 number or name:
 ```
