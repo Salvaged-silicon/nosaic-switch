@@ -31,6 +31,8 @@
 #   ./mkportmap.sh --stdin < captured.txt > portmap.conf
 #
 # Environment: SFP_CAGES (default 48) is how many front-panel cages are SFP+.
+#              QSFP_BREAKOUT=1 maps each QSFP+ cage as four 10G ports instead
+#              of one 40G port. The default is 40G.
 #
 # The second form takes the command's output from anywhere -- a serial console
 # session, for instance, which is how it is done on a switch with no management
@@ -43,6 +45,9 @@ set -u
 # board data and the reason this generator lives in the board directory.
 SFP_CAGES=${SFP_CAGES:-48}
 
+# QSFP+ cages as one 40G port (default) or four 10G ports.
+QSFP_BREAKOUT=${QSFP_BREAKOUT:-0}
+
 emit() {
     # EOS prints one row per logical port:
     #
@@ -53,26 +58,43 @@ emit() {
     # Logical is the SDK's port number and Physical is the lane it wants in
     # portmap_<logical>=<physical>:<speed>.
     #
-    # SPEED COMES FROM HOW THE CAGE IS CONFIGURED, NOT FROM THE CAGE TYPE.
-    # A QSFP+ cage is either one 40G port or four 10G ports, and EOS names it
-    # accordingly: Ethernet49/1..4 when broken out, plain Ethernet49 when it is
-    # a single 40G. So a slashed name is one 10G lane of a breakout, and an
-    # unslashed name above the SFP+ range is a whole 40G cage.
+    # A QSFP+ CAGE IS FOUR LANES IN THIS TABLE WHATEVER MODE IT IS IN.
     #
-    # This matters because the two are not interchangeable. Mapping a 40G cage
-    # as four 10G lanes spends four logical ports on hardware that has one, and
-    # the chip accepts it -- a wrong port map is silently inert rather than
-    # rejected.
+    # This table is the SDK's lane table, and the lanes are physical: a QSFP
+    # cage always appears as Ethernet49/1..4 here, even when EOS is running it
+    # as a single 40G port. Operational mode lives in `show interfaces status`
+    # instead, which shows Ethernet53/1 alone at 40G once a 40G module is in.
+    #
+    # An earlier version of this keyed on the name -- slashed meant a 10G
+    # breakout lane, unslashed above the SFP+ range meant a 40G cage. That
+    # branch never fired, because this table never prints an unslashed QSFP
+    # name, so every cage was mapped as four 10G lanes and a 40G optic in one
+    # of them could not come up at all.
+    #
+    # So above SFP_CAGES a cage is one 40G port by default: the /1 lane carries
+    # it and the other three are deliberately not mapped. Set QSFP_BREAKOUT=1
+    # for four 10G ports per cage instead.
+    #
+    # The two are not interchangeable and the chip will not tell you which you
+    # have -- a wrong port map is silently inert rather than rejected.
     #
     # Regenerate after changing any breakout, because the logical numbering
     # moves with it.
-    awk -v sfp="$SFP_CAGES" '
+    awk -v sfp="$SFP_CAGES" -v breakout="$QSFP_BREAKOUT" '
         $1 ~ /^Ethernet[0-9]/ && NF >= 6 {
             intf = $1; logical = $(NF-2); physical = $(NF-1); mmu = $NF
             if (logical !~ /^[0-9]+$/ || physical !~ /^[0-9]+$/) next
 
             cage = intf; sub(/^Ethernet/, "", cage); sub(/\/.*/, "", cage)
-            if (intf ~ /\//) {
+            lane = ""
+            if (intf ~ /\//) { lane = intf; sub(/^[^\/]*\//, "", lane) }
+
+            if (cage + 0 > sfp + 0 && breakout + 0 == 0) {
+                # One 40G port per cage. The first lane carries it; the other
+                # three are not mapped, which is what "40G" means here.
+                if (lane != "" && lane != "1") { dropped++; next }
+                speed = 40; kind = "40G cage"; forty++
+            } else if (intf ~ /\//) {
                 speed = 10; kind = "breakout lane"
             } else if (cage + 0 > sfp + 0) {
                 speed = 40; kind = "40G cage"; forty++
@@ -106,6 +128,7 @@ emit() {
             }
             printf "# %d ports", n
             if (forty) printf ", %d of them 40G cages", forty
+            if (dropped) printf " (%d lanes folded into their cage)", dropped
             printf "\n"
         }
     '
@@ -135,9 +158,12 @@ derived() {
         END {
             if (n == 0) exit 0
             print ""
-            print "# Which logical ports are 10G (xe). The SDK wants a bitmap,"
-            print "# bit N meaning logical port N. Derived from the map above so"
-            print "# a board with a different port count still comes out right."
+            print "# Which logical ports are front-panel Ethernet (xe). The SDK"
+            print "# wants a bitmap, bit N meaning logical port N. This is the"
+            print "# port TYPE rather than its speed -- a 40G cage belongs here"
+            print "# too, and its speed comes from the :40 in its portmap entry."
+            print "# Derived from the map above so a board with a different port"
+            print "# count still comes out right."
             # awk has no shifts portable enough to trust here, so build the hex
             # digits directly: nibble i holds bits 4i..4i+3.
             for (i = 1; i <= n; i++) nib[int(ports[i] / 4)] += 2 ^ (ports[i] % 4)
