@@ -149,10 +149,13 @@ The taps are recreated whenever `nosd` restarts, so addresses go on afterwards.
 ```sh
 doas busybox ip addr add 10.101.101.42/29 dev et1
 doas busybox ip addr add 10.101.101.57/29 dev et2
-doas busybox ip -6 addr add 2001:470:882d:1040::42/64 dev et1
+doas busybox ip -6 addr add 2001:db8:1040::42/64 dev et1
 doas busybox ip link set et1 up
 doas busybox ip link set et2 up
 ```
+
+Addresses here are examples: the v4 ones are RFC 1918 and the v6 one is the
+RFC 3849 documentation prefix. Substitute your own.
 
 Then OSPF, through `vtysh`:
 
