@@ -1,8 +1,9 @@
 # Arista DCS-7050SX2-72Q-R — Trident2+ (BCM56860).
 #
-# NOSaic's first real board. Nothing here has run on the switch yet: the port
-# is scaffolded so the remaining work is concrete, and status stays planned
-# until it boots from its own base and forwards traffic.
+# NOSaic's first real board. It boots from its own base, forwards in hardware
+# and holds OSPF adjacencies; status stays bringup rather than production
+# because nothing has yet been installed to its flash and survived a power
+# cycle. See docs/architecture.md for what is proven and what is not.
 
 id: arista-7050sx2-72q
 vendor: arista
@@ -88,7 +89,7 @@ thermal:
   slew_down_percent: 5
   interval_seconds: 10
 
-status: planned
+status: bringup
 
 notes: >
   Aboot boots unsigned SWIs here: boot0 is a shell script we control, no

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
@@ -28,11 +29,63 @@ Each board is one self-contained directory under ` + "`platform/`" + `. This pag
 generated from them, so a new port is added by adding a directory and never by
 editing a shared file.
 
-Every board has three pages: **install** for somebody holding the switch,
-**build** for somebody making an image, and **hardware** for somebody changing
-the datapath or debugging silicon.
+Every board has at least three pages: **install** for somebody holding the
+switch, **build** for somebody making an image, and **hardware** for somebody
+changing the datapath or debugging silicon. A port may add more, and they are
+listed here because this page is generated from what the directory actually
+contains rather than from a fixed list.
 
 `
+
+// pageOrder is the order pages are listed in when a board has them. Anything
+// a board ships that is not named here follows, alphabetically -- the point is
+// a predictable order for the common pages, not a list to keep in step with
+// what boards actually contain.
+var pageOrder = []string{
+	"install", "running", "build", "architecture", "hardware",
+}
+
+// pageLinks lists the documentation a board actually has.
+//
+// Enumerated rather than assumed. A fixed list here means a board that adds a
+// page does not get it linked, and the whole reason this file is generated is
+// that the board directory is the truth. A board missing one of the common
+// pages is likewise reported as it is rather than linked into a 404.
+func pageLinks(bd *board.Board, dir string) string {
+	docs := filepath.Join(filepath.Dir(bd.Path), "docs")
+	entries, err := os.ReadDir(docs)
+	if err != nil {
+		return "—"
+	}
+
+	have := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		have[strings.TrimSuffix(e.Name(), ".md")] = true
+	}
+
+	var names []string
+	for _, n := range pageOrder {
+		if have[n] {
+			names = append(names, n)
+			delete(have, n)
+		}
+	}
+	var rest []string
+	for n := range have {
+		rest = append(rest, n)
+	}
+	sort.Strings(rest)
+	names = append(names, rest...)
+
+	var links []string
+	for _, n := range names {
+		links = append(links, fmt.Sprintf("[%s](%s/docs/%s.md)", n, dir, n))
+	}
+	return strings.Join(links, " · ")
+}
 
 // Render returns the index for the given boards.
 func Render(boards []*board.Board) string {
@@ -48,8 +101,7 @@ func Render(boards []*board.Board) string {
 	b.WriteString("|---|---|---|---|---|---|\n")
 	for _, bd := range boards {
 		dir := filepath.ToSlash(filepath.Join("..", "platform", bd.ID))
-		pages := fmt.Sprintf("[install](%s/docs/install.md) · [build](%s/docs/build.md) · [hardware](%s/docs/hardware.md)",
-			dir, dir, dir)
+		pages := pageLinks(bd, dir)
 		fmt.Fprintf(&b, "| [%s](%s/README.md) | %s | %s | %s | %s | %s |\n",
 			bd.ID, dir, bd.Arch, bd.ASIC, bd.Boot, bd.Status, pages)
 	}

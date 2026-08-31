@@ -3,38 +3,58 @@
 The general build is in [docs/BUILDING.md](../../../docs/BUILDING.md). Only what
 is specific to this board is here.
 
-> **Incomplete.** The base image below builds today; it will boot and do
-> nothing, because the datapath does not exist yet. The rest of this page is
-> what M6 has to add.
-
 ## The short version
 
 ```sh
 make toolchain ARCH=x86_64
-make packages ARCH=x86_64 PROFILE=full
-make image BOARD=arista-7050sx2-72q
+make image BOARD=arista-7050sx2-72q PROFILE=minimal ARGS=--ram-boot
 ```
 
+That produces, in `out/images/arista-7050sx2-72q/`:
+
+```
+  NOSaic-<version>-arista-7050sx2-72q.swi    what Aboot boots
+  boot-config                                the line that points at it
+  vmlinuz  initramfs.cpio.gz  rootfs.sqsh    the pieces inside it
+  disk.img                                   for the flash install route
+```
+
+Drop `ARGS=--ram-boot` for an image intended for flash. Use `PROFILE=minimal`
+for now: `board.yml` says `full`, but only `minimal` has ever been booted on
+this board.
+
 This board is x86_64, the same architecture the virtual platform proves on every
-commit, so the toolchain, glibc, kernel and userspace are the ones already
-tested — nothing here is a fresh cross-compilation problem.
+commit, so the toolchain, glibc, kernel and userspace are already tested —
+nothing here is a fresh cross-compilation problem.
 
-The `aboot` backend emits `NOSaic-<version>-arista-7050sx2-72q.swi` plus the
-`boot-config` line that points Aboot at it.
+## Building one package at a time
 
-## What this board needs that the generic build does not
+The datapath is the thing you will iterate on, and it does not need a whole
+image:
 
-None of this exists yet. Each is a recipe, and each has a licensing question
-that must be answered before it can ship in a published image:
+```sh
+make pkg PKG=nosd-td2p ARCH=x86_64      # the datapath, ~2 min
+make pkg PKG=frr       ARCH=x86_64      # the routing stack
+make check                              # tests, vet, gofmt
+```
 
-| Piece | What it is | Redistributable? |
+See [running.md](running.md#8-updating-just-the-datapath) for pushing a rebuilt
+`nosd` onto a running switch without a reboot.
+
+## What this board pulls in that a server image does not
+
+| Package | What it is | Licence |
 |---|---|---|
-| OpenBCM SDK | Chip support for BCM56860, from the `sdk-6.5.24` tree | **Yes** — see below |
-| BDE shim | A userspace BDE — see the hardware page. **Not** Broadcom's kernel modules | Ours |
-| `nosd-td2p` | The Trident2+ datapath, implementing `switch-api` | Ours, Apache 2.0 |
-| platform HAL | Sensors, PSUs, LEDs, SFP EEPROM | Ours |
+| `openbcm` | Chip support for BCM56860, SDK **6.5.24** | Broadcom OpenBCM — redistributable, see below |
+| `nosd-td2p` | The Trident2+ datapath, including a userspace BDE | Apache 2.0 |
+| `frr` | zebra, ospfd, ospf6d, bgpd | GPL-2.0-or-later |
 
-The SDK is referenced by `file:line` and never copied into this tree.
+plus the chain FRR needs: `json-c`, `libyang`, `pcre2`, `protobuf-c`,
+`readline`, `ncurses`.
+
+`openbcm` is a **`build_depends:`**, not a `depends:`. It is linked into
+`nosd-td2p` and has no business being installed as well — carried as a runtime
+dependency it made a 794 MB image against a 768 MB slot.
 
 ## The SDK, and why an image carrying it may be published
 
@@ -42,42 +62,64 @@ Broadcom's OpenBCM licence (`Legal/LICENSE` in that tree) grants a worldwide,
 royalty-free, perpetual licence to reproduce and distribute the software, and
 for source to create and distribute derivative works. That is what makes a
 NOSaic image containing it shippable rather than local-only, and it is why the
-datapath here goes through the SDK rather than around it.
+datapath goes through the SDK rather than around it.
 
-One obligation comes with it, and it is not optional: **every distributed copy
+One obligation comes with it and it is not optional: **every distributed copy
 must reproduce all proprietary notices**. Removing or obscuring them is
 expressly forbidden, so the SDK's own licence and notices ship in the image's
-NOTICE alongside everything else, and the recipe declares
-`redistributable: true` on that basis rather than on assumption.
+NOTICE, and the recipe declares `redistributable: true` on that basis rather
+than on assumption.
 
 The source is mirrored at
-[Salvaged-silicon/OpenBCM](https://github.com/Salvaged-silicon/OpenBCM), a fork
-of Broadcom's repository, so the build does not depend on an upstream that
-could move.
-
-**That repository carries ten SDK versions side by side**, from 6.5.16 to
-6.5.27, and the pinned archive contains all of them. So every path names the
-version it means, and the recipe pins **6.5.24** — not because it is the newest,
-which it is not, but because it is the version the datapath was proven with on
-this board. `sdk-6.5.24/src/soc/mcm/bcm56860_a0.c` is this chip's support.
+[Salvaged-silicon/OpenBCM](https://github.com/Salvaged-silicon/OpenBCM) so the
+build does not depend on an upstream that could move. **That repository carries
+ten SDK versions side by side**, 6.5.16 to 6.5.27, so every path names the
+version it means. The recipe pins **6.5.24** — not because it is the newest,
+which it is not, but because it is the version this board's datapath was proven
+with. `sdk-6.5.24/src/soc/mcm/bcm56860_a0.c` is this chip's support.
 
 A newer version is not automatically a better one here: the SDK is the piece
-whose unmodified chip initialisation is the entire reason for taking this
-route, so the version that has been run against real silicon wins over the one
-with the higher number.
+whose unmodified chip initialisation is the entire reason for taking this route,
+so the version that has been run against real silicon wins over the one with the
+higher number. SDK source is referenced by `file:line` and never copied into
+this tree.
 
 ## Kernel
 
-The fleet kernel plus a board fragment. Known requirements:
+The fleet kernel plus a board fragment. What this board needs:
 
-- `CONFIG_I2C_PIIX4` — without it the fan CPLD cannot be reached at all.
+- `CONFIG_TUN` — the tap bridge is how ports reach the Linux stack. Without it
+  `nosd` cannot open `/dev/net/tun` and no port is on the network stack at all.
+- `CONFIG_I2C_PIIX4` — without it the fan CPLD cannot be reached.
 - `tg3` for the management port (`14e4:1682`).
-- The Arista SCD (`3475:0001`) is a PCI device; its driver is board support we
-  supply rather than something mainline provides.
+- `memmap=64M$0xd0000000` on the command line, from `board.yml`, reserving the
+  DMA pool the userspace BDE claims through `/dev/mem`. Without it the datapath
+  has no memory it can hand to the chip's DMA engine.
+
+The Arista SCD (`3475:0001`) needs no kernel driver: NOSaic drives it from
+userspace through its PCI BAR.
+
+## Site configuration is not in the build
+
+`portmap.conf` and `polarity.conf` are generated per switch and are deliberately
+absent from the repository — the numbers are the vendor's, read off a machine
+that already has them. The image does not contain them and `nosd` will not start
+without them. See [running.md](running.md#4-site-configuration).
+
+`config/asic.conf` **is** in the repository, because everything in it is
+board-independent chip configuration rather than vendor data: interrupt mode,
+port defaults, the SerDes lane map and its per-macro exceptions, and the `tap_`
+declarations.
+
+## Reproducibility
+
+Packages are byte-identical across builds — sorted archive members, zeroed
+uid/gid, `SOURCE_DATE_EPOCH` — and CI checks it by building twice and comparing
+hashes. If a package hash moves without a recipe change, something is leaking
+the clock or the build path.
 
 ## Verifying before you install
 
-Nothing in this section is a substitute for having the EOS SWI saved. Aboot can
-boot an image over TFTP without writing to flash, and during bring-up that is
-the right way to try one: a bad image then costs a reboot rather than a
-recovery session.
+Aboot boots an image over HTTP without writing flash, and during bring-up that
+is the right way to try one. See [running.md](running.md). Nothing in this
+section is a substitute for having the EOS SWI saved.

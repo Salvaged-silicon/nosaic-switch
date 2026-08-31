@@ -1,8 +1,13 @@
 # Installing NOSaic on the 7050SX2-72Q
 
-> **Not yet possible.** No NOSaic image has been installed on this switch. This
-> page records the mechanism, which is established from the switch's own flash,
-> so that the first attempt is not also the first time anyone writes it down.
+> **Not yet done.** No NOSaic image has been installed to this switch's flash.
+> Everything proven on this board so far was run from RAM — see
+> **[running.md](running.md)**, which is the route you want for development and
+> the one that never writes flash.
+>
+> This page records the flash mechanism, established from the switch's own
+> flash, so that the first attempt is not also the first time anyone writes it
+> down.
 
 ## Before you start
 

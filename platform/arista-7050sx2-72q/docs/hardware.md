@@ -1,12 +1,17 @@
 # Arista 7050SX2-72Q — hardware reference
 
-How the box is built and how NOSaic will drive it. The investigation that
-produced these facts lives in a private reverse-engineering repository; what is
-here is what somebody changing NOSaic's datapath or debugging a port needs.
+How the box is built and how NOSaic drives it. The investigation that produced
+these facts lives in a private reverse-engineering repository; what is here is
+what somebody changing NOSaic's datapath or debugging a port needs.
 
-> **Nothing below has been exercised by NOSaic.** It is written from work done
-> on this switch under EOS and from its own flash. Treat it as a map, not as a
-> record of something that booted.
+This is the register-level reference. For the shape of the whole system — what
+each piece does and how a packet actually travels — start with
+**[architecture.md](architecture.md)**.
+
+> Most of what follows has now been exercised by NOSaic on the switch. Where a
+> section describes something still unproven it says so; the summary of which
+> is which is in
+> [architecture.md](architecture.md#8-what-is-proven-and-what-is-not).
 
 ## At a glance
 
@@ -89,7 +94,7 @@ header is that vendor's, and an image containing it could not be published.
 
 ## Datapath
 
-`nosd-td2p` will drive the chip through the OpenBCM SDK — `sdk-6.5.24` carries
+`nosd-td2p` drives the chip through the OpenBCM SDK — `sdk-6.5.24` carries
 BCM56860 (`src/soc/mcm/bcm56860_a0.c`) with a full register and memory
 database. The licence expressly permits distributing the source and derivative
 works, so the resulting image is shippable. See the build page for the notice
@@ -123,8 +128,12 @@ contiguous and its physical address known, which a pagemap lookup cannot
 provide for a 32 MB pool. The region is reserved at boot instead:
 
 ```
-memmap=64M$0x100000000
+memmap=64M$0xd0000000
 ```
+
+This is the value in `board.yml`, which is the one that matters — an earlier
+draft of this page said `0x100000000` and the two disagreeing is exactly the
+kind of thing that costs an afternoon.
 
 The `$` marks it reserved so the kernel never touches it, and physical
 addresses become base plus offset. Whatever sets the kernel command line for
@@ -582,16 +591,19 @@ This is the arrangement EdgeNOS uses on this board and the approach is taken
 from its `tools/mkconfigbcm.sh`; its `PROVENANCE.md` sets out which parts of a
 platform may be published and why.
 
-## Why most ports still have no link
+## What a port needs before it will link
 
 
 
-The full initialisation runs and every port answers the port API. Linkscan is
-running, every port enables without complaint, and **no port has link.** That
-is expected, and it is not evidence that the port map is wrong.
+An initialised chip is not a working port. The full initialisation runs, every
+port answers the port API, linkscan is running and every port enables without
+complaint — and with the two board facts below missing, **no port has link**.
+That is not evidence that the port map is wrong, which is what it looks like.
 
-Two board facts stand between an initialised chip and a working port here, and
-NOSaic has neither yet.
+Both are now supplied, by `config/polarity.conf` and `config/portmap.conf`
+respectively, and the cabled ports link. Both files are generated per switch by
+the scripts in [tools/](../tools/) and are deliberately not in this repository:
+see [build.md](build.md#site-configuration-is-not-in-the-build).
 
 ### The PCB swaps P/N pairs, per lane
 

@@ -6,13 +6,15 @@ Each board is one self-contained directory under `platform/`. This page is
 generated from them, so a new port is added by adding a directory and never by
 editing a shared file.
 
-Every board has three pages: **install** for somebody holding the switch,
-**build** for somebody making an image, and **hardware** for somebody changing
-the datapath or debugging silicon.
+Every board has at least three pages: **install** for somebody holding the
+switch, **build** for somebody making an image, and **hardware** for somebody
+changing the datapath or debugging silicon. A port may add more, and they are
+listed here because this page is generated from what the directory actually
+contains rather than from a fixed list.
 
 | Board | Arch | ASIC | Boot | Status | Pages |
 |---|---|---|---|---|---|
-| [arista-7050sx2-72q](../platform/arista-7050sx2-72q/README.md) | x86_64 | td2p | aboot | planned | [install](../platform/arista-7050sx2-72q/docs/install.md) · [build](../platform/arista-7050sx2-72q/docs/build.md) · [hardware](../platform/arista-7050sx2-72q/docs/hardware.md) |
+| [arista-7050sx2-72q](../platform/arista-7050sx2-72q/README.md) | x86_64 | td2p | aboot | bringup | [install](../platform/arista-7050sx2-72q/docs/install.md) · [running](../platform/arista-7050sx2-72q/docs/running.md) · [build](../platform/arista-7050sx2-72q/docs/build.md) · [architecture](../platform/arista-7050sx2-72q/docs/architecture.md) · [hardware](../platform/arista-7050sx2-72q/docs/hardware.md) |
 | [virt-x86_64](../platform/virt-x86_64/README.md) | x86_64 | virt | virt | bringup | [install](../platform/virt-x86_64/docs/install.md) · [build](../platform/virt-x86_64/docs/build.md) · [hardware](../platform/virt-x86_64/docs/hardware.md) |
 
 ## How each board installs
