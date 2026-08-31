@@ -449,7 +449,11 @@ Not proven:
   virtual platform and unexercised here.
 - **Persistence.** Because it RAM boots, the port map, polarity and any
   addressing have to be pushed after every boot. See
-  [running.md](running.md).
+  [running.md](running.md). Fixing it means putting NOSaic's state in files on
+  the existing FAT partition rather than in partitions of its own -- Aboot
+  matches `flash:` on the controller, so extra eMMC partitions compete for
+  `/mnt/flash` and the first one presented wins. See
+  [hardware.md](hardware.md#how-aboot-resolves-flash).
 - **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
   (s6) has ever been booted here.
 - **ECMP.** The two uplinks have different costs, so FRR picks one. Equal costs

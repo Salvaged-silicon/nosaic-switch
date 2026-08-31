@@ -154,10 +154,17 @@ recoverable.
 - **The vendor OS is still there**, and that is deliberate for now. It is the
   recovery path, and the eMMC has room for both.
 
-Making the state persistent means partitioning the eMMC for NOSaic's own layout
-beside a FAT partition Aboot can still read. The sizes fit — 64 + 768×2 + 512 MB
-against a 3.68 GiB part — but Aboot's rule for resolving `flash:` has not been
-established, and that has to be answered before anything is repartitioned.
+Making the state persistent is **not** a matter of partitioning the eMMC, which
+was the obvious plan until Aboot was asked how it resolves `flash:`. It matches
+on the *controller*, so every partition on the eMMC competes for `/mnt/flash`
+and the first one presented wins — add NOSaic's partitions and Aboot may boot
+with `flash:` pointing at an ext4 slot and no image in sight. The full rule, and
+the options that do work, are in
+[hardware.md](hardware.md#how-aboot-resolves-flash).
+
+The one this board should take is to keep the eMMC single-partition and put
+NOSaic's state in files on it, mounted by loop. No repartitioning, no collision,
+and Aboot's view of the device does not change at all.
 
 ## Aboot has no network of its own
 

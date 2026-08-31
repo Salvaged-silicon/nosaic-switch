@@ -642,6 +642,74 @@ What it needs to become a real measurement is knowing which cages have cables
 in them, so that "no link" can be told apart from "nothing plugged in". Module
 presence is readable independently of link, and that is the next piece.
 
+## How Aboot resolves `flash:`
+
+Established from Aboot's own `/bin/initblockdev` on this switch, because it
+decides whether the eMMC can be repartitioned without losing the boot path.
+
+`flash:` is not "the FAT32 partition" and not "the first partition". It is
+whatever is mounted at `/mnt/flash`, and the mount point is chosen per
+partition in three tiers:
+
+1. **By filesystem label.** A label starting `eos-` or `eos_` (case
+   insensitive) mounts at `/mnt/<rest>`, lowercased — `EOS-TEST` becomes
+   `/mnt/test`.
+2. **By sysfs device path**, from `/etc/blockdev`:
+
+   ```
+   pci0000:00/0000:00:14.7/mmc_host/.*$             flash
+   pci0000:00/0000:00:12.0/usb1/1-1/1-1.1/.*$       usb1
+   pci0000:00/0000:00:12.0/usb1/1-1/1-1.4/.*$       usb2
+   pci0000:00/0000:00:11.0/.*host./target.:0:0/.*$  drive
+   ```
+
+   The match is on the **controller**, not the partition — so every partition
+   on the eMMC wants `/mnt/flash`.
+3. A final default of `/mnt/flash`.
+
+**On this switch it is tier 2.** `/dev/mmcblk0p1` carries no label at all, only
+`UUID="559C-F7A5"`, and `/mnt/flash.conf` records it as matched by device path:
+
+```
+devid='pci0000:00/0000:00:14.7/mmc_host/mmc0/mmc0:0001'
+dev='mmcblk0'  part='p1'  fstype='vfat'
+```
+
+Two further behaviours matter:
+
+- **A cpio partition is mounted `-recover`.** If the first six bytes are the
+  cpio magic `070701`, the mount point gains that suffix. That is what p2 is:
+  Arista's fallback config store, at `/mnt/flash-recover`.
+- **First one wins.** If the target mount point is already in `/proc/mounts`,
+  the partition is skipped with `exit 0` and nothing is said about it.
+
+### What this means for repartitioning
+
+Adding NOSaic's own partitions to this eMMC is **order dependent, and the order
+is not ours to choose**. Every one of them matches the tier-2 rule and asks for
+`/mnt/flash`; whichever the kernel presents first takes it, and the FAT
+partition holding the SWI is then skipped silently. Aboot would boot with
+`flash:` pointing at an ext4 slot and no image in sight.
+
+Labelling the FAT partition `EOS-FLASH` pins it by tier 1, but does not fix
+this: if a NOSaic partition is processed first it still claims `/mnt/flash`
+before the labelled one is reached.
+
+The options that do work:
+
+- **Keep the eMMC single-partition and put NOSaic's state in files on it.** A
+  data image and per-slot images living in the FAT filesystem, mounted by loop.
+  No repartitioning, no collision, the vendor image stays where it is, and
+  Aboot's view of the device does not change at all.
+- **Give every NOSaic partition an `eos-` label** so tier 1 routes each to its
+  own mount point and none of them contends for `/mnt/flash`. This works
+  against Aboot but costs NOSaic its own `nosaic-*` label lookup, which would
+  fall back to fixed partition numbers.
+- **Put them on a different controller.** The two SATA ports are empty and
+  `/etc/blockdev` already maps that controller to `/mnt/drive`. Needs hardware.
+
+The first is the one this board should take.
+
 ## Quirks
 
 - **Everything proven so far was proven after `kexec` from EOS**, and `kexec`
