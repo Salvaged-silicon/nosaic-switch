@@ -440,11 +440,13 @@ Proven on the switch:
 | Hardware forwarding, CPU not involved | measured, see section 6 |
 | Fans, temperatures, PSUs, transceivers | yes |
 | Graceful reboot | yes |
+| Boots from its own flash, unattended | yes |
 
 Not proven:
 
-- **Installation to flash.** Everything so far is a RAM boot over HTTP. A/B
-  slots, `boot-config`, trial boot and rollback are unexercised on this board.
+- **A/B slots, trial boot and rollback.** The board boots from flash, but as a
+  single image Aboot loads directly. The slot machinery is CI-tested on the
+  virtual platform and unexercised here.
 - **Persistence.** Because it RAM boots, the port map, polarity and any
   addressing have to be pushed after every boot. See
   [running.md](running.md).

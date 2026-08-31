@@ -11,7 +11,7 @@ NOSaic's first real board, and the one M6 is written against.
 | Management | BCM57762 (`14e4:1682`), `tg3` |
 | Bootloader | Aboot, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots, forwards and routes; not yet installable to flash |
+| Status | **bringup** — boots from its own flash, forwards and routes; no A/B slots or persistence yet |
 
 - **[Architecture](docs/architecture.md)** — how it all works, hardware and software
 - **[Running from RAM](docs/running.md)** — the development loop, no flash written
@@ -34,14 +34,19 @@ The board runs as a router. On the switch, verified rather than assumed:
   OSPF for four adjacencies and nothing like 100;
 - fans, temperatures, PSUs and transceivers read and control through the
   platform HAL, with a closed-loop fan curve;
-- `reboot` works.
+- `reboot` works;
+- **it boots from its own flash, unattended** — Aboot reads `boot-config`,
+  finds the SWI and boots it with no console intervention and no network.
 
 ## What does not
 
-- **Installation to flash.** Everything so far is a RAM boot over HTTP. A/B
-  slots, `boot-config`, trial boot and rollback are unexercised here.
-- **Persistence.** It RAM boots, so the port map, polarity and addressing are
-  pushed after every boot.
+- **A/B slots and rollback.** What is installed is one image Aboot boots
+  directly. The slot machinery is CI-tested on the virtual platform and
+  unexercised here.
+- **Persistence.** The installed image is a RAM-boot image, so the root overlay
+  is a tmpfs and the port map, polarity and addressing are pushed after every
+  boot. Fixing that means partitioning the eMMC beside a FAT partition Aboot
+  can still read.
 - **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
   (s6) has been booted.
 - **ECMP.** `l3sync` takes one next hop per prefix.

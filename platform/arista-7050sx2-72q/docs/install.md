@@ -1,19 +1,41 @@
 # Installing NOSaic on the 7050SX2-72Q
 
-> **Not yet done.** No NOSaic image has been installed to this switch's flash.
-> Everything proven on this board so far was run from RAM — see
-> **[running.md](running.md)**, which is the route you want for development and
-> the one that never writes flash.
->
-> This page records the flash mechanism, established from the switch's own
-> flash, so that the first attempt is not also the first time anyone writes it
-> down.
+The switch boots NOSaic from its own flash. What is **not** here yet is the A/B
+slot layout — this installs one image that Aboot boots, with no second slot, no
+trial boot and no rollback, and no persistent state. See
+[What this does not give you](#what-this-does-not-give-you).
+
+For development, [running.md](running.md) boots over HTTP and writes nothing at
+all. That is still the faster loop.
 
 ## Before you start
 
-Installing over EOS is reversible **only if you have the EOS SWI**. Copy the
-existing `/mnt/flash/EOS-*.swi` and `/mnt/flash/boot-config` off the box before
-touching anything. Restoring is a matter of putting them back.
+**Back the flash up first, and verify the backup.** The whole procedure below
+is reversible, but only because the vendor's own image is still sitting on the
+flash beside ours — and that is a property of this procedure, not a guarantee.
+
+What is worth having off the box:
+
+| | How |
+|---|---|
+| The whole eMMC | `dd if=/dev/mmcblk0 bs=1M \| gzip -1 \| nc <host> <port>` |
+| The vendor SWI and `boot-config` | mount `/dev/mmcblk0p1` and copy them |
+| The BIOS SPI, where Aboot lives | boot the vendor OS once, `flashrom -p internal -r` |
+
+Check what you took. `gzip -t` the device image and confirm it decompresses to
+exactly the size the switch reports; `unzip -t` the vendor SWI; compare every
+md5 against one computed on the switch rather than trusting the transfer.
+
+## Why this is recoverable
+
+**Aboot is not on the eMMC.** It lives in the 16 MB BIOS SPI flash, so nothing
+written to `/dev/mmcblk0` can remove it — Ctrl-C at the console always reaches
+an Aboot prompt, and from there the vendor image on the flash boots with one
+command. That is the property the whole procedure rests on.
+
+The eMMC's small second partition is Arista's own fallback config store, a cpio
+holding a `boot-config` pointing at an older vendor image. It is a second
+safety net, and repartitioning would destroy it.
 
 ## Console
 
@@ -25,105 +47,119 @@ same port, so a wrong baud looks like a dead box.
 Aboot reads `/mnt/flash/boot-config`, a single line:
 
 ```
-SWI=flash:/NOSaic-<version>-arista-7050sx2-72q.swi
+SWI=flash:/nosaic.swi
 ```
 
-It then opens that SWI — a zip — and runs the `boot0` inside it, which kexecs
-our kernel. **No signing is enforced on this board**, and Aboot can also load
-over HTTP, FTP, TFTP or NFS, which is the safer route during bring-up because
-nothing in flash changes.
-
-The board's `prefdl` reports `HwEpoch 1`, so a SWI declaring
-`SWI_MAX_HWEPOCH=1` is accepted. Ours does.
+It opens that SWI — a zip — and runs the `boot0` inside it, which kexecs our
+kernel. **No signing is enforced on this board.** The board's `prefdl` reports
+`HwEpoch 1`, so a SWI declaring `SWI_MAX_HWEPOCH=1` is accepted; ours does.
 
 ## Installing
 
-1. Copy the `.swi` to `/mnt/flash/`.
-2. Point `boot-config` at it, keeping the old line commented so it can be put back.
-3. `reload`.
+Each step proves one more thing than the last, and nothing before step 4 changes
+what the switch does on its own.
 
-## Going back to EOS
+### 1. Put the image on the flash
 
-Restore the original `boot-config`, or at the Aboot prompt boot the EOS SWI
-directly. Aboot itself is not modified by any of this, which is what makes the
-switch recoverable.
+From the vendor OS, which has the flash mounted read-write and a known-good FAT
+driver:
+
+```sh
+bash sudo wget -q -O /mnt/flash/nosaic.swi http://<build host>:8080/nosaic.swi
+bash md5sum /mnt/flash/nosaic.swi
+```
+
+Compare that against the build host. A truncated download is a SWI that unzips
+far enough to look plausible.
+
+NOSaic can do this too, now that its kernel has MMC and VFAT — mount
+`/dev/mmcblk0p1` and write to it. Prove that path deliberately rather than
+discovering it during an install; the write test is in step 3 of the notes
+below.
+
+### 2. Dry run, from the Aboot prompt
+
+```
+Aboot# boot --testonly flash:/nosaic.swi
+```
+
+`testonly` is honoured by our `boot0`: it unzips the SWI, stages the kernel and
+initrd, assembles the command line and calls `kexec --load` — then returns to
+the prompt without jumping. What it proves is everything except the jump:
+
+```
++ unzip -oq /mnt/flash/nosaic.swi nosaic-kernel nosaic-initrd -d /tmp
++ CMDLINE=... memmap=64M$0xd0000000 iomem=relaxed
++ kexec --load /tmp/nosaic-kernel --initrd=/tmp/nosaic-initrd ...
+NOSaic: staged, not booting (testonly)
+```
+
+Read that command line. `kernel-params` lives *inside* the archive, and a
+version of `boot0` that looked for it beside the archive silently booted without
+the board's `memmap` reservation — which surfaces much later as a datapath that
+cannot map its DMA pool.
+
+### 3. Boot it for real, still without changing anything
+
+```
+Aboot# boot flash:/nosaic.swi
+```
+
+`boot-config` is untouched, so a power cycle still returns to the vendor OS.
+
+### 4. Make it the default
+
+```sh
+cp /mnt/flash/boot-config /mnt/flash/boot-config.eos     # keep the original
+echo SWI=flash:/nosaic.swi > /mnt/flash/boot-config
+sync
+```
+
+The original is kept as a whole file rather than a commented-out line, so
+restoring it never depends on whether Aboot's parser accepts comments.
+
+Unmount the flash before rebooting.
+
+## Going back
+
+```sh
+cp /mnt/flash/boot-config.eos /mnt/flash/boot-config
+```
+
+or, without changing anything, at the Aboot prompt:
+
+```
+Aboot# boot flash:/EOS-4.18.3.1F.swi
+```
+
+Aboot itself is never modified by any of this, which is what makes the switch
+recoverable.
+
+## Recovery ladder
+
+1. Bad image → Ctrl-C at Aboot → boot the vendor SWI by name
+2. Wrong `boot-config` → boot by name as above, then restore the saved file
+3. Flash partition damaged → net-boot NOSaic ([running.md](running.md)),
+   restore files from your backup
+4. Partition table destroyed → net-boot NOSaic, `dd` the device image back
+5. eMMC entirely dead → Aboot still boots; net-boot indefinitely
+
+## What this does not give you
+
+- **No A/B slots, no rollback.** One image, booted directly. The slot machinery
+  exists and is CI-tested on the virtual platform; it is not what this installs.
+- **No persistent state.** This installs a RAM-boot image, so the root overlay
+  is a tmpfs: the port map, polarity and any addressing are lost on every boot
+  and must be pushed again. See [running.md](running.md#4-site-configuration).
+- **The vendor OS is still there**, and that is deliberate for now. It is the
+  recovery path, and the eMMC has room for both.
+
+Making the state persistent means partitioning the eMMC for NOSaic's own layout
+beside a FAT partition Aboot can still read. The sizes fit — 64 + 768×2 + 512 MB
+against a 3.68 GiB part — but Aboot's rule for resolving `flash:` has not been
+established, and that has to be answered before anything is repartitioned.
 
 ## Aboot has no network of its own
 
-It is a separate environment from EOS and comes up with nothing configured, so
-an HTTP boot fails with "Network is unreachable" before it fetches anything:
-
-```
-initnetdev
-ifconfig ma1 <addr> netmask 255.255.255.0 up
-route add default gw <gateway> dev ma1
-ping -c 3 <build host>          # wait for it: the first attempt fails on ARP
-```
-
-Then boot the image straight off a web server, leaving flash untouched:
-
-```
-boot http://<build host>:8080/nosaic.swi
-```
-
-Configure it at the prompt rather than setting NETIP and NETGW in boot-config,
-which writes flash. A runtime address disappears at the next reboot, which is
-what you want for a test.
-
-**Wait for the link before the fetch.** The first ping after `ifconfig up`
-regularly fails while a gigabit link negotiates; a script that treats that as
-an error turns an expected few seconds into a failed boot. Check for a reply
-rather than for the absence of a known error string -- "Network is unreachable"
-came back from `sendto`, not from the packet-loss line, so a check written
-against "100% packet loss" passed and the real failure arrived one step later
-where it was harder to read.
-
-Build the image with `--ram-boot` for this. Without it the initramfs looks for
-on-disk slots that a net-booted board does not have and stops with
-`NOSAIC-INITRAMFS-FAIL unknown slot 'a'`:
-
-```
-make image BOARD=arista-7050sx2-72q PROFILE=minimal ARGS=--ram-boot
-```
-
-## Arm the watchdog before booting anything experimental
-
-The SCD watchdog is the recovery path: nothing punches it unless you do, so a
-wedged image resets the board back into EOS on its own. **It is not armed when
-NOSaic starts.** Aboot punches it during its own boot and leaves it disarmed on
-handover, so a custom NOS begins with no recovery net at all -- and assuming
-otherwise is how the first NOSaic boot here ended in a hung switch and a trip
-to the PDU.
-
-NOSaic drives it:
-
-```
-nosaic platform watchdog status         # register value and whether it is armed
-nosaic platform watchdog arm 300000     # 5 minutes; 655350 ms is the maximum
-nosaic platform release-asic
-```
-
-`arm` reads the register back and fails if it did not take. That matters more
-here than it sounds: an earlier version wrote the timeout into the wrong field,
-so it reported the value it was asked for, read back exactly that, and then
-fired about a minute later on the value Aboot had left behind -- twice, in the
-middle of releasing the ASIC. See the watchdog section in `hardware.md` for the
-encoding and how it was established.
-
-Disarm only with the console attached; it removes the automatic recovery.
-
-## When it does not work
-
-**`The SWI is too old. Please use a SWI with version of at least 4.14.7`** --
-Aboot 6.1.2 parses SWI_VERSION as EOS's series.major.minor. NOSaic ships 4.99.0
-there and carries its own version as NOSAIC_VERSION.
-
-**`tg3: Could not obtain valid ethernet address, aborting`** -- the MAC is in
-the board's prefdl and reaches the NIC through an SCD mailbox, not the NIC's
-own EEPROM. boot0 brings the management interface up before the kexec so that
-Aboot's driver copies it into the MAC register, and down again before jumping.
-
-**The kernel boots and then hangs shortly after init starts** -- check that the
-management interface was brought back down before the kexec. The vendor records
-the NIC DMA-ing into memory the next kernel has not initialised yet, appearing
-as corruption or "Bad page state".
+Relevant only for the net-boot path; see
+[running.md](running.md#3-give-aboot-a-network-and-boot-the-image).
