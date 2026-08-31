@@ -26,6 +26,44 @@ CONFIG_TMPFS=y
 # over to the real root, so it is not optional.
 CONFIG_BLK_DEV_INITRD=y
 
+# --- where a switch keeps its image ---------------------------------------
+# eMMC, and the FAT partition the bootloader reads.
+#
+# This is not exotic: an eMMC or SD part carrying a FAT boot partition is the
+# normal arrangement on this class of hardware -- Aboot reads FAT32, and so
+# does ONIE and so does anything booting via EFI. Without the two of these a
+# kernel comes up perfectly, sees no block device at all, and cannot install
+# itself or even read the flash it booted from.
+#
+# It is worth saying how that presents, because it does not look like a
+# missing driver. /proc/partitions lists only the squashfs loop, the SD host
+# controller sits on the PCI bus with no driver bound, and dmesg says nothing
+# whatsoever about mmc -- so the obvious reading is that the board has no
+# storage. On the 7050SX2 the controller is an AMD FCH at 00:14.7 (1022:7813)
+# and the eMMC behind it is a 4 GB part holding the vendor OS.
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_SDHCI=y
+CONFIG_MMC_SDHCI_PCI=y
+CONFIG_MMC_SDHCI_ACPI=y
+
+CONFIG_FAT_FS=y
+CONFIG_VFAT_FS=y
+CONFIG_MSDOS_FS=y
+# vfat refuses to mount without a codepage and an NLS character set, and the
+# error names neither.
+CONFIG_NLS=y
+CONFIG_NLS_DEFAULT="utf8"
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_NLS_UTF8=y
+
+# Partition table parsing. The vendor's own layout is MSDOS; NOSaic's disk
+# image is GPT.
+CONFIG_PARTITION_ADVANCED=y
+CONFIG_MSDOS_PARTITION=y
+CONFIG_EFI_PARTITION=y
+
 # --- virtual hardware ----------------------------------------------------
 # The virtual platform is a first-class board, not a convenience: it is the
 # one that keeps main provable with no switch attached.
