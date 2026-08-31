@@ -632,7 +632,27 @@ static void bring_up_40g(int unit, bcm_port_t port)
 	BCM_PBMP_CLEAR(lanes);
 	if (bcm_port_subsidiary_ports_get(unit, port, &lanes) == BCM_E_NONE)
 		BCM_PBMP_COUNT(lanes, nlanes);
-	printf("port %d: speed_max=%d subsidiary_ports=%d\n", port, smax, nlanes);
+
+	/*
+	 * What the port can actually do, as opposed to what it is configured to
+	 * allow. BCM_E_PARAM from bcm_port_speed_set is an ability check, and
+	 * ability and speed_max are different things -- speed_max is a
+	 * configured ceiling, ability is what the PHY reports it can negotiate.
+	 * They can disagree, and that gap is where a 40G-capable port that
+	 * refuses 40G hides.
+	 */
+	{
+		bcm_port_ability_t ab;
+
+		if (bcm_port_ability_local_get(unit, port, &ab) == BCM_E_NONE)
+			printf("port %d: speed_max=%d subsidiary=%d ability fd=0x%x hd=0x%x "
+			       "intf=0x%x\n", port, smax, nlanes,
+			       (unsigned)ab.speed_full_duplex, (unsigned)ab.speed_half_duplex,
+			       (unsigned)ab.interface);
+		else
+			printf("port %d: speed_max=%d subsidiary=%d ability unavailable\n",
+			       port, smax, nlanes);
+	}
 
 	rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_XGMII);
 	if (rv < 0) {
@@ -689,6 +709,32 @@ int nosaic_sdk_ports(int unit)
 	 * having built no descriptor when that is empty. Every transmit then
 	 * silently vanishes.
 	 */
+	/*
+	 * Which of the map's ports the chip actually created.
+	 *
+	 * A port named in portmap_ that never appears in the chip's port bitmap
+	 * was rejected at init, silently -- and the only symptom is that nothing
+	 * ever touches it.
+	 */
+	{
+		int p, missing = 0;
+
+		for (p = 1; p <= 72; p++) {
+			char key[32];
+
+			snprintf(key, sizeof(key), "portmap_%d", p);
+			if (nosaic_props_get(key) == NULL)
+				continue;
+			if (!BCM_PBMP_MEMBER(cfg.port, p)) {
+				printf("port %d is in the map and NOT in the chip's port "
+				       "bitmap\n", p);
+				missing++;
+			}
+		}
+		if (missing)
+			printf("%d mapped port(s) were not created by the chip\n", missing);
+	}
+
 	rv = bcm_linkscan_enable_set(unit, 250000);
 	if (rv < 0) {
 		fprintf(stderr, "nosd-td2p: bcm_linkscan_enable_set returned %d (%s)\n",
