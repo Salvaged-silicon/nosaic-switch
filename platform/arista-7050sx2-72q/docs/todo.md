@@ -100,3 +100,59 @@ is unobserved rather than known-good.
 PSU and transceiver access is SCD-specific and the CLI reaches it through type
 assertions. It works, and it is not the seam
 [the design](../../../docs/DESIGN.md) describes.
+
+## `make image` does not rebuild changed C source
+
+`make image` composes the image from the prebuilt `.nos` packages under
+`out/packages/`. It does not notice that a recipe's source has changed, so
+editing `datapath/td2p/*.c` and running `make image` produces an image
+containing the *previous* binary, silently and with no warning.
+
+The workaround is `make pkg PKG=nosd-td2p ARCH=x86_64` before `make image`.
+The fix is for the image build to compare recipe source mtimes (or hashes)
+against the package it is about to use, and either rebuild or refuse.
+
+This is worth fixing ahead of most things on this list because of how it
+fails. An image that silently carries stale code does not look broken --
+it boots, it runs, and it disagrees with the source tree. Several
+conclusions in the 40G bring-up were drawn from images that did not
+contain the change being tested, including a "the SCD fix works" that had
+to be withdrawn and re-proven.
+
+Until it is fixed, verify before booting:
+
+    unsquashfs -d r -f nosaic-rootfs.sqsh usr/sbin/nosd-td2p
+    grep -c '<a string from your change>' r/usr/sbin/nosd-td2p
+
+## The two 40G cages link but pass no traffic
+
+et53 (logical 65) and et54 (logical 69) come up at 40000 and stay up, and
+the far end agrees. Neither has ever carried a frame.
+
+Ruled out by measurement, not by argument:
+
+  - the SCD low-power/reset bits -- the cages were forced dark, and a
+    reboot brought them back with no manual poke
+  - the port map: matches EOS exactly (`portmap_65=85:40`, `portmap_69=97:40`)
+  - polarity and lane maps: EOS's own values, and the property report
+    confirms the SDK reads them
+  - MMU bandwidth: the chip's own table shows 40 at physical 85 and 97
+  - STP state (already FORWARD), port enable (already 1), MAC loopback
+    (off), frame max (1622 on 40G and 10G alike)
+  - our own 40G bring-up code, since removing it changed nothing
+  - the CPU-to-ASIC path, since et1 and et2 carry traffic through the
+    identical `bcm_tx` code
+
+What the counters say, with a 10G port as the control:
+
+    et1  (10G)  in-uc=6  in-nuc=146  out-uc=7
+    et54 (40G)  in-uc=0  in-nuc=0    out-uc=0
+
+Nothing reaches the MAC -- not unicast, not broadcast, and no FCS errors
+either, while the far end is transmitting at it and both ends report
+link. A port whose PCS is locked and whose MAC counts nothing is the
+open question.
+
+Note that et53's far end is the 7050TX-64, which is not currently
+configured, so et53 has never had a working far end to prove anything
+against. Only et54, facing the AS5610, is a clean test.
