@@ -316,6 +316,23 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 		return 1;
 	if (nosaic_sdk_bcm_init(unit) != 0)
 		return 1;
+
+	/*
+	 * Which properties the SDK actually read, reported here and not only on
+	 * the --init diagnostic path.
+	 *
+	 * It was on the diagnostic path alone, which is the one place it is least
+	 * needed: somebody running --init is already watching. The daemon is what
+	 * runs the switch, and a property it loaded but the SDK never looked at is
+	 * silent -- counted as configuration, reported as configuration, and
+	 * having no effect whatever. A misspelt key and a wrong value produce the
+	 * same picture from outside, and the difference is the whole question when
+	 * a port will not come up.
+	 *
+	 * After bcm_init, because that is when the SDK has finished asking.
+	 */
+	nosaic_props_report_unused();
+
 	nosaic_sdk_ports(unit);
 
 	/*
