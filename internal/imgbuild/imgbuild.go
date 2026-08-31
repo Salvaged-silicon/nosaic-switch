@@ -516,6 +516,33 @@ fi
 
 grep -q "^admin::" /etc/shadow && say "no password set, as shipped" || { say "FAIL admin has a password"; fail=1; }
 
+# Every declared service must have something to run.
+#
+# Checked statically rather than by asking whether each one is up, because
+# "up" is timing dependent -- a datapath daemon legitimately takes minutes to
+# initialise a chip, and a health check that races it is worse than none.
+# Whether the binary exists is not timing dependent, and it is the failure that
+# actually happened: the virtual platform declared an nosd service for a
+# package that was never built, so it restarted a missing binary forever with
+# the failure going to a log nobody reads, and the boot test passed every time.
+svc_missing=0
+svc_seen=0
+for r in /etc/s6-rc/source/*/run /etc/systemd/system/*.service; do
+    [ -f "$r" ] || continue
+    svc_seen=$((svc_seen + 1))
+    # The delimiter is not "|", which is also the alternation this pattern
+    # needs. Getting that wrong produced a check that parsed nothing, found
+    # nothing missing, and reported "all 0 declared services" -- passing
+    # exactly as loudly as a real one.
+    prog=$(sed -nE "s#^(exec|ExecStart=) ?(/[^ ]+).*#\2#p" "$r" | head -1)
+    if [ -z "$prog" ]; then
+        say "FAIL $r declares no program this check can read"; svc_missing=1; continue
+    fi
+    [ -x "$prog" ] || { say "FAIL $r runs $prog, which is not installed"; svc_missing=1; }
+done
+[ "$svc_seen" -gt 0 ] || { say "FAIL no service definitions found to check"; svc_missing=1; }
+[ "$svc_missing" = 0 ] && say "all $svc_seen declared services have their binaries" || fail=1
+
 # Commit or decline the trial. This is what "confirms itself healthy" means in
 # practice: the system that just booted decides whether it is good enough to
 # keep, and if it never does, the initramfs rolls back on a later boot.
@@ -656,7 +683,7 @@ poweroff -f
 	// reset by the board, and which board is a different question from which
 	// silicon. A board whose chip needs no releasing simply has no HAL driver
 	// and gets no service.
-	if o.Board.PlatformHAL.Driver != "" && o.Board.DatapathPackage() != "" {
+	if o.Board.PlatformHAL.Driver != "" && datapathInstalled(o, packages) {
 		services = append(services, svcgen.Service{
 			Name:    "asic-release",
 			Exec:    "/usr/bin/nosaic platform release-asic",
@@ -692,7 +719,7 @@ poweroff -f
 	//
 	// After asic-release, because the chip is not on the PCI bus until then
 	// and the daemon would find nothing to open.
-	if o.Board.DatapathPackage() != "" {
+	if datapathInstalled(o, packages) {
 		after := []string{"network"}
 		if o.Board.PlatformHAL.Driver != "" {
 			after = append(after, "asic-release")
@@ -772,6 +799,29 @@ func copyBoardConfig(dir, rootfs string) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+// datapathInstalled reports whether the board's datapath package is actually
+// in this image.
+//
+// Not the same question as whether the board wants one. A board whose datapath
+// is not built yet is a normal state during a port, and the build says so and
+// carries on -- but it must then not also declare a service for it. Declaring
+// one produces an image that warns "this will not forward anything" and then
+// spends the rest of its life restarting a binary that was never installed,
+// with the failure going to a log nobody reads. The virtual platform shipped
+// exactly that, and its boot test passed every time.
+func datapathInstalled(o Options, packages []string) bool {
+	want := o.Board.DatapathPackage()
+	if want == "" {
+		return false
+	}
+	for _, p := range packages {
+		if strings.HasPrefix(p, want+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 // dedupeUsers returns the accounts to add, in a stable order, having removed
