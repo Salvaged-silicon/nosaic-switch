@@ -1,5 +1,7 @@
 # NOSaic
 
+[![ci](https://github.com/Salvaged-silicon/nosaic-switch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Salvaged-silicon/nosaic-switch/actions/workflows/ci.yml)
+
 A network operating system for **end-of-service-life switches and routers** — hardware
 the vendor has abandoned, given a modern, open, maintained OS.
 
