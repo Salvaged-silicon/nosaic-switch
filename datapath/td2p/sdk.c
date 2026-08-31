@@ -615,7 +615,24 @@ static int port_is_40g(int port)
 
 static void bring_up_40g(int unit, bcm_port_t port)
 {
-	int rv;
+	int rv, smax = 0, nlanes = 0;
+	bcm_pbmp_t lanes;
+
+	/* What the SDK thinks this port is, before we ask it for anything.
+	 *
+	 * speed_max tells us whether the port has four lanes or one: a TD2+
+	 * XLPORT macro reports 40000 for a port that owns its whole macro and
+	 * 10000 for one lane of a breakout. That is the difference between "the
+	 * port map gave it four lanes and something else refuses 40G" and "the
+	 * port map never gave it four lanes", which look identical from a
+	 * failed speed_set.
+	 */
+	if (bcm_port_speed_max(unit, port, &smax) != BCM_E_NONE)
+		smax = -1;
+	BCM_PBMP_CLEAR(lanes);
+	if (bcm_port_subsidiary_ports_get(unit, port, &lanes) == BCM_E_NONE)
+		BCM_PBMP_COUNT(lanes, nlanes);
+	printf("port %d: speed_max=%d subsidiary_ports=%d\n", port, smax, nlanes);
 
 	rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_XGMII);
 	if (rv < 0) {
@@ -623,15 +640,22 @@ static void bring_up_40g(int unit, bcm_port_t port)
 			port, rv, bcm_errmsg(rv));
 		return;
 	}
+	/* Not fatal. The port map's ":40" may already have set the speed, in
+	 * which case forcing it again is refused -- and that refusal must not
+	 * skip the duplex and autoneg settings below, which was the first
+	 * version's mistake. */
 	rv = bcm_port_speed_set(unit, port, 40000);
-	if (rv < 0) {
-		fprintf(stderr, "nosd-td2p: port %d speed_set(40000): %d (%s)\n",
-			port, rv, bcm_errmsg(rv));
-		return;
-	}
+	if (rv < 0)
+		fprintf(stderr, "nosd-td2p: port %d speed_set(40000): %d (%s); "
+			"continuing\n", port, rv, bcm_errmsg(rv));
+
 	bcm_port_duplex_set(unit, port, BCM_PORT_DUPLEX_FULL);
 	bcm_port_autoneg_set(unit, port, 0);
-	printf("port %d brought up as 40G (XGMII, autoneg off)\n", port);
+
+	if (bcm_port_speed_get(unit, port, &rv) == BCM_E_NONE)
+		printf("port %d brought up as 40G (XGMII), speed now %d\n", port, rv);
+	else
+		printf("port %d brought up as 40G (XGMII)\n", port);
 }
 
 
