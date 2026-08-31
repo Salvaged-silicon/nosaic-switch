@@ -31,6 +31,13 @@ build:
     # nothing and reports "libreadline (needed for vtysh) not found", which
     # names the wrong library entirely. Nothing in this image draws a UTF-8
     # TUI. Not a separate termlib either, for the same naming reason.
+    # ncurses installs its programs with `install -s`, which runs the *host's*
+    # strip on a target binary. On x86_64 that happens to work, because host
+    # and target are the same; cross-building for aarch64 it fails with
+    # "strip: Unable to recognise the format of the input file" and the error
+    # names install rather than the cross-compile. NOSaic strips packages
+    # itself, so nothing is lost by declining here.
+    - --disable-stripping
     - --disable-widec
     - --enable-overwrite
     # No terminfo database in the image, and none compiled during the build.

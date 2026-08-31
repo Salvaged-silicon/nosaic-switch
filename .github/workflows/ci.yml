@@ -154,6 +154,38 @@ jobs:
       - name: Compose the image
         run: make image BOARD=virt-x86_64
 
+      # A licence obligation, checked rather than assumed.
+      #
+      # Broadcom's OpenBCM licence is what makes an image containing the SDK
+      # distributable at all, and it requires every distributed copy to
+      # reproduce all proprietary notices. The repository's own NOTICE promises
+      # that each built image ships one enumerating every component -- and for
+      # a while that promise was simply false, because nothing generated it and
+      # nothing looked.
+      - name: The image carries its own NOTICE and SBOM
+        run: |
+          set -eu
+          # This step runs on the runner rather than in the builder container,
+          # so it cannot assume the container's tools are here.
+          command -v unsquashfs >/dev/null || sudo apt-get install -y squashfs-tools
+          out=$(mktemp -d)
+          sudo unsquashfs -q -f -d "$out/root" \
+            out/images/virt-x86_64/rootfs.sqsh usr/share/nosaic
+          for f in NOTICE sbom.json; do
+            p="$out/root/usr/share/nosaic/$f"
+            [ -s "$p" ] || { echo "::error::the image has no $f"; exit 1; }
+            echo "--- $f ---"; head -20 "$p"
+          done
+          # Every package that went in must be named. A NOTICE that lists some
+          # of them is worse than none: it reads as complete.
+          missing=0
+          for pkg in $(./out/nosaic pkg order --profile minimal); do
+            grep -q "^  $pkg-" "$out/root/usr/share/nosaic/NOTICE" \
+              || { echo "::error::$pkg is in the image but not in its NOTICE"; missing=1; }
+          done
+          [ "$missing" -eq 0 ]
+          python3 -c "import json,sys; d=json.load(open('$out/root/usr/share/nosaic/sbom.json')); sys.exit(0 if d['components'] else 1)"
+
       # The real gate. Not "does it compile" and not "does it start": the image
       # is attached as a disk and mounted by the initramfs exactly as it would
       # be on hardware, brings up an s6 supervision tree from service

@@ -82,6 +82,7 @@ func Build(o Options) (*Result, error) {
 	var kernel string
 	var users []nospkg.User
 	var pkgServices []nospkg.Service
+	var comps []component
 	for _, p := range selected {
 		file := filepath.Join(o.PackageDir, p.file)
 		fmt.Fprintf(o.Log, "    + %s %s\n", p.Name, p.Version)
@@ -92,6 +93,14 @@ func Build(o Options) (*Result, error) {
 		names = append(names, m.Name+"-"+m.Version)
 		users = append(users, m.Users...)
 		pkgServices = append(pkgServices, m.Services...)
+		comps = append(comps, componentOf(m))
+	}
+
+	// The image's own NOTICE and SBOM, from the manifests of what went into
+	// it. This is a licence obligation rather than bookkeeping -- see
+	// writeAttribution.
+	if _, err := writeAttribution(rootfs, o.Version, o.Board.ID, o.Arch.ID, comps, o.Log); err != nil {
+		return nil, fmt.Errorf("writing the image attribution: %w", err)
 	}
 
 	// Merge /usr before anything reads paths out of the tree: the kernel
