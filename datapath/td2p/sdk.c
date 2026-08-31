@@ -25,6 +25,7 @@
  */
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "bde.h"
@@ -582,6 +583,58 @@ static void report_delta(bcm_port_t port, const struct pcounters *a,
 		printf("         clean: %llu frames arrived intact, so this lane is the\n"
 		       "         right way round.\n", dpkt);
 }
+/*
+ * A 40G port needs its interface and speed set through the API, not merely
+ * declared in the port map.
+ *
+ * The map's ":40" tells the SDK how many lanes the port owns. It does not
+ * bring the port up at 40G: port_init_speed and its friends configure a
+ * default that suits the 10G cages, and a QSFP cage left on that default
+ * enables, is polled by linkscan, and never links -- with no error anywhere,
+ * because nothing failed.
+ *
+ * The sequence is EdgeNOS's, verified on a BCM56855 where it took a 40G uplink
+ * to PCS lock: interface XGMII, speed 40000, full duplex, autoneg off because
+ * an SR4 optic does not negotiate.
+ *
+ * Applied only to ports the map declares as 40G. The 10G cages reach link on
+ * the property defaults, and there is no reason to touch what works.
+ */
+static int port_is_40g(int port)
+{
+	char key[32];
+	const char *v;
+
+	snprintf(key, sizeof(key), "portmap_%d", port);
+	v = nosaic_props_get(key);
+	if (v == NULL)
+		return 0;
+	v = strchr(v, ':');
+	return v != NULL && atoi(v + 1) == 40;
+}
+
+static void bring_up_40g(int unit, bcm_port_t port)
+{
+	int rv;
+
+	rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_XGMII);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: port %d interface_set(XGMII): %d (%s)\n",
+			port, rv, bcm_errmsg(rv));
+		return;
+	}
+	rv = bcm_port_speed_set(unit, port, 40000);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-td2p: port %d speed_set(40000): %d (%s)\n",
+			port, rv, bcm_errmsg(rv));
+		return;
+	}
+	bcm_port_duplex_set(unit, port, BCM_PORT_DUPLEX_FULL);
+	bcm_port_autoneg_set(unit, port, 0);
+	printf("port %d brought up as 40G (XGMII, autoneg off)\n", port);
+}
+
+
 
 int nosaic_sdk_ports(int unit)
 {
@@ -620,7 +673,14 @@ int nosaic_sdk_ports(int unit)
 	}
 
 	BCM_PBMP_ITER(cfg.port, port) {
-		int erv = bcm_port_enable_set(unit, port, 1);
+		int erv;
+
+		/* Before enabling: the interface type has to be right as the port
+		 * comes up, not corrected afterwards. */
+		if (port_is_40g(port))
+			bring_up_40g(unit, port);
+
+		erv = bcm_port_enable_set(unit, port, 1);
 
 		if (erv < 0 && enable_failures++ == 0)
 			fprintf(stderr, "nosd-td2p: bcm_port_enable_set(port %d) returned "
