@@ -22,3 +22,14 @@
 # host-specific build overrides
 local.mk
 .source-set
+
+# Site configuration, generated from your own switch.
+#
+# The port map and SerDes polarity are read off a machine already running the
+# vendor's OS, so the numbers are the vendor's and are not ours to publish.
+# They are still *board* data rather than per-unit data, so they belong in the
+# image you build -- the image builder copies platform/<board>/config/ into
+# /etc/nosaic, which is the first place the datapath looks. Generate them once
+# with the scripts in platform/<board>/tools/ and drop them here.
+/platform/*/config/portmap.conf
+/platform/*/config/polarity.conf

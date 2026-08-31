@@ -36,17 +36,19 @@ The board runs as a router. On the switch, verified rather than assumed:
   platform HAL, with a closed-loop fan curve;
 - `reboot` works;
 - **it boots from its own flash, unattended** — Aboot reads `boot-config`,
-  finds the SWI and boots it with no console intervention and no network.
+  finds the SWI and boots it with no console intervention and no network, and
+  comes up with its datapath running and its ports present.
 
 ## What does not
 
 - **A/B slots and rollback.** What is installed is one image Aboot boots
   directly. The slot machinery is CI-tested on the virtual platform and
   unexercised here.
-- **Persistence.** The installed image is a RAM-boot image, so the root overlay
-  is a tmpfs and the port map, polarity and addressing are pushed after every
-  boot. Fixing that means partitioning the eMMC beside a FAT partition Aboot
-  can still read.
+- **Addressing and routing do not survive a reboot.** The datapath does: the
+  port map and polarity ship in the image, so after a cold boot `nosd` is
+  running and the ports exist. What is missing is somewhere for *this* switch's
+  addresses to live, and an ordering fix — network configuration is applied
+  before the datapath has created the interfaces it would apply to.
 - **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
   (s6) has been booted.
 - **ECMP.** `l3sync` takes one next hop per prefix.

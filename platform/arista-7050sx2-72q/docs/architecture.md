@@ -447,13 +447,13 @@ Not proven:
 - **A/B slots, trial boot and rollback.** The board boots from flash, but as a
   single image Aboot loads directly. The slot machinery is CI-tested on the
   virtual platform and unexercised here.
-- **Persistence.** Because it RAM boots, the port map, polarity and any
-  addressing have to be pushed after every boot. See
-  [running.md](running.md). Fixing it means putting NOSaic's state in files on
-  the existing FAT partition rather than in partitions of its own -- Aboot
-  matches `flash:` on the controller, so extra eMMC partitions compete for
-  `/mnt/flash` and the first one presented wins. See
-  [hardware.md](hardware.md#how-aboot-resolves-flash).
+- **Addressing and routing.** The board data -- port map and SerDes polarity --
+  ships in the image, so the datapath comes up unaided after a cold boot. This
+  switch's own addresses and OSPF configuration do not, and there is nowhere
+  for them to live yet: `/mnt/data` is a tmpfs on a RAM boot, and the board's
+  committed `config/` is the wrong home for site addressing. There is also an
+  ordering problem -- network configuration runs before `nosd` has created the
+  interfaces. See [todo.md](todo.md).
 - **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
   (s6) has ever been booted here.
 - **ECMP.** The two uplinks have different costs, so FRR picks one. Equal costs

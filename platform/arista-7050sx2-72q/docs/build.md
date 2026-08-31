@@ -99,12 +99,19 @@ The fleet kernel plus a board fragment. What this board needs:
 The Arista SCD (`3475:0001`) needs no kernel driver: NOSaic drives it from
 userspace through its PCI BAR.
 
-## Site configuration is not in the build
+## Site configuration is not in the repository, but it is in the build
 
-`portmap.conf` and `polarity.conf` are generated per switch and are deliberately
-absent from the repository — the numbers are the vendor's, read off a machine
-that already has them. The image does not contain them and `nosd` will not start
-without them. See [running.md](running.md#4-site-configuration).
+`portmap.conf` and `polarity.conf` are absent from this repository — the numbers
+are the vendor's, read off a machine that already has them, so they are not ours
+to publish. That is a statement about the repository, not about the image:
+generate them once, drop them in `platform/arista-7050sx2-72q/config/`, and the
+image builder copies them into `/etc/nosaic` like any other board
+configuration. `.gitignore` keeps them untracked.
+
+They are board data rather than per-unit data — every switch of this model has
+the same lane map and the same PCB polarity — so one generation serves all of
+them. An image built without them boots and has no datapath. See
+[running.md](running.md#4-site-configuration).
 
 `config/asic.conf` **is** in the repository, because everything in it is
 board-independent chip configuration rather than vendor data: interrupt mode,

@@ -603,7 +603,7 @@ That is not evidence that the port map is wrong, which is what it looks like.
 Both are now supplied, by `config/polarity.conf` and `config/portmap.conf`
 respectively, and the cabled ports link. Both files are generated per switch by
 the scripts in [tools/](../tools/) and are deliberately not in this repository:
-see [build.md](build.md#site-configuration-is-not-in-the-build).
+see [build.md](build.md#site-configuration-is-not-in-the-repository-but-it-is-in-the-build).
 
 ### The PCB swaps P/N pairs, per lane
 

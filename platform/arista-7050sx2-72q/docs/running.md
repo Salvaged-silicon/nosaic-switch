@@ -109,18 +109,28 @@ platform/arista-7050sx2-72q/tools/mkportmap.sh  <switch-ip> > portmap.conf
 platform/arista-7050sx2-72q/tools/mkpolarity.sh <switch-ip> > polarity.conf
 ```
 
-They belong in `/mnt/data/config`, which on a **RAM boot is a tmpfs** — so they
-have to be pushed after every boot:
+**Put them in the board's `config/` directory and they ship in the image.** The
+image builder copies `platform/<board>/config/` into `/etc/nosaic`, which is the
+first place the datapath looks, and `.gitignore` keeps these two files out of
+the repository:
 
 ```sh
-doas mkdir -p /mnt/data/config
-doas busybox wget -q -O /mnt/data/config/portmap.conf  http://10.22.1.5:8080/portmap.conf
-doas busybox wget -q -O /mnt/data/config/polarity.conf http://10.22.1.5:8080/polarity.conf
-doas s6-svc -r /run/service/nosd
+cp portmap.conf polarity.conf platform/arista-7050sx2-72q/config/
+make image BOARD=arista-7050sx2-72q PROFILE=minimal ARGS=--ram-boot
 ```
 
-Without them `nosd` exits and s6 restarts it in a loop; the log says which file
-it wanted.
+The build says how many it took: `4 board configuration file(s) into
+/etc/nosaic`. An image built without them boots and has no datapath — `nosd`
+exits and s6 restarts it in a loop, with the log naming the file it wanted.
+
+They are board data, not per-unit data: every 7050SX2-72Q has the same lane map
+and the same PCB polarity, so one generation serves every switch of this model
+you own. Keeping them out of the repository is about provenance — the numbers
+were read off a machine running the vendor's OS — not about them being specific
+to one box.
+
+If you would rather not rebuild, `/mnt/data/config` is still searched, and on a
+RAM boot that is a tmpfs you must repopulate after every boot.
 
 **Chip initialisation takes around six minutes** at this log verbosity. Wait
 for it before concluding anything:

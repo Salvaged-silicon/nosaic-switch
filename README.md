@@ -52,12 +52,11 @@ assumed:
 Two things stand between that and a supported board, and only one of them is about
 the switch being a switch.
 
-**Its configuration does not survive a power cycle.** The installed image is a
-RAM-boot image, so the port map and SerDes polarity live on a tmpfs; after a reboot
-`nosd` exits and the box comes up with no datapath at all. Everything above was
-measured on a switch configured by hand. Fixing it means NOSaic's state in files on
-the flash rather than in partitions of its own — Aboot resolves `flash:` by
-controller, so extra partitions compete for it.
+**It comes up with no addresses.** The board data — port map and SerDes polarity —
+ships in the image, so after a cold reboot the datapath is running and the ports
+are there. What does not survive is *this* switch's addressing and routing
+configuration: there is nowhere for it to live yet, and network configuration is
+applied before the datapath has created the interfaces it would apply to.
 
 **The switch was configured with `ip` and `vtysh`, not with NOSaic's own CLI.** The
 `nosaic show ports`, `interface` and `route` commands exist and run against the
