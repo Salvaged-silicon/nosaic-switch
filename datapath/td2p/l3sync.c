@@ -63,10 +63,27 @@
  * process stays up. The rules punt without the counters. l3_fp_stats=1 turns
  * them on for as long as you are watching.
  *
- * IPv4 ONLY, for now. The v6 equivalent needs the NDP cache over netlink,
- * because there is no /proc file for it, and a second field-processor group,
- * because DstIp and DstIp6 are different widths and one group cannot carry
- * both keys. Stated rather than silently missing.
+ * v6 NEEDS ITS OWN FIELD-PROCESSOR GROUP. bcmFieldQualifyIp6NextHeader has the
+ * same enum value as bcmFieldQualifyIpProtocol, but the destination qualifier
+ * does not -- DstIp is 32 bits and DstIp6 is 128 -- so one group cannot carry
+ * both keys.
+ *
+ * AND ITS OWN SELF-PUNT, WHICH IS EASY TO MISS. Adding BCM_L2_STATION_IPV6 to
+ * MY_STATION starts the chip routing v6 frames sent to our MAC without turning
+ * on the matching punt, and the thing that normally exposes that keeps working:
+ * OSPFv3 is IP protocol 89, so the v6 protocol rule punts it and the adjacency
+ * goes Full. What does not work is neighbour discovery -- a Neighbour
+ * Advertisement for our own address is ICMPv6, not 89, so it is routed and
+ * dropped, and the peer's global address sits at FAILED for ever while its
+ * link-local resolves fine. A control plane that comes up while the data plane
+ * cannot resolve its own neighbours is the worst kind of half-working, so every
+ * address the interface owns is punted, link-local included.
+ *
+ * MULTICAST IS NOT A NEXT HOP. The kernel's NDP cache holds solicited-node and
+ * all-nodes entries beside real neighbours; mirroring those builds egress
+ * objects pointing at 33:33 multicast MACs, which nothing can be forwarded to.
+ * They are skipped at every entry point rather than only where they were first
+ * noticed.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +94,8 @@
 #include <sys/socket.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 
 #include <sal/types.h>
 #include <bcm/types.h>
@@ -121,11 +140,24 @@ static int nrt;
 static struct { int ifx; uint32_t ip; } hs[MAX_HOST];
 static int nhs;
 
+static struct { int ifx; uint8_t gw[16]; bcm_if_t eg; } nh6[MAX_NH];
+static int nnh6;
+static struct { uint8_t dst[16]; int plen; bcm_if_t eg; int seen; } rt6[MAX_RT];
+static int nrt6;
+static struct { int ifx; uint8_t ip[16]; } hs6[MAX_HOST];
+static int nhs6;
+static struct { int ifx; uint8_t ip[16]; } self6[MAX_HOST];
+static int nself6;
+
 static unsigned long st_added, st_moved, st_gone, st_failed, st_unresolved, st_host;
+static unsigned long st6_added, st6_moved, st6_gone, st6_failed, st6_unresolved, st6_host;
 
 static bcm_field_group_t fp_grp = -1;
 static bcm_field_entry_t fp_ospf = -1;
 static int fp_stat_ospf = -1;
+static bcm_field_group_t fp_grp6 = -1;
+static bcm_field_entry_t fp_ospf6 = -1;
+static int fp_stat_ospf6 = -1;
 
 static struct l3if *if_by_name(const char *n)
 {
@@ -253,6 +285,174 @@ static int nexthop(struct l3if *ifp, int ifx, uint32_t gw, bcm_if_t *eg)
 	return BCM_E_NONE;
 }
 
+
+/* IPv6 multicast is never a next hop: see the note at the top. */
+static int is_mcast6(const uint8_t *a)
+{
+	return a[0] == 0xff;
+}
+
+static void hex2bin(const char *h, uint8_t *out, int n)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		char b[3] = { h[i * 2], h[i * 2 + 1], 0 };
+
+		out[i] = (uint8_t)strtoul(b, NULL, 16);
+	}
+}
+
+static void mask6(int plen, uint8_t *out)
+{
+	int i;
+
+	for (i = 0; i < 16; i++) {
+		int bits = plen - i * 8;
+
+		out[i] = bits >= 8 ? 0xff :
+			 bits <= 0 ? 0x00 : (uint8_t)(0xff << (8 - bits));
+	}
+}
+
+/*
+ * Dump the kernel's NDP cache.
+ *
+ * There is no /proc file for it -- /proc/net/arp is v4 only and has no v6
+ * counterpart -- so it comes over netlink. Each resolved neighbour is handed
+ * to the callback. Reachability state is deliberately not filtered on: a STALE
+ * entry still holds the right MAC, and refusing it would leave a route
+ * unprogrammed for no benefit.
+ */
+static void nd_walk(void (*fn)(int ifindex, const uint8_t *ip, const uint8_t *mac,
+			       void *arg), void *arg)
+{
+	struct {
+		struct nlmsghdr n;
+		struct ndmsg    r;
+	} req;
+	uint8_t buf[16384];
+	int s, len;
+
+	s = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	if (s < 0)
+		return;
+
+	memset(&req, 0, sizeof(req));
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ndmsg));
+	req.n.nlmsg_type = RTM_GETNEIGH;
+	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	req.n.nlmsg_seq = 1;
+	req.r.ndm_family = AF_INET6;
+
+	if (send(s, &req, req.n.nlmsg_len, 0) < 0) {
+		close(s);
+		return;
+	}
+
+	while ((len = recv(s, buf, sizeof(buf), 0)) > 0) {
+		struct nlmsghdr *n = (struct nlmsghdr *)buf;
+		int done = 0;
+
+		for (; NLMSG_OK(n, (unsigned)len); n = NLMSG_NEXT(n, len)) {
+			struct ndmsg *nd;
+			struct rtattr *rta;
+			const uint8_t *dst = NULL, *ll = NULL;
+			int rlen;
+
+			if (n->nlmsg_type == NLMSG_DONE) {
+				done = 1;
+				break;
+			}
+			if (n->nlmsg_type != RTM_NEWNEIGH)
+				continue;
+			nd = (struct ndmsg *)NLMSG_DATA(n);
+			if (nd->ndm_family != AF_INET6)
+				continue;
+
+			rta = (struct rtattr *)((char *)nd + NLMSG_ALIGN(sizeof(*nd)));
+			rlen = (int)n->nlmsg_len - (int)NLMSG_LENGTH(sizeof(*nd));
+			for (; RTA_OK(rta, rlen); rta = RTA_NEXT(rta, rlen)) {
+				if (rta->rta_type == NDA_DST && RTA_PAYLOAD(rta) == 16)
+					dst = RTA_DATA(rta);
+				if (rta->rta_type == NDA_LLADDR && RTA_PAYLOAD(rta) == 6)
+					ll = RTA_DATA(rta);
+			}
+			if (dst != NULL && ll != NULL && !is_mcast6(dst))
+				fn(nd->ndm_ifindex, dst, ll, arg);
+		}
+		if (done)
+			break;
+	}
+	close(s);
+}
+
+struct nd_find {
+	const uint8_t *want;
+	uint8_t       *mac;
+	int            found;
+};
+
+static void nd_match(int ifindex, const uint8_t *ip, const uint8_t *mac, void *arg)
+{
+	struct nd_find *f = arg;
+
+	(void)ifindex;
+	if (!f->found && memcmp(ip, f->want, 16) == 0) {
+		memcpy(f->mac, mac, 6);
+		f->found = 1;
+	}
+}
+
+static int nd_lookup(const uint8_t *ip6, uint8_t *mac)
+{
+	struct nd_find f = { ip6, mac, 0 };
+
+	nd_walk(nd_match, &f);
+	return f.found;
+}
+
+/* One egress object per (interface, gateway), as for v4. */
+static int nexthop6(struct l3if *ifp, int ifx, const uint8_t *gw, bcm_if_t *eg)
+{
+	bcm_l3_egress_t egr;
+	uint8_t mac[6];
+	int rv, i;
+
+	for (i = 0; i < nnh6; i++) {
+		if (nh6[i].ifx == ifx && memcmp(nh6[i].gw, gw, 16) == 0) {
+			*eg = nh6[i].eg;
+			return BCM_E_NONE;
+		}
+	}
+	if (is_mcast6(gw))
+		return BCM_E_PARAM;
+	if (nnh6 >= MAX_NH)
+		return BCM_E_RESOURCE;
+	if (!nd_lookup(gw, mac))
+		return BCM_E_NOT_FOUND;
+
+	bcm_l3_egress_t_init(&egr);
+	memcpy(egr.mac_addr, mac, 6);
+	egr.intf = ifp->intf;
+	egr.vlan = ifp->vlan;
+	egr.port = ifp->port;
+	egr.module = 0;
+
+	rv = bcm_l3_egress_create(l3_unit, 0, &egr, eg);
+	if (rv != BCM_E_NONE)
+		return rv;
+
+	nh6[nnh6].ifx = ifx;
+	memcpy(nh6[nnh6].gw, gw, 16);
+	nh6[nnh6].eg = *eg;
+	nnh6++;
+	printf("l3: v6 next hop dev %s via %02x:%02x:%02x:%02x:%02x:%02x -> egress %d\n",
+	       ifp->ifname, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], *eg);
+	fflush(stdout);
+	return BCM_E_NONE;
+}
+
 static uint32_t q_self_ip;
 
 static int q_ospf(bcm_field_entry_t e)
@@ -265,14 +465,31 @@ static int q_self(bcm_field_entry_t e)
 	return bcm_field_qualify_DstIp(l3_unit, e, (bcm_ip_t)q_self_ip, 0xffffffff);
 }
 
-static int fp_add(const char *what, bcm_field_entry_t *ent, int *stat_id,
+static int q_ospf6(bcm_field_entry_t e)
+{
+	return bcm_field_qualify_Ip6NextHeader(l3_unit, e, 89, 0xff);
+}
+
+static uint8_t q_self6_ip[16];
+
+static int q_self6(bcm_field_entry_t e)
+{
+	bcm_ip6_t data, mask;
+
+	memcpy(data, q_self6_ip, 16);
+	memset(mask, 0xff, 16);
+	return bcm_field_qualify_DstIp6(l3_unit, e, data, mask);
+}
+
+static int fp_add(bcm_field_group_t grp, const char *what,
+		  bcm_field_entry_t *ent, int *stat_id,
 		  int (*qual)(bcm_field_entry_t))
 {
 	int rv;
 
-	if (fp_grp < 0)
+	if (grp < 0)
 		return -1;
-	rv = bcm_field_entry_create(l3_unit, fp_grp, ent);
+	rv = bcm_field_entry_create(l3_unit, grp, ent);
 	if (rv != BCM_E_NONE) {
 		fprintf(stderr, "fp: %s entry_create: %d\n", what, rv);
 		return -1;
@@ -290,7 +507,7 @@ static int fp_add(const char *what, bcm_field_entry_t *ent, int *stat_id,
 	if (fp_stats && stat_id != NULL) {
 		bcm_field_stat_t s[1] = { bcmFieldStatPackets };
 
-		if (bcm_field_stat_create(l3_unit, fp_grp, 1, s, stat_id) == BCM_E_NONE)
+		if (bcm_field_stat_create(l3_unit, grp, 1, s, stat_id) == BCM_E_NONE)
 			bcm_field_entry_stat_attach(l3_unit, *ent, *stat_id);
 	}
 	rv = bcm_field_entry_install(l3_unit, *ent);
@@ -319,7 +536,22 @@ static void fp_setup(void)
 		fp_grp = -1;
 		return;
 	}
-	fp_add("ospf (ip proto 89)", &fp_ospf, &fp_stat_ospf, q_ospf);
+	fp_add(fp_grp, "ospf (ip proto 89)", &fp_ospf, &fp_stat_ospf, q_ospf);
+
+	/* A separate group, because one cannot carry both keys: DstIp is 32 bits
+	 * and DstIp6 is 128. */
+	BCM_FIELD_QSET_INIT(q);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyStageIngress);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyIp6NextHeader);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyDstIp6);
+	rv = bcm_field_group_create(l3_unit, q, BCM_FIELD_GROUP_PRIO_ANY, &fp_grp6);
+	if (rv != BCM_E_NONE) {
+		fprintf(stderr, "fp: v6 group_create: %d -- v6 control plane will not "
+			"survive MY_STATION\n", rv);
+		fp_grp6 = -1;
+		return;
+	}
+	fp_add(fp_grp6, "ospfv3 (next header 89)", &fp_ospf6, &fp_stat_ospf6, q_ospf6);
 }
 
 static void fp_show(const char *tag, int stat_id)
@@ -363,7 +595,7 @@ static void self_punt(struct l3if *ifp)
 		snprintf(b, sizeof(b), "self %s (%u.%u.%u.%u)", ifp->ifname,
 			 ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
 		q_self_ip = ip;
-		fp_add(b, &ifp->fp_self, &ifp->fp_stat_self, q_self);
+		fp_add(fp_grp, b, &ifp->fp_self, &ifp->fp_stat_self, q_self);
 	}
 	if (ifp->self_done)
 		return;
@@ -608,6 +840,268 @@ static void poll_hosts(void)
 		fflush(stdout);
 }
 
+
+static int self6_seen(int ifx, const uint8_t *ip)
+{
+	int i;
+
+	for (i = 0; i < nself6; i++) {
+		if (self6[i].ifx == ifx && memcmp(self6[i].ip, ip, 16) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/*
+ * Every v6 address the interface owns has to punt -- see the note at the top.
+ * Link-local included: OSPFv3 and neighbour discovery both use it.
+ *
+ * /proc/net/if_inet6 columns: address(32 hex) ifindex plen scope flags ifname
+ */
+static void self_punt6(struct l3if *ifp)
+{
+	char line[256], addr[64], name[64];
+	unsigned ifidx, plen, scope, flags;
+	FILE *f;
+	int ifx = (int)(ifp - ifs);
+
+	if (ifp->cpu_eg < 0)
+		return;                 /* the v4 path builds it first */
+	f = fopen("/proc/net/if_inet6", "r");
+	if (f == NULL)
+		return;
+
+	while (fgets(line, sizeof(line), f) != NULL) {
+		bcm_l3_host_t h;
+		bcm_field_entry_t ent = -1;
+		uint8_t ip[16];
+		char b[80];
+		int stat = -1, rv;
+
+		if (sscanf(line, "%63s %x %x %x %x %63s",
+			   addr, &ifidx, &plen, &scope, &flags, name) != 6)
+			continue;
+		if (strcmp(name, ifp->ifname) != 0)
+			continue;
+		hex2bin(addr, ip, 16);
+		if (is_mcast6(ip) || self6_seen(ifx, ip))
+			continue;
+		if (nself6 >= MAX_HOST)
+			break;
+
+		bcm_l3_host_t_init(&h);
+		h.l3a_flags = BCM_L3_IP6 | BCM_L3_L2TOCPU;
+		memcpy(h.l3a_ip6_addr, ip, 16);
+		h.l3a_intf = ifp->cpu_eg;
+		rv = bcm_l3_host_add(l3_unit, &h);
+
+		snprintf(b, sizeof(b), "v6 self %s (%02x%02x:..:%02x%02x)",
+			 ifp->ifname, ip[0], ip[1], ip[14], ip[15]);
+		if (fp_grp6 >= 0) {
+			memcpy(q_self6_ip, ip, 16);
+			fp_add(fp_grp6, b, &ent, &stat, q_self6);
+		}
+
+		memcpy(self6[nself6].ip, ip, 16);
+		self6[nself6].ifx = ifx;
+		nself6++;
+		printf("l3: %s self v6 %02x%02x:..:%02x%02x -> CPU: %d\n", ifp->ifname,
+		       ip[0], ip[1], ip[14], ip[15], rv);
+		fflush(stdout);
+	}
+	fclose(f);
+}
+
+static int rt6_find(const uint8_t *dst, int plen)
+{
+	int i;
+
+	for (i = 0; i < nrt6; i++) {
+		if (rt6[i].plen == plen && memcmp(rt6[i].dst, dst, 16) == 0)
+			return i;
+	}
+	return -1;
+}
+
+static void rt6_sweep(void)
+{
+	int i, gone = 0;
+
+	for (i = 0; i < nrt6; ) {
+		bcm_l3_route_t r;
+
+		if (rt6[i].seen) {
+			rt6[i].seen = 0;
+			i++;
+			continue;
+		}
+		bcm_l3_route_t_init(&r);
+		r.l3a_flags = BCM_L3_IP6;
+		memcpy(r.l3a_ip6_net, rt6[i].dst, 16);
+		mask6(rt6[i].plen, r.l3a_ip6_mask);
+		r.l3a_intf = rt6[i].eg;
+		bcm_l3_route_delete(l3_unit, &r);
+		st6_gone++;
+		gone++;
+
+		rt6[i] = rt6[nrt6 - 1];
+		nrt6--;
+	}
+	if (gone) {
+		printf("l3: -%d v6 routes withdrawn from DEFIP\n", gone);
+		fflush(stdout);
+	}
+}
+
+/*
+ * /proc/net/ipv6_route columns:
+ *   dst(32 hex) dstplen(hex) src(32 hex) srcplen nexthop(32 hex)
+ *   metric refcnt use flags ifname
+ */
+static void poll_routes6(void)
+{
+	char line[512], dst[64], gw[64], iface[64];
+	unsigned plen, flags;
+	FILE *f = fopen("/proc/net/ipv6_route", "r");
+	int added = 0;
+
+	if (f == NULL)
+		return;
+	while (fgets(line, sizeof(line), f) != NULL) {
+		bcm_l3_route_t r;
+		struct l3if *ifp;
+		bcm_if_t eg;
+		uint8_t d[16], g[16];
+		int rv, idx, moved = 0;
+
+		if (sscanf(line, "%63s %x %*s %*x %63s %*x %*x %*x %x %63s",
+			   dst, &plen, gw, &flags, iface) != 5)
+			continue;
+		ifp = if_by_name(iface);
+		if (ifp == NULL)
+			continue;
+		if (!(flags & 0x1))     /* RTF_UP */
+			continue;
+		if (!(flags & 0x2))     /* RTF_GATEWAY */
+			continue;
+		if (plen == 0 || plen > 128)
+			continue;
+
+		hex2bin(dst, d, 16);
+		hex2bin(gw, g, 16);
+		if (is_mcast6(d) || is_mcast6(g))
+			continue;
+
+		if (nexthop6(ifp, (int)(ifp - ifs), g, &eg) != BCM_E_NONE) {
+			st6_unresolved++;
+			continue;
+		}
+
+		idx = rt6_find(d, (int)plen);
+		if (idx >= 0) {
+			rt6[idx].seen = 1;
+			if (rt6[idx].eg == eg)
+				continue;
+			moved = 1;
+		}
+
+		bcm_l3_route_t_init(&r);
+		r.l3a_flags = BCM_L3_IP6;
+		memcpy(r.l3a_ip6_net, d, 16);
+		mask6((int)plen, r.l3a_ip6_mask);
+		r.l3a_intf = eg;
+		if (moved)
+			r.l3a_flags |= BCM_L3_REPLACE;
+
+		rv = bcm_l3_route_add(l3_unit, &r);
+		if (rv != BCM_E_NONE) {
+			st6_failed++;
+			continue;
+		}
+		if (moved) {
+			rt6[idx].eg = eg;
+			st6_moved++;
+		} else if (nrt6 < MAX_RT) {
+			memcpy(rt6[nrt6].dst, d, 16);
+			rt6[nrt6].plen = (int)plen;
+			rt6[nrt6].eg = eg;
+			rt6[nrt6].seen = 1;
+			nrt6++;
+			st6_added++;
+			added++;
+		}
+	}
+	fclose(f);
+	rt6_sweep();
+	if (added) {
+		printf("l3: +%d v6 routes into DEFIP (total %lu, moved %lu, failed %lu, "
+		       "unresolved %lu)\n",
+		       added, st6_added, st6_moved, st6_failed, st6_unresolved);
+		fflush(stdout);
+	}
+}
+
+static int host6_seen(int ifx, const uint8_t *ip)
+{
+	int i;
+
+	for (i = 0; i < nhs6; i++) {
+		if (hs6[i].ifx == ifx && memcmp(hs6[i].ip, ip, 16) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static void host6_add(int ifindex, const uint8_t *ip, const uint8_t *mac, void *arg)
+{
+	bcm_l3_host_t h;
+	struct l3if *ifp;
+	bcm_if_t eg;
+	char name[IFNAMSIZ];
+	int *added = arg;
+	int ifx, i, rv;
+
+	(void)mac;
+	if (if_indextoname((unsigned)ifindex, name) == NULL)
+		return;
+	ifp = if_by_name(name);
+	if (ifp == NULL)
+		return;
+	ifx = (int)(ifp - ifs);
+	if (host6_seen(ifx, ip) || self6_seen(ifx, ip))
+		return;
+	if (nhs6 >= MAX_HOST)
+		return;
+	if (nexthop6(ifp, ifx, ip, &eg) != BCM_E_NONE)
+		return;
+
+	bcm_l3_host_t_init(&h);
+	h.l3a_flags = BCM_L3_IP6;
+	memcpy(h.l3a_ip6_addr, ip, 16);
+	h.l3a_intf = eg;
+	rv = bcm_l3_host_add(l3_unit, &h);
+	if (rv != BCM_E_NONE)
+		return;
+
+	memcpy(hs6[nhs6].ip, ip, 16);
+	hs6[nhs6].ifx = ifx;
+	nhs6++;
+	st6_host++;
+	(*added)++;
+	printf("l3: v6 host dev %s -> egress %d (", ifp->ifname, eg);
+	for (i = 0; i < 16; i += 2)
+		printf("%02x%02x%s", ip[i], ip[i + 1], i < 14 ? ":" : ")\n");
+}
+
+static void poll_hosts6(void)
+{
+	int added = 0;
+
+	nd_walk(host6_add, &added);
+	if (added)
+		fflush(stdout);
+}
+
 void nosaic_l3_poll(void)
 {
 	static unsigned long ticks;
@@ -617,10 +1111,14 @@ void nosaic_l3_poll(void)
 
 	if (!l3_on)
 		return;
-	for (i = 0; i < nif; i++)
+	for (i = 0; i < nif; i++) {
 		self_punt(&ifs[i]);
+		self_punt6(&ifs[i]);
+	}
 	poll_routes();
 	poll_hosts();
+	poll_routes6();
+	poll_hosts6();
 
 	/* Report periodically, and only when something has changed.
 	 *
@@ -629,7 +1127,8 @@ void nosaic_l3_poll(void)
 	 * already closed one lead on the strength of a return code that meant
 	 * nothing, and "the route was accepted" and "the route is in the ASIC"
 	 * are different claims. */
-	now = st_added + st_moved + st_gone + st_failed + st_host;
+	now = st_added + st_moved + st_gone + st_failed + st_host +
+	      st6_added + st6_moved + st6_gone + st6_failed + st6_host;
 	if (++ticks % 60 == 0 && now != last) {
 		last = now;
 		nosaic_l3_stats();
@@ -743,11 +1242,16 @@ void nosaic_l3_stats(void)
 
 	if (!l3_on)
 		return;
-	printf("l3: %lu routes / %d next hops (moved %lu, gone %lu, failed %lu, "
-	       "unresolved %lu), %lu host entries\n",
+	printf("l3: v4 %lu routes / %d next hops (moved %lu, gone %lu, failed %lu, "
+	       "unresolved %lu), %lu hosts\n",
 	       st_added, nnh, st_moved, st_gone, st_failed, st_unresolved, st_host);
+	printf("l3: v6 %lu routes / %d next hops (moved %lu, gone %lu, failed %lu, "
+	       "unresolved %lu), %lu hosts\n",
+	       st6_added, nnh6, st6_moved, st6_gone, st6_failed, st6_unresolved,
+	       st6_host);
 
 	fp_show("ospf (ip proto 89)", fp_stat_ospf);
+	fp_show("ospfv3 (next header 89)", fp_stat_ospf6);
 	for (i = 0; i < nif; i++) {
 		char b[64];
 

@@ -122,3 +122,12 @@ services:
     exec: /usr/lib/frr/ospfd -A 127.0.0.1 -f /etc/frr/frr.conf
     after: [zebra]
     restart: always
+
+  # OSPFv3. A separate daemon from ospfd rather than a mode of it, because v6
+  # OSPF is a different protocol rather than an option on the v4 one -- and the
+  # route sync needs it: with no v6 IGP the only v6 route learned is a default,
+  # which is deliberately not programmed into the chip.
+  - name: ospf6d
+    exec: /usr/lib/frr/ospf6d -A ::1 -f /etc/frr/frr.conf
+    after: [zebra]
+    restart: always
