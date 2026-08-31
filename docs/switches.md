@@ -6,13 +6,11 @@ Each board is one self-contained directory under `platform/`. This page is
 generated from them, so a new port is added by adding a directory and never by
 editing a shared file.
 
-Every board has at least three pages: **install** for somebody holding the
-switch, **build** for somebody making an image, and **hardware** for somebody
-changing the datapath or debugging silicon. Some carry a **walkthrough**, which
-is the ordered path from a switch in a rack to one that forwards. Most also carry a **todo** saying
-what is left and, of that, what actually stops the board working. A port may add
-more, and they are listed here because this page is generated from what the
-directory contains rather than from a fixed list.
+Every board carries **install** for somebody holding the switch, **build** for
+somebody making an image, **hardware** for somebody changing the datapath or
+debugging silicon, and **todo** for what is left. A board that has been brought
+up on real hardware also carries a **walkthrough** — the ordered path from a
+switch in a rack to one that forwards, and where to start if you have one.
 
 | Board | Arch | ASIC | Boot | Status | Pages |
 |---|---|---|---|---|---|
@@ -23,3 +21,17 @@ directory contains rather than from a fixed list.
 
 - **aboot** — a SWI booted by Aboot: copy to flash and point boot-config at it
 - **virt** — no installer: QEMU is given the kernel, initramfs and disk directly
+
+## Boards that need data from the vendor's OS
+
+A few boards need numbers that no public document publishes and that can
+only be read from the vendor's software on a machine that already has them
+— which SerDes lane each port is wired to, which lanes have their pair
+swapped on the PCB. That output is yours rather than ours, so it is **not in
+this repository**. The generators are, and they are read-only against the
+switch:
+
+- **arista-7050sx2-72q** — [tools/](../platform/arista-7050sx2-72q/tools/): `mkpolarity.sh`, `mkportmap.sh`
+  Run them once against a switch running the vendor's OS, drop the output
+  in [config/](../platform/arista-7050sx2-72q/config/), and it ships in every image you build for that
+  board. Full instructions are in that board's README.

@@ -82,3 +82,57 @@ func TestPageLinksNoDocs(t *testing.T) {
 		t.Errorf("want an em dash for a board with no docs, got %q", got)
 	}
 }
+
+// boardWithTools writes a board directory carrying the named generator
+// scripts and returns a Board pointing at it.
+func boardWithTools(t *testing.T, id string, tools ...string) *board.Board {
+	t.Helper()
+	dir := t.TempDir()
+	if len(tools) > 0 {
+		td := filepath.Join(dir, "tools")
+		if err := os.MkdirAll(td, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, x := range tools {
+			if err := os.WriteFile(filepath.Join(td, x), []byte("#!/bin/sh\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return &board.Board{ID: id, Path: filepath.Join(dir, "board.yml")}
+}
+
+// A board that ships generators says so, and names them. Without this the
+// catalog mentions the port map only by its absence, which reads as though the
+// board is unsupported -- when the generator is precisely the supported part.
+func TestGeneratorsAreListedForBoardsThatHaveThem(t *testing.T) {
+	var b strings.Builder
+	writeGenerators(&b, []*board.Board{boardWithTools(t, "somebox", "mkportmap.sh", "mkpolarity.sh")})
+	got := b.String()
+
+	for _, want := range []string{"somebox", "mkportmap.sh", "mkpolarity.sh", "not in\nthis repository"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the generator section does not mention %q:\n%s", want, got)
+		}
+	}
+}
+
+// A board with no generators contributes nothing, and with no boards at all the
+// section is absent rather than present and empty.
+func TestNoGeneratorSectionWhenNoBoardHasTools(t *testing.T) {
+	var b strings.Builder
+	writeGenerators(&b, []*board.Board{boardWithTools(t, "plain")})
+	if got := b.String(); got != "" {
+		t.Errorf("a board with no tools should add nothing, got:\n%s", got)
+	}
+}
+
+// Listed in a stable order, so the page does not reshuffle between machines.
+func TestGeneratorToolsAreSorted(t *testing.T) {
+	var b strings.Builder
+	writeGenerators(&b, []*board.Board{boardWithTools(t, "somebox", "zzz.sh", "aaa.sh")})
+	got := b.String()
+	if strings.Index(got, "aaa.sh") > strings.Index(got, "zzz.sh") {
+		t.Errorf("tools should be sorted:\n%s", got)
+	}
+}

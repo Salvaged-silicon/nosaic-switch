@@ -29,13 +29,11 @@ Each board is one self-contained directory under ` + "`platform/`" + `. This pag
 generated from them, so a new port is added by adding a directory and never by
 editing a shared file.
 
-Every board has at least three pages: **install** for somebody holding the
-switch, **build** for somebody making an image, and **hardware** for somebody
-changing the datapath or debugging silicon. Some carry a **walkthrough**, which
-is the ordered path from a switch in a rack to one that forwards. Most also carry a **todo** saying
-what is left and, of that, what actually stops the board working. A port may add
-more, and they are listed here because this page is generated from what the
-directory contains rather than from a fixed list.
+Every board carries **install** for somebody holding the switch, **build** for
+somebody making an image, **hardware** for somebody changing the datapath or
+debugging silicon, and **todo** for what is left. A board that has been brought
+up on real hardware also carries a **walkthrough** — the ordered path from a
+switch in a rack to one that forwards, and where to start if you have one.
 
 `
 
@@ -121,7 +119,73 @@ func Render(boards []*board.Board) string {
 		}
 		fmt.Fprintf(&b, "- **%s** — %s\n", bd.Boot, desc)
 	}
+
+	writeGenerators(&b, boards)
 	return b.String()
+}
+
+// writeGenerators lists the per-switch data a board cannot ship and how to
+// produce it.
+//
+// Some boards need numbers that are only readable from the vendor's own
+// software on the machine that has them -- a SerDes port map, a polarity
+// table. Those are not in this repository, and a catalog that merely omits
+// them reads as though the board is unsupported. It is the opposite: the
+// generator is the supported part, and the output is yours.
+//
+// Derived from the board directory like everything else here, so a port that
+// adds a generator gets it listed without editing this file.
+func writeGenerators(b *strings.Builder, boards []*board.Board) {
+	type entry struct {
+		id    string
+		tools []string
+	}
+	var have []entry
+	for _, bd := range boards {
+		if bd.Path == "" {
+			continue
+		}
+		dir := filepath.Join(filepath.Dir(bd.Path), "tools")
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		var names []string
+		for _, e := range ents {
+			if !e.IsDir() {
+				names = append(names, e.Name())
+			}
+		}
+		if len(names) > 0 {
+			sort.Strings(names)
+			have = append(have, entry{bd.ID, names})
+		}
+	}
+	if len(have) == 0 {
+		return
+	}
+
+	b.WriteString("\n## Boards that need data from the vendor's OS\n\n")
+	b.WriteString("A few boards need numbers that no public document publishes and that can\n")
+	b.WriteString("only be read from the vendor's software on a machine that already has them\n")
+	b.WriteString("— which SerDes lane each port is wired to, which lanes have their pair\n")
+	b.WriteString("swapped on the PCB. That output is yours rather than ours, so it is **not in\n")
+	b.WriteString("this repository**. The generators are, and they are read-only against the\n")
+	b.WriteString("switch:\n\n")
+
+	for _, e := range have {
+		dir := filepath.ToSlash(filepath.Join("..", "platform", e.id))
+		fmt.Fprintf(b, "- **%s** — [tools/](%s/tools/): ", e.id, dir)
+		for i, n := range e.tools {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "`%s`", n)
+		}
+		fmt.Fprintf(b, "\n  Run them once against a switch running the vendor's OS, drop the output\n"+
+			"  in [config/](%s/config/), and it ships in every image you build for that\n"+
+			"  board. Full instructions are in that board's README.\n", dir)
+	}
 }
 
 // Write renders the index into the repository.
