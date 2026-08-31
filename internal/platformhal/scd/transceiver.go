@@ -21,6 +21,20 @@ const (
 	// xcvrTXDisable is bit 6. Asserted for an empty cage and for a module the
 	// board has not qualified, deasserted once one has.
 	xcvrTXDisable = 1 << 6
+
+	// xcvrQSFPLowPower is bits 5 and 7: a QSFP module's low-power and reset
+	// controls. They have no counterpart on an SFP+ cage, which is why the
+	// SFP+ ports came up with only TX_DISABLE cleared and the QSFP ports did
+	// not come up at all.
+	//
+	// A module held here answers nothing. Its EEPROM does not respond and its
+	// transmitter is dark, so the neighbour sits at NO-CARRIER while this end
+	// reports a port that is enabled, at the right speed, with the right lane
+	// map and polarity, and no error anywhere. Established on this board by
+	// clearing bit 7 on the two cabled cages and watching both 40G links come
+	// up at once, and before that on a 7050TX-64, where reading the same block
+	// under EOS and under our own OS was what located it.
+	xcvrQSFPLowPower = (1 << 5) | (1 << 7)
 )
 
 // Known values of a cage word, measured on this board.
@@ -124,9 +138,18 @@ func (c Cage) TXEnabled() bool { return c.Raw&xcvrTXDisable == 0 }
 // from the other: we lock onto the neighbour's light, the neighbour sees no
 // carrier at all.
 //
-// Only bit 6 is touched. The rest of the word means things this driver has not
-// established, and clearing bits whose purpose is unknown on the device that
-// gates the lasers is not a trade worth making.
+// On an SFP+ cage only bit 6 is touched: the rest of the word means things this
+// driver has not established, and clearing bits whose purpose is unknown on the
+// device that gates the lasers is not a trade worth making.
+//
+// A QSFP cage additionally needs its low-power and reset controls cleared, or
+// the module never powers up. That is not optional and it is not visible from
+// the datapath -- see xcvrQSFPLowPower.
+//
+// THE REGISTER DOES NOT READ BACK WHAT IS WRITTEN. It mixes read-only status
+// with control, so 0x01 written reads 0x08. Judge it by effect rather than by
+// read-back, which is why the check below tests only the bit whose behaviour is
+// established.
 func (s *SCD) SetTX(cage int, on bool) (before, after uint32, err error) {
 	if cage < 1 || cage > xcvrCount {
 		return 0, 0, fmt.Errorf("cage %d is outside 1..%d", cage, xcvrCount)
@@ -140,10 +163,15 @@ func (s *SCD) SetTX(cage int, on bool) (before, after uint32, err error) {
 	v := before | xcvrTXDisable
 	if on {
 		v = before &^ uint32(xcvrTXDisable)
+		if cage > xcvrSFPCount {
+			v &^= uint32(xcvrQSFPLowPower)
+		}
 	}
 	s.write32(off, v)
 	after = s.read32(off)
 
+	// Only TX_DISABLE is checked. The low-power bits do not read back, so
+	// asserting anything about them here would be asserting something false.
 	if (after&xcvrTXDisable == 0) != on {
 		return before, after, fmt.Errorf(
 			"cage %d transmitter did not change: %#08x -> %#08x, TX_DISABLE still %v",
