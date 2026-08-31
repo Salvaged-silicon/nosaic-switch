@@ -17,7 +17,7 @@ jobs:
     name: make check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build the pinned builder container
         run: make builder
       - name: Check
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: check
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Sources are pinned by hash, so caching them is safe: a cache cannot
       # substitute different content. It also stops a transient network failure
@@ -58,7 +58,7 @@ jobs:
           cat bootstrap/versions.env >> .source-set
 
       - name: Cache fetched sources
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # The SDK is excluded deliberately. It is 1.79 GB, and caching it
           # would leave room for one copy before eviction started taking the
@@ -73,7 +73,7 @@ jobs:
 
       - name: Cache the x86_64 toolchain
         id: toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: toolchain
           key: toolchain-x86_64-${{ hashFiles('bootstrap/configs/x86_64.defconfig', 'bootstrap/versions.env') }}
@@ -107,7 +107,7 @@ jobs:
       # one on every commit would make CI useless without proving anything new.
       - name: Cache the kernel package
         id: kernel
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: out/packages
           key: pkgs-x86_64-${{ hashFiles('recipes/**', 'arch/x86_64/arch.yml') }}
@@ -245,7 +245,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: check
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # What determines the downloads is the source URLs and their hashes, not
       # every byte of every recipe. Keying on whole files meant a comment edit
@@ -258,7 +258,7 @@ jobs:
           cat bootstrap/versions.env >> .source-set
 
       - name: Cache fetched sources
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           # The SDK is excluded deliberately. It is 1.79 GB, and caching it
           # would leave room for one copy before eviction started taking the
@@ -273,7 +273,7 @@ jobs:
 
       - name: Cache the aarch64 toolchain
         id: toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: toolchain
           key: toolchain-aarch64-${{ hashFiles('bootstrap/configs/aarch64.defconfig', 'bootstrap/versions.env') }}
