@@ -56,6 +56,91 @@ The board runs as a router. On the switch, verified rather than assumed:
 Status stays `bringup` until it boots from its own flash and survives a power
 cycle without help.
 
+## Getting the port map and polarity from EOS
+
+Two files are needed before this board can forward anything, and neither is in
+this repository:
+
+| File | What it is |
+|---|---|
+| `portmap.conf` | which logical port is wired to which physical SerDes lane |
+| `polarity.conf` | which lanes have their differential pair swapped on the PCB |
+
+They are **board** data — every 7050SX2-72Q has the same lane map and the same
+PCB polarity, so you generate them once and they serve every switch of this
+model you own. They are absent from this repository because the only practical
+way to read them is to ask the vendor's software on a machine that already has
+them, which makes the output vendor-derived. The generators are ours; the
+numbers are yours.
+
+Neither can be guessed. The map is not an offset — on this board Ethernet1..20
+sit on lanes 13..32, Ethernet21..48 on 41..68, and the QSFP cages are not in
+order, with Ethernet50 below Ethernet49. A sequential map satisfies every
+bandwidth rule the chip enforces and reaches none of the right cages. Polarity
+is worse: getting it wrong brings the link **up** and makes every frame
+garbage, because inverting a 64b/66b stream turns the sync header `01` into
+`10`, which is also legal. The receiver locks onto nonsense and reports no
+errors.
+
+### 1. Get to EOS
+
+The generators read from a switch running the vendor's OS. If yours already
+boots NOSaic, boot EOS once from the Aboot prompt — this writes nothing and
+leaves `boot-config` alone:
+
+```
+Aboot# boot flash:/EOS-4.18.3.1F.swi
+```
+
+Note EOS's own management address, which is not necessarily the one NOSaic uses.
+
+### 2. Generate them
+
+Both are **read-only**: `mkportmap.sh` issues a `show` command, and
+`mkpolarity.sh` issues register reads. Nothing is written to the switch, which
+may be carrying traffic while they run.
+
+```sh
+cd platform/arista-7050sx2-72q/tools
+./mkportmap.sh  <switch-ip> > portmap.conf
+./mkpolarity.sh <switch-ip> > polarity.conf
+```
+
+Both need `sshpass` and take `SW_USER` (default `admin`) and `SW_PW` (default
+`arista`) from the environment. `mkportmap.sh` also takes `SFP_CAGES`, which
+defaults to 48 — the number of front-panel cages that are SFP+ rather than
+QSFP+.
+
+⚠ `mkpolarity.sh` uses `phy raw sbus`. Do not substitute `getreg`: a blind
+`getreg` sweep wedged this box hard enough to need a physical power cycle.
+
+**No management address on the switch?** `mkportmap.sh` will take the command's
+output from anywhere, so you can capture it over the serial console instead:
+
+```
+switch# show platform trident system detail          (save the output)
+
+./mkportmap.sh --stdin < captured.txt > portmap.conf
+```
+
+### 3. Put them where the build will find them
+
+```sh
+cp portmap.conf polarity.conf platform/arista-7050sx2-72q/config/
+```
+
+`.gitignore` keeps those two filenames untracked, and the image builder copies
+a board's `config/` into `/etc/nosaic` — the first place the datapath looks. The
+build tells you how many it took:
+
+```
+4 board configuration file(s) into /etc/nosaic
+```
+
+Four is right for this board: `asic.conf`, `network.conf`, and these two. Two
+means the image has no datapath — it will boot, `nosd` will exit, and s6 will
+restart it forever with the log naming the file it wanted.
+
 ## Why this board first
 
 The plan originally named the 7050TX-64. It is now second. The TX's 48 ports of
@@ -70,7 +155,6 @@ drives it; the investigation — traces, hypotheses, eliminated leads, and
 anything derived from vendor binaries — stays there. Vendor SDK source is never
 copied in; it is referenced by `file:line`.
 
-Two files are generated per switch and deliberately absent from this
-repository: `portmap.conf` and `polarity.conf`. The numbers in them are the
-vendor's, read off the machine that already has them. The generators are in
-[tools/](tools/); the output is yours.
+`portmap.conf` and `polarity.conf` are absent from this repository for the same
+reason — the numbers are read off a machine running the vendor's software. See
+[Getting the port map and polarity from EOS](#getting-the-port-map-and-polarity-from-eos).

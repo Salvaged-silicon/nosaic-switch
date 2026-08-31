@@ -17,7 +17,7 @@ not yet proven here.
 - A **web server** the switch's management network can reach.
 - The switch's **management address**, and a gateway.
 - This board's `portmap.conf` and `polarity.conf`. **These are not in the
-  repository** — see [Site configuration](#site-configuration) below.
+  repository** — see [Site configuration](#4-site-configuration) below.
 
 ---
 
