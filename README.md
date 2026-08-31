@@ -23,9 +23,10 @@ bar; both are in [docs/switches.md](docs/switches.md).
 | _none_ | | | | |
 
 Every board carries at least three pages — **install**, **build** and a deep
-**hardware** reference with its architecture, port map and registers — and may add more.
-They live in the board's own directory, and [docs/switches.md](docs/switches.md) indexes
-them from what each directory actually contains.
+**hardware** reference with its architecture, port map and registers — plus a **todo**
+listing what is left, separated into what stops it working and what does not. They live
+in the board's own directory, and [docs/switches.md](docs/switches.md) indexes them from
+what each directory actually contains.
 
 ## Where it has got to
 
@@ -46,18 +47,26 @@ assumed:
 - fans, temperatures, PSUs and transceivers read and control through the platform HAL,
   with a closed-loop fan curve.
 
-Two things stand between that and a supported board.
+Two things stand between that and a supported board, and only one of them is about
+the switch being a switch.
 
-It cannot install itself: everything above is a RAM boot, and the A/B slots, trial boot
-and rollback are built and CI-tested on the virtual platform but unexercised on this
-switch.
+**Its configuration does not survive a power cycle.** The installed image is a
+RAM-boot image, so the port map and SerDes polarity live on a tmpfs; after a reboot
+`nosd` exits and the box comes up with no datapath at all. Everything above was
+measured on a switch configured by hand. Fixing it means NOSaic's state in files on
+the flash rather than in partitions of its own — Aboot resolves `flash:` by
+controller, so extra partitions compete for it.
 
-And the switch was configured with `ip` and `vtysh` rather than with NOSaic's own CLI.
-The `nosaic show ports`, `interface` and `route` commands exist and run against the
-virtual datapath in CI; they have not been run against silicon. Until the same commands
-work unmodified on both, the claim below about one CLI everywhere is a design commitment
-rather than a demonstrated fact — which is exactly why it is the gate on this board
-rather than something to be assumed.
+**The switch was configured with `ip` and `vtysh`, not with NOSaic's own CLI.** The
+`nosaic show ports`, `interface` and `route` commands exist and run against the
+virtual datapath in CI; they have not been run against silicon. Until the same
+commands work unmodified on both, the claim below about one CLI everywhere is a
+design commitment rather than a demonstrated fact — which is why it is the gate on
+this board rather than something to assume.
+
+Everything else outstanding is in each board's own list:
+**[7050SX2](platform/arista-7050sx2-72q/docs/todo.md)** ·
+**[virt-x86_64](platform/virt-x86_64/docs/todo.md)**.
 
 How it all works, with diagrams, is in
 **[architecture](platform/arista-7050sx2-72q/docs/architecture.md)**; the development

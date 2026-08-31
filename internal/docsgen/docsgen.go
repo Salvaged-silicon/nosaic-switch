@@ -31,9 +31,10 @@ editing a shared file.
 
 Every board has at least three pages: **install** for somebody holding the
 switch, **build** for somebody making an image, and **hardware** for somebody
-changing the datapath or debugging silicon. A port may add more, and they are
-listed here because this page is generated from what the directory actually
-contains rather than from a fixed list.
+changing the datapath or debugging silicon. Most also carry a **todo** saying
+what is left and, of that, what actually stops the board working. A port may add
+more, and they are listed here because this page is generated from what the
+directory contains rather than from a fixed list.
 
 `
 
@@ -42,7 +43,7 @@ contains rather than from a fixed list.
 // a predictable order for the common pages, not a list to keep in step with
 // what boards actually contain.
 var pageOrder = []string{
-	"install", "running", "build", "architecture", "hardware",
+	"install", "running", "build", "architecture", "hardware", "todo",
 }
 
 // pageLinks lists the documentation a board actually has.
