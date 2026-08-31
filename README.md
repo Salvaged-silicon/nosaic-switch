@@ -69,6 +69,8 @@ Everything else outstanding is in each board's own list:
 **[7050SX2](platform/arista-7050sx2-72q/docs/todo.md)** ·
 **[virt-x86_64](platform/virt-x86_64/docs/todo.md)**.
 
+If you have one of these switches, the ordered path from a rack to a forwarding
+box is **[the walkthrough](platform/arista-7050sx2-72q/docs/walkthrough.md)**.
 How it all works, with diagrams, is in
 **[architecture](platform/arista-7050sx2-72q/docs/architecture.md)**; the development
 loop that produced it is in

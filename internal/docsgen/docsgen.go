@@ -31,7 +31,8 @@ editing a shared file.
 
 Every board has at least three pages: **install** for somebody holding the
 switch, **build** for somebody making an image, and **hardware** for somebody
-changing the datapath or debugging silicon. Most also carry a **todo** saying
+changing the datapath or debugging silicon. Some carry a **walkthrough**, which
+is the ordered path from a switch in a rack to one that forwards. Most also carry a **todo** saying
 what is left and, of that, what actually stops the board working. A port may add
 more, and they are listed here because this page is generated from what the
 directory contains rather than from a fixed list.
@@ -43,7 +44,7 @@ directory contains rather than from a fixed list.
 // a predictable order for the common pages, not a list to keep in step with
 // what boards actually contain.
 var pageOrder = []string{
-	"install", "running", "build", "architecture", "hardware", "todo",
+	"walkthrough", "install", "running", "build", "architecture", "hardware", "todo",
 }
 
 // pageLinks lists the documentation a board actually has.

@@ -13,6 +13,8 @@ NOSaic's first real board, and the one M6 is written against.
 | Console | ttyS0 @ 9600 |
 | Status | **bringup** — boots from its own flash, forwards and routes; no A/B slots or persistence yet |
 
+- **[Walkthrough](docs/walkthrough.md)** — **start here** if you have one of these:
+  backup, port map, build, install, forward
 - **[Architecture](docs/architecture.md)** — how it all works, hardware and software
 - **[Running from RAM](docs/running.md)** — the development loop, no flash written
 - **[Build](docs/build.md)** — building an image for it
