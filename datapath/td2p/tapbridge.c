@@ -78,6 +78,7 @@
 #include <bcm/tx.h>
 #include <bcm/port.h>
 #include <bcm/vlan.h>
+#include <bcm/l2.h>
 #include <bcm/stat.h>
 
 #include "tapbridge.h"
@@ -110,6 +111,10 @@ static bcm_pkt_t *tx_pkt;   /* allocated once; see the header comment */
  * CPU. The source port decides which tap it belongs to; a frame from a port
  * with no tap is not ours and is left for whatever else may want it.
  */
+/* Punted frames whose source port matches no tap. See tap_rx. */
+static unsigned long rx_unmatched;
+static int           rx_unmatched_logged;
+
 static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 {
 	int i;
@@ -140,6 +145,33 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 		if (write(taps[i].fd, d, (size_t)len) != len)
 			return BCM_RX_NOT_HANDLED;
 		return BCM_RX_HANDLED;
+	}
+
+	/*
+	 * A frame the chip punted to us from a port we have no tap for.
+	 *
+	 * This used to return silently, which made the two failures below
+	 * indistinguishable from outside:
+	 *
+	 *   the chip is not receiving        no frames arrive, nothing happens
+	 *   the chip is receiving fine       frames arrive, are punted, and are
+	 *                                    dropped here because src_port is
+	 *                                    not the number we bound the tap to
+	 *
+	 * The second is entirely plausible on a 40G port, where the logical
+	 * port, the physical port and the first lane of the macro are three
+	 * different numbers. Counting it -- and saying which port it came from
+	 * -- is the difference between a diagnosis and a guess.
+	 */
+	rx_unmatched++;
+	if (rx_unmatched_logged < 8) {
+		rx_unmatched_logged++;
+		printf("tap: punted frame from src_port %d matches no tap "
+		       "(taps are on ports", pkt->src_port);
+		for (i = 0; i < ntaps; i++)
+			printf(" %d", taps[i].port);
+		printf(")\n");
+		fflush(stdout);
 	}
 	return BCM_RX_NOT_HANDLED;
 }
@@ -409,6 +441,20 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
  * "the chip sent it and the far end did not like it", which look identical
  * from here otherwise.
  */
+static int l2_dump_cb(int unit, bcm_l2_addr_t *info, void *user_data)
+{
+	int *n = user_data;
+
+	if (*n < 24)
+		printf("l2:   %02x:%02x:%02x:%02x:%02x:%02x vlan %d port %d%s\n",
+		       info->mac[0], info->mac[1], info->mac[2],
+		       info->mac[3], info->mac[4], info->mac[5],
+		       info->vid, info->port,
+		       (info->flags & BCM_L2_STATIC) ? " static" : "");
+	(*n)++;
+	return BCM_E_NONE;
+}
+
 void nosaic_tap_stats(void)
 {
 	static const struct {
@@ -477,6 +523,69 @@ void nosaic_tap_stats(void)
 			       ((unsigned long long)COMPILER_64_HI(v) << 32));
 		}
 		printf("\n");
+	}
+
+	printf("tap: %lu punted frame(s) matched no tap\n", rx_unmatched);
+
+	/*
+	 * What the chip says the VLAN contains, rather than what we asked it to
+	 * contain. bcm_vlan_port_add returning BCM_E_NONE says the call was
+	 * accepted; it does not say the CPU ended up a member, and a VLAN
+	 * without the CPU in it punts nothing -- frames arrive at the port,
+	 * forward correctly, and never reach us. Reading it back is the only
+	 * way to tell that apart from a port that is not receiving.
+	 */
+	{
+		bcm_port_config_t cfg;
+		int have_cfg = (bcm_port_config_get(tap_unit, &cfg) == BCM_E_NONE);
+
+		for (i = 0; i < ntaps; i++) {
+			bcm_pbmp_t pbm, upbm;
+			bcm_port_t p;
+			int cpu_in = -1;
+
+			if (taps[i].vlan <= 0)
+				continue;
+			if (bcm_vlan_port_get(tap_unit, (bcm_vlan_t)taps[i].vlan,
+					      &pbm, &upbm) != BCM_E_NONE) {
+				printf("vlan: %s vid %d unreadable\n",
+				       taps[i].name, taps[i].vlan);
+				continue;
+			}
+			if (have_cfg) {
+				cpu_in = 0;
+				BCM_PBMP_ITER(cfg.cpu, p) {
+					if (BCM_PBMP_MEMBER(pbm, p))
+						cpu_in = 1;
+				}
+			}
+			printf("vlan: %s vid %d members", taps[i].name, taps[i].vlan);
+			BCM_PBMP_ITER(pbm, p)
+				printf(" %d", p);
+			printf(" untagged");
+			BCM_PBMP_ITER(upbm, p)
+				printf(" %d", p);
+			printf("  cpu-member=%d\n", cpu_in);
+		}
+	}
+
+	/*
+	 * The L2 table: whether the chip has seen a frame on this port at all.
+	 *
+	 * This is the measurement that does not depend on the counter subsystem
+	 * or on the punt path. A source MAC learned against a port is proof the
+	 * ASIC received and accepted a frame there, whatever the MIB counters
+	 * read and whether or not anything reached the CPU. An empty table for
+	 * a port whose link is up says the frames are not arriving; an entry
+	 * says they are, and the fault is above the MAC.
+	 */
+	{
+		int n = 0;
+
+		printf("l2: learned entries:\n");
+		bcm_l2_traverse(tap_unit, l2_dump_cb, &n);
+		if (n == 0)
+			printf("l2:   (none)\n");
 	}
 	fflush(stdout);
 }
