@@ -11,6 +11,7 @@
  * STATE: bring-up. This links the SDK and reports what it found; it does not
  * yet attach the device or serve the socket. Nothing here has run on hardware.
  */
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,13 +24,46 @@
 #include "tapbridge.h"
 
 /* Runs once a second from the pump, whether or not there is traffic. */
+/* Milliseconds between two monotonic samples; a zero `then` reads as due. */
+static long elapsed_ms(const struct timespec *then, const struct timespec *now)
+{
+	if (then->tv_sec == 0 && then->tv_nsec == 0)
+		return 1 << 30;
+	return (long)(now->tv_sec - then->tv_sec) * 1000 +
+	       (now->tv_nsec - then->tv_nsec) / 1000000;
+}
+
+/*
+ * Periodic work, and it must be periodic in WALL CLOCK rather than per call.
+ *
+ * The pump calls this every time poll() returns, and poll() returns the instant
+ * a packet is waiting -- so on a busy port this runs once per packet, not once
+ * per second. nosaic_l3_poll() mirrors the kernel FIB into the chip: it parses
+ * /proc/net/route, /proc/net/arp and /proc/net/ipv6_route, makes a netlink
+ * RTM_GETNEIGH round trip, and walks every route and neighbour programming the
+ * chip. Doing that per packet held the CPU path to about twenty packets a
+ * second and built queues nineteen seconds deep.
+ *
+ * It looked like a rate limit somewhere in the SDK, and it was this. The 1000
+ * ms passed to the pump is a poll TIMEOUT -- the longest it will wait when
+ * nothing is happening -- and never a guarantee of how often this is called.
+ */
 static void datapath_tick(void)
 {
-	static unsigned long ticks;
+	static struct timespec last_l3, last_stats;
+	struct timespec now;
 
-	nosaic_l3_poll();
-	if (++ticks % 60 == 0)
+	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+		return;
+
+	if (elapsed_ms(&last_l3, &now) >= 1000) {
+		last_l3 = now;
+		nosaic_l3_poll();
+	}
+	if (elapsed_ms(&last_stats, &now) >= 60000) {
+		last_stats = now;
 		nosaic_tap_stats();
+	}
 }
 
 
