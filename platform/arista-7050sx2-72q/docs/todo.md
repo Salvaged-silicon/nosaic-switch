@@ -184,13 +184,23 @@ writing to a tun fd should manage, which points at how RX is being
 collected -- interrupt versus poll, and the interval -- rather than at the
 per-frame work.
 
-The tap bridge punts every frame through the CPU, one `bcm_tx` per frame
-with a single preallocated buffer, and RX through a `bcm_rx` callback that
-writes to a tun fd. Nothing is rate-limited or backpressured, and the DMA
-pool is a fixed 64 MB reservation. Pool exhaustion is the suspicion -- the
-same failure mode already recorded for field-processor counter collection,
-which took both adjacencies down -- but the mechanism has not been proven
-and should not be written down as though it had.
+Two of the numbers behind it have since been found, and neither was ever
+chosen. `bcm_rx_start(unit, NULL)` takes the SDK's defaults:
+
+  - `global_pps` 1000 -- a **software** rate limit for this chip family,
+    applied in the SDK's own RX thread (`bcm_esw_rx_rate_set`,
+    `src/bcm/esw/rx.c:5432`)
+  - 8 chains of 8 packets -- 64 packets total may be in flight between the
+    chip and the daemon
+
+That is enough for ping, ARP and OSPF and nothing else, which is the exact
+shape of what was measured. Both are now stated explicitly in
+`tapbridge.c` (20000 pps, 16 x 64) rather than inherited.
+
+Whether that is the whole story is not yet measured. A rate limit does not
+by itself explain 19 pps when the limit is 1000; the likely interaction is
+that drops above the limit collapse TCP's window, so goodput ends up far
+below the cap. That is a hypothesis and is written here as one.
 
 Worth fixing early. It is not only a performance limit: it is the
 difference between a switch that survives someone copying a file across it
