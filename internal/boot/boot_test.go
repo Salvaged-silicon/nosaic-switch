@@ -1,6 +1,7 @@
 package boot
 
 import (
+	"encoding/binary"
 	"io"
 	"os"
 	"os/exec"
@@ -517,5 +518,60 @@ func TestAbootBoot0CyclesTheManagementInterface(t *testing.T) {
 	}
 	if !(up < down && down < load) {
 		t.Errorf("the interface must go up, then down, then kexec (up=%d down=%d load=%d)", up, down, load)
+	}
+}
+
+// A PowerPC `make uImage` is a legacy U-Boot header wrapped around a gzipped
+// self-extracting zImage. Nested inside a FIT as type="kernel", bootm executes
+// the header bytes; what belongs there is the payload, and the compression the
+// kernel build chose is recorded in the header rather than guessed at.
+func TestUImageIsUnwrappedForTheFIT(t *testing.T) {
+	dir := t.TempDir()
+	payload := []byte("this stands in for a gzipped zImage")
+
+	hdr := make([]byte, 64)
+	binary.BigEndian.PutUint32(hdr[0:4], 0x27051956)
+	hdr[31] = 1 // gzip
+	uimage := filepath.Join(dir, "uImage")
+	if err := os.WriteFile(uimage, append(hdr, payload...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, comp, err := unwrapUImage(uimage, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comp != "gzip" {
+		t.Errorf("compression: got %q, want gzip (byte 31 of the header)", comp)
+	}
+	if b, err := os.ReadFile(got); err != nil {
+		t.Fatal(err)
+	} else if string(b) != string(payload) {
+		t.Errorf("payload: got %q, want %q", b, payload)
+	}
+
+	// A raw kernel is not a uImage and must pass through untouched, or an
+	// arch that stages a bare binary loses its first 64 bytes.
+	raw := filepath.Join(dir, "vmlinux.bin")
+	if err := os.WriteFile(raw, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, comp, err = unwrapUImage(raw, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != raw || comp != "none" {
+		t.Errorf("a raw kernel was rewritten: path %q, compression %q", got, comp)
+	}
+}
+
+// Empty means no load property at all, which lets U-Boot place the blob. A
+// board that has found out its U-Boot wants telling says so in board.yml.
+func TestLoadAddressIsOptional(t *testing.T) {
+	if got := loadLine(""); got != "" {
+		t.Errorf("no address should emit no property, got %q", got)
+	}
+	if got := loadLine("0x03000000"); !strings.Contains(got, "load = <0x03000000>;") {
+		t.Errorf("got %q", got)
 	}
 }

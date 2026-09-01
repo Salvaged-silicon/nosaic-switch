@@ -1,38 +1,62 @@
-# NOSaic board port. Copy this directory to platform/<id>/ and fill it in.
-# The directory name must match `id`.
+# Edgecore AS5610-52X -- Freescale P2020 (e500v2, big-endian) + BCM56846
+# (Trident+). 48 x SFP+ 10G plus 4 x QSFP+ 40G.
 
-id: edgecore-as5610-52x  # unique, matches the directory name
-vendor: edgecore  # e.g. arista, accton, juniper
-model: as5610-52x  # e.g. 7050sx2-72q
+id: edgecore-as5610-52x
+vendor: edgecore
+model: as5610-52x
 
-# The orthogonal axes. arch and boot name directories (arch/<arch>, boot/<boot>);
-# asic selects which nosd provider this board installs.
-arch: powerpc  # x86_64 | aarch64 | powerpc | armhf
-asic: tdp  # e.g. td2p, td2, tdp, helix4, prestera, virt
-boot: onie-sfx  # virt | aboot | onie-sfx | uboot
+arch: powerpc
+asic: tdp
+boot: onie-sfx
 
-# Only for boot: uboot. Where in RAM the kernel is loaded, which is a property
-# of the SoC -- there is no safe default, and a wrong one hangs the board with
-# nothing on the console.
-# u_boot_arch: ppc
-# u_boot_load: "0x01000000"
-# u_boot_entry: "0x01000000"
+# This board runs U-Boot underneath ONIE, so it states U-Boot addresses even
+# though its installer is ONIE. That is what lets the build emit a FIT the
+# board can load over TFTP into RAM -- see docs/install.md.
+#
+# Zero for both is not a placeholder: the PowerPC boot wrapper is a
+# self-relocating zImage, so U-Boot decompresses it to the bottom of RAM and
+# enters it there. The addresses are read back out of the kernel's own uImage
+# header, and they match what the vendor's own boot command uses.
+u_boot_arch: ppc
+u_boot_load: "0x00000000"
+u_boot_entry: "0x00000000"
 
-# Only for boot: aboot. The newest Arista hardware epoch this image claims to
-# support; Aboot refuses a board whose epoch is higher. Read it off the switch
-# with prefdl. Defaults to 1.
-# aboot_max_hwepoch: "1"
+# Where a TFTP'd image is parked before bootm unpacks it, and where the two
+# blobs inside it are placed. The fdt and ramdisk addresses are read off the
+# FIT this switch actually boots today, not chosen: U-Boot 2013.01 here is
+# known to want telling.
+#
+# The vendor stages at 0x02000000, which is right for its own 5 MB image and
+# wrong for ours. A RAM-booted image carries the whole root filesystem, so the
+# initramfs runs from 0x03100000 to about 0x059b0000 -- staging on top of that
+# has the copy overwrite its own source partway through. 0x08000000 is clear of
+# it, and this board has 2 GB.
+u_boot_stage: "0x08000000"
+u_boot_fdt_addr: "0x03000000"
+u_boot_ramdisk_addr: "0x03100000"
 
-profile: minimal  # full | slim | minimal
-kernel: ""                   # empty means the fleet default
+# A P2020 has no ACPI, so nothing tells the kernel what is on the board except
+# this file. Compiled at image time and carried inside the FIT.
+device_tree: dts/as5610-52x.dts
 
-status: planned              # planned | bringup | experimental | production
+profile: minimal
+kernel: ""
+
+status: bringup
 
 notes: >
-  What is unusual about this board. Hard-won findings belong here: register
-  quirks, access paths that silently fail, firmware that must load before a
-  port will link. This is the most valuable file in the directory.
+  Big-endian PowerPC, which is the first board in the fleet that is not
+  little-endian x86 -- the SDK needs SYS_BE_PIO=1 and any structure shared
+  with the chip needs checking rather than assuming.
 
-# Read off the running switch, not guessed: a wrong baud rate
-# makes a working board look hung.
+  The ASIC is a BCM56846 Trident+ with a CMICe, not the CMICm the Trident2+
+  boards have; the interrupt and DMA paths differ and the 7050SX2's BDE does
+  not carry over unchanged.
+
+  ONIE and the NOS share one disk, reached over USB, and the vendor's boot
+  command loads the NOS from MBR partition 5. Installing by writing a whole
+  disk image would take ONIE with it and remove the way back, so the ONIE
+  backend must install into a partition. Until it does, use the TFTP netboot
+  path, which writes nothing.
+
 console: "ttyS0,115200"

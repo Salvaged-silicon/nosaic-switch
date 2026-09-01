@@ -36,12 +36,38 @@ type Image struct {
 	Arch    string
 	Version string
 
+	// DTB is a compiled device tree, when the board supplies one.
+	//
+	// x86 boards describe themselves through ACPI and need none. A PowerPC or
+	// ARM board cannot boot without one, and it belongs in the FIT beside the
+	// kernel rather than being deployed separately: U-Boot's `bootm addr#conf`
+	// selects a configuration, and that configuration names the device tree the
+	// kernel is handed. Empty means the board did not supply one.
+	DTB string
+
 	// U-Boot needs to be told things the other bootloaders work out for
 	// themselves: which architecture name it uses, and where in RAM to put the
 	// kernel. Those are properties of the board, so they come from board.yml.
 	UBootArch  string
 	UBootLoad  string
 	UBootEntry string
+
+	// UBootStage is where a downloaded image is parked in RAM before bootm
+	// unpacks it. Distinct from UBootLoad, which is where the kernel inside
+	// it ends up: staging an image on top of its own unpack address makes it
+	// overwrite itself partway through, and the symptom is a board that
+	// prints nothing further.
+	UBootStage string
+
+	// FDTAddr and RamdiskAddr place those two blobs in RAM. Empty lets U-Boot
+	// choose, which is usually right.
+	FDTAddr     string
+	RamdiskAddr string
+
+	// Console is the board's serial console as the kernel spells it, e.g.
+	// "ttyS0,115200". Needed because a U-Boot board must be handed an
+	// explicit command line.
+	Console string
 
 	// KernelParams are appended to the kernel command line.
 	KernelParams string

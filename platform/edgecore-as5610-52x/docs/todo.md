@@ -33,19 +33,28 @@ under QEMU's permissive generic-PowerPC model, and dies only on the board — so
 `arch/powerpc/arch.yml` fails any build containing one of those instruction
 classes. Do not weaken it to make something link.
 
-### The kernel cannot build a device tree
+### ~~The kernel cannot build a device tree~~ — done
 
 x86_64 boards describe themselves through ACPI and need no device tree, so
-nothing in the kernel recipe has ever compiled one. This board cannot boot
-without it: `platform/accton-as5610-52x/dts/as5610-52x.dts` exists in EdgeNOS,
-`model = "powerpc-accton-as5610-52x-r0"`, `compatible = "accton,as5610_52x",
-"fsl,P2020RDB"`.
+nothing in the kernel recipe had ever compiled one. This board cannot boot
+without one.
 
-The kernel package is per-architecture and a device tree is per-board, so this
-is not simply a file to add to the recipe. The project plan already says the
-shape -- "per-board defconfig + DTS as data" -- and the decision to make is
-whether the DTB is built by the image builder from the board directory, or
-whether a board contributes a small package of its own.
+Resolved the way the plan said — DTS as board data. A board names one in
+`board.yml`:
+
+```yaml
+device_tree: dts/as5610-52x.dts
+```
+
+and the image builder compiles it and hands it to the boot backend, which
+carries it inside the FIT. Compiled at image time rather than committed as a
+`.dtb`, because a device tree is the one board file where a wrong value hangs
+the board before the console opens — it needs to be readable in a diff. `dtc`
+was already a build dependency: `mkimage` shells out to it.
+
+The source is EdgeNOS's, itself derived from ONL's. Unlike the 7050SX2's port
+map and polarity tables, which are vendor-derived and stay out of the public
+tree, this is open-source-derived board data and ships in it.
 
 Two smaller things were fixed while establishing this, and are worth knowing
 because both would have produced a kernel that builds and does not boot:
@@ -61,19 +70,40 @@ because both would have produced a kernel that builds and does not boot:
 ### The ONIE backend does not handle U-Boot platforms
 
 An installer builds — script plus a 488 MB disk image, with a genuine
-PowerPC uImage kernel inside it — and it would not produce a bootable switch.
+PowerPC uImage kernel inside it — and it would still not produce a bootable
+switch. Two of the four things wrong with it are fixed; two are not.
 
-`internal/boot/onie.go` writes the disk and stops. It never sets `nos_bootcmd`
-in `u-boot-env`, which is how an ONIE platform tells U-Boot where its NOS is.
-On x86 the firmware can find a bootloader in the image's own boot partition; a
-U-Boot board has to be told, and this is the first U-Boot board.
+**Fixed.** The installer exports a full `PATH` before it does anything (ONIE
+gives it `/usr/bin:/bin`, and `fdisk`, `mke2fs`, `fw_setenv` and `reboot` all
+live outside that), and it reboots the switch itself with `/sbin/reboot`.
+The second matters more than it looks: ONIE's own `exec_installer` calls
+`reboot` without a path, that fails here, and its error handler then re-runs
+the step that resets the NOS boot command. A successful install undoes itself.
 
-Second, NOSaic's disk image is GPT with named partitions — the initramfs finds
-its slots by name — and this board runs MBR today. Whether the vendor U-Boot
-reads GPT is unknown and wants establishing before anything is written.
+**Still open — the FIT has nowhere to live.** `internal/boot/onie.go` writes
+the disk and stops; nothing sets `nos_bootcmd`, which is how an ONIE platform
+tells U-Boot where its NOS is. The reason that is not a two-line fix is the
+layout: NOSaic's boot partition is an ext2 filesystem holding a slot pointer,
+and a U-Boot board needs the FIT somewhere raw — one per slot, if A/B is to
+mean anything here.
 
-Both are backend work rather than board work, which is the right shape: the
-board declares `boot: onie-sfx` and should not have to know.
+**Still open — GPT against a DOS-only U-Boot.** NOSaic's image is GPT with
+named partitions. This board's boot command reads `${usbdev}:5`, a *logical*
+partition, which only MBR has; that is near proof its U-Boot has no GPT
+support. The answer is not to give this board a different table but to stop
+needing one: `usb read <addr> <lba> <count>` takes raw sectors and parses
+nothing, and it is recorded as working on this exact board. The installer knows
+the LBA because it just wrote the table.
+
+Both remaining items are backend work rather than board work, which is the
+right shape: the board declares `boot: onie-sfx` and should not have to know.
+
+**Meanwhile there is a way to run on this board that needs none of it.** The
+build now emits a netboot FIT for any board that declares U-Boot addresses,
+whatever its installer, and TFTP into RAM writes nothing at all. See
+[install.md](install.md). That is the analogue of how the 7050SX2 was first
+booted, and it is the right order: prove the image runs before designing the
+partition table it will live in.
 
 ### The board's own hardware is undescribed
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -392,16 +393,49 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 	if err != nil {
 		return err
 	}
+	dtb, err := compileDeviceTree(root, b, filepath.Join(root, "out", "images", boardID))
+	if err != nil {
+		return err
+	}
 	artifact, err := backend.Wrap(boot.Image{
 		Kernel: res.Kernel, Initramfs: res.Initramfs,
 		Squashfs: res.Squashfs, Disk: res.Disk,
 		Board: b.ID, Arch: a.ID, Version: version.Version,
+		DTB:       dtb,
 		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
+		UBootStage: b.UBootStage, Console: b.Console,
+		FDTAddr: b.UBootFDTAddr, RamdiskAddr: b.UBootRamdiskAddr,
 		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
 		KernelParams:    b.KernelParams,
 	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
 	if err != nil {
 		return err
+	}
+
+	// A board installed by ONIE still has U-Boot underneath it, and U-Boot can
+	// load a FIT over the network into RAM. That is the only way to try an
+	// image on such a board without writing its disk -- and on a board that
+	// shares one disk with ONIE, writing the disk is what removes the way
+	// back. So the FIT is built for any board that states U-Boot addresses,
+	// not only for boards whose installer is U-Boot.
+	netboot := ""
+	if b.UBootArch != "" && b.Boot != "uboot" {
+		fit, err := boot.For("uboot")
+		if err != nil {
+			return err
+		}
+		netboot, err = fit.Wrap(boot.Image{
+			Kernel: res.Kernel, Initramfs: res.Initramfs,
+			Board: b.ID, Arch: a.ID, Version: version.Version,
+			DTB:       dtb,
+			UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
+			UBootStage: b.UBootStage, Console: b.Console,
+			FDTAddr: b.UBootFDTAddr, RamdiskAddr: b.UBootRamdiskAddr,
+			KernelParams: b.KernelParams,
+		}, filepath.Join(root, "out", "images", boardID), os.Stdout)
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("\nimage for %s (%s profile)\n", b.ID, pr.Name)
@@ -416,6 +450,13 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 	fmt.Printf("\ninstall with %s\n  %s\n", backend.ID(), backend.Describe())
 	if fi, err := os.Stat(artifact); err == nil {
 		fmt.Printf("  %-42s %6.1f MiB\n", artifact, float64(fi.Size())/(1<<20))
+	}
+	if netboot != "" {
+		fmt.Printf("\nor try it without installing, from the U-Boot prompt\n")
+		fmt.Printf("  tftpboot 0x02000000 %s && bootm 0x02000000#nosaic\n", filepath.Base(netboot))
+		if fi, err := os.Stat(netboot); err == nil {
+			fmt.Printf("  %-42s %6.1f MiB\n", netboot, float64(fi.Size())/(1<<20))
+		}
 	}
 	return nil
 }
@@ -719,4 +760,36 @@ func chooseBoard(root string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("no board called %q", answer)
+}
+
+// compileDeviceTree builds the board's .dts into a .dtb, if it has one.
+//
+// Compiling here rather than shipping a checked-in .dtb keeps the reviewable
+// artifact the source: a device tree is the one board file where a wrong value
+// produces a board that hangs before the console opens, so it needs to be
+// readable in a diff. dtc is already a build dependency -- mkimage shells out
+// to it to compile the FIT description.
+func compileDeviceTree(root string, b *board.Board, outDir string) (string, error) {
+	if b.DeviceTree == "" {
+		return "", nil
+	}
+	src := filepath.Join(root, "platform", b.ID, b.DeviceTree)
+	if _, err := os.Stat(src); err != nil {
+		return "", fmt.Errorf("board %s declares device_tree %s: %w", b.ID, b.DeviceTree, err)
+	}
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return "", err
+	}
+	out := filepath.Join(outDir, strings.TrimSuffix(filepath.Base(src), ".dts")+".dtb")
+
+	fmt.Printf("==> compiling %s\n", b.DeviceTree)
+	// -@ keeps the symbol table, which costs a little space and makes the
+	// result usable with overlays later. Warnings are left on: a device tree
+	// that dtc grumbles about is usually one that is about to misbehave.
+	cmd := exec.Command("dtc", "-I", "dts", "-O", "dtb", "-o", out, src)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("compiling %s: %w", src, err)
+	}
+	return out, nil
 }

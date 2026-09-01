@@ -50,6 +50,25 @@ type Board struct {
 	UBootLoad  string `yaml:"u_boot_load"`
 	UBootEntry string `yaml:"u_boot_entry"`
 
+	// UBootStage is where a TFTP'd image is parked before bootm unpacks it.
+	// Must not overlap where the kernel unpacks, which is UBootLoad.
+	UBootStage string `yaml:"u_boot_stage"`
+
+	// Where the device tree and initramfs are placed. Empty lets U-Boot
+	// choose. An older U-Boot may need to be told.
+	UBootFDTAddr     string `yaml:"u_boot_fdt_addr"`
+	UBootRamdiskAddr string `yaml:"u_boot_ramdisk_addr"`
+
+	// DeviceTree is a .dts under the board directory, compiled at image time
+	// and carried inside the FIT.
+	//
+	// x86 boards describe themselves through ACPI and leave this empty. A
+	// PowerPC or ARM board cannot boot without one, and a board's device tree
+	// is board data in the same sense its port map is -- it belongs in the
+	// board directory, not in the kernel recipe, so that adding a board stays
+	// a matter of adding a directory.
+	DeviceTree string `yaml:"device_tree"`
+
 	// Flash layout, in MiB. Zero means the default, which suits a board with
 	// modest flash; a board with room should say so rather than inherit a
 	// number chosen for a virtual machine.

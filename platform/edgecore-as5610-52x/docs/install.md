@@ -59,8 +59,6 @@ than after.
 
 ## The route
 
-## The route
-
 `boot: onie-sfx` — NOSaic emits a self-extracting installer that ONIE runs.
 An image now builds:
 
@@ -89,9 +87,29 @@ in the backend rather than a mistake in the board.
 ### The layout is GPT and this board's is MBR
 
 NOSaic's disk image is GPT with named partitions — the initramfs finds its
-slots by name. This board currently runs an MBR layout with an extended
-partition. Whether the vendor U-Boot can read GPT is unknown and needs checking
-before anything is written.
+slots by name. This board runs MBR, and its boot command loads from
+`${usbdev}:5` — a *logical* partition, which only an MBR extended partition can
+have. That is close to proof that this U-Boot was built for DOS partitions
+alone.
+
+The way out is not to abandon GPT for one board. U-Boot can read raw sectors
+without parsing any partition table at all:
+
+```
+usb read 0x02000000 0x42000 0x7fc2      # load address, start LBA, sector count
+```
+
+That is the form the vendor OS used before it moved to `usbboot`, and it is
+recorded as working on this exact board. So the installer writes the FIT to a
+partition raw and points `nos_bootcmd` at that partition's LBA, which it knows
+because it just wrote the table. The bootloader never needs to understand the
+format.
+
+**What this needs that does not exist yet.** NOSaic's boot partition is an ext2
+filesystem holding the slot pointer, not a raw FIT. A U-Boot board needs
+somewhere raw for the FIT, and both slots need one if A/B is to mean anything
+here. That is a change to the disk layout for `boot: uboot`-underneath boards,
+not a change to this board.
 
 ### Why this is still recoverable
 
@@ -106,3 +124,143 @@ established before anything else could be risked.
 
 **Do not write `mtd0` or `mtd3`** — ONIE and U-Boot. Everything NOSaic installs
 belongs on the block device.
+
+
+## Trying it without installing
+
+This is the way to run NOSaic on this switch today, and it is the direct
+analogue of how the 7050SX2 was first booted — there, `boot http://...` from
+the Aboot prompt; here, TFTP from the U-Boot prompt. **Nothing is written.** No
+partition, no filesystem, no `saveenv`. Power-cycling the switch returns it to
+exactly the OS it was running before.
+
+The build emits a second artifact for this:
+
+```
+make image BOARD=edgecore-as5610-52x ARGS=--ram-boot
+  NOSaic-<version>-edgecore-as5610-52x.itb    ~51 MiB
+```
+
+A FIT carrying the kernel, the device tree, and an initramfs with the whole
+root filesystem inside it. Built for any board that declares U-Boot addresses,
+whatever its installer, precisely so that an ONIE board can be tried before it
+is committed to.
+
+Serve it from the build host and, at the `LOADER=>` prompt:
+
+```
+setenv autoload no
+dhcp                                  # or set ipaddr/netmask/gatewayip by hand
+setenv serverip <build-host>
+setenv bootargs 'console=ttyS0,115200 cma=32M'
+tftpboot 0x08000000 NOSaic-<version>-edgecore-as5610-52x.itb
+bootm 0x08000000#nosaic
+```
+
+Every line of that is load-bearing:
+
+- **`bootargs` must be set.** Without it the kernel falls back to its built-in
+  command line, and the failure is a board that loads the image and then prints
+  nothing at all. No panic, no console, no clue.
+- **`0x08000000`, not the vendor's `0x02000000`.** The vendor stages its own
+  5 MB image at 32 MB. Ours carries the root filesystem, so the initramfs
+  unpacks from 0x03100000 to roughly 0x059b0000 — staging at 0x02000000 puts
+  the image on top of where its own contents are going, and the copy overwrites
+  its source partway through.
+- **`#nosaic`** names the configuration inside the FIT.
+- **`setenv`, never `saveenv`.** The addresses live in RAM and are gone on the
+  next reset. A `saveenv` during bring-up is how a board ends up unable to boot
+  anything.
+
+Do **not** set `fdt_high` or `initrd_high`. EdgeNOS's notes record setting them
+to `0xffffffff` as breaking both its own boot and ONIE's; U-Boot's default
+relocation is correct here.
+
+## The FIT this board wants
+
+Read off the image the switch boots today, not chosen:
+
+| | |
+|---|---|
+| kernel | gzip, `load` and `entry` both `0x0` — `CONFIG_RELOCATABLE=y` does the rest |
+| device tree | uncompressed, `load = 0x03000000` |
+| initramfs | **`compression = "none"`**, `load = 0x03100000` |
+
+The initramfs is a `.cpio.gz`, and declaring it `none` is not an oversight: the
+kernel unpacks it. Telling U-Boot it is gzip makes U-Boot decompress it first,
+into a buffer sized for something else.
+
+Two more, both of which cost someone a day already:
+
+- **A ramdisk node is required.** U-Boot 2013.01 here fails silently on a FIT
+  that has none.
+- **Never nest a uImage inside a FIT.** A PowerPC `make uImage` is a legacy
+  U-Boot header wrapped around a gzipped self-extracting zImage; put that whole
+  thing in as `type = "kernel"` and `bootm` executes the header bytes. The
+  payload is what belongs there — the first 64 bytes off the front. NOSaic's
+  U-Boot backend does this unwrapping itself, so the kernel recipe stages one
+  artifact and the boot backend takes what it needs.
+
+## Getting back
+
+Three routes, in increasing order of how broken things are.
+
+**From a running OS**, no console needed. `onie_boot_reason` is the whole
+decision: U-Boot's `check_boot_reason` sends the box to ONIE if it is set to
+anything, and ONIE deletes it once it has done its job.
+
+```
+fw_setenv onie_boot_reason install && reboot
+```
+
+`fw_setenv` prompts for confirmation and will sit there waiting in a script, so
+pipe `y` into it. This needs `/proc/mtd`, which needs the MTD options in
+`recipes/linux/config/powerpc.fragment` — without them the NOR never probes,
+`/proc/mtd` is empty, and `fw_setenv` has nothing to write.
+
+**From the `LOADER=>` prompt**, when the OS will not start:
+
+```
+setenv onie_boot_reason install
+saveenv
+boot
+```
+
+**When the environment itself is wrong** and neither the NOS nor ONIE will
+start:
+
+```
+env default -a
+saveenv
+reset
+```
+
+That restores U-Boot's compiled-in defaults and lands in ONIE.
+
+Underneath all three is the hardware guarantee: **ONIE and U-Boot are in NOR
+flash, and the device tree marks `onie`, `uboot` and `board_eeprom`
+read-only** — the kernel's MTD layer refuses writes to them. Only
+`u-boot-env` is writable. Nothing NOSaic can do to `/dev/sda`, and nothing
+short of a deliberate `flash_erase` of a read-only MTD, removes the way back.
+
+**And the vendor OS is a way back too.** ONIE installers for the Cumulus Linux
+releases this board shipped with are kept outside this repository; from ONIE,
+`onie-nos-install <url>` returns the switch to one of them.
+
+## What ONIE's shell does not have
+
+Its BusyBox is from 2017 and the installer runs inside it. Verified absent:
+`parted`, `partprobe`, `ssh-keygen`, `curl`, `mkfs.ext4`. Present: `fdisk`,
+`blkid`, `mke2fs` (but not its `-q` flag), `dd`, `tar`, `wget`, `fw_printenv`,
+`fw_setenv`.
+
+Two traps worth stating plainly, because both produce a *successful* install
+that does not boot:
+
+- **`PATH` is `/usr/bin:/bin`.** `fdisk`, `mke2fs`, `fw_setenv` and `reboot`
+  all live outside it. NOSaic's installer exports a full `PATH` first.
+- **ONIE reports failure on a successful install, and then undoes it.** Its
+  `exec_installer` calls `reboot` without a path; on this box that fails, the
+  error handler runs, and the step that resets the NOS boot command runs with
+  it. So the installer reboots the switch itself, with a full path, before
+  handing control back.
