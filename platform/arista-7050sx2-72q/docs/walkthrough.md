@@ -204,20 +204,43 @@ It now comes up on its own, with its datapath running and its ports present.
 
 ## 6. Address the ports and start routing
 
-This part does **not** persist yet — see [todo.md](todo.md). After each boot:
+**This is configuration, not a per-boot ritual.** Put your addresses in the
+board's `config/network.conf` and your OSPF in `recipes/frr/nosaic/frr.conf`,
+build, and the switch comes up with all of it — loopback, every routed port,
+and the routing daemons — after a power cycle, with nothing typed at the
+console.
+
+```
+# platform/arista-7050sx2-72q/config/network.conf
+iface lo   10.101.255.53/32
+iface et1  10.101.101.42/29 mtu 1600
+iface et54 10.101.101.65/29 mtu 1600
+```
+
+Two things about that file are worth understanding rather than copying.
+
+**MTU is load bearing.** OSPF will not leave ExStart when the two ends
+disagree, and an adjacency that reaches ExStart and stops is the signature.
+Match your neighbours; here that is 1600.
+
+**Keep management traffic on the management port.** Once this switch runs OSPF
+it *learns* a route to your build network over the front panel, and a learned
+/24 beats the default route by longest prefix. Its own management traffic then
+leaves by the front panel and comes back through the CPU punt path, which
+carries about twenty packets a second — a 77 MB image at 21 KB/s instead of
+2 MB/s, and a box too busy to answer its console. Pin it:
+
+```
+route 10.22.1.0/24 via 10.1.1.1 dev eth0
+```
+
+If you would rather do it by hand for one boot, the taps are recreated whenever
+`nosd` restarts, so addresses go on afterwards:
 
 ```sh
 doas busybox ip addr add 10.101.101.42/29 dev et1
 doas busybox ip link set et1 up
-
-doas vtysh -c "conf t" \
-  -c "router ospf" \
-  -c "ospf router-id 10.101.101.42" \
-  -c "network 10.101.101.40/29 area 0.0.0.0" \
-  -c "end"
 ```
-
-The taps are recreated whenever `nosd` restarts, so addresses go on afterwards.
 
 There is a window of about a second after configuring an address during which
 traffic to it is dropped: `MY_STATION` is already routing packets aimed at us
@@ -289,10 +312,17 @@ Aboot is never modified, so the console always reaches a prompt.
 
 ## What you will not have
 
-- **Addressing and routing across a reboot** — step 6 each time.
 - **A/B slots or rollback.** One image, booted directly.
 - **The `nosaic` CLI driving the datapath.** It exists and works against the
-  virtual platform; on silicon this board is configured with `ip` and `vtysh`.
+  virtual platform; on silicon this board is configured through `network.conf`,
+  `frr.conf` and `vtysh`.
+- **A control plane that carries anything.** Packets destined for the switch go
+  through the CPU, and that path manages about twenty a second while answering
+  a ping in 8 ms. Protocols fit; a file copy does not, and at full rate it
+  starves the box until the transfer stops. The cause is that the datapath
+  daemon polls rather than taking interrupts, which costs a core outright.
+- **A way in over the network.** No SSH server is packaged, so the only shell
+  is the serial console.
 
-All three are in [todo.md](todo.md), with what is required separated from what
-is not.
+All of them are in [todo.md](todo.md), with what is required separated from
+what is not.
