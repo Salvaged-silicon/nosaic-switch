@@ -10,31 +10,77 @@ and how it was proven is in
 
 ## Required — the switch does not come up working without these
 
-### Interface addresses and routing do not survive a reboot
+### The control plane carries almost nothing
 
-The switch boots from its own flash and brings its datapath up unaided: after
-a cold reboot `nosd` is running and `et1`/`et2` exist, with no console
-intervention. What it does not do is address them or start routing, so it comes
-up as a switch with no addresses and no OSPF.
+Every frame destined for this switch is punted through the CPU by the tap
+bridge. That path measures **about twenty packets a second** while answering a
+ping in 8 ms: latency is fine, throughput is almost nothing. Protocols fit —
+every OSPF adjacency on this board holds — and nothing else does. At full rate
+an inbound transfer starves the box until it stops answering its console, and
+recovers on its own when the transfer ends.
 
-Two things are in the way, and the second is the interesting one.
+Two causes are known and one is fixed.
 
-**There is nowhere for this switch's addressing to live.** The board's
-`config/` directory ships in the image, which is right for board data, and
-`network.conf` is committed — so lab addressing does not belong in it. On a RAM
-boot `/mnt/data` is a tmpfs, so that is not an answer either. This wants either
-a site-config input to the image build or NOSaic's persistent state in files on
-the flash partition; see
+**Counter collection ran every second.** `bcm_stat_init` takes the SDK default
+of one second, and with S-Channel polled rather than interrupt-driven each
+counter read spins, so a pass over 54 ports cost most of a second of CPU:
+`bcmCNTR.0` held 997 seconds of CPU over eighteen minutes of uptime. At
+`bcm_stat_interval=30000000` it holds 42 seconds over comparable uptime, idle
+load average fell from 2.07 to 1.32, and the usable punt rate roughly doubled.
+
+**The polling thread cannot be made cheap.** `bcmPOLL` still holds about 93% of
+a core, and no configuration fixes it:
+
+    sal_usleep(usec)   busy-waits with sched_yield() when
+                       usec < (2 * SECOND_USEC) / HZ        -- 2 to 20 ms
+
+so `polled_irq_delay` either sits below that and spins, or above it and polls
+perhaps fifty times a second. There is no value that both sleeps and polls
+often enough to deliver packets.
+
+**The fix is interrupt delivery in the BDE** — MSI or INTx through UIO or vfio.
+`nosaic_interrupt_connect` returns -1 today, deliberately, because during
+bring-up an interrupt path was one more thing that could be wrong. It is now
+the thing that is wrong. With interrupts the polling thread is not needed at
+all.
+
+### Management traffic follows learned routes
+
+This switch runs OSPF on its front panel, so it **learns** a route to the build
+network over it, and a learned /24 beats the default route by longest prefix.
+Its own management traffic then leaves by the front panel and returns through
+the punt path above. Pulling an image ran at **21 KB/s** and saturated the box;
+pinned to the management port the same transfer runs at **over 2 MB/s**.
+
+Nothing is misconfigured. It is what happens when a router with a management
+port also participates in the routing domain that contains its management
+station: in-band and out-of-band share one table, and the more specific route
+wins whichever one you meant.
+
+The board ships a static route as a pin, which works because a static route's
+metric beats OSPF's at equal prefix length. It is a pin and not a solution: it
+names one network, and any other prefix the switch learns can do the same
+again. The real answer is a **management VRF** — eth0 and its routes in a
+separate table, which is also what an operator expects on a switch.
+
+### There is no way in over the network
+
+NOSaic packages no SSH server, so the only shell is the serial console at 9600
+baud. Every remote operation costs minutes, and recovering a switch means
+having someone at a console. This is a missing package rather than a missing
+capability — dropbear with the board's `authorized_keys` in `config/` would do
+it — but it shapes every other piece of work on this board.
+
+### Site configuration lives in the image
+
+Addresses and OSPF now survive a power cycle, and they do it by shipping in the
+image: the board's `config/network.conf` and `recipes/frr/nosaic/frr.conf`.
+That means changing an IP means rebuilding an image, which is the wrong shape.
+On a RAM boot `/mnt/data` is a tmpfs, so there is still nowhere persistent for
+it. This wants either a site-config input to the image build or NOSaic's
+persistent state in files on the flash partition; see
 [hardware.md](hardware.md#how-aboot-resolves-flash) for why it is files rather
 than a partition.
-
-**Network configuration runs before the datapath exists.** `network-config`
-applies `network.conf` early in boot; `nosd` creates the tap interfaces minutes
-later, once the chip is initialised. So even with the addresses written down,
-applying them once at boot would find no interfaces to apply them to — the
-self-test already tolerates exactly this, reporting an absent interface as
-"expected on a management-plane boot". Whatever configures a routed port has to
-wait for it to exist, or be re-applied when it does.
 
 ## Nice to have — the switch works without these
 
@@ -101,7 +147,9 @@ PSU and transceiver access is SCD-specific and the CLI reaches it through type
 assertions. It works, and it is not the seam
 [the design](../../../docs/DESIGN.md) describes.
 
-## `make image` does not rebuild changed C source
+## Build and tooling
+
+### `make image` does not rebuild changed C source
 
 `make image` composes the image from the prebuilt `.nos` packages under
 `out/packages/`. It does not notice that a recipe's source has changed, so
@@ -123,131 +171,3 @@ Until it is fixed, verify before booting:
 
     unsquashfs -d r -f nosaic-rootfs.sqsh usr/sbin/nosd-td2p
     grep -c '<a string from your change>' r/usr/sbin/nosd-td2p
-
-## The two 40G cages link but pass no traffic
-
-et53 (logical 65) and et54 (logical 69) come up at 40000 and stay up, and
-the far end agrees. Neither has ever carried a frame.
-
-Ruled out by measurement, not by argument:
-
-  - the SCD low-power/reset bits -- the cages were forced dark, and a
-    reboot brought them back with no manual poke
-  - the port map: matches EOS exactly (`portmap_65=85:40`, `portmap_69=97:40`)
-  - polarity and lane maps: EOS's own values, and the property report
-    confirms the SDK reads them
-  - MMU bandwidth: the chip's own table shows 40 at physical 85 and 97
-  - STP state (already FORWARD), port enable (already 1), MAC loopback
-    (off), frame max (1622 on 40G and 10G alike)
-  - our own 40G bring-up code, since removing it changed nothing
-  - the CPU-to-ASIC path, since et1 and et2 carry traffic through the
-    identical `bcm_tx` code
-
-What the counters say, with a 10G port as the control:
-
-    et1  (10G)  in-uc=6  in-nuc=146  out-uc=7
-    et54 (40G)  in-uc=0  in-nuc=0    out-uc=0
-
-Nothing reaches the MAC -- not unicast, not broadcast, and no FCS errors
-either, while the far end is transmitting at it and both ends report
-link. A port whose PCS is locked and whose MAC counts nothing is the
-open question.
-
-Note that et53's far end is the 7050TX-64, which is not currently
-configured, so et53 has never had a working far end to prove anything
-against. Only et54, facing the AS5610, is a clean test.
-
-## A bulk transfer through the tap bridge wedges the box
-
-Reproduced twice: `wget` of a 77 MB image over a front-panel port stops the
-datapath dead. The box then answers nothing -- not the port carrying the
-transfer, not the other front-panel ports, not the serial console shell,
-which echoes input and never executes it. The chip keeps every link up
-throughout, so from the far end the switch looks perfectly healthy. Only a
-power cycle recovers it.
-
-Control traffic over the same path is fine: ping, ARP and OSPF at about
-8 ms, sustained for as long as you like.
-
-Throttling the sender to 400 KB/s changes the outcome completely: the box
-stays up, the console stays responsive, and the transfer completes. So it
-is a rate the punt path cannot survive, not a size.
-
-The rate it actually achieves, measured over 60 s during such a transfer:
-
-    28 KB/s  --  about 19 packets per second at 1500 bytes
-
-That is the number worth fixing. Latency is fine (8 ms ping), so this is
-not a path that is slow to respond; it is a path that moves almost nothing.
-Nineteen packets a second is far below what a single `bcm_rx` callback
-writing to a tun fd should manage, which points at how RX is being
-collected -- interrupt versus poll, and the interval -- rather than at the
-per-frame work.
-
-Two of the numbers behind it have since been found, and neither was ever
-chosen. `bcm_rx_start(unit, NULL)` takes the SDK's defaults:
-
-  - `global_pps` 1000 -- a **software** rate limit for this chip family,
-    applied in the SDK's own RX thread (`bcm_esw_rx_rate_set`,
-    `src/bcm/esw/rx.c:5432`)
-  - 8 chains of 8 packets -- 64 packets total may be in flight between the
-    chip and the daemon
-
-That is enough for ping, ARP and OSPF and nothing else, which is the exact
-shape of what was measured. Both are now stated explicitly in
-`tapbridge.c` (20000 pps, 16 x 64) rather than inherited.
-
-Whether that is the whole story is not yet measured. A rate limit does not
-by itself explain 19 pps when the limit is 1000; the likely interaction is
-that drops above the limit collapse TCP's window, so goodput ends up far
-below the cap. That is a hypothesis and is written here as one.
-
-Worth fixing early. It is not only a performance limit: it is the
-difference between a switch that survives someone copying a file across it
-and one that does not.
-
-## Management traffic follows learned routes
-
-The switch runs OSPF on its front panel and therefore learns a route to the
-build network over it. A learned /24 beats the default route by longest
-prefix, so the box's own management traffic left by the front panel and
-returned through the CPU punt path. Pulling an image ran at **21 KB/s** and
-saturated the box; pinning the path to the management port took the same
-transfer to **over 2 MB/s**.
-
-Nothing was misconfigured. It is what happens when a router with a management
-port also participates in the routing domain that contains its management
-station: in-band and out-of-band share one table, and the more specific route
-wins whichever one you meant.
-
-The board now ships a static route as a pin, which works because a static
-route's metric beats OSPF's at equal prefix length. It is a pin, not a
-solution: it names one network, and any other prefix the switch learns can do
-the same thing again.
-
-The real answer is a **management VRF** -- eth0 and its routes in a separate
-table, so nothing learned in the default table can ever steal them. That is
-also what an operator expects on a switch, and it wants doing before this
-board is something somebody else runs.
-
-## The CPU punt path is polled, and polling costs a core
-
-Measured on an idle switch: `bcmPOLL` holds about 93% of one core
-permanently. The SDK's polled-IRQ thread exists because the userspace BDE
-connects no interrupt handler, and it cannot be made cheap by configuration:
-
-    sal_usleep(usec)   busy-waits with sched_yield() when
-                       usec < (2 * SECOND_USEC) / HZ
-
-which is 2-20 ms depending on HZ. So `polled_irq_delay` either sits below that
-threshold and spins, or sits above it and polls perhaps fifty times a second --
-useless for packet delivery. There is no value that both sleeps and polls often
-enough.
-
-Setting `bcm_stat_interval` to 30 s already recovered a whole core from
-`bcmCNTR` (997 s of CPU down to 42 s over comparable uptimes) and roughly
-doubled the usable punt rate. The remaining core is `bcmPOLL`, and the only
-real fix is **interrupt delivery in the BDE** -- MSI or INTx through UIO or
-vfio -- after which the polling thread is not needed at all. That is the piece
-of work this measurement is asking for.
-
