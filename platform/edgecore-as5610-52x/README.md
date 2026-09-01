@@ -38,11 +38,11 @@ Two of the three already exist in the tree:
 
 ## What is missing
 
-- **The toolchain has never been built.** `bootstrap/configs/powerpc.defconfig`
-  exists and nothing has run it. This is spike S1 from the project plan, and
-  it is the first thing that has to work: if a modern GCC cannot produce
-  e500v2-safe binaries, this board's whole class of hardware needs a pinned
-  older compiler and the plan changes.
+- ~~**The toolchain has never been built.**~~ Spike S1 passed: gcc-15.2.0 and
+  glibc-2.42 build soft-float generic PowerPC, and the instruction audit
+  reports `0 forbidden` — nothing in the output uses an opcode an e500v2
+  cannot execute. This class of hardware does **not** need a pinned older
+  compiler, and M8's scope is unchanged.
 - **There is no Trident+ datapath.** `nosd-tdp` does not exist. The chip is a
   BCM56846, one generation before the 7050SX2's Trident2+, and `nosd-td2p` is
   the closest relative — the first real test of whether the per-ASIC split was

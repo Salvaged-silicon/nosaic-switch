@@ -53,7 +53,7 @@ const itsTemplate = `/dts-v1/;
             compression = "%s";
             load = <%s>;
             entry = <%s>;
-            hash { algo = "sha256"; };
+            hash { algo = "%s"; };
         };
         ramdisk {
             description = "NOSaic initramfs";
@@ -62,7 +62,7 @@ const itsTemplate = `/dts-v1/;
             arch = "%s";
             os = "linux";
             compression = "none";
-%s            hash { algo = "sha256"; };
+%s            hash { algo = "%s"; };
         };
 %s    };
     configurations {
@@ -88,7 +88,7 @@ const itsFDT = `        fdt {
             type = "flat_dt";
             arch = "%s";
             compression = "none";
-%s            hash { algo = "sha256"; };
+%s            hash { algo = "%s"; };
         };
 `
 
@@ -135,6 +135,16 @@ func (u uboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 		return "", err
 	}
 
+	// sha256 is the right default and is not universal: U-Boot 2013.01 on the
+	// AS5610 knows crc32, md5 and sha1, and a FIT hashed with anything else
+	// loads, reports the configuration it found, and then says it cannot get
+	// the kernel image -- which reads like a malformed image rather than an
+	// unsupported digest.
+	algo := img.FITHash
+	if algo == "" {
+		algo = "sha256"
+	}
+
 	// A kernel that is already a legacy uImage cannot go into a FIT as-is:
 	// bootm would hand the kernel's own 64-byte header to the decompressor.
 	// Unwrapping here rather than asking each arch to stage a second kernel
@@ -158,14 +168,14 @@ func (u uboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 		if _, err := os.Stat(dtb); err != nil {
 			return "", fmt.Errorf("device tree %s: %w", img.DTB, err)
 		}
-		fdtImage = fmt.Sprintf(itsFDT, dtb, img.UBootArch, loadLine(img.FDTAddr))
+		fdtImage = fmt.Sprintf(itsFDT, dtb, img.UBootArch, loadLine(img.FDTAddr), algo)
 		fdtRef = "            fdt = \"fdt\";\n"
 	}
 
 	its := fmt.Sprintf(itsTemplate,
 		img.Version, img.Board,
-		kernel, img.UBootArch, kcomp, load, entry,
-		initrd, img.UBootArch, loadLine(img.RamdiskAddr),
+		kernel, img.UBootArch, kcomp, load, entry, algo,
+		initrd, img.UBootArch, loadLine(img.RamdiskAddr), algo,
 		fdtImage,
 		img.Version,
 		fdtRef)

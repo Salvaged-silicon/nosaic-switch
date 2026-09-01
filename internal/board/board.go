@@ -56,6 +56,10 @@ type Board struct {
 
 	// Where the device tree and initramfs are placed. Empty lets U-Boot
 	// choose. An older U-Boot may need to be told.
+	// The digest inside the FIT. Empty means sha256; an older U-Boot may know
+	// only crc32.
+	UBootFITHash string `yaml:"u_boot_fit_hash"`
+
 	UBootFDTAddr     string `yaml:"u_boot_fdt_addr"`
 	UBootRamdiskAddr string `yaml:"u_boot_ramdisk_addr"`
 

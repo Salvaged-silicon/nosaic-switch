@@ -405,6 +405,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
 		UBootStage: b.UBootStage, Console: b.Console,
 		FDTAddr: b.UBootFDTAddr, RamdiskAddr: b.UBootRamdiskAddr,
+		FITHash:         b.UBootFITHash,
 		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
 		KernelParams:    b.KernelParams,
 	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
@@ -431,6 +432,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 			UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
 			UBootStage: b.UBootStage, Console: b.Console,
 			FDTAddr: b.UBootFDTAddr, RamdiskAddr: b.UBootRamdiskAddr,
+			FITHash:      b.UBootFITHash,
 			KernelParams: b.KernelParams,
 		}, filepath.Join(root, "out", "images", boardID), os.Stdout)
 		if err != nil {

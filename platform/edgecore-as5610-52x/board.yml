@@ -32,6 +32,12 @@ u_boot_entry: "0x00000000"
 # has the copy overwrite its own source partway through. 0x08000000 is clear of
 # it, and this board has 2 GB.
 u_boot_stage: "0x08000000"
+# U-Boot 2013.01 here knows crc32, md5 and sha1. A FIT hashed with sha256
+# transfers, reports the configuration it found, and then fails with
+# "ERROR: can't get kernel image!" -- which reads like a corrupt image rather
+# than an unsupported digest. Read off the FIT this switch boots today.
+u_boot_fit_hash: "crc32"
+
 u_boot_fdt_addr: "0x03000000"
 u_boot_ramdisk_addr: "0x03100000"
 

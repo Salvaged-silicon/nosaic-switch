@@ -64,6 +64,10 @@ type Image struct {
 	FDTAddr     string
 	RamdiskAddr string
 
+	// FITHash is the digest used inside the FIT. Empty means sha256; an older
+	// U-Boot may know only crc32.
+	FITHash string
+
 	// Console is the board's serial console as the kernel spells it, e.g.
 	// "ttyS0,115200". Needed because a U-Boot board must be handed an
 	// explicit command line.
