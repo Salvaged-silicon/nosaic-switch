@@ -348,7 +348,7 @@ as long as you are watching.
 This is the distinction the whole design exists to make.
 
 ```
-  CONTROL PLANE -- packets for us, and protocols        MEASURED: ~19 packets/s
+  CONTROL PLANE -- packets for us, and protocols       MEASURED: 500 packets/s
 
     wire --> chip --> punt rules / self host entry --> CPU
                                                         |
@@ -385,40 +385,49 @@ That comparison is the test worth remembering. "The routes are installed" and
    CPU counter     /sys/class/net/et1/statistics/rx_packets
 ```
 
-### The control plane is much narrower than it looks
+### What the control plane actually carries
 
-The diagram above once said "~thousands/s" for the punt path. Measured, it is
-**28 KB/s — about 19 packets a second** at 1500 bytes, while answering a ping in
-8 ms. Latency is fine; throughput is almost nothing.
+Measured, same test each time — 300 pings at a fixed rate from the same host
+over the same port:
 
-That is enough for what a switch's control plane is for. OSPF hellos, ARP,
-neighbour discovery and a shell session all fit comfortably, which is why every
-adjacency on this board holds and nothing looked wrong for weeks. It is not
-enough for anything that moves bytes: pulling a 77 MB image *to* the switch
-saturated the path and wedged the datapath outright — every port stopped
-answering, the console echoed input without executing it, and every link stayed
-up so the far end saw a healthy switch. Only a power cycle recovered it.
-Throttling the sender to 400 KB/s changed the outcome completely, so it is a
-rate the path cannot survive rather than a size.
-
-Two of the numbers behind it were never chosen. `bcm_rx_start(unit, NULL)`
-accepts the SDK's defaults:
-
-| default | value | what it is |
+| rate | before | after |
 |---|---|---|
-| `global_pps` | 1000 | a **software** rate limit, applied in the SDK's RX thread for this chip family (`bcm_esw_rx_rate_set`, `src/bcm/esw/rx.c:5432`) |
-| chains × packets | 8 × 8 = 64 | every packet that may be in flight between chip and daemon |
+| 20/s | 15% loss | **0%** |
+| 50/s | 100% loss | **0%** |
+| 100/s | 100% loss | **0%** |
+| 200/s | 100% loss | **0%** |
+| 500/s | 100% loss | **0%** |
 
-Both are now stated explicitly in `tapbridge.c` — 20000 pps, 16 chains of 64 —
-and deliberately kept modest rather than maximal, because the far end of this
-path is a single process doing one `write()` per frame. A punt path is an
-attack surface as well as a bottleneck, and "as high as it goes" trades one
-failure mode for a worse one.
+500/s is where the test stopped, not where the path does. A bulk transfer
+across it leaves the box responsive; it used to stop answering its own console
+until the transfer ended.
 
-Whether that is the whole story is not yet measured. A 1000 pps cap does not by
-itself explain 19 pps; the likely interaction is that drops above the cap
-collapse TCP's window, so goodput lands far below it. That is a hypothesis, and
-is recorded as one in the board's [todo](todo.md).
+Two things were changed and it is worth separating them, because only one moved
+this number.
+
+**The datapath takes interrupts now.** `nosaic_interrupt_connect` used to
+return -1, so the SDK ran a polling thread that held a core permanently. The
+chip is bound to `uio_pci_generic`, a thread blocked in `read()` on `/dev/uioN`
+calls the SDK's ISR and re-arms, and `bcmPOLL` is gone — idle load average fell
+from 2.07 to 0.20. This is real and worth having, and it changed the packet
+rate **not at all**.
+
+**The daemon was rescanning the FIB per packet.** `nosaic_tap_pump` calls its
+tick every time `poll()` returns, and `poll()` returns the instant a packet is
+waiting — so the tick ran once per packet, not once per second. It called
+`nosaic_l3_poll()` unconditionally: parse `/proc/net/route`, `/proc/net/arp`
+and `/proc/net/ipv6_route`, a netlink `RTM_GETNEIGH`, then walk every route and
+neighbour programming the chip. That is the twenty packets a second.
+
+The `1000` passed to the pump is a poll **timeout** — the longest it waits when
+nothing is happening — and never a promise about how often the tick runs. The
+statistics call in the same function was already gated by a counter, which is
+what hid it: the tick looked periodic because one of the two things in it was.
+
+The lesson is worth more than the fix. This was read as an SDK rate limit and
+then as a polling-versus-interrupt problem, and it was neither. Both readings
+were plausible, both had supporting evidence, and the number did not move until
+somebody looked at the loop that runs per packet.
 
 ---
 
@@ -484,9 +493,8 @@ Not proven:
 - **A/B slots, trial boot and rollback.** The board boots from flash, but as a
   single image Aboot loads directly. The slot machinery is CI-tested on the
   virtual platform and unexercised here.
-- **Control-plane throughput.** 28 KB/s, and a bulk transfer wedges the box.
-  See section 6 and [todo.md](todo.md). The configuration change that may fix
-  it is committed and not yet measured.
+- **The ceiling of the control plane.** 500/s at zero loss is measured; where
+  it actually stops is not. Section 6 has the numbers.
 - **Where site configuration lives.** Addresses and OSPF now come back after a
   power cycle, but they come back from the board's committed `config/` and
   `recipes/frr/nosaic/frr.conf`, which is the wrong home for site addressing:

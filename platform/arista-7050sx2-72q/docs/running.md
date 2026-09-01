@@ -309,11 +309,11 @@ restart, so this costs the same six minutes as a boot — but not the boot.
   self-punt entry has not been installed yet. `l3sync` closes it within a
   second. Testing faster than that looks exactly like a broken port.
 - **`vtysh` needs `doas`.** The socket directory belongs to the `frr` account.
-- **Do not pull a large file to the switch over a front-panel port.** The punt
-  path manages about 28 KB/s, and at full rate a bulk transfer wedges the
-  datapath: every port stops answering, the console echoes input without
-  executing it, every link stays up, and only a power cycle recovers it. Serve
-  it rate-limited (400 KB/s is fine) if you must use that path.
+- **A large transfer over a front-panel port is fine now, and was not.** The
+  punt path used to manage about twenty packets a second and a bulk transfer
+  took the datapath down until it finished. It now carries 500/s at zero loss
+  and stays responsive throughout. If you are on an image from before that
+  fix, throttle the sender.
 - **Verify an image before you boot it.** `make image` will happily compose one
   containing the previous binary. Extract it and grep for a string from your
   change; see [BUILDING.md](../../../docs/BUILDING.md).

@@ -227,8 +227,8 @@ Match your neighbours; here that is 1600.
 it *learns* a route to your build network over the front panel, and a learned
 /24 beats the default route by longest prefix. Its own management traffic then
 leaves by the front panel and comes back through the CPU punt path, which
-carries about twenty packets a second — a 77 MB image at 21 KB/s instead of
-2 MB/s, and a box too busy to answer its console. Pin it:
+carries the switch's own management traffic — a 77 MB image at 21 KB/s instead
+of 2 MB/s. Pin it:
 
 ```
 route 10.22.1.0/24 via 10.1.1.1 dev eth0
@@ -316,11 +316,9 @@ Aboot is never modified, so the console always reaches a prompt.
 - **The `nosaic` CLI driving the datapath.** It exists and works against the
   virtual platform; on silicon this board is configured through `network.conf`,
   `frr.conf` and `vtysh`.
-- **A control plane that carries anything.** Packets destined for the switch go
-  through the CPU, and that path manages about twenty a second while answering
-  a ping in 8 ms. Protocols fit; a file copy does not, and at full rate it
-  starves the box until the transfer stops. The cause is that the datapath
-  daemon polls rather than taking interrupts, which costs a core outright.
+- **A measured ceiling on the control plane.** Packets destined for the switch
+  go through the CPU, and that path is good for at least 500/s at zero loss.
+  Where it actually stops has not been measured.
 - **A way in over the network.** No SSH server is packaged, so the only shell
   is the serial console.
 

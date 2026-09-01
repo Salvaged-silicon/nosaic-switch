@@ -52,13 +52,14 @@ The board runs as a router. On the switch, verified rather than assumed:
 - **A/B slots and rollback.** What is installed is one image Aboot boots
   directly. The slot machinery is CI-tested on the virtual platform and
   unexercised here.
-- **The control plane moves almost nothing.** Every frame destined for this
-  switch is punted through the CPU by the tap bridge, and that path measures
-  **28 KB/s — about 19 packets a second** — while answering a ping in 8 ms.
-  Enough for the protocols a switch runs; not enough for anything else. A
-  full-rate bulk transfer across it wedged the datapath outright, twice,
-  recoverable only by a power cycle. Details and the two SDK defaults behind it
-  are in [todo](docs/todo.md).
+- **The control plane is no longer the bottleneck it was.** Frames destined
+  for this switch are punted through the CPU; that path carried about twenty
+  packets a second and now carries **500/s at zero loss**, with a bulk
+  transfer across it leaving the box responsive. The fix was ours, not the
+  chip's: the daemon rescanned the whole kernel FIB once per received packet.
+  It also takes interrupts from the chip now rather than polling, which
+  recovered a core (idle load 2.07 to 0.20) and, on its own, changed the
+  packet rate not at all.
 - **No way in over the network.** NOSaic ships no SSH server, so the only shell
   is the serial console at 9600. That is a missing package, not a missing
   capability, but it makes every remote operation slow.

@@ -56,14 +56,16 @@ assumed:
 Two things stand between that and a supported board, and only one of them is about
 the switch being a switch.
 
-**The control plane moves almost nothing.** Every frame destined for this switch is
-punted through the CPU by the tap bridge, and that path was measured at **28 KB/s —
-about 19 packets a second** — while answering a ping in 8 ms. It is fine for the
-protocols a switch runs and useless for anything else: copying a file across the box
-saturated it and wedged the datapath outright. Two of the numbers behind that were
-the SDK's defaults, inherited by passing `NULL` to `bcm_rx_start` and never chosen
-for this board; they are now stated, and whether that is the whole story is not yet
-measured. See the board's [todo](platform/arista-7050sx2-72q/docs/todo.md).
+**The control plane is honest now, and was not.** Every frame destined for this
+switch is punted through the CPU by the tap bridge. That path used to carry
+**about twenty packets a second**; it now carries **500/s at zero loss**, which
+is where the test stopped rather than where the path does. The cause was not
+the silicon and not the SDK — the daemon was rescanning the entire kernel
+routing table, and issuing a netlink round trip, *once per received packet*.
+Two things were fixed to get there and only one of them mattered for
+throughput: the datapath now takes interrupts from the chip instead of polling
+for them, which recovered a whole CPU core and moved the packet rate not at
+all, and then the per-packet rescan became per-second.
 
 **The switch was configured with `ip` and `vtysh`, not with NOSaic's own CLI.** The
 `nosaic show ports`, `interface` and `route` commands exist and run against the

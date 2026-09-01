@@ -10,69 +10,52 @@ and how it was proven is in
 
 ## Required — the switch does not come up working without these
 
-### The control plane carries almost nothing
+### The control plane's ceiling is unmeasured
 
-Every frame destined for this switch is punted through the CPU by the tap
-bridge. That path measures **about twenty packets a second** while answering a
-ping in 8 ms: latency is fine, throughput is almost nothing. Protocols fit —
-every OSPF adjacency on this board holds — and nothing else does. At full rate
-an inbound transfer starves the box until it stops answering its console, and
-recovers on its own when the transfer ends.
+**This was the top item on this list and is largely solved.** It is kept
+because the number above which it fails is still unknown, and because how it
+was found is worth more than the fix.
 
-Two causes are known and one is fixed.
+Measured, 300 pings at a fixed rate from the same host over the same port:
 
-**Counter collection ran every second.** `bcm_stat_init` takes the SDK default
-of one second, and with S-Channel polled rather than interrupt-driven each
-counter read spins, so a pass over 54 ports cost most of a second of CPU:
-`bcmCNTR.0` held 997 seconds of CPU over eighteen minutes of uptime. At
-`bcm_stat_interval=30000000` it holds 42 seconds over comparable uptime, idle
-load average fell from 2.07 to 1.32, and the usable punt rate roughly doubled.
+| rate | before | after |
+|---|---|---|
+| 20/s | 15% loss | **0%** |
+| 50/s | 100% loss | **0%** |
+| 100/s | 100% loss | **0%** |
+| 200/s | 100% loss | **0%** |
+| 500/s | 100% loss | **0%** |
 
-**The polling thread cannot be made cheap.** `bcmPOLL` still holds about 93% of
-a core, and no configuration fixes it:
+500/s is where the test stopped. A bulk transfer over the same path leaves the
+box responsive; it used to take the datapath down until the transfer ended.
 
-    sal_usleep(usec)   busy-waits with sched_yield() when
-                       usec < (2 * SECOND_USEC) / HZ        -- 2 to 20 ms
+What remains: nobody has found the rate at which this path actually saturates,
+or what happens at it. A switch should degrade rather than fall over, and that
+has not been demonstrated. Somebody should push it until it breaks and write
+down what breaking looks like.
 
-so `polled_irq_delay` either sits below that and spins, or above it and polls
-perhaps fifty times a second. There is no value that both sleeps and polls
-often enough to deliver packets.
+Two changes got here, and separating them matters:
 
-**Interrupt delivery is built, and does not work yet.** This is the closest
-thing on this list to finished, and the remaining gap is a specific one.
+  - **interrupts instead of polling.** `nosaic_interrupt_connect` returned -1,
+    so the SDK ran a polling thread holding a core permanently. The chip is now
+    bound to `uio_pci_generic`, a thread blocked in `read()` calls the SDK's
+    ISR and re-arms, `bcmPOLL` is gone, and idle load fell from 2.07 to 0.20.
+    It changed the packet rate **not at all**.
+  - **the daemon stopped rescanning the FIB per packet.** `nosaic_tap_pump`
+    calls its tick every time `poll()` returns, and `poll()` returns the
+    instant a packet is waiting, so the tick ran once per packet.
+    `datapath_tick` called `nosaic_l3_poll()` unconditionally — parse three
+    `/proc` files, a netlink `RTM_GETNEIGH`, then walk every route and
+    neighbour programming the chip. **That** was the twenty packets a second.
 
-What works, measured on the switch with `polled_irq_mode=0`:
+The `1000` passed to the pump is a poll timeout, not a promise about how often
+the tick runs. The statistics call beside it was already gated by a counter,
+which is exactly what hid the problem: the tick looked periodic because one of
+the two things in it was.
 
-  - the chip binds to `uio_pci_generic` at boot — it declares INTA, which that
-    driver requires
-  - `IRQ 33` counts up by about one per received packet
-  - `nosaic_interrupt_connect` starts a thread blocked in `read()` on
-    `/dev/uioN` that calls the SDK's own ISR and re-arms afterwards
-    (`uio_pci_generic` masks INTx in its handler and offers no `irqcontrol`,
-    so nothing unmasks it but us)
-  - **`bcmPOLL` disappears entirely.** Its replacement uses 0.07 s of CPU in
-    eight minutes, and idle load average falls from 2.07 to **0.16**
-
-What does not: the datapath stops forwarding. Clearing `polled_irq_mode` also
-clears `SOC_F_POLLED`, which changes how the SDK waits for DMA — instead of
-polling the descriptor it waits on a semaphore the ISR is supposed to signal
-(`src/soc/common/dma.c:3959`). The interrupts arrive, the ISR is called, and
-the RX descriptors stay `!done`, so packets are never reaped.
-
-The gap is therefore between *the ISR being called* and *the DMA completion
-being recognised*; everything either side of it is proven. Two candidates are
-not yet eliminated: whether the CMIC interrupt mask covers the packet-DMA
-channels when the SDK believes it is interrupt-driven, and whether the four
-`*_intr_enable=0` properties — set when there were no interrupts at all — now
-need to be 1.
-
-`polled_irq_mode` stays at 1 until that is closed. Polled costs a core and
-works; interrupt-driven costs nothing and does not.
-
-One near-miss worth keeping: `soc_dma_wait_timeout- Not polled` appears
-thousands of times in the log and is **not** an error. It is a `LOG_VERBOSE`
-line meaning the DMA took the interrupt-driven path, and "timeout" is part of
-the function name.
+It was read as an SDK rate limit, then as a polling-versus-interrupt problem.
+Both readings were plausible and both had supporting evidence. The number did
+not move until somebody read the loop that runs once per packet.
 
 ### Management traffic follows learned routes
 
