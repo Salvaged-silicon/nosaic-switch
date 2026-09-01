@@ -453,7 +453,12 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 	}
 	if netboot != "" {
 		fmt.Printf("\nor try it without installing, from the U-Boot prompt\n")
-		fmt.Printf("  tftpboot 0x02000000 %s && bootm 0x02000000#nosaic\n", filepath.Base(netboot))
+		stage := b.UBootStage
+		if stage == "" {
+			stage = "0x02000000"
+		}
+		fmt.Printf("  setenv bootargs 'console=%s'\n", b.Console)
+		fmt.Printf("  tftpboot %s %s && bootm %s#nosaic\n", stage, filepath.Base(netboot), stage)
 		if fi, err := os.Stat(netboot); err == nil {
 			fmt.Printf("  %-42s %6.1f MiB\n", netboot, float64(fi.Size())/(1<<20))
 		}
