@@ -76,13 +76,22 @@ names one network, and any other prefix the switch learns can do the same
 again. The real answer is a **management VRF** — eth0 and its routes in a
 separate table, which is also what an operator expects on a switch.
 
-### There is no way in over the network
+### SSH lands on root, not on the login account
 
-NOSaic packages no SSH server, so the only shell is the serial console at 9600
-baud. Every remote operation costs minutes, and recovering a switch means
-having someone at a console. This is a missing package rather than a missing
-capability — dropbear with the board's `authorized_keys` in `config/` would do
-it — but it shapes every other piece of work on this board.
+Solved enough to stop being a blocker: dropbear is packaged, keys come from the
+board's gitignored `config/authorized_keys`, and login takes 0.096 s against
+minutes for the console.
+
+What is left is which account it reaches. dropbear refuses any account whose
+password field is **blank** before it looks at a key, and the login account has
+a blank password so the serial console can reach it without one. Root's is
+locked -- not blank -- so root is the only account a key can authenticate.
+
+Fixing it properly means locking the login account and giving the console an
+automatic login. That works and was tried; it removes the login prompt, which
+the image boot test waits for and which is the one thing a person expects to
+see on a console. Worth doing deliberately, with the test updated in the same
+change, rather than as a side effect of packaging an SSH server.
 
 ### Site configuration lives in the image
 

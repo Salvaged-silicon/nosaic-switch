@@ -60,9 +60,10 @@ The board runs as a router. On the switch, verified rather than assumed:
   It also takes interrupts from the chip now rather than polling, which
   recovered a core (idle load 2.07 to 0.20) and, on its own, changed the
   packet rate not at all.
-- **No way in over the network.** NOSaic ships no SSH server, so the only shell
-  is the serial console at 9600. That is a missing package, not a missing
-  capability, but it makes every remote operation slow.
+- **SSH is key-only, and lands on root.** dropbear refuses any account with a
+  blank password before it looks at a key, and the login account has one so the
+  console can reach it without a password. Root's is locked, so keys are the
+  only way in and a password can never work.
 - **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
   (s6) has been booted.
 - **ECMP.** `l3sync` takes one next hop per prefix.

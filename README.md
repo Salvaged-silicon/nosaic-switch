@@ -74,9 +74,10 @@ commands work unmodified on both, the claim below about one CLI everywhere is a
 design commitment rather than a demonstrated fact — which is why it is the gate on
 this board rather than something to assume.
 
-There is also no way onto the box over the network. NOSaic ships no SSH server, so
-the only shell is the serial console. That is a missing package rather than a
-missing capability, and it is on the board's list.
+It is reachable over the network now: dropbear is packaged, host keys are
+generated on the box rather than shipped, and authorised keys come from the
+board's gitignored `config/authorized_keys`. Login takes 0.096 s where the
+9600-baud console took minutes.
 
 Everything else outstanding is in each board's own list:
 **[7050SX2](platform/arista-7050sx2-72q/docs/todo.md)** ·
