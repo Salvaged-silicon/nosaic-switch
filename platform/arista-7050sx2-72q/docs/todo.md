@@ -93,16 +93,41 @@ the image boot test waits for and which is the one thing a person expects to
 see on a console. Worth doing deliberately, with the test updated in the same
 change, rather than as a side effect of packaging an SSH server.
 
-### Site configuration lives in the image
+### Site configuration on flash, and what it does not cover
 
-Addresses and OSPF now survive a power cycle, and they do it by shipping in the
-image: the board's `config/network.conf` and `recipes/frr/nosaic/frr.conf`.
-That means changing an IP means rebuilding an image, which is the wrong shape.
-On a RAM boot `/mnt/data` is a tmpfs, so there is still nowhere persistent for
-it. This wants either a site-config input to the image build or NOSaic's
-persistent state in files on the flash partition; see
-[hardware.md](hardware.md#how-aboot-resolves-flash) for why it is files rather
-than a partition.
+Solved for the things that matter day to day, and worth knowing the shape of.
+
+A switch's own settings go in `nosaic/config/` **on the flash partition**,
+which survives both a reboot and the image being replaced:
+
+```
+/mnt/flash/nosaic/config/network.conf     addresses and routes
+/mnt/flash/nosaic/config/frr.conf         routing configuration
+```
+
+The initramfs copies that directory into `/mnt/data/config` before the root
+filesystem is assembled, and from there the existing mechanism takes over --
+`apply-network.sh` prefers `/mnt/data/config/network.conf` over the image's,
+and a `frr-siteconf` oneshot installs `frr.conf` with the ownership the daemons
+need before zebra starts. `nosd` already read its port map and polarity from
+that directory, so this is the same path rather than a new one.
+
+Proven on the switch: an address present only in the flash copy appeared on the
+interface after a cold boot.
+
+What is left:
+
+  - **Nothing writes it.** Configuration is edited by hand on the flash
+    partition. `nosaic` has no command that changes a setting and stores it,
+    which is what an operator would expect and what the CLI gate at M6 is
+    really about.
+  - **The partition is found by looking.** The initramfs tries a short list of
+    devices and takes the first with a `nosaic/config` directory on it. That is
+    honest on a board with one flash device and wants stating properly once a
+    second board has two.
+  - **No validation.** A malformed `network.conf` is reported line by line and
+    otherwise ignored; a malformed `frr.conf` is the routing daemons' problem
+    and they are less forgiving.
 
 ## Nice to have — the switch works without these
 

@@ -36,7 +36,14 @@ const applyNetwork = `#!/bin/sh
 # management-plane boot with no datapath still finishes -- it just takes the
 # deadline to admit it, and says which ports never appeared.
 
+# The switch's own configuration wins over the image's.
+#
+# /etc/nosaic/network.conf ships in the image and is the same on every switch
+# built from it. /mnt/data/config/network.conf belongs to THIS switch and
+# survives an image being replaced, which is what makes changing an address
+# something other than a rebuild.
 CONF=/etc/nosaic/network.conf
+[ -r /mnt/data/config/network.conf ] && CONF=/mnt/data/config/network.conf
 [ -r "$CONF" ] || exit 0
 
 # How long to wait for the datapath to create its interfaces.
@@ -44,6 +51,8 @@ WAIT_SECS=${NOSAIC_NET_WAIT:-600}
 POLL_SECS=5
 
 say() { echo "NOSAIC-NET $*"; }
+
+say "using $CONF"
 
 # Interfaces first: a route cannot be installed through a device that has no
 # address, and the error if you try names neither.

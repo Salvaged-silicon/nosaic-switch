@@ -104,6 +104,22 @@ install:
 services:
   # The run directory is on a tmpfs, so it does not survive a boot and cannot
   # simply be shipped in the image with the right ownership.
+  # This switch's own routing configuration, if it has any.
+  #
+  # /etc/frr/frr.conf ships in the image and is identical on every switch built
+  # from it. A switch that keeps its own in /mnt/data/config/frr.conf gets that
+  # instead, which is what makes changing an OSPF network something other than
+  # an image rebuild. Copied rather than symlinked because the daemons rewrite
+  # this file on `write memory`, and a symlink would send that back to a store
+  # the daemons do not own.
+  #
+  # Ownership matters as much as the content: frr.conf is 0640 and the daemons
+  # run as frr, so a copy landing root-owned is a daemon that starts and reads
+  # nothing.
+  - name: frr-siteconf
+    exec: /bin/sh -c "if [ -r /mnt/data/config/frr.conf ]; then cp /mnt/data/config/frr.conf /etc/frr/frr.conf && chown frr:frr /etc/frr/frr.conf && chmod 0640 /etc/frr/frr.conf && echo NOSAIC-FRR using /mnt/data/config/frr.conf; fi"
+    restart: never
+
   - name: frr-dirs
     # /var/lib/frr holds the northbound configuration state and /var/tmp/frr
     # the crash log; without them every daemon reports a failed mkdir at
@@ -118,7 +134,7 @@ services:
   # the capabilities it needs to write routes.
   - name: zebra
     exec: /usr/lib/frr/zebra -A 127.0.0.1 -f /etc/frr/frr.conf
-    after: [frr-dirs, nosd]
+    after: [frr-dirs, frr-siteconf, nosd]
     restart: always
 
   - name: ospfd

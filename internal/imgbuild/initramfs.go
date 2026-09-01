@@ -58,6 +58,30 @@ if [ -f /nosaic-rootfs.sqsh ]; then
     # a port map goes. Nothing here survives the reboot, and that is what
     # stateless means.
     mkdir -p /mnt/data/config
+    # ...and filled from flash if this board keeps any there.
+    #
+    # A RAM boot has no persistent slot, so without this every switch comes up
+    # with only the configuration built into its image -- which means changing
+    # an address means building an image. The flash partition survives both a
+    # reboot and an image replacement, so a nosaic/config directory on it is
+    # the one place a switch's own settings can live.
+    #
+    # Discovered by looking rather than declared: the partition that holds the
+    # configuration is the one with the configuration on it. Every step is
+    # allowed to fail -- a board with no such partition, or a partition with no
+    # such directory, is the normal case and must still boot.
+    for _d in /dev/mmcblk0p1 /dev/sda1 /dev/vda1 /dev/mmcblk0p2; do
+        [ -b "$_d" ] || continue
+        mkdir -p /mnt/flash
+        mount -t vfat -o ro "$_d" /mnt/flash 2>/dev/null || continue
+        if [ -d /mnt/flash/nosaic/config ]; then
+            cp -a /mnt/flash/nosaic/config/. /mnt/data/config/ 2>/dev/null \
+                && echo "NOSAIC-INITRAMFS site configuration from $_d"
+            umount /mnt/flash 2>/dev/null || true
+            break
+        fi
+        umount /mnt/flash 2>/dev/null || true
+    done
     # Tells the booted system it has no persistence by design, so its self-test
     # does not report the absence as a fault.
     : > /mnt/data/slot-ram/upper/etc/nosaic/ramboot
