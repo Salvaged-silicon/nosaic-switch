@@ -156,3 +156,28 @@ open question.
 Note that et53's far end is the 7050TX-64, which is not currently
 configured, so et53 has never had a working far end to prove anything
 against. Only et54, facing the AS5610, is a clean test.
+
+## A bulk transfer through the tap bridge wedges the box
+
+Reproduced twice: `wget` of a 77 MB image over a front-panel port stops the
+datapath dead. The box then answers nothing -- not the port carrying the
+transfer, not the other front-panel ports, not the serial console shell,
+which echoes input and never executes it. The chip keeps every link up
+throughout, so from the far end the switch looks perfectly healthy. Only a
+power cycle recovers it.
+
+Control traffic over the same path is fine: ping, ARP and OSPF at about
+8 ms, sustained for as long as you like.
+
+The tap bridge punts every frame through the CPU, one `bcm_tx` per frame
+with a single preallocated buffer, and RX through a `bcm_rx` callback that
+writes to a tun fd. Nothing about that is rate-limited or backpressured,
+and the DMA pool is a fixed 64 MB reservation. The suspicion is pool
+exhaustion -- the same failure mode already recorded for field-processor
+counter collection, which took both adjacencies down -- but it has not been
+measured, and the honest statement is that the mechanism is unknown.
+
+Worth fixing early. It is not only a performance limit: it is the
+difference between a switch that survives someone copying a file across it
+and one that does not.
+
