@@ -52,6 +52,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/mman.h>
+#include <dirent.h>
 
 #include "bde.h"
 
@@ -77,6 +78,7 @@ int nosaic_bde_open(struct nosaic_bde *b, const char *bdf)
 	char path[256];
 
 	memset(b, 0, sizeof(*b));
+	b->uio_fd = -1;                 /* no interrupt device until asked for */
 	snprintf(b->bdf, sizeof(b->bdf), "%s", bdf);
 
 	/* BAR0: the register window. Mapped shared because the whole point is
@@ -164,6 +166,77 @@ int nosaic_bde_open(struct nosaic_bde *b, const char *bdf)
 	return 0;
 }
 
+/* ---- interrupts, through uio_pci_generic ---------------------------------
+ *
+ * PCI config space, the command register, bit 10.
+ *
+ * uio_pci_generic's own handler masks INTx with pci_check_and_mask_intx() and
+ * offers no irqcontrol, so nothing unmasks it again but us. Miss this and the
+ * chip interrupts exactly once and is then silent forever -- which looks like
+ * an interrupt path that was never wired up at all, rather than one that fired
+ * and was left masked.
+ */
+#define PCI_COMMAND_REG      0x04
+#define PCI_INTX_DISABLE     (1u << 10)
+
+int nosaic_bde_irq_open(struct nosaic_bde *b)
+{
+	char path[256];
+	DIR *d;
+	struct dirent *e;
+	int n = -1;
+
+	b->uio_fd = -1;
+
+	/* The kernel names the device uioN and links it under the PCI device,
+	 * so the number is discovered rather than assumed. */
+	snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/uio", b->bdf);
+	d = opendir(path);
+	if (d == NULL)
+		return -1;                      /* not bound: the board runs polled */
+	while ((e = readdir(d)) != NULL) {
+		if (sscanf(e->d_name, "uio%d", &n) == 1)
+			break;
+		n = -1;
+	}
+	closedir(d);
+	if (n < 0)
+		return -1;
+
+	snprintf(path, sizeof(path), "/dev/uio%d", n);
+	b->uio_fd = open(path, O_RDWR);
+	if (b->uio_fd < 0) {
+		fprintf(stderr, "bde: %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+	fprintf(stderr, "bde: interrupts via %s\n", path);
+	return 0;
+}
+
+int nosaic_bde_irq_wait(struct nosaic_bde *b)
+{
+	uint32_t count;
+	ssize_t rv;
+
+	if (b->uio_fd < 0)
+		return -1;
+	rv = read(b->uio_fd, &count, sizeof(count));
+	if (rv != (ssize_t)sizeof(count))
+		return -1;
+	return 0;
+}
+
+void nosaic_bde_irq_arm(struct nosaic_bde *b)
+{
+	uint32_t cmd;
+
+	if (b->uio_fd < 0)
+		return;
+	cmd = nosaic_bde_cfg_read(b, PCI_COMMAND_REG);
+	if (cmd & PCI_INTX_DISABLE)
+		nosaic_bde_cfg_write(b, PCI_COMMAND_REG, cmd & ~PCI_INTX_DISABLE);
+}
+
 void nosaic_bde_close(struct nosaic_bde *b)
 {
 	/* Cast away volatile: it describes how the mapping is accessed, not
@@ -173,6 +246,7 @@ void nosaic_bde_close(struct nosaic_bde *b)
 	if (b->bar_fd > 0) close(b->bar_fd);
 	if (b->cfg_fd > 0) close(b->cfg_fd);
 	if (b->mem_fd > 0) close(b->mem_fd);
+	if (b->uio_fd >= 0) close(b->uio_fd);
 	memset(b, 0, sizeof(*b));
 }
 

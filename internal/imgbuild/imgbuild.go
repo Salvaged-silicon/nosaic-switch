@@ -748,6 +748,46 @@ poweroff -f
 		})
 	}
 
+	// Interrupt delivery for the switch chip.
+	//
+	// The datapath drives the ASIC from userspace with no vendor kernel
+	// module, and gets register access and DMA through sysfs and a reserved
+	// memory window. Interrupts it cannot get that way, and without them the
+	// SDK falls back to a polling thread that holds a core permanently and
+	// still delivers only about twenty packets a second to the CPU.
+	//
+	// uio_pci_generic closes that: bound to the device, a read() on /dev/uioN
+	// blocks until the chip raises INTx. It does not touch BAR mapping or DMA,
+	// so nothing else about the BDE changes.
+	//
+	// The ids are read from the device rather than written down, because a
+	// board that states its ASIC's PCI address has already said which device
+	// this is and saying it twice is how the two come to disagree.
+	//
+	// After asic-release: the chip is not on the bus before that, so there is
+	// nothing to bind to.
+	if o.Board.PlatformHAL.ASICPCI != "" && datapathInstalled(o, packages) {
+		bind := fmt.Sprintf(
+			"/bin/sh -c 'D=/sys/bus/pci/devices/%s; "+
+				"[ -e $D/driver ] && exit 0; "+
+				"V=$(cut -c3- $D/vendor); P=$(cut -c3- $D/device); "+
+				"echo \"$V $P\" > /sys/bus/pci/drivers/uio_pci_generic/new_id "+
+				"&& echo NOSAIC-IRQ bound %s to uio_pci_generic "+
+				"|| echo NOSAIC-IRQ could not bind %s; exit 0'",
+			o.Board.PlatformHAL.ASICPCI, o.Board.PlatformHAL.ASICPCI,
+			o.Board.PlatformHAL.ASICPCI)
+		after := []string{}
+		if o.Board.PlatformHAL.Driver != "" {
+			after = append(after, "asic-release")
+		}
+		services = append(services, svcgen.Service{
+			Name:    "asic-irq",
+			Exec:    bind,
+			After:   after,
+			Restart: "never",
+		})
+	}
+
 	// The front-panel transmitters.
 	//
 	// The board gates each cage's laser and leaves them all off from power-on.
@@ -780,6 +820,9 @@ poweroff -f
 		after := []string{"network"}
 		if o.Board.PlatformHAL.Driver != "" {
 			after = append(after, "asic-release")
+		}
+		if o.Board.PlatformHAL.ASICPCI != "" {
+			after = append(after, "asic-irq")
 		}
 		services = append(services, svcgen.Service{
 			Name:    "nosd",

@@ -207,23 +207,95 @@ static void *nosaic_p2l(soc_cm_dev_t *dev, sal_paddr_t addr)
 }
 
 /*
- * Interrupts: not connected.
+ * Interrupts, through uio_pci_generic.
  *
- * The SDK polls when no handler is installed, which is what this driver wants
- * during bring-up -- an interrupt path is one more thing that can be wrong
- * while the question is still whether the chip initialises at all. Returning
- * success without connecting anything would be the dangerous version of this;
- * these say plainly that nothing was installed.
+ * This used to return -1 and say so plainly, and the SDK fell back to its
+ * polling thread. That was the right call during bring-up -- an interrupt path
+ * is one more thing that can be wrong while the question is still whether the
+ * chip initialises at all -- and it stopped being the right call once the cost
+ * was measured. Polling holds a core permanently and still delivers about
+ * twenty packets a second to the CPU, and no configuration fixes it:
+ * sal_usleep busy-waits below 2*SECOND_USEC/HZ, so polled_irq_delay either
+ * spins or polls fifty times a second.
+ *
+ * A blocking read() on /dev/uioN costs nothing while the chip is quiet and
+ * wakes immediately when it is not.
+ *
+ * The thread is a SAL thread rather than a bare pthread because the handler it
+ * calls is the SDK's own ISR and uses SAL primitives; a thread the SAL does not
+ * know about is not a context those may be used from.
  */
+static struct {
+	struct nosaic_bde *bde;
+	soc_cm_isr_func_t  handler;
+	void              *data;
+	volatile int       stop;
+	int                running;
+} irq_ctx;
+
+static void nosaic_irq_thread(void *unused)
+{
+	COMPILER_REFERENCE(unused);
+
+	/* Armed before the first wait, not after: uio_pci_generic masks INTx in
+	 * its own handler, and the chip may already have an interrupt pending
+	 * from initialisation. Waiting first would block on an interrupt that
+	 * has already happened. */
+	nosaic_bde_irq_arm(irq_ctx.bde);
+
+	while (!irq_ctx.stop) {
+		if (nosaic_bde_irq_wait(irq_ctx.bde) != 0) {
+			if (irq_ctx.stop)
+				break;
+			continue;
+		}
+		if (irq_ctx.handler)
+			irq_ctx.handler(irq_ctx.data);
+		nosaic_bde_irq_arm(irq_ctx.bde);
+	}
+	irq_ctx.running = 0;
+	sal_thread_exit(0);
+}
+
 static int nosaic_interrupt_connect(soc_cm_dev_t *dev,
 				    soc_cm_isr_func_t handler, void *data)
 {
-	return -1;
+	struct nosaic_bde *b = bde_of(dev);
+	sal_thread_t t;
+
+	if (b == NULL)
+		return -1;
+	if (nosaic_bde_irq_open(b) != 0) {
+		/* Not bound to uio_pci_generic. Say so and refuse, rather than
+		 * reporting success and installing nothing -- the SDK's fallback
+		 * to polling is a decision it should get to make. */
+		fprintf(stderr, "nosd-td2p: no /dev/uio for %s; the device is not "
+			"bound to uio_pci_generic, so interrupts are unavailable\n",
+			b->bdf);
+		return -1;
+	}
+
+	irq_ctx.bde     = b;
+	irq_ctx.handler = handler;
+	irq_ctx.data    = data;
+	irq_ctx.stop    = 0;
+	irq_ctx.running = 1;
+
+	t = sal_thread_create("nosaicIRQ", SAL_THREAD_STKSZ, 50,
+			      nosaic_irq_thread, NULL);
+	if (t == SAL_THREAD_ERROR) {
+		irq_ctx.running = 0;
+		fprintf(stderr, "nosd-td2p: could not start the interrupt thread\n");
+		return -1;
+	}
+	printf("  interrupts connected (uio)\n");
+	return 0;
 }
 
 static int nosaic_interrupt_disconnect(soc_cm_dev_t *dev)
 {
-	return -1;
+	irq_ctx.stop = 1;
+	return 0;
 }
 
 /*

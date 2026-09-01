@@ -97,3 +97,21 @@ CONFIG_VLAN_8021Q=m
 # -- so an ordinary routing daemon can run over them. Without this there is no
 # /dev/net/tun and nothing above the datapath can see a port at all.
 CONFIG_TUN=y
+
+# Userspace interrupt delivery for the switch chip.
+#
+# The datapath daemon drives the ASIC from userspace with no vendor kernel
+# module. Register access and DMA it does through sysfs and a reserved memory
+# window; interrupts it cannot, and without them the SDK falls back to a
+# polling thread that holds a core permanently and still delivers only about
+# twenty packets a second to the CPU.
+#
+# uio_pci_generic is the smallest thing that closes that gap: it binds the
+# device, and a read() on /dev/uioN blocks until the chip raises INTx. It does
+# not touch BAR mapping or DMA, so the rest of the BDE is unchanged. The chip
+# declares interrupt pin A (config 0x3d = 0x01), which is what this driver
+# requires -- it has no MSI support, and a device that only does MSI cannot use
+# it.
+CONFIG_UIO=y
+CONFIG_UIO_PCI_GENERIC=y
+
