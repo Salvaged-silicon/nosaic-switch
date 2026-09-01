@@ -111,6 +111,15 @@ static bcm_pkt_t *tx_pkt;   /* allocated once; see the header comment */
  * CPU. The source port decides which tap it belongs to; a frame from a port
  * with no tap is not ours and is left for whatever else may want it.
  */
+/*
+ * Receive path sizing. See the comment at bcm_rx_start for why these are
+ * stated rather than left to the SDK's defaults of 1000 pps and 64 packets.
+ */
+#define RX_PKT_SIZE        (16 * 1024)  /* the SDK's own default; ample at 1600 MTU */
+#define RX_PKTS_PER_CHAIN  64
+#define RX_CHAINS          16
+#define RX_GLOBAL_PPS      20000
+
 /* Punted frames whose source port matches no tap. See tap_rx. */
 static unsigned long rx_unmatched;
 static int           rx_unmatched_logged;
@@ -421,11 +430,46 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 		return -1;
 	}
 	if (!bcm_rx_active(unit)) {
-		rv = bcm_rx_start(unit, NULL);
+		bcm_rx_cfg_t cfg;
+
+		/*
+		 * The receive configuration, chosen rather than inherited.
+		 *
+		 * bcm_rx_start(unit, NULL) accepts the SDK's defaults, and two of
+		 * them decide what this switch's control plane can carry:
+		 *
+		 *   global_pps      1000    a SOFTWARE rate limit, applied in the
+		 *                           SDK's RX thread for this chip family
+		 *                           (bcm_esw_rx_rate_set, esw/rx.c:5432)
+		 *   8 chains x 8    64      every packet that may be in flight
+		 *   packets                 between the chip and this process
+		 *
+		 * Sixty-four packets of buffering and a thousand a second is
+		 * enough for ping, ARP and OSPF, and nothing else. It is not a
+		 * rate anybody chose for this board -- it is what NULL means.
+		 *
+		 * These numbers are deliberately modest rather than maximal. The
+		 * far end of this path is one process doing a write() per frame,
+		 * so raising the limit raises what can be aimed at that process
+		 * too: a punt path is also an attack surface, and "as high as it
+		 * goes" would be trading one failure for a worse one.
+		 */
+		bcm_rx_cfg_t_init(&cfg);
+		cfg.pkt_size       = RX_PKT_SIZE;
+		cfg.pkts_per_chain = RX_PKTS_PER_CHAIN;
+		cfg.global_pps     = RX_GLOBAL_PPS;
+		cfg.max_burst      = RX_PKTS_PER_CHAIN;
+		cfg.chan_cfg[1].chains = RX_CHAINS;
+		cfg.chan_cfg[1].cos_bmp = 0xff;
+
+		rv = bcm_rx_start(unit, &cfg);
 		if (rv != BCM_E_NONE) {
-			fprintf(stderr, "tap: bcm_rx_start: %d\n", rv);
+			fprintf(stderr, "tap: bcm_rx_start: %d (%s)\n",
+				rv, bcm_errmsg(rv));
 			return -1;
 		}
+		printf("tap: rx %d pps, %d chains x %d packets\n",
+		       RX_GLOBAL_PPS, RX_CHAINS, RX_PKTS_PER_CHAIN);
 	}
 	return ntaps;
 }
