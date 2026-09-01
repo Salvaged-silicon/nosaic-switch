@@ -54,7 +54,7 @@ CFLAGS  += -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
 # problem nobody has solved and does not need solving.
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
-OBJS    += sdk.o tapbridge.o l3sync.o
+OBJS    += sdk.o tapbridge.o l3sync.o led.o
 endif
 
 nosd-td2p: $(OBJS)

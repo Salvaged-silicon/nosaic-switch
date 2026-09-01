@@ -21,6 +21,7 @@
 #include "props.h"
 #include "sdk.h"
 #include "l3sync.h"
+#include "led.h"
 #include "tapbridge.h"
 
 /* Runs once a second from the pump, whether or not there is traffic. */
@@ -50,7 +51,7 @@ static long elapsed_ms(const struct timespec *then, const struct timespec *now)
  */
 static void datapath_tick(void)
 {
-	static struct timespec last_l3, last_stats;
+	static struct timespec last_l3, last_stats, last_led;
 	struct timespec now;
 
 	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
@@ -59,6 +60,13 @@ static void datapath_tick(void)
 	if (elapsed_ms(&last_l3, &now) >= 1000) {
 		last_l3 = now;
 		nosaic_l3_poll();
+	}
+	/* The panel, at a rate a person would notice rather than a machine.
+	 * Two seconds is well inside how long anybody takes to walk to a rack,
+	 * and 72 register reads at that rate is nothing. */
+	if (elapsed_ms(&last_led, &now) >= 2000) {
+		last_led = now;
+		nosaic_led_poll();
 	}
 	if (elapsed_ms(&last_stats, &now) >= 60000) {
 		last_stats = now;
@@ -441,6 +449,10 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 			}
 			nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
 		}
+
+		/* The front panel. Not fatal if it fails: a switch with a dark
+		 * panel still forwards, and a board with no SCD has no panel. */
+		nosaic_led_start(unit);
 
 		printf("nosd: the datapath is up on unit %d\n", unit);
 		fflush(stdout);
