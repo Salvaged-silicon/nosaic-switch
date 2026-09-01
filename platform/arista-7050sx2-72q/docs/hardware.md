@@ -742,6 +742,77 @@ Two lessons, both cheap to apply next time:
 - prefer a measurement that **cannot be faked by the thing you are testing**.
   L2 learning is a side effect of reception; a counter is a report about it.
 
+## What EOS sets that we do not
+
+EOS's live SDK configuration was dumped from this board and is the closest
+thing to ground truth for how this silicon is meant to be driven. Twenty-seven
+global properties, and the useful part is the gap.
+
+**EOS polls nothing except MDIO.** It sets `miim_intr_enable=0` and not one
+other `*_intr_enable`, no `polled_irq_mode`, and no
+`pktdma_poll_mode_channel_bitmap` — so every one of those takes the default,
+which is to use interrupts. Our configuration was the opposite for a reason
+that has since gone away: with no interrupt path, each of those was added to
+get past a specific bring-up failure.
+
+### Not ours to copy
+
+Five of EOS's properties **do not exist in OpenBCM 6.5.24**:
+
+| property | EOS value |
+|---|---|
+| `force_core_pll` | 1 |
+| `force_core_pll_freq` | 415 |
+| `cut_through` | 1 |
+| `ar_unconnected_pbmp` | 0x7e000000000000000000 |
+| `port_init_cl72_hg` | 0x11 |
+
+The `ar_` prefix gives it away: **EOS runs a modified SDK**. Setting these here
+would load them, count them, report them as configuration and have no effect
+whatever — the exact failure the unread-property report exists to catch. If
+something later needs the core PLL pinned to 415 MHz, that is a register write
+or an SDK patch, not a line in this file.
+
+### Recorded, not adopted
+
+These are real properties in our SDK that EOS sets and we do not. None is
+adopted yet, because changing them alongside the interrupt work would make a
+failure impossible to attribute. They are written down because they are the
+vendor's answers for this board and several look like they matter.
+
+| property | EOS | what it does |
+|---|---|---|
+| `l2xmsg_mode` | 1 | L2 learning through the hardware FIFO. The SDK default is `L2MODE_POLL` — a thread scanning the table (`include/soc/l2x.h:327`) |
+| `l2_mem_entries` | 163840 | L2 table sizing |
+| `l3_mem_entries` | 147456 | L3 table sizing |
+| `bcm_num_cos` | 8 | CoS queues |
+| `multicast_l2_range` | 24575 | |
+| `multicast_l3_range` | 0 | |
+| `max_vp_lags` | 0 | virtual-port LAGs, off |
+| `ipv6_lpm_128b_enable` | 0 | with `num_ipv6_lpm_128b_entries=0` |
+| `bcm_stat_jumbo` | 9236 | jumbo threshold for statistics |
+| `module_64ports` | 1 | 64-port module mode; the default is 32 (`src/soc/esw/drv.c:1977`) |
+| `ptp_bs_fref`, `ptp_ts_pll_fref` | 1, 1 | PTP clock references |
+| `run_l2_sw_aging` | 0 | already the default |
+| `higig2_hdr_mode` | 1 | read only on the Katana2 path in this SDK, so probably inert here |
+| `xgxs_lcpll_xtal_refclk` | 1 | read only by the QSGMII PHY driver here, so probably inert |
+
+`l2xmsg_mode` and `module_64ports` are the two most likely to change behaviour
+on this board. The sizing properties are worth a look whenever a table turns
+out to be smaller than expected.
+
+### Adopted
+
+Only the four DMA timeouts, and only because the failure being chased lives
+inside a function that takes one:
+
+```
+dma_desc_timeout_usec=15000000      SDK default: 1 second
+cdma_timeout_usec=15000000          include/soc/cmic.h:662-675
+tdma_timeout_usec=15000000
+tslam_timeout_usec=15000000
+```
+
 ## How Aboot resolves `flash:`
 
 Established from Aboot's own `/bin/initblockdev` on this switch, because it
