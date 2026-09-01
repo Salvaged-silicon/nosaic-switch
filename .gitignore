@@ -33,3 +33,4 @@ local.mk
 # with the scripts in platform/<board>/tools/ and drop them here.
 /platform/*/config/portmap.conf
 /platform/*/config/polarity.conf
+/platform/*/config/authorized_keys

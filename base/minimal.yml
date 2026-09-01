@@ -22,6 +22,7 @@ packages:
   - busybox
   - s6-rc
   - opendoas
+  - dropbear
   # The routing stack. It is the largest thing in this tier by some way, and it
   # is here because a switch that boots and forwards but cannot run a routing
   # protocol is not a smaller switch, it is an incomplete one -- and this tier

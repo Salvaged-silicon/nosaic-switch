@@ -280,7 +280,11 @@ func mksquashfs(o Options, dir, out string) error {
 // destroyed the ownership recipes legitimately declare, so it is checked
 // rather than overwritten.
 func checkOwnership(rootfs string, users []nospkg.User) error {
-	allowed := map[int]bool{0: true}
+	// Root, the login account, and anything a recipe declared. The login
+	// account owns its own home directory and is created by the image rather
+	// than by a package, so it is not in users:.
+	allowed := map[int]bool{0: true, loginUID: true}
+	allowed[loginGID] = true
 	for _, u := range users {
 		allowed[u.UID] = true
 		allowed[u.GID] = true
@@ -436,6 +440,9 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 	// reported.
 	if o.Board.Path != "" {
 		cfgDir := filepath.Join(filepath.Dir(o.Board.Path), "config")
+		if err := installAuthorizedKeys(cfgDir, rootfs, "root", o.Log); err != nil {
+			return err
+		}
 		n, err := copyBoardConfig(cfgDir, rootfs)
 		if err != nil {
 			return err
@@ -870,6 +877,82 @@ poweroff -f
 	return writeFile(rootfs, "/etc/hostname", "nosaic\n", 0o644)
 }
 
+// The login account's numeric ids, as written into /etc/passwd above.
+const (
+	loginUID = 1000
+	loginGID = 1000
+)
+
+// installAuthorizedKeys puts a board's config/authorized_keys where the SSH
+// server will look for it.
+//
+// Site identity rather than board data, which is why it is gitignored and why
+// it is the one file in config/ that does not land in /etc/nosaic. A board
+// without one still builds, and the serial console is then the only way in --
+// which is the state every board was in before dropbear was packaged.
+//
+// The keys go to ROOT rather than to the login account, and the reason is
+// dropbear rather than preference: it refuses any account whose password field
+// is blank, before it looks at a key, so the login account cannot be reached
+// by key while the console can reach it without a password. Root's password is
+// already locked (`*`), which is not blank, so key authentication is the only
+// way in as root and password authentication can never succeed.
+//
+// The alternative was locking the login account too and giving the console an
+// automatic login. That works, and it removes the login prompt -- which the
+// image boot test waits for, and which is the one thing a person expects to
+// see on a console. Not worth it for a cosmetic preference about which account
+// SSH lands on.
+func installAuthorizedKeys(dir, rootfs, account string, log io.Writer) error {
+	b, err := os.ReadFile(filepath.Join(dir, "authorized_keys"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	home := "/home/" + account
+	uid, gid := loginUID, loginGID
+	if account == "root" {
+		home, uid, gid = "/root", 0, 0
+	}
+
+	// Ownership, and it is the whole of this function that can go wrong.
+	//
+	// Created root-owned and 0700, the account cannot traverse into its own
+	// home: login fails with "can't change directory to /home/admin" and every
+	// key is refused. 0755 on the home so it can be entered, 0700 on .ssh and
+	// 0600 on the file because dropbear refuses a key others can write -- and
+	// refuses it in a way that reads exactly like a key that does not work.
+	if err := os.MkdirAll(filepath.Join(rootfs, home, ".ssh"), 0o700); err != nil {
+		return err
+	}
+	if err := writeFile(rootfs, home+"/.ssh/authorized_keys", string(b), 0o600); err != nil {
+		return err
+	}
+	for path, mode := range map[string]os.FileMode{
+		home:                           0o755,
+		home + "/.ssh":                 0o700,
+		home + "/.ssh/authorized_keys": 0o600,
+	} {
+		full := filepath.Join(rootfs, path)
+		if err := os.Chmod(full, mode); err != nil {
+			return err
+		}
+		if err := os.Lchown(full, uid, gid); err != nil {
+			return fmt.Errorf("chown %s to %d:%d: %w", path, uid, gid, err)
+		}
+	}
+	n := 0
+	for _, l := range strings.Split(string(b), "\n") {
+		if l = strings.TrimSpace(l); l != "" && !strings.HasPrefix(l, "#") {
+			n++
+		}
+	}
+	fmt.Fprintf(log, "    %d authorized key(s) for %s\n", n, account)
+	return nil
+}
+
 // copyBoardConfig places a board's config/ directory under /etc/nosaic.
 func copyBoardConfig(dir, rootfs string) (int, error) {
 	entries, err := os.ReadDir(dir)
@@ -882,6 +965,11 @@ func copyBoardConfig(dir, rootfs string) (int, error) {
 	n := 0
 	for _, e := range entries {
 		if e.IsDir() {
+			continue
+		}
+		// Handled separately: it is not SDK configuration and /etc/nosaic is
+		// not where an SSH server looks for it.
+		if e.Name() == "authorized_keys" {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))

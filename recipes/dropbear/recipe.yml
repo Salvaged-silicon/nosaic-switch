@@ -1,0 +1,61 @@
+# dropbear — a shell on the switch, over the network.
+#
+# Until this existed the only way onto a NOSaic switch was its serial console
+# at 9600 baud, where a three-second command costs a minute of wall clock and
+# recovering a box means having somebody at a console. That is not a missing
+# convenience; it shapes every other piece of work on a board, and it is why
+# an unauthenticated inetd shell kept getting started by hand during bring-up.
+#
+# dropbear rather than OpenSSH for the same reason opendoas beat sudo on this
+# tier: it is a few hundred kilobytes against several megabytes, and this
+# profile exists for boards where flash is small. The full and slim profiles
+# can take OpenSSH later if an operator expects it.
+name: dropbear
+version: "2024.86"
+summary: A small SSH server, so a switch is reachable without a serial console
+
+license: MIT
+redistributable: true
+
+source:
+  url: https://matt.ucc.asn.au/dropbear/releases/dropbear-2024.86.tar.bz2
+  sha256: e78936dffc395f2e0db099321d6be659190966b99712b55c530dd0a1822e0a5e
+  mirrors:
+    - https://github.com/Salvaged-silicon/nosaic-sources/releases/download/sources-2026-08-27/dropbear-2024.86.tar.bz2
+
+depends: [glibc]
+
+build:
+  system: configure
+  configure:
+    - --prefix=/usr
+    # No PAM: authentication is against /etc/shadow and authorized_keys, which
+    # is what this image has. Pulling PAM in for one binary would undo the
+    # size argument for choosing dropbear at all.
+    - --disable-pam
+    # No zlib. Compression on an SSH session to a switch buys nothing on a
+    # local network and is one more library in the image.
+    - --disable-zlib
+    # utmp/wtmp want a writable /var/run/utmp that this image does not keep,
+    # and their absence otherwise prints a warning on every login.
+    - --disable-utmp
+    - --disable-wtmp
+    - --disable-lastlog
+
+install:
+  - {src: nosaic/dropbear.conf, dst: /etc/dropbear/README, mode: "0644"}
+
+services:
+  # -F   foreground: a supervisor reads a fork as the service having exited
+  # -E   log to stderr, which the supervisor captures
+  # -R   generate host keys on first use rather than shipping them
+  #
+  # -R is the important one. Host keys baked into an image would be identical
+  # on every switch built from it, which is the same key on every box in a
+  # fleet -- so they are generated on the box, into the overlay. On a RAM boot
+  # that means a new key each boot and a client warning; on a flash-installed
+  # image it means a key per switch, which is the point.
+  - name: dropbear
+    exec: /usr/sbin/dropbear -F -E -R -p 22
+    after: [network]
+    restart: always

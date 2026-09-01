@@ -16,6 +16,7 @@ packages:
   - linux
   - glibc
   - sudo
+  - dropbear
   # systemd's libraries need libmount and libblkid at run time, not only at
   # link time. Leaving util-linux out produces an image that builds cleanly and
   # cannot start PID 1.
