@@ -63,13 +63,31 @@ while read -r kind name rest; do
         echo "$name" >> "$ABSENT"
         continue
     fi
+
+    # Already correct? Then touch nothing.
+    #
+    # This is not an optimisation, it is the whole safety of retrying. The
+    # block below takes an interface DOWN to set its MAC, and this loop runs
+    # every few seconds until the datapath has created its ports -- which is
+    # minutes. Without this test the management interface was carried down and
+    # up over a hundred times per boot, and came back NO-CARRIER and stayed
+    # there: the box lost its management network for the entire wait and did
+    # not get it back. Re-running this script must be free for anything
+    # already in the state the file asks for.
+    have_addr=$(ip -o addr show dev "$name" 2>/dev/null | grep -c "${addr%%/*}/")
+    have_mac=$(cat /sys/class/net/"$name"/address 2>/dev/null)
+    is_up=$(ip link show "$name" 2>/dev/null | head -1 | grep -c "[<,]UP[,>]")
+    if [ "$have_addr" -ge 1 ] && [ "$is_up" -ge 1 ] &&
+       { [ -z "$mac" ] || [ "$have_mac" = "$mac" ]; }; then
+        continue
+    fi
     # The address, before the interface comes up. A board states one when its
     # hardware does not carry it anywhere the driver can find: on these
     # switches the MAC lives in board data on an i2c SEEPROM, and the driver
     # only probes at all because it falls back to a random address. Leaving
     # that random address in place would mean a switch whose identity changes
     # every boot.
-    if [ -n "$mac" ]; then
+    if [ -n "$mac" ] && [ "$have_mac" != "$mac" ]; then
         ip link set dev "$name" down 2>/dev/null
         if ip link set dev "$name" address "$mac" 2>/dev/null; then
             say "$name mac $mac"
