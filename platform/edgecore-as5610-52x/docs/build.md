@@ -10,10 +10,12 @@ make packages ARCH=powerpc PROFILE=minimal
 make image BOARD=edgecore-as5610-52x
 ```
 
-## The toolchain is the first blocker
+## The toolchain works — spike S1 passed
 
-`bootstrap/configs/powerpc.defconfig` exists and has never been run. That is
-spike S1 from the project plan, and it is the gate on everything else here.
+`make toolchain ARCH=powerpc` builds in about 38 minutes, and
+`make toolchain-test ARCH=powerpc` passes: a statically linked 32-bit
+big-endian PowerPC binary that runs, and an instruction audit reporting zero
+forbidden opcodes.
 
 The difficulty is specific and worth understanding before starting. GCC removed
 the `powerpc-linux-gnuspe` target — the e500v2's native SPE ABI — around GCC
@@ -31,8 +33,10 @@ dies with SIGILL only on the real board — so `arch.yml` carries a
 and the toolchain test fails a build containing one. Do not weaken it to make
 something link.
 
-**Gate:** `make toolchain-test ARCH=powerpc` builds a static binary that runs,
-and the instruction audit passes.
+That was the gate, and it is met. The concern behind it was real — GCC dropped
+the SPE ABI target around GCC 8/9 — and the answer is that soft-float generic
+PowerPC on a current gcc-15.2.0 and glibc-2.42 works. This hardware does not
+need a frozen compiler.
 
 ## The datapath is the second
 

@@ -9,38 +9,29 @@ unit running EdgeNOS rather than produced here.
 
 ## Required — nothing works without these
 
-### The PowerPC toolchain has never been built
+### ~~The PowerPC toolchain~~ — spike S1 passed
 
-`bootstrap/configs/powerpc.defconfig` exists and has never been run. This is
-spike S1 from the project plan and it gates everything else.
+**Done, and it was the biggest unknown here.** `make toolchain ARCH=powerpc`
+builds in 38 minutes and `make toolchain-test ARCH=powerpc` passes:
 
-The risk is real rather than procedural: GCC removed the `powerpc-linux-gnuspe`
-target — e500v2's native SPE ABI — around GCC 8/9. `arch/powerpc/arch.yml`
-chooses soft-float generic PowerPC on a current toolchain instead, and carries a
-`forbidden_insn_re` that fails any build containing an instruction an e500v2
-cannot execute. That guard exists because a hard-float build disassembles
-cleanly, runs under QEMU's permissive model, and dies only on the hardware.
+```
+hello: ELF 32-bit MSB executable, PowerPC, statically linked
+ran:   nosaic bits=32 endian=big ptr=4 long=4
+instruction audit: 0 forbidden
+abi floor: Linux 3.2.0 (ceiling 4.0.0)
+```
 
-**Gate:** `make toolchain-test ARCH=powerpc` produces a static binary that runs,
-and the instruction audit passes. If it cannot, this class of hardware needs a
-pinned older compiler and M8's scope changes.
+The question S1 existed to answer was whether a modern compiler can still
+produce e500v2-safe binaries at all, given that GCC dropped the SPE ABI target
+around GCC 8/9. It can: soft-float generic PowerPC on gcc-15.2.0 and
+glibc-2.42, with the instruction audit confirming nothing in the output uses an
+opcode this CPU cannot execute. This class of hardware does **not** need to be
+frozen on a 2021 toolchain, and M8's scope is unchanged.
 
-### There is no Trident+ datapath
-
-`nosd-tdp` does not exist. It is a new package but not a new SDK — OpenBCM
-6.5.24 carries `BCM56846_DEVICE_ID 0xb846` and the Trident+ drivers, and it is
-the recipe the 7050SX2 already uses.
-
-`nosd-td2p` is the closest relative and its shape should mostly carry: a
-userspace BDE, a tap bridge, an FIB mirror. What must not carry is anything
-that assumes the Arista board — the SCD, the port map, the flash layout, the
-LED path and, most importantly, **the endianness**. See
-[hardware.md](hardware.md#s-channel-and-the-big-endian-trap): this is a
-big-endian host and a CMICe chip, and the SDK's defaults are wrong for both.
-
-This is the first real test of the per-ASIC split. Sharing most of `nosd-td2p`
-means the split was drawn in the right place; copying it means it was not, and
-the fix belongs in a shared layer rather than in a third copy.
+The audit is the part to keep. A hard-float build disassembles cleanly, runs
+under QEMU's permissive generic-PowerPC model, and dies only on the board — so
+`arch/powerpc/arch.yml` fails any build containing one of those instruction
+classes. Do not weaken it to make something link.
 
 ### The kernel cannot build a device tree
 
