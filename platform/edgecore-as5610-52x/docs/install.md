@@ -180,9 +180,9 @@ says what is actually wrong is the one above them.
 
 **Getting back is not automatic.** Magic sysrq is compiled in, the serial BREAK
 trigger works, and `reboot(b)` is listed as permitted -- and sending it left the
-board hard down, console silent to a CR, for several minutes. The APC outlet
-(3, on `10.101.107.10`) is what recovered it. Treat sysrq here as a way to
-*read* state, not to reset the board.
+board hard down, console silent to a CR, for several minutes. Only a power
+cycle recovered it. Treat sysrq here as a way to *read* state, not to reset the
+board, and have switched power on this box before booting anything at it.
 
 ## Trying it without installing
 
