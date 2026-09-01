@@ -26,7 +26,13 @@ source:
 depends: [glibc]
 
 build:
-  system: configure
+  # autotools, not "configure": dropbear has a real autoconf configure, and the
+  # difference is whether the builder passes --host. Without it configure probes
+  # the BUILD machine, finds it can run test programs, and on a cross-build
+  # fails outright with "cannot run C compiled programs". Caught by the aarch64
+  # cross-build in CI, which is exactly the canary it exists to be -- everything
+  # here is x86_64 and nothing local would have noticed.
+  system: autotools
   configure:
     - --prefix=/usr
     # No PAM: authentication is against /etc/shadow and authorized_keys, which
