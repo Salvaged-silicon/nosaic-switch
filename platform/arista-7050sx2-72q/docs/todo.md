@@ -169,13 +169,28 @@ power cycle recovers it.
 Control traffic over the same path is fine: ping, ARP and OSPF at about
 8 ms, sustained for as long as you like.
 
+Throttling the sender to 400 KB/s changes the outcome completely: the box
+stays up, the console stays responsive, and the transfer completes. So it
+is a rate the punt path cannot survive, not a size.
+
+The rate it actually achieves, measured over 60 s during such a transfer:
+
+    28 KB/s  --  about 19 packets per second at 1500 bytes
+
+That is the number worth fixing. Latency is fine (8 ms ping), so this is
+not a path that is slow to respond; it is a path that moves almost nothing.
+Nineteen packets a second is far below what a single `bcm_rx` callback
+writing to a tun fd should manage, which points at how RX is being
+collected -- interrupt versus poll, and the interval -- rather than at the
+per-frame work.
+
 The tap bridge punts every frame through the CPU, one `bcm_tx` per frame
 with a single preallocated buffer, and RX through a `bcm_rx` callback that
-writes to a tun fd. Nothing about that is rate-limited or backpressured,
-and the DMA pool is a fixed 64 MB reservation. The suspicion is pool
-exhaustion -- the same failure mode already recorded for field-processor
-counter collection, which took both adjacencies down -- but it has not been
-measured, and the honest statement is that the mechanism is unknown.
+writes to a tun fd. Nothing is rate-limited or backpressured, and the DMA
+pool is a fixed 64 MB reservation. Pool exhaustion is the suspicion -- the
+same failure mode already recorded for field-processor counter collection,
+which took both adjacencies down -- but the mechanism has not been proven
+and should not be written down as though it had.
 
 Worth fixing early. It is not only a performance limit: it is the
 difference between a switch that survives someone copying a file across it
