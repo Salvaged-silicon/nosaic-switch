@@ -206,3 +206,48 @@ Worth fixing early. It is not only a performance limit: it is the
 difference between a switch that survives someone copying a file across it
 and one that does not.
 
+## Management traffic follows learned routes
+
+The switch runs OSPF on its front panel and therefore learns a route to the
+build network over it. A learned /24 beats the default route by longest
+prefix, so the box's own management traffic left by the front panel and
+returned through the CPU punt path. Pulling an image ran at **21 KB/s** and
+saturated the box; pinning the path to the management port took the same
+transfer to **over 2 MB/s**.
+
+Nothing was misconfigured. It is what happens when a router with a management
+port also participates in the routing domain that contains its management
+station: in-band and out-of-band share one table, and the more specific route
+wins whichever one you meant.
+
+The board now ships a static route as a pin, which works because a static
+route's metric beats OSPF's at equal prefix length. It is a pin, not a
+solution: it names one network, and any other prefix the switch learns can do
+the same thing again.
+
+The real answer is a **management VRF** -- eth0 and its routes in a separate
+table, so nothing learned in the default table can ever steal them. That is
+also what an operator expects on a switch, and it wants doing before this
+board is something somebody else runs.
+
+## The CPU punt path is polled, and polling costs a core
+
+Measured on an idle switch: `bcmPOLL` holds about 93% of one core
+permanently. The SDK's polled-IRQ thread exists because the userspace BDE
+connects no interrupt handler, and it cannot be made cheap by configuration:
+
+    sal_usleep(usec)   busy-waits with sched_yield() when
+                       usec < (2 * SECOND_USEC) / HZ
+
+which is 2-20 ms depending on HZ. So `polled_irq_delay` either sits below that
+threshold and spins, or sits above it and polls perhaps fifty times a second --
+useless for packet delivery. There is no value that both sleeps and polls often
+enough.
+
+Setting `bcm_stat_interval` to 30 s already recovered a whole core from
+`bcmCNTR` (997 s of CPU down to 42 s over comparable uptimes) and roughly
+doubled the usable punt rate. The remaining core is `bcmPOLL`, and the only
+real fix is **interrupt delivery in the BDE** -- MSI or INTx through UIO or
+vfio -- after which the polling thread is not needed at all. That is the piece
+of work this measurement is asking for.
+
