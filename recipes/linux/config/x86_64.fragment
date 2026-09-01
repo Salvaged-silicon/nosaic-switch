@@ -25,3 +25,12 @@ CONFIG_SERIAL_8250_CONSOLE=y
 CONFIG_I2C_PIIX4=y
 CONFIG_I2C_CHARDEV=y
 CONFIG_EEPROM_AT24=y
+
+# The eMMC controller on the Arista 7050SX2, enumerated through ACPI.
+#
+# This lived in common.fragment, where it was harmless only for as long as
+# every board was x86. ACPI does not exist on PowerPC, so the symbol's
+# dependencies go unmet, Kconfig drops it silently, and the build's own
+# configuration check is what caught it -- a symbol asked for and not set
+# produces a kernel that boots and cannot do the thing you configured.
+CONFIG_MMC_SDHCI_ACPI=y

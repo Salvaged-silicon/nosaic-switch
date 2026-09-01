@@ -74,7 +74,20 @@ func Build(o Options) (*Result, error) {
 		epoch = defaultEpoch
 	}
 
-	work := filepath.Join(o.Root, ".cache", "pkg", r.Name)
+	// Scoped by architecture, and it has to be.
+	//
+	// This was .cache/pkg/<name>, shared by every architecture. Two builds of
+	// the same package then share one source tree and one stage directory:
+	// build for x86_64 while a powerpc build is running and the second one
+	// extracts over the first's patched tree, which surfaces as
+	// "Reversed (or previously applied) patch detected" -- a message that
+	// blames the patch rather than the sharing. Even run serially, a stage
+	// directory left by another architecture is the wrong contents to install
+	// from.
+	//
+	// Latent until now because CI gives each architecture its own container,
+	// so nothing in CI ever shared these.
+	work := filepath.Join(o.Root, ".cache", "pkg", r.Name, o.Arch.ID)
 	if err := os.RemoveAll(work); err != nil {
 		return nil, err
 	}

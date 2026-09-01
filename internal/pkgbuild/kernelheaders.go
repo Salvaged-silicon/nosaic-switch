@@ -23,7 +23,8 @@ import (
 // worse failure than not building.
 func runKernelHeaders(o Options, stage string) error {
 	ver := o.Recipe.Version
-	src := filepath.Join(o.Root, ".cache", "pkg", "linux", "src", "linux-"+ver)
+	// Arch-scoped, matching the work directory in pkgbuild.go.
+	src := filepath.Join(o.Root, ".cache", "pkg", "linux", o.Arch.ID, "src", "linux-"+ver)
 	if _, err := os.Stat(src); err != nil {
 		return fmt.Errorf("no built kernel tree at %s: build the linux recipe first: %w",
 			relPath(o.Root, src), err)

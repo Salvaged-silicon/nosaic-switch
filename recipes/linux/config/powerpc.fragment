@@ -21,12 +21,23 @@ CONFIG_SERIAL_OF_PLATFORM=y
 CONFIG_PCI=y
 CONFIG_FSL_PCI=y
 
-# Contiguous DMA for the switch chip. The vendor kernel command line carries
-# cma=32M; the Trident+ needs a contiguous region for its DMA rings the same
-# way the Trident2+ does, and on this board it comes from CMA rather than from
-# a memmap= reservation.
+# Contiguous memory for the switch chip's DMA rings. The vendor kernel command
+# line carries cma=32M, and the Trident+ needs a contiguous region the same way
+# the Trident2+ does -- but on the Arista that is a memmap= reservation, and
+# here it is CMA.
+#
+# CONFIG_DMA_CMA is deliberately NOT set: it depends on HAVE_DMA_CONTIGUOUS,
+# which powerpc does not select (arm, arm64, mips, x86, riscv and others do).
+# So this board gets the generic CMA pool without the DMA-API integration,
+# which means a driver reaches it through cma_alloc() rather than by
+# dma_alloc_coherent() drawing from it.
+#
+# That matters for the datapath when it is written: on x86 the BDE reserves its
+# DMA window with memmap= and maps it through /dev/mem, and neither mechanism
+# is what this board offers. Asking for DMA_CMA anyway is how you get a kernel
+# that boots and silently has no CMA at all -- the build refuses it, which is
+# how this was found.
 CONFIG_CMA=y
-CONFIG_DMA_CMA=y
 
 # Storage. The operating system lives on a NAND-backed block device at
 # /dev/sda with an ordinary partition table; the NOR flash holds firmware only
