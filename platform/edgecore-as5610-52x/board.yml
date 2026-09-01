@@ -1,0 +1,38 @@
+# NOSaic board port. Copy this directory to platform/<id>/ and fill it in.
+# The directory name must match `id`.
+
+id: edgecore-as5610-52x  # unique, matches the directory name
+vendor: edgecore  # e.g. arista, accton, juniper
+model: as5610-52x  # e.g. 7050sx2-72q
+
+# The orthogonal axes. arch and boot name directories (arch/<arch>, boot/<boot>);
+# asic selects which nosd provider this board installs.
+arch: powerpc  # x86_64 | aarch64 | powerpc | armhf
+asic: tdp  # e.g. td2p, td2, tdp, helix4, prestera, virt
+boot: onie-sfx  # virt | aboot | onie-sfx | uboot
+
+# Only for boot: uboot. Where in RAM the kernel is loaded, which is a property
+# of the SoC -- there is no safe default, and a wrong one hangs the board with
+# nothing on the console.
+# u_boot_arch: ppc
+# u_boot_load: "0x01000000"
+# u_boot_entry: "0x01000000"
+
+# Only for boot: aboot. The newest Arista hardware epoch this image claims to
+# support; Aboot refuses a board whose epoch is higher. Read it off the switch
+# with prefdl. Defaults to 1.
+# aboot_max_hwepoch: "1"
+
+profile: minimal  # full | slim | minimal
+kernel: ""                   # empty means the fleet default
+
+status: planned              # planned | bringup | experimental | production
+
+notes: >
+  What is unusual about this board. Hard-won findings belong here: register
+  quirks, access paths that silently fail, firmware that must load before a
+  port will link. This is the most valuable file in the directory.
+
+# Read off the running switch, not guessed: a wrong baud rate
+# makes a working board look hung.
+console: "ttyS0,115200"

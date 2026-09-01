@@ -17,8 +17,9 @@ the vendor has abandoned, given a modern, open, maintained OS.
 None yet.
 
 A board reaches this table when it installs itself, survives a power cycle, and passes
-CI — not when it works on the bench. Two are in bring-up and neither has cleared that
-bar; both are in [docs/switches.md](docs/switches.md).
+CI — not when it works on the bench. Three boards exist and none has cleared that bar:
+two in bring-up and one only declared. All are in
+[docs/switches.md](docs/switches.md).
 
 | Board | Arch | ASIC | Boot | Status |
 |-------|------|------|------|--------|
@@ -81,7 +82,37 @@ board's gitignored `config/authorized_keys`. Login takes 0.096 s where the
 
 Everything else outstanding is in each board's own list:
 **[7050SX2](platform/arista-7050sx2-72q/docs/todo.md)** ·
-**[virt-x86_64](platform/virt-x86_64/docs/todo.md)**.
+**[virt-x86_64](platform/virt-x86_64/docs/todo.md)** ·
+**[AS5610-52X](platform/edgecore-as5610-52x/docs/todo.md)**.
+
+## The next board
+
+The **[Edgecore AS5610-52X](platform/edgecore-as5610-52x/)** is declared and
+nothing runs on it. It earns a mention here because of what it tests rather than
+what it does: it is the first board that is not x86_64, and it changes three axes
+at once — **PowerPC e500v2**, **Trident+ (BCM56846)**, **ONIE on NOR flash**.
+Every claim above about architecture-neutrality has so far been a design
+commitment rather than a demonstrated fact, because both existing boards are
+x86_64.
+
+Two of the three axes already exist in the tree: `arch/powerpc` is fully
+specified — soft-float, big-endian, with an instruction audit that fails any
+build containing an opcode an e500v2 cannot execute — and the `onie` and `uboot`
+boot backends are written. The ASIC does not: there is no `nosd-tdp`, though
+OpenBCM 6.5.24 already carries the chip, so it is a new package rather than a
+new SDK.
+
+Starting a board is one command and no change to anything central:
+
+```sh
+nosaic board scaffold edgecore-as5610-52x \
+  --vendor edgecore --model as5610-52x \
+  --arch powerpc --asic tdp --boot onie-sfx --console ttyS0,115200
+```
+
+`nosaic check` then refuses the board until its documentation is real rather
+than the template's, which is how the three pages every board carries stay
+worth reading.
 
 If you have one of these switches, the ordered path from a rack to a forwarding
 box is **[the walkthrough](platform/arista-7050sx2-72q/docs/walkthrough.md)**.

@@ -83,6 +83,16 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "board":
+		if len(args) < 2 || args[1] != "scaffold" {
+			fmt.Fprintln(os.Stderr, "usage: nosaic board scaffold <id> [options]")
+			os.Exit(2)
+		}
+		if err := scaffoldCmd(repoRoot(), args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "boards":
 		if err := listBoards(repoRoot()); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)

@@ -319,8 +319,10 @@ Aboot is never modified, so the console always reaches a prompt.
 - **A measured ceiling on the control plane.** Packets destined for the switch
   go through the CPU, and that path is good for at least 500/s at zero loss.
   Where it actually stops has not been measured.
-- **A way in over the network.** No SSH server is packaged, so the only shell
-  is the serial console.
+- **SSH on the login account.** dropbear is packaged and keys work, but they
+  land on `root`: dropbear refuses an account with a blank password before it
+  looks at a key, and the login account has one so the console can reach it
+  without a password.
 
 All of them are in [todo.md](todo.md), with what is required separated from
 what is not.

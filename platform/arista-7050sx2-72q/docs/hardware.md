@@ -495,12 +495,25 @@ every XLP this board uses carries 40 Gb whether it is four 10G SFP+ lanes or
 one 40G QSFP cage. So the 18 XLPs needed are dealt round-robin across the four
 quads, 5/5/4/4, giving 200/200/160/160 Gb. See `config/asic.conf`.
 
-**Polled interrupts.** NOSaic's BDE has no interrupt to connect: it reaches the
-chip by mapping the PCI BAR from userspace, and no kernel driver is bound to
-route a vector to it. Without `polled_irq_mode=1` the SDK takes the IRQ path
-and stops at `soc_attach: could not connect interrupt line`. The SDK's own
-poller is the supported alternative, so this selects a path it offers rather
-than working around it.
+**Interrupts, and `polled_irq_mode=0`.** This was 1 for most of the board's
+life, because the BDE had no interrupt to connect: it reaches the chip by
+mapping the PCI BAR from userspace, and with no driver bound there is no vector
+to route. Without `polled_irq_mode=1` the SDK took the IRQ path and stopped at
+`soc_attach: could not connect interrupt line`.
+
+It is 0 now. The chip is bound to `uio_pci_generic` by the `asic-irq` service,
+and the BDE's `nosaic_interrupt_connect` starts a thread blocked in `read()` on
+`/dev/uioN` that calls the SDK's ISR and re-arms — `uio_pci_generic` masks INTx
+in its own handler and offers no `irqcontrol`, so nothing unmasks it but us.
+`bcmPOLL` disappears entirely and idle load average falls from 2.07 to 0.20.
+
+What made it work was not the interrupt path alone. A first attempt connected
+interrupts correctly and the datapath stopped forwarding: clearing
+`polled_irq_mode` also clears `SOC_F_POLLED`, and the SDK then waits for DMA on
+a semaphore rather than polling a descriptor. Converging on EOS's own settings
+fixed it — dropping `tdma`/`tslam`/`schan` `_intr_enable=0`, which were added
+when there were no interrupts at all, and taking EOS's fifteen-second DMA
+timeouts in place of the SDK's one second. See "What EOS sets that we do not".
 
 **Matching feature flags.** Several SDK flags change struct layouts, and
 `INCLUDE_RCPU` adds a pointer to `soc_cm_device_vectors_t` immediately after

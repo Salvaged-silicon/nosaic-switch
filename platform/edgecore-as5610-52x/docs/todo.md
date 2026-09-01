@@ -1,0 +1,102 @@
+# Edgecore AS5610-52X — what is left
+
+Everything. Nothing NOSaic has built runs on this board, and this page is the
+order to attack it in rather than a list of defects.
+
+Status of the board is in [the README](../README.md); what is known about the
+hardware is in [hardware.md](hardware.md), and almost all of it was read off a
+unit running EdgeNOS rather than produced here.
+
+## Required — nothing works without these
+
+### The PowerPC toolchain has never been built
+
+`bootstrap/configs/powerpc.defconfig` exists and has never been run. This is
+spike S1 from the project plan and it gates everything else.
+
+The risk is real rather than procedural: GCC removed the `powerpc-linux-gnuspe`
+target — e500v2's native SPE ABI — around GCC 8/9. `arch/powerpc/arch.yml`
+chooses soft-float generic PowerPC on a current toolchain instead, and carries a
+`forbidden_insn_re` that fails any build containing an instruction an e500v2
+cannot execute. That guard exists because a hard-float build disassembles
+cleanly, runs under QEMU's permissive model, and dies only on the hardware.
+
+**Gate:** `make toolchain-test ARCH=powerpc` produces a static binary that runs,
+and the instruction audit passes. If it cannot, this class of hardware needs a
+pinned older compiler and M8's scope changes.
+
+### There is no Trident+ datapath
+
+`nosd-tdp` does not exist. It is a new package but not a new SDK — OpenBCM
+6.5.24 carries `BCM56846_DEVICE_ID 0xb846` and the Trident+ drivers, and it is
+the recipe the 7050SX2 already uses.
+
+`nosd-td2p` is the closest relative and its shape should mostly carry: a
+userspace BDE, a tap bridge, an FIB mirror. What must not carry is anything
+that assumes the Arista board — the SCD, the port map, the flash layout, the
+LED path and, most importantly, **the endianness**. See
+[hardware.md](hardware.md#s-channel-and-the-big-endian-trap): this is a
+big-endian host and a CMICe chip, and the SDK's defaults are wrong for both.
+
+This is the first real test of the per-ASIC split. Sharing most of `nosd-td2p`
+means the split was drawn in the right place; copying it means it was not, and
+the fix belongs in a shared layer rather than in a third copy.
+
+### The board's own hardware is undescribed
+
+There is no platform HAL for it. From EdgeNOS's manifest it needs at least a
+CPLD driver, a **DS100DF410 40G retimer** with an init step, sensors and SFP
+through something ONLP-shaped, and **LED microcontroller firmware**
+(`led0.hex`, `led1.hex`).
+
+The retimer is the one that will present as a mystery: an unprogrammed retimer
+is a 40G link that does not come up, and on the sibling 7050TX-64 leaving the
+equivalent part in reset cost *every* port on the box rather than only the 40G
+ones.
+
+The LEDs are the opposite arrangement to the 7050SX2, where the chip's LED
+processors are off and the board controller drives the panel directly. Here
+there is firmware to load, and NOSaic has never done that on any board.
+
+### Where site configuration lives has to be answered again
+
+The 7050SX2 keeps a switch's own settings in a directory on its FAT flash
+partition. This board has no eMMC and no partition table — NOR flash as MTD,
+with ONIE in `mtd0` and `board_eeprom` as its own partition. The mechanism
+does not transfer.
+
+`board_eeprom` is also where this board's identity and MACs live. A board that
+cannot read its own MAC comes up with a random one that changes every boot,
+which is worth solving before the first install.
+
+## Known blocker inherited from EdgeNOS
+
+### The field processor does not evaluate live traffic
+
+EdgeNOS reached the point where an ACL is installed in the TCAM, reads back
+correctly, and **never matches a packet**. 2000 injected IPv4 packets to a
+drop-ACL'd destination flooded through the chip with the FP statistic at zero.
+
+Exhaustively ruled out there: `IFP_BYPASS_ENABLE=0`, the slice map, the port
+field select (`fpf2=0` is the correct registered selcode for a DstIp-only
+group), entry validity, `init misc`, and the arming registers edged uses.
+
+It matters to NOSaic because the tap bridge's punt path on the 7050SX2 is built
+on field-processor rules. If the FP cannot be armed on this chip, the punt path
+needs a different mechanism here — so this should be established early rather
+than discovered after the datapath is otherwise working.
+
+The recommended next step, from that work: install a drop ACL under Cumulus on
+this exact silicon, confirm it drops, dump the ingress-pipeline enable and
+config registers, and diff against the SDK's state. The differing register is
+the missing arming.
+
+## Not blockers, but decide early
+
+- **Interrupts.** EdgeNOS runs this chip polled. On the 7050SX2 that cost a
+  full core and held the control plane to twenty packets a second, and the fix
+  was to make interrupts work rather than tune the polling. Start polled;
+  do not finish polled.
+- **The PCI domain is `0001:`, not `0000:`.** Anything that hardcodes domain
+  zero will not find this chip.
+- **DMA comes from `cma=32M`**, not a `memmap=` reservation.
