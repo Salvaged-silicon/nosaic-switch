@@ -5,7 +5,13 @@ route is, from the flash layout on a running unit.
 
 ## What the board boots
 
-U-Boot, then ONIE, from NOR flash. There is no eMMC and no partition table:
+U-Boot, then ONIE. `onie_platform` is `powerpc-accton_as5610_52x-r0`; an ONIE
+installer must declare a matching platform or ONIE refuses it. Confirm with
+`onie-sysinfo -p` on the box rather than trusting this page.
+
+There are two storage devices and the distinction matters.
+
+**NOR flash, 8 MB, as MTD.** Firmware only:
 
 ```
 mtd0   0x00360000   onie            3.4 MB
@@ -14,24 +20,44 @@ mtd2   0x00010000   board_eeprom
 mtd3   0x00080000   uboot           512 KB
 ```
 
-`onie_platform` is `powerpc-accton_as5610_52x-r0`. An ONIE installer must
-declare a matching platform or ONIE will refuse it, and that string is the one
-to match — confirm with `onie-sysinfo -p` on the box rather than trusting this
-page.
+**NAND, ~3.8 GB, as a block device** — `/dev/sda`, with an ordinary partition
+table. This is where an operating system goes:
 
-## Why that changes things
+```
+sda1    127 MB
+sda2          extended
+sda3   3386 MB
+sda5   15.9 MB
+sda6    289 MB
+```
 
-The 7050SX2's install work does not transfer. There, Aboot resolves `flash:`
-against a FAT filesystem on eMMC, and NOSaic's persistent site configuration
-lives in a directory on that partition. Here there is neither: the flash is
-MTD, the installer is ONIE, and where a switch's own configuration lives has to
-be answered again for this board.
+## Why this is easier than the 7050SX2
 
-`board_eeprom` being its own MTD partition is the other difference. The board's
-identity and MAC addresses live there; the 7050SX2 keeps the same information
-on an i2c SEEPROM read through its board controller. A board that cannot read
-its own MAC comes up with a random one that changes every boot, which is worth
-solving before the first install rather than after.
+The Arista board boots a single `.swi` that Aboot loads from a FAT filesystem
+on eMMC, and NOSaic's A/B slot machinery has never run on it: there is one
+image, loaded directly, and the site configuration had to be given a home on
+the boot partition because there was nowhere else.
+
+This board has a real block device with a real partition table, and the vendor
+OS already uses the shape NOSaic was designed around — a read-only squashfs
+under an overlay:
+
+```
+overlay on /  lowerdir=/lower  upperdir=/rw/config1/upper  workdir=/rw/config1/work
+```
+
+`config1` rather than `config` suggests slots, and the switch database entry
+for this board records `persistence: squashfs-overlay` and dual-slot A/B
+upgrade. So the A/B mechanism that is CI-tested on the virtual platform and
+unexercised on the Arista has a plausible home here, and site configuration has
+somewhere obvious to live rather than needing a special case.
+
+`board_eeprom` on the NOR flash is where the board's identity and MAC addresses
+live. A board that cannot read its own MAC comes up with a random one that
+changes every boot, so this is worth solving before the first install rather
+than after.
+
+## The route
 
 ## The route
 
@@ -39,7 +65,10 @@ solving before the first install rather than after.
 The backend exists (`internal/boot/onie.go`) and has never produced an image
 that a switch has accepted.
 
-**Recovery.** ONIE's own rescue mode is the way back, and it lives in `mtd0`
-independently of anything NOSaic writes. That is a better position than the
-7050SX2 started from, where the recovery path had to be established first.
-Do not write `mtd0` or `mtd3`.
+**Recovery.** ONIE's own rescue mode is the way back, and it lives on the NOR
+flash independently of anything NOSaic writes to `/dev/sda`. That is a better
+position than the 7050SX2 started from, where the recovery path had to be
+established before anything else could be risked.
+
+**Do not write `mtd0` or `mtd3`** — ONIE and U-Boot. Everything NOSaic installs
+belongs on the block device.

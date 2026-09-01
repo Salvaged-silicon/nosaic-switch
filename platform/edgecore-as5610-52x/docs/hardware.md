@@ -38,9 +38,11 @@ allports   xe0-xe51
 simpler arrangement than the 7050SX2's, where the QSFP cages sit at logical
 49/53/57/61/65/69 with gaps for breakout lanes.
 
-## Flash
+## Storage
 
-NOR flash, as MTD partitions rather than a block device:
+Two devices, and the distinction decides where an image goes.
+
+**NOR flash, 8 MB, as MTD** — firmware only:
 
 ```
 mtd0   0x00360000   onie
@@ -49,12 +51,24 @@ mtd2   0x00010000   board_eeprom
 mtd3   0x00080000   uboot
 ```
 
-Two things follow. There is no eMMC and no partition table, so the
-flash-resolution work done for Aboot on the 7050SX2 does not transfer — an
-image goes on through ONIE, and NOSaic's own persistent state has to live
-somewhere an MTD can hold it. And `board_eeprom` is its own partition, which is
-where the board's identity and MAC live; the 7050SX2 keeps the same information
-on an i2c SEEPROM.
+**NAND, ~3.8 GB, as an ordinary block device** — `/dev/sda`, with a partition
+table: `sda1` 127 MB, `sda3` 3386 MB, `sda5` 15.9 MB, `sda6` 289 MB.
+
+That second device is the good news for this port. The vendor OS runs the exact
+shape NOSaic was designed around — a read-only squashfs under an overlay:
+
+```
+overlay on /  lowerdir=/lower  upperdir=/rw/config1/upper  workdir=/rw/config1/work
+```
+
+`config1` rather than `config` suggests slots, and the switch database entry
+records `persistence: squashfs-overlay` with dual-slot A/B upgrade. So the A/B
+machinery that is CI-tested on the virtual platform and has never run on the
+Arista has a plausible home here.
+
+`board_eeprom` is its own MTD partition and holds the board's identity and MAC
+addresses; the 7050SX2 keeps the same information on an i2c SEEPROM read
+through its board controller.
 
 ## S-Channel, and the big-endian trap
 
