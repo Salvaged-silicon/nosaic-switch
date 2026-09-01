@@ -188,6 +188,34 @@ Macros 42 and 45 use `xgxs_tx_lane_map_core` rather than a per-macro exception.
 Two derived exceptions were tried and refuted. Neither cage is cabled, so this
 is unobserved rather than known-good.
 
+### VXLAN, which the silicon and the SDK both already have
+
+The switch does VXLAN routing, bridging and gateway at wire speed
+(`EGR_VXLAN_CONTROL` is in the SDK's BCM56860 register database), and
+`src/bcm/esw/trident2/vxlan.c` — 16,566 lines, 45 entry points — is already
+compiled into the OpenBCM build NOSaic links against. NOSaic has nothing:
+no VXLAN, no tunnel, no VTEP, and `switch-api` has no tunnel concept.
+
+Behind ECMP and VRF, because neither of those is a feature for future users —
+the box has two uplinks and uses one, and its management traffic follows a
+learned route into the CPU path unless pinned by hand.
+
+Two things to know before starting:
+
+  - **L3 VXLAN routing needs recirculation** on this silicon — multiple passes
+    through the forwarding pipeline, per Arista's 7050X architecture
+    whitepaper. Bridging is free in the way line-rate features usually are;
+    routing spends pipeline bandwidth. Measure it here rather than trusting
+    the whitepaper.
+  - **This is the contract's first real test.** Adding it means versioned
+    additions to `switch-api` — tunnel endpoints, VNI-to-VLAN mapping, overlay
+    next hops — with `nosd-virt` updated in the same commit so CI still
+    exercises them, probably as Linux VXLAN interfaces over the veth
+    dataplane. If the contract has to bend toward Broadcom to fit, the
+    abstraction has failed and the fix belongs in the contract rather than in
+    the test. That is the design's own stated criterion and nothing has
+    exercised it yet.
+
 ### The platform HAL is still SCD-shaped
 
 PSU and transceiver access is SCD-specific and the CLI reaches it through type
