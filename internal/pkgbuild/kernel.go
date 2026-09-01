@@ -135,7 +135,25 @@ func verifyFragment(srcDir string, fragment []byte) error {
 	var missing []string
 	for _, line := range strings.Split(string(fragment), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
+			continue
+		}
+		// "# CONFIG_X is not set" is a request, not a comment, and it is the
+		// one most worth checking: a symbol a fragment turns off can be turned
+		// back on by another symbol that selects it, and the result is a
+		// kernel that differs from the one asked for in the direction nobody
+		// looks. Everything else beginning with # really is a comment.
+		if rest, ok := strings.CutPrefix(line, "# "); ok {
+			sym, ok := strings.CutSuffix(rest, " is not set")
+			if !ok || !strings.HasPrefix(sym, "CONFIG_") {
+				continue
+			}
+			if v, on := have[sym]; on && v != "n" {
+				missing = append(missing, fmt.Sprintf("%s: asked for it to be off, got %q", sym, v))
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
 			continue
 		}
 		k, want, ok := strings.Cut(line, "=")

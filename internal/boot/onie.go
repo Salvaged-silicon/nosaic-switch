@@ -41,6 +41,11 @@ const installer = `#!/bin/sh
 
 set -e
 
+# ONIE sets PATH=/usr/bin:/bin and nothing else, so fdisk, mke2fs, fw_setenv
+# and reboot are all absent from it. Every one of those failures reads as
+# "not found" for a tool that is plainly installed.
+export PATH="/usr/sbin:/sbin:/usr/bin:/bin:$PATH"
+
 echo "NOSaic %s for %s (%s)"
 
 # Where to write. ONIE tells us which device it booted from; falling back to
@@ -70,7 +75,18 @@ SKIP=$(awk '/^__NOSAIC_PAYLOAD__$/ { print NR + 1; exit 0; }' "$0")
 tail -n +$SKIP "$0" | tar -xO disk.img | dd of="$DISK" bs=1M conv=fsync
 
 sync
-echo "NOSaic installed. Reboot to start it."
+
+# ONIE's own exec_installer calls reboot without a path, so on a board where
+# /sbin is not in ONIE's PATH that call fails, ONIE logs a failure for an
+# install that succeeded, and its error handler re-runs the step that resets
+# the NOS boot command. Rebooting here, with a full path, gets in first.
+echo "NOSaic installed."
+if [ -x /sbin/reboot ]; then
+    echo "rebooting"
+    /sbin/reboot || true
+else
+    echo "reboot this switch to start it"
+fi
 exit 0
 
 __NOSAIC_PAYLOAD__

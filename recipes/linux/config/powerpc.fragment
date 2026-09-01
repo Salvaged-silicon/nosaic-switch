@@ -48,6 +48,14 @@ CONFIG_MTD_PHYSMAP_OF=y
 CONFIG_MTD_CFI=y
 CONFIG_MTD_CFI_INTELEXT=y
 CONFIG_MTD_CFI_AMDSTD=y
+# The NOR is one Spansion device, one byte wide, and its partitions are named
+# in the device tree rather than on the command line. Spelled out because the
+# u-boot environment lives in one of those partitions: without them there is no
+# /proc/mtd, fw_setenv has nothing to write to, and the OS can neither set its
+# own boot command nor ask for ONIE on the next boot.
+CONFIG_MTD_CFI_I1=y
+CONFIG_MTD_MAP_BANK_WIDTH_1=y
+CONFIG_MTD_OF_PARTS=y
 
 # The management port. Freescale's own MAC on this SoC.
 CONFIG_GIANFAR=y
@@ -56,3 +64,10 @@ CONFIG_GIANFAR=y
 # architecture that is not little-endian, and a great deal of code has never
 # been compiled for one.
 CONFIG_CPU_BIG_ENDIAN=y
+
+# 36-bit physical addressing. mpc85xx_smp_defconfig turns this on; on the
+# AS5610's P2020 it must be off, and the failure when it is not is a board that
+# loads the image and then prints nothing at all -- no panic, no console, no
+# clue. Found in EdgeNOS's boot notes rather than on the bench, which is the
+# only reason it did not cost a day.
+# CONFIG_PHYS_64BIT is not set
