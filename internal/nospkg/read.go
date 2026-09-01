@@ -271,6 +271,27 @@ func Extract(path, dst string) (*Manifest, error) {
 			if err := chmodRaw(clean, h.Mode); err != nil {
 				return nil, err
 			}
+			if err := chownEntry(clean, h.Uid, h.Gid); err != nil {
+				return nil, err
+			}
 		}
 	}
+}
+
+// chownEntry applies a package's declared ownership.
+//
+// Only when the package asked for something other than root: an unprivileged
+// extraction (inspecting a package, a test) must not fail on the overwhelming
+// majority of files that are root-owned anyway. When a recipe HAS named an
+// owner, failing to apply it is an error rather than a warning -- a config
+// file silently left as root:root is a daemon that starts and reads nothing,
+// which is far harder to diagnose than a build that stops and says why.
+func chownEntry(path string, uid, gid int) error {
+	if uid == 0 && gid == 0 {
+		return nil
+	}
+	if err := os.Lchown(path, uid, gid); err != nil {
+		return fmt.Errorf("chown %s to %d:%d: %w", path, uid, gid, err)
+	}
+	return nil
 }

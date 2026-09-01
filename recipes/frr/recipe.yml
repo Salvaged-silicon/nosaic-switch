@@ -85,8 +85,11 @@ build:
     ac_cv_file__proc_net_if_inet6: "yes"
 
 install:
-  - {src: nosaic/frr.conf, dst: /etc/frr/frr.conf, mode: "0640"}
-  - {src: nosaic/vtysh.conf, dst: /etc/frr/vtysh.conf, mode: "0640"}
+  # Owned by frr, because the daemons run as frr and 0640 root:root is a
+  # config file they cannot read. ospfd starts either way; without this it
+  # starts with NO configuration and reports "OSPF is not enabled".
+  - {src: nosaic/frr.conf, dst: /etc/frr/frr.conf, mode: "0640", owner: "frr:frr"}
+  - {src: nosaic/vtysh.conf, dst: /etc/frr/vtysh.conf, mode: "0640", owner: "frr:frr"}
 
 # One service per daemon, not watchfrr.
 #

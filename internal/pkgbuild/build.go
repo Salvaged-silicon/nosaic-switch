@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
 	"syscall"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
@@ -381,9 +383,53 @@ func collect(o Options, stage string) ([]nospkg.Entry, error) {
 		if _, err := os.Stat(src); err != nil {
 			return nil, fmt.Errorf("install %s: %w", in.Dst, err)
 		}
-		entries = append(entries, nospkg.Entry{Dst: in.Dst, Src: src, Mode: mode})
+		uid, gid, err := resolveOwner(o.Recipe, in.Owner)
+		if err != nil {
+			return nil, fmt.Errorf("install %s: %w", in.Dst, err)
+		}
+		entries = append(entries, nospkg.Entry{
+			Dst: in.Dst, Src: src, Mode: mode, UID: uid, GID: gid,
+		})
 	}
 	return entries, nil
+}
+
+// resolveOwner turns "user" or "user:group" into numeric ids, using only the
+// recipe's own users: stanza.
+//
+// Deliberately NOT the build host's /etc/passwd. A package that took its
+// ownership from whichever machine built it would install different files
+// depending on where it was built, which is precisely the property .nos exists
+// to avoid -- and the account almost certainly does not exist on the builder
+// anyway.
+func resolveOwner(r *recipe.Recipe, owner string) (int, int, error) {
+	if owner == "" {
+		return 0, 0, nil
+	}
+	user, group := owner, ""
+	if i := strings.IndexByte(owner, ':'); i >= 0 {
+		user, group = owner[:i], owner[i+1:]
+	}
+	find := func(name string) (int, int, bool) {
+		for _, u := range r.Users {
+			if u.Name == name {
+				return u.UID, u.GID, true
+			}
+		}
+		return 0, 0, false
+	}
+	uid, gid, ok := find(user)
+	if !ok {
+		return 0, 0, fmt.Errorf("owner %q: no such account in this recipe's users:", user)
+	}
+	if group != "" {
+		if _, g, ok := find(group); ok {
+			gid = g
+		} else if group != user {
+			return 0, 0, fmt.Errorf("owner %q: no such group in this recipe's users:", group)
+		}
+	}
+	return uid, gid, nil
 }
 
 // generateServices renders init files for every backend, so one package works

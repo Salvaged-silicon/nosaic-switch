@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
@@ -126,6 +127,9 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 	sqsh := filepath.Join(o.OutDir, "rootfs.sqsh")
+	if err := checkOwnership(rootfs, users); err != nil {
+		return nil, err
+	}
 	if err := mksquashfs(o, rootfs, sqsh); err != nil {
 		return nil, err
 	}
@@ -243,14 +247,67 @@ func findKernel(rootfs string) (string, error) {
 
 func mksquashfs(o Options, dir, out string) error {
 	fmt.Fprintf(o.Log, "==> squashing the root filesystem\n")
-	// -all-root and a fixed mkfs time keep the image reproducible: ownership
-	// from the build host and the wall clock are the two things that would
-	// otherwise differ between two builds of identical inputs.
+	// A fixed mkfs time keeps the image reproducible against the wall clock.
+	//
+	// -all-root used to be here for the other half of that -- ownership from
+	// the build host -- and it is gone, because it also flattened ownership a
+	// recipe deliberately DECLARED. FRR ships frr.conf 0640 and runs its
+	// daemons as frr; squashed to root:root, ospfd started, could not read its
+	// own configuration, and reported "OSPF is not enabled" rather than a
+	// permission error. (-all-root also silently overrides mksquashfs's own
+	// -pf pseudo-file overrides, so that is not a way round it.)
+	//
+	// Reproducibility is now kept by checkOwnership below, which is a stronger
+	// guarantee than -all-root gave: instead of overwriting whatever ownership
+	// the tree had, it proves the tree only ever contains root and ids some
+	// recipe asked for by name.
 	cmd := exec.Command("mksquashfs", dir, out,
-		"-noappend", "-all-root", "-comp", "xz", "-no-progress",
+		"-noappend", "-comp", "xz", "-no-progress",
 		"-mkfs-time", "0", "-all-time", "0")
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("mksquashfs: %v\n%s", err, b)
+	}
+	return nil
+}
+
+// checkOwnership fails the build if anything in the staged tree is owned by an
+// id no recipe asked for.
+//
+// Every file must be root, or belong to an account some package declared in
+// its users: stanza. Anything else can only have come from the build host --
+// the uid of whoever ran the build leaking into the image -- and that is
+// exactly the non-reproducibility -all-root used to hide. Hiding it also
+// destroyed the ownership recipes legitimately declare, so it is checked
+// rather than overwritten.
+func checkOwnership(rootfs string, users []nospkg.User) error {
+	allowed := map[int]bool{0: true}
+	for _, u := range users {
+		allowed[u.UID] = true
+		allowed[u.GID] = true
+	}
+	var bad []string
+	err := filepath.Walk(rootfs, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			return nil
+		}
+		if !allowed[int(st.Uid)] || !allowed[int(st.Gid)] {
+			if len(bad) < 10 {
+				rel, _ := filepath.Rel(rootfs, p)
+				bad = append(bad, fmt.Sprintf("/%s (%d:%d)", rel, st.Uid, st.Gid))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(bad) > 0 {
+		return fmt.Errorf("image ownership: %s owned by an id no recipe declared; "+
+			"the build host's uid has leaked into the image", strings.Join(bad, ", "))
 	}
 	return nil
 }

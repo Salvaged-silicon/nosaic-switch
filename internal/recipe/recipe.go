@@ -90,6 +90,21 @@ type Install struct {
 	Src  string `yaml:"src"`
 	Dst  string `yaml:"dst"`
 	Mode string `yaml:"mode"`
+
+	// Owner is the account this file belongs to, as "user" or "user:group",
+	// naming an account from this recipe's users: stanza.
+	//
+	// Without it a package could create a system account and install a
+	// config file that account cannot read. That is not hypothetical: FRR
+	// ships frr.conf 0640 and runs its daemons as frr, so root-owned config
+	// meant ospfd started, found nothing it could read, and reported "OSPF
+	// is not enabled" -- a daemon running perfectly with no configuration,
+	// which looks like a config error rather than a permission one.
+	//
+	// Resolved to numeric ids at build time from users:, never from the
+	// build host's /etc/passwd, so the package stays reproducible and means
+	// the same thing on a machine that has never heard of the account.
+	Owner string `yaml:"owner"`
 }
 
 // Service is an init-system-agnostic service definition. Recipes never write

@@ -24,6 +24,10 @@ type Entry struct {
 	Src string
 	// Mode is the permission bits.
 	Mode uint32
+	// UID and GID are the numeric owner. Zero means root, which is both the
+	// default and the correct answer for almost everything.
+	UID int
+	GID int
 	// Link, if set, makes this a symlink to that target.
 	Link string
 	// Dir, if true, makes this a directory.
@@ -113,8 +117,8 @@ func buildPayload(entries []Entry, stamp time.Time) ([]byte, []File, error) {
 			Name:    e.Dst,
 			Mode:    int64(e.Mode),
 			ModTime: stamp,
-			Uid:     0,
-			Gid:     0,
+			Uid:     e.UID,
+			Gid:     e.GID,
 			Uname:   "",
 			Gname:   "",
 		}
@@ -148,7 +152,8 @@ func buildPayload(entries []Entry, stamp time.Time) ([]byte, []File, error) {
 			}
 		}
 
-		f := File{Path: e.Dst, Mode: uint32(hdr.Mode), Link: e.Link}
+		f := File{Path: e.Dst, Mode: uint32(hdr.Mode), Link: e.Link,
+			UID: e.UID, GID: e.GID}
 		if hdr.Typeflag == tar.TypeReg {
 			s := sha256.Sum256(content)
 			f.SHA256 = hex.EncodeToString(s[:])

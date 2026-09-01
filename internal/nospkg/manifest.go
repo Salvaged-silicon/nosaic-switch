@@ -43,6 +43,8 @@ type File struct {
 	Size   int64  `json:"size"`   // bytes; 0 for symlinks and directories
 	SHA256 string `json:"sha256"` // empty for symlinks and directories
 	Link   string `json:"link,omitempty"`
+	UID    int    `json:"uid,omitempty"` // 0 (root) unless a recipe said otherwise
+	GID    int    `json:"gid,omitempty"`
 }
 
 // Service is an init-system-agnostic service definition. Recipes never write
