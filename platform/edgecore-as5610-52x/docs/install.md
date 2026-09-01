@@ -62,8 +62,42 @@ than after.
 ## The route
 
 `boot: onie-sfx` — NOSaic emits a self-extracting installer that ONIE runs.
-The backend exists (`internal/boot/onie.go`) and has never produced an image
-that a switch has accepted.
+An image now builds:
+
+```
+vmlinuz             9.6 MiB   u-boot legacy uImage, Linux/PowerPC
+initramfs.cpio.gz   1.2 MiB
+rootfs.sqsh        40.5 MiB
+NOSaic-...bin       488 MiB   the installer: a script with a disk image appended
+```
+
+The kernel is a genuine PowerPC uImage, which is what U-Boot on this class of
+board can start. **The installer is not yet safe to run**, for two reasons
+found by reading what it produces rather than by trying it.
+
+### It does not tell U-Boot anything
+
+The generated script writes the whole disk image to the device ONIE booted
+from, syncs, and says "reboot to start it". Nothing sets `nos_bootcmd` in
+`u-boot-env`, which is how an ONIE platform tells U-Boot where its NOS lives.
+On an x86 ONIE box firmware can find a bootloader in the image's own boot
+partition; a PowerPC U-Boot board has to be told.
+
+`internal/boot/onie.go` contains no mention of U-Boot at all, so this is a gap
+in the backend rather than a mistake in the board.
+
+### The layout is GPT and this board's is MBR
+
+NOSaic's disk image is GPT with named partitions — the initramfs finds its
+slots by name. This board currently runs an MBR layout with an extended
+partition. Whether the vendor U-Boot can read GPT is unknown and needs checking
+before anything is written.
+
+### Why this is still recoverable
+
+ONIE and U-Boot live on the NOR flash, which nothing in this path touches. A
+bad disk image leaves both intact, and ONIE rescue is the way back. That is a
+better starting position than the 7050SX2 had.
 
 **Recovery.** ONIE's own rescue mode is the way back, and it lives on the NOR
 flash independently of anything NOSaic writes to `/dev/sda`. That is a better

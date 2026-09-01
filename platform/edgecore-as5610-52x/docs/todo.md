@@ -58,6 +58,23 @@ because both would have produced a kernel that builds and does not boot:
   and U-Boot on this class of board loads a uImage; a bare vmlinux is not
   something it can start.
 
+### The ONIE backend does not handle U-Boot platforms
+
+An installer builds — script plus a 488 MB disk image, with a genuine
+PowerPC uImage kernel inside it — and it would not produce a bootable switch.
+
+`internal/boot/onie.go` writes the disk and stops. It never sets `nos_bootcmd`
+in `u-boot-env`, which is how an ONIE platform tells U-Boot where its NOS is.
+On x86 the firmware can find a bootloader in the image's own boot partition; a
+U-Boot board has to be told, and this is the first U-Boot board.
+
+Second, NOSaic's disk image is GPT with named partitions — the initramfs finds
+its slots by name — and this board runs MBR today. Whether the vendor U-Boot
+reads GPT is unknown and wants establishing before anything is written.
+
+Both are backend work rather than board work, which is the right shape: the
+board declares `boot: onie-sfx` and should not have to know.
+
 ### The board's own hardware is undescribed
 
 There is no platform HAL for it. From EdgeNOS's manifest it needs at least a
