@@ -181,8 +181,24 @@ doas vtysh -c "conf t" \
   -c "interface et2" -c "ipv6 ospf6 area 0.0.0.0" -c "end"
 ```
 
-None of this persists: the overlay is a tmpfs on a RAM boot. That is the point
-of this mode, and the reason flash installation is the next milestone.
+None of this persists in a RAM boot: the overlay is a tmpfs. That is the point
+of this mode.
+
+**A flash-installed image does not need any of the above.** The board's
+`config/network.conf` and `recipes/frr/nosaic/frr.conf` ship in the image, and
+after a power cycle the switch comes back with its loopback, every routed port
+addressed, and `zebra`/`ospfd` already running against them. Changing an
+address means rebuilding an image, which is the wrong shape and is on the
+[todo](todo.md) — but nothing is typed in at the console any more.
+
+Note the ordering that makes it work. Front-panel interfaces do not exist until
+`nosd` has created them, minutes after boot, so `apply-network.sh` **waits** for
+each named interface rather than skipping it. It used to skip, which meant every
+front-panel address in the file was silently never applied on a normal boot.
+Anything that retries like that must also be safe to run when there is nothing
+to do: an earlier version reconfigured interfaces that were already correct, and
+carried the management port down and up over a hundred times in one boot until
+it came back `NO-CARRIER` and stayed there.
 
 ---
 
@@ -259,7 +275,15 @@ matching a single line.
 ## 8. Updating just the datapath
 
 A full image rebuild and reboot is about fifteen minutes. Replacing `nosd`
-alone is about two, and the root filesystem is a writable overlay:
+alone is about two, and the root filesystem is a writable overlay.
+
+**Rebuild the package first.** `make image` composes from `out/packages/` and
+does not notice changed source, so an image built without this step contains
+the previous binary — silently:
+
+```sh
+make pkg PKG=nosd-td2p ARCH=x86_64
+```
 
 ```sh
 doas s6-svc -d /run/service/nosd
@@ -285,3 +309,53 @@ restart, so this costs the same six minutes as a boot — but not the boot.
   self-punt entry has not been installed yet. `l3sync` closes it within a
   second. Testing faster than that looks exactly like a broken port.
 - **`vtysh` needs `doas`.** The socket directory belongs to the `frr` account.
+- **Do not pull a large file to the switch over a front-panel port.** The punt
+  path manages about 28 KB/s, and at full rate a bulk transfer wedges the
+  datapath: every port stops answering, the console echoes input without
+  executing it, every link stays up, and only a power cycle recovers it. Serve
+  it rate-limited (400 KB/s is fine) if you must use that path.
+- **Verify an image before you boot it.** `make image` will happily compose one
+  containing the previous binary. Extract it and grep for a string from your
+  change; see [BUILDING.md](../../../docs/BUILDING.md).
+- **The SCD survives a warm reboot.** A `devmem` poke at a transceiver or reset
+  register persists across `reboot`, so an unfixed image can look fixed. Put
+  the register back to its broken state, confirm the symptom returns, and only
+  then reboot to test.
+- **The console drops characters** when the thermal service is logging to it,
+  so long commands arrive corrupted. Keep them short, and check what actually
+  happened rather than trusting the echo.
+
+## Getting back in when the management port is down
+
+The management port is one NIC on one cable, and when that link goes down the
+only shell is a 9600-baud console — which cannot carry an image, which is the
+one thing you need to recover a switch.
+
+The front panel is the way back — as a **manual** step, not shipped config:
+
+```sh
+doas busybox ip route add 10.22.1.0/24 via 10.101.101.41 dev et1
+```
+
+so the switch reaches its own build host through the ports it exists to route
+on. Control traffic only, for the reason in the gotcha above.
+
+It was briefly a `route` line in the board's `network.conf`, and that was a
+mistake worth recording. A static /24 beats a default route by longest-prefix
+match, so shipping it silently moved **every** build-host transfer off the
+healthy management NIC and onto the punt path — including image downloads,
+which is exactly the traffic that path cannot carry. No metric fixes that;
+longest prefix wins regardless. A recovery route belongs in the hands of
+somebody recovering, not in the image.
+
+Remember to delete it afterwards.
+
+If the box is wedged rather than unreachable, power-cycle it. Before doing that,
+rule out the local side: unbinding and rebinding the NIC re-initialises the
+driver and PHY without a reboot, and if the link is still `NO-CARRIER`
+afterwards the fault is at the far end, not here.
+
+```sh
+doas sh -c "echo 0000:04:00.0 > /sys/bus/pci/drivers/tg3/unbind"
+doas sh -c "echo 0000:04:00.0 > /sys/bus/pci/drivers/tg3/bind"
+```

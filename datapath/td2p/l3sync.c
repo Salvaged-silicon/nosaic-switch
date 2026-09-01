@@ -93,6 +93,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <net/if.h>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -1102,6 +1103,78 @@ static void poll_hosts6(void)
 		fflush(stdout);
 }
 
+/*
+ * Addresses that belong to the switch but to no front-panel port.
+ *
+ * A loopback is the natural in-band management address: it is up as long as the
+ * box is, it does not move when a port goes down, and it is what a router-id
+ * should be. OSPF advertises it and every router in the area installs a route
+ * to it -- and the switch itself will not answer on it, because nothing tells
+ * the chip that address is local.
+ *
+ * The interfaces registered by nosaic_l3_add_intf each get a self host entry.
+ * A loopback has no port and no VLAN, so it is registered by nobody and gets
+ * nothing. The packet arrives, is routed rather than punted, matches no route,
+ * and is dropped -- an address the whole network believes in and the switch
+ * silently discards. That is worse than an address that does not exist.
+ *
+ * The entry itself is ingress-port independent, so any interface's CPU egress
+ * object serves. SIOCGIFADDR cannot be used here: it returns an interface's
+ * FIRST address, which on lo is 127.0.0.1 and never the one that matters.
+ */
+#define MAX_LOOPBACK 8
+static uint32_t lo_done[MAX_LOOPBACK];
+static int      nlo_done;
+
+static void loopback_punt(void)
+{
+	struct ifaddrs *head = NULL, *a;
+	int cpu_eg = -1, i;
+
+	/* Any interface's CPU egress will do; if none exists yet, next poll. */
+	for (i = 0; i < nif; i++) {
+		if (ifs[i].cpu_eg >= 0) {
+			cpu_eg = ifs[i].cpu_eg;
+			break;
+		}
+	}
+	if (cpu_eg < 0 || getifaddrs(&head) != 0)
+		return;
+
+	for (a = head; a != NULL; a = a->ifa_next) {
+		struct sockaddr_in *sin;
+		bcm_l3_host_t h;
+		uint32_t ip;
+		int seen = 0, rv;
+
+		if (a->ifa_addr == NULL || a->ifa_addr->sa_family != AF_INET)
+			continue;
+		if ((a->ifa_flags & IFF_LOOPBACK) == 0)
+			continue;
+		sin = (struct sockaddr_in *)a->ifa_addr;
+		ip = ntohl(sin->sin_addr.s_addr);
+		if ((ip >> 24) == 127)            /* 127/8 is not routed anywhere */
+			continue;
+		for (i = 0; i < nlo_done; i++)
+			if (lo_done[i] == ip)
+				seen = 1;
+		if (seen || nlo_done >= MAX_LOOPBACK)
+			continue;
+
+		bcm_l3_host_t_init(&h);
+		h.l3a_ip_addr = ip;
+		h.l3a_flags = BCM_L3_L2TOCPU;
+		h.l3a_intf = cpu_eg;
+		rv = bcm_l3_host_add(l3_unit, &h);
+		printf("l3: %s self %u.%u.%u.%u -> CPU: %d\n", a->ifa_name,
+		       ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff, rv);
+		fflush(stdout);
+		if (rv == BCM_E_NONE)
+			lo_done[nlo_done++] = ip;
+	}
+	freeifaddrs(head);
+}
+
 void nosaic_l3_poll(void)
 {
 	static unsigned long ticks;
@@ -1115,6 +1188,7 @@ void nosaic_l3_poll(void)
 		self_punt(&ifs[i]);
 		self_punt6(&ifs[i]);
 	}
+	loopback_punt();
 	poll_routes();
 	poll_hosts();
 	poll_routes6();

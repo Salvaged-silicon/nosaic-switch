@@ -113,6 +113,41 @@ make image BOARD=virt-x86_64        # compose the A/B disk image
 
 `make help` lists every target. `nosaic build` with no board lists the boards.
 
+### `make image` does not rebuild changed source
+
+`make image` composes an image from the packages already in `out/packages/`. It does
+**not** notice that a recipe's source changed. Editing `datapath/td2p/*.c` and running
+`make image` produces an image containing the *previous* binary, silently, with no
+warning and no error.
+
+```sh
+make pkg PKG=nosd-td2p ARCH=x86_64      # rebuild the package first
+make image BOARD=arista-7050sx2-72q     # then compose
+```
+
+This is worth knowing because of how it fails. An image carrying stale code does not
+look broken — it boots, it runs, and it quietly disagrees with your source tree. It
+invalidated several conclusions during the 7050SX2 bring-up, including a fix that was
+declared proven and had to be withdrawn, because the image under test never contained
+the change being tested.
+
+Until the build closes that gap, **verify before you boot**. Extract the image and grep
+the binary for a string from your change:
+
+```sh
+python3 -c "import zipfile; zipfile.ZipFile('NOSaic-....swi').extractall('.')"
+zcat nosaic-initrd | cpio -idm
+unsquashfs -d r -f nosaic-rootfs.sqsh usr/sbin/nosd-td2p
+grep -c 'a string from your change' r/usr/sbin/nosd-td2p
+```
+
+Reading ownership needs the squashfs metadata rather than extracted files, since
+extracting as a normal user rewrites it:
+
+```sh
+unsquashfs -lls nosaic-rootfs.sqsh | grep etc/frr
+```
+
 ## Running it
 
 Two ways, and they matter for different reasons.

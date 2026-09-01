@@ -642,6 +642,106 @@ What it needs to become a real measurement is knowing which cages have cables
 in them, so that "no link" can be told apart from "nothing plugged in". Module
 presence is readable independently of link, and that is the next piece.
 
+## The 40G cages
+
+Both QSFP+ cages carrying cables link at 40000 and pass traffic from a cold
+boot. Getting there needed three things and a great deal that turned out not to
+matter, and the second is worth as much as the first.
+
+### The cage is switched off at the board controller
+
+An optic that is present, seated and correct still emits nothing while the SCD
+holds it in low power and reset. The transceiver control table is:
+
+```
+BAR0 + 0xa010, stride 0x10, 54 entries    48 SFP+ then 6 QSFP+
+```
+
+so the six QSFP cages are at `0xa310`, `0xa320`, `0xa330`, `0xa340`, `0xa350`
+and `0xa360`. Three bits matter:
+
+| bit | mask | meaning | applies to |
+|-----|------|---------|-----------|
+| 6 | `0x40` | `TX_DISABLE` | SFP+ and QSFP+ |
+| 5 | `0x20` | low power | **QSFP+ only** |
+| 7 | `0x80` | reset | **QSFP+ only** |
+
+Clearing `TX_DISABLE` is enough for an SFP+ and is *not* enough for a QSFP+:
+bits 5 and 7 have no SFP+ counterpart, and leaving them set is a laser that
+never lights. `internal/platformhal/scd` clears all three for a QSFP cage and
+only `TX_DISABLE` for an SFP+.
+
+Two traps sit around this register:
+
+- **It does not read back what you write.** Writing `0x01` reads back `0x08`.
+  Verifying a write by reading it tells you nothing; the far end's carrier is
+  the measurement.
+- **It survives a warm reboot.** The SCD is a board controller and `reboot`
+  does not reset it, so a manual `devmem` poke persists across an image change.
+  That is how a fix was once declared proven by an image that did not contain
+  it. To test an SCD change honestly, write the cage back to low power
+  (`devmem 0xfc00a350 32 0x1A1`), confirm the far end goes `NO-CARRIER`, and
+  only then reboot.
+
+### `port_init_speed` is read by port NAME
+
+The port map's `:40` is not sufficient on its own. A global `port_init_speed`
+applies to every port including the 40G ones, and the per-port override is
+keyed by the SDK's port *name*, not its number:
+
+```
+port_init_speed_xe52=40000      # correct — xe52 is the port's index in pbmp_xport_xe
+port_init_speed_65=40000        # loaded, counted, never read
+```
+
+`xeN` is the port's index within `pbmp_xport_xe`, so it **moves with the port
+count**. Under this board's 54-port map the six cages are `xe48`..`xe53`; under
+a 72-port map every name above `xe47` means a different port. A polarity or
+lane-map file generated against one map is silently wrong under the other.
+
+### What was not the problem
+
+Recorded because each was tried, and because a reader who finds these ports
+down will reach for the same things:
+
+| suspected | verdict |
+|---|---|
+| SerDes polarity | EOS's own values, and confirmed read by the property report |
+| lane maps | likewise; and at 40GBASE-R4 the alignment markers deskew and reorder for you |
+| clause 72/73/37 autoneg | removed entirely; the links come up without them |
+| MMU bandwidth | the chip's own table shows 40 at physical 85 and 97 |
+| STP state | already `FORWARD`; port enable already 1 |
+| MAC loopback, frame max | loopback off, 1622 on 40G and 10G alike |
+| a missing CPU-to-ASIC header | the 10G ports use the identical `bcm_tx` path |
+
+### The counters lie, and the L2 table does not
+
+The most expensive part of this was not the fault. It was that **`bcm_stat_get`
+read zero on a 40G port that was receiving perfectly** — including
+`snmpIfInNUcastPkts`, so it could not be explained away as "no unicast yet".
+Zero is also what a genuinely dead port reads, so the diagnostic looked like it
+was answering and was not.
+
+What settled it in one line was the chip's L2 table:
+
+```
+l2:   80:a2:35:81:ca:e1 vlan 1054 port 69
+```
+
+That is the neighbour's MAC, learned by the ASIC, on the 40G port, in the right
+VLAN. **A learned source address is proof the chip received and accepted a
+frame there** — it does not depend on the counter subsystem, on the punt path,
+or on anything reaching the CPU. `nosd-td2p` now dumps it alongside the port
+counters for exactly that reason.
+
+Two lessons, both cheap to apply next time:
+
+- keep a **control** in every measurement. A 10G port carrying pings and a 40G
+  port carrying nothing reported identical counters, and it was the control
+  that proved the instrument wrong rather than the port.
+- prefer a measurement that **cannot be faked by the thing you are testing**.
+  L2 learning is a side effect of reception; a counter is a report about it.
+
 ## How Aboot resolves `flash:`
 
 Established from Aboot's own `/bin/initblockdev` on this switch, because it

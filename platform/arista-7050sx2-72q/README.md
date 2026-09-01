@@ -26,9 +26,15 @@ NOSaic's first real board, and the one M6 is written against.
 The board runs as a router. On the switch, verified rather than assumed:
 
 - the chip comes out of reset, enumerates and initialises through the SDK;
-- ports link, and front-panel ports appear on the Linux stack as `et1`, `et2`;
+- ports link, and front-panel ports appear on the Linux stack as `et1`, `et2`,
+  `et53`, `et54`;
+- **both 40G QSFP+ cages link at 40000 and pass traffic**, to two different
+  neighbours, from a cold boot with no manual step — see
+  [hardware](docs/hardware.md#the-40g-cages) for what that took;
 - FRR holds **OSPFv2 and OSPFv3 adjacencies at Full** with two different
   vendors' boxes;
+- **its addressing and OSPF configuration come back on their own** after a power
+  cycle: loopback, every routed port, and the routing daemons, nothing typed in;
 - the kernel FIB is mirrored into the ASIC — `CHIP route 96/8192`, from the
   chip's own accounting;
 - **forwarding happens in silicon**: 100 packets routed through the box raised
@@ -46,11 +52,16 @@ The board runs as a router. On the switch, verified rather than assumed:
 - **A/B slots and rollback.** What is installed is one image Aboot boots
   directly. The slot machinery is CI-tested on the virtual platform and
   unexercised here.
-- **Addressing and routing do not survive a reboot.** The datapath does: the
-  port map and polarity ship in the image, so after a cold boot `nosd` is
-  running and the ports exist. What is missing is somewhere for *this* switch's
-  addresses to live, and an ordering fix — network configuration is applied
-  before the datapath has created the interfaces it would apply to.
+- **The control plane moves almost nothing.** Every frame destined for this
+  switch is punted through the CPU by the tap bridge, and that path measures
+  **28 KB/s — about 19 packets a second** — while answering a ping in 8 ms.
+  Enough for the protocols a switch runs; not enough for anything else. A
+  full-rate bulk transfer across it wedged the datapath outright, twice,
+  recoverable only by a power cycle. Details and the two SDK defaults behind it
+  are in [todo](docs/todo.md).
+- **No way in over the network.** NOSaic ships no SSH server, so the only shell
+  is the serial console at 9600. That is a missing package, not a missing
+  capability, but it makes every remote operation slow.
 - **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
   (s6) has been booted.
 - **ECMP.** `l3sync` takes one next hop per prefix.

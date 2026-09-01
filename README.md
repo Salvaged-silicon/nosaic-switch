@@ -41,22 +41,29 @@ assumed:
   Broadcom kernel modules**;
 - front-panel ports appear on the Linux stack, and **FRR holds OSPFv2 and OSPFv3
   adjacencies** with two different vendors' routers;
+- **40G works as well as 10G**: both QSFP+ cages link at 40000 and pass traffic to two
+  different neighbours, from a cold boot, with no manual step;
 - the kernel routing table is mirrored into the ASIC — 96 route entries, by the chip's
   own accounting;
 - **forwarding happens in silicon**: 100 packets routed through the box raised the chip's
   port counter by 101 and the CPU's by 44, which is the background protocol traffic and
   nothing like 100;
+- **its addressing and OSPF configuration come back on their own** after a power cycle —
+  loopback, every routed port, and the routing daemons, with nothing typed in;
 - fans, temperatures, PSUs and transceivers read and control through the platform HAL,
   with a closed-loop fan curve.
 
 Two things stand between that and a supported board, and only one of them is about
 the switch being a switch.
 
-**It comes up with no addresses.** The board data — port map and SerDes polarity —
-ships in the image, so after a cold reboot the datapath is running and the ports
-are there. What does not survive is *this* switch's addressing and routing
-configuration: there is nowhere for it to live yet, and network configuration is
-applied before the datapath has created the interfaces it would apply to.
+**The control plane moves almost nothing.** Every frame destined for this switch is
+punted through the CPU by the tap bridge, and that path was measured at **28 KB/s —
+about 19 packets a second** — while answering a ping in 8 ms. It is fine for the
+protocols a switch runs and useless for anything else: copying a file across the box
+saturated it and wedged the datapath outright. Two of the numbers behind that were
+the SDK's defaults, inherited by passing `NULL` to `bcm_rx_start` and never chosen
+for this board; they are now stated, and whether that is the whole story is not yet
+measured. See the board's [todo](platform/arista-7050sx2-72q/docs/todo.md).
 
 **The switch was configured with `ip` and `vtysh`, not with NOSaic's own CLI.** The
 `nosaic show ports`, `interface` and `route` commands exist and run against the
@@ -64,6 +71,10 @@ virtual datapath in CI; they have not been run against silicon. Until the same
 commands work unmodified on both, the claim below about one CLI everywhere is a
 design commitment rather than a demonstrated fact — which is why it is the gate on
 this board rather than something to assume.
+
+There is also no way onto the box over the network. NOSaic ships no SSH server, so
+the only shell is the serial console. That is a missing package rather than a
+missing capability, and it is on the board's list.
 
 Everything else outstanding is in each board's own list:
 **[7050SX2](platform/arista-7050sx2-72q/docs/todo.md)** ·

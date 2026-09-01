@@ -70,6 +70,37 @@ say `nosd`; the builder picks the provider from the board's ASIC, and the confli
 an error to end up with two fighting over one chip. Providers are keyed to the *silicon*,
 not the board, so one package serves every switch using that chip.
 
+**A package owns the accounts it creates, and the files those accounts need.** A recipe
+declares system accounts in `users:` with fixed numeric ids, and an `install:` entry may
+name one in `owner:`:
+
+```yaml
+users:
+  - {name: frr, uid: 101, gid: 101, home: /var/run/frr, shell: /sbin/nologin}
+install:
+  - {src: nosaic/frr.conf, dst: /etc/frr/frr.conf, mode: "0640", owner: "frr:frr"}
+```
+
+Without that a package could create an account and install a file that account cannot
+read, which is not a hypothetical: FRR ships `frr.conf` mode 0640 and runs its daemons as
+`frr`, and root-owned it meant `ospfd` started, read nothing, and reported *"OSPF is not
+enabled"* — a permission error wearing a configuration error's clothes, on a daemon that
+was running and supervised the whole time.
+
+Ownership is resolved to numeric ids **at build time from the recipe's own `users:`**,
+never from the build host's `/etc/passwd`. A package that took ownership from whichever
+machine built it would install different files depending on where it was built, and the
+account almost certainly does not exist on the builder anyway.
+
+**Ownership in an image is proved, not overwritten.** The image build used to pass
+`mksquashfs -all-root`, which guaranteed reproducibility against build-host ownership by
+flattening everything to root — including ownership a recipe had deliberately declared,
+and including `mksquashfs`'s own `-pf` override, so there was no way round it while it
+stayed. It is gone. In its place the builder walks the composed tree and fails if any
+file is owned by an id no recipe asked for by name. That is the stronger guarantee: a
+build host uid leaking into an image is now an error that names the file, rather than
+something silently painted over.
+
 ### Licensing
 
 NOSaic is Apache 2.0. Built images may contain source-available vendor code and are

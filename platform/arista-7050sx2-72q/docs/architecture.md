@@ -348,7 +348,7 @@ as long as you are watching.
 This is the distinction the whole design exists to make.
 
 ```
-  CONTROL PLANE -- packets for us, and protocols                   ~thousands/s
+  CONTROL PLANE -- packets for us, and protocols        MEASURED: ~19 packets/s
 
     wire --> chip --> punt rules / self host entry --> CPU
                                                         |
@@ -384,6 +384,41 @@ That comparison is the test worth remembering. "The routes are installed" and
    chip counter    nosd logs it once a minute:  port: et1 (port 1) link=1 ...
    CPU counter     /sys/class/net/et1/statistics/rx_packets
 ```
+
+### The control plane is much narrower than it looks
+
+The diagram above once said "~thousands/s" for the punt path. Measured, it is
+**28 KB/s — about 19 packets a second** at 1500 bytes, while answering a ping in
+8 ms. Latency is fine; throughput is almost nothing.
+
+That is enough for what a switch's control plane is for. OSPF hellos, ARP,
+neighbour discovery and a shell session all fit comfortably, which is why every
+adjacency on this board holds and nothing looked wrong for weeks. It is not
+enough for anything that moves bytes: pulling a 77 MB image *to* the switch
+saturated the path and wedged the datapath outright — every port stopped
+answering, the console echoed input without executing it, and every link stayed
+up so the far end saw a healthy switch. Only a power cycle recovered it.
+Throttling the sender to 400 KB/s changed the outcome completely, so it is a
+rate the path cannot survive rather than a size.
+
+Two of the numbers behind it were never chosen. `bcm_rx_start(unit, NULL)`
+accepts the SDK's defaults:
+
+| default | value | what it is |
+|---|---|---|
+| `global_pps` | 1000 | a **software** rate limit, applied in the SDK's RX thread for this chip family (`bcm_esw_rx_rate_set`, `src/bcm/esw/rx.c:5432`) |
+| chains × packets | 8 × 8 = 64 | every packet that may be in flight between chip and daemon |
+
+Both are now stated explicitly in `tapbridge.c` — 20000 pps, 16 chains of 64 —
+and deliberately kept modest rather than maximal, because the far end of this
+path is a single process doing one `write()` per frame. A punt path is an
+attack surface as well as a bottleneck, and "as high as it goes" trades one
+failure mode for a worse one.
+
+Whether that is the whole story is not yet measured. A 1000 pps cap does not by
+itself explain 19 pps; the likely interaction is that drops above the cap
+collapse TCP's window, so goodput lands far below it. That is a hypothesis, and
+is recorded as one in the board's [todo](todo.md).
 
 ---
 
@@ -433,11 +468,13 @@ Proven on the switch:
 | | |
 |---|---|
 | Chip out of reset, on the bus, initialised | yes |
-| Ports link, transmit and receive | yes, on both cabled ports |
+| Ports link, transmit and receive | yes, on all four cabled ports |
+| 40G QSFP+ cages | link at 40000 and pass traffic, cold boot, no manual step |
 | Tap bridge, ARP and ICMP over hardware ports | yes |
 | OSPFv2 and OSPFv3 adjacencies | Full, to two different vendors' boxes |
 | Routes into the ASIC | `CHIP route 96/8192`, the chip's own count |
 | Hardware forwarding, CPU not involved | measured, see section 6 |
+| Addressing and OSPF across a power cycle | loopback, every routed port, daemons -- unaided |
 | Fans, temperatures, PSUs, transceivers | yes |
 | Graceful reboot | yes |
 | Boots from its own flash, unattended | yes |
@@ -447,13 +484,14 @@ Not proven:
 - **A/B slots, trial boot and rollback.** The board boots from flash, but as a
   single image Aboot loads directly. The slot machinery is CI-tested on the
   virtual platform and unexercised here.
-- **Addressing and routing.** The board data -- port map and SerDes polarity --
-  ships in the image, so the datapath comes up unaided after a cold boot. This
-  switch's own addresses and OSPF configuration do not, and there is nowhere
-  for them to live yet: `/mnt/data` is a tmpfs on a RAM boot, and the board's
-  committed `config/` is the wrong home for site addressing. There is also an
-  ordering problem -- network configuration runs before `nosd` has created the
-  interfaces. See [todo.md](todo.md).
+- **Control-plane throughput.** 28 KB/s, and a bulk transfer wedges the box.
+  See section 6 and [todo.md](todo.md). The configuration change that may fix
+  it is committed and not yet measured.
+- **Where site configuration lives.** Addresses and OSPF now come back after a
+  power cycle, but they come back from the board's committed `config/` and
+  `recipes/frr/nosaic/frr.conf`, which is the wrong home for site addressing:
+  it means rebuilding an image to change an IP. `/mnt/data` is a tmpfs on a RAM
+  boot, so there is still nowhere persistent for it. See [todo.md](todo.md).
 - **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
   (s6) has ever been booted here.
 - **ECMP.** The two uplinks have different costs, so FRR picks one. Equal costs
