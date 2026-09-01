@@ -205,3 +205,21 @@ func TestS6DefaultIsALongrun(t *testing.T) {
 		}
 	}
 }
+
+// execline groups on double quotes only, so a single-quoted region in an exec
+// line is split on whitespace and the command runs as something else entirely.
+// It is accepted and it does the wrong thing, which is the worst combination --
+// and it works under systemd, so it breaks on one tier and not the other.
+func TestSingleQuotesInExecAreRefused(t *testing.T) {
+	s := Service{
+		Name: "bind-something",
+		Exec: `/bin/sh -c 'A=1; echo $A'`,
+	}
+	if err := s.Validate(); err == nil {
+		t.Fatal("a single-quoted exec was accepted; execline would split it into words")
+	}
+	ok := Service{Name: "bind-something", Exec: `/bin/sh -c "A=1; echo $A"`}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("double quotes must remain usable: %v", err)
+	}
+}

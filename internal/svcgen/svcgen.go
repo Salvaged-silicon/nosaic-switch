@@ -88,6 +88,29 @@ func (s Service) Validate() error {
 		return fmt.Errorf("service %q: exec must start with an absolute path, got %q",
 			s.Name, strings.Fields(s.Exec)[0])
 	}
+	// Single quotes do not group in execline.
+	//
+	// The s6 backend renders exec into an execline script, and execline groups
+	// on DOUBLE quotes only -- a single-quoted region is split on whitespace
+	// like anything else. So
+	//
+	//     /bin/sh -c 'A=1; echo $A'
+	//
+	// reaches sh as the single argument "'A=1;" and the rest becomes arguments
+	// to sh itself. It is accepted, it runs, and it does something entirely
+	// different from what was written, which is how one of these silently
+	// failed to bind a PCI device and blocked every service that depended on
+	// it. systemd would have parsed the same line correctly, so it works on one
+	// tier and not the other.
+	//
+	// Refused rather than rewritten: quoting that has to be guessed at is worth
+	// a build failure, and anything needing real shell grammar wants a script
+	// file rather than an exec line.
+	if strings.Contains(s.Exec, "'") {
+		return fmt.Errorf("service %q: exec may not contain single quotes -- they do "+
+			"not group in execline, so the command would be split into words. Use "+
+			"double quotes, or put it in a script and exec that", s.Name)
+	}
 	switch s.Restart {
 	case "", "on-failure", "always", "never":
 	default:

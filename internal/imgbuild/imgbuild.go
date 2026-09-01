@@ -760,29 +760,24 @@ poweroff -f
 	// blocks until the chip raises INTx. It does not touch BAR mapping or DMA,
 	// so nothing else about the BDE changes.
 	//
-	// The ids are read from the device rather than written down, because a
-	// board that states its ASIC's PCI address has already said which device
-	// this is and saying it twice is how the two come to disagree.
+	// A script rather than an inline command, because a service's exec line is
+	// rendered into execline, where single quotes do NOT group -- see svcgen.
 	//
 	// After asic-release: the chip is not on the bus before that, so there is
 	// nothing to bind to.
 	if o.Board.PlatformHAL.ASICPCI != "" && datapathInstalled(o, packages) {
-		bind := fmt.Sprintf(
-			"/bin/sh -c 'D=/sys/bus/pci/devices/%s; "+
-				"[ -e $D/driver ] && exit 0; "+
-				"V=$(cut -c3- $D/vendor); P=$(cut -c3- $D/device); "+
-				"echo \"$V $P\" > /sys/bus/pci/drivers/uio_pci_generic/new_id "+
-				"&& echo NOSAIC-IRQ bound %s to uio_pci_generic "+
-				"|| echo NOSAIC-IRQ could not bind %s; exit 0'",
-			o.Board.PlatformHAL.ASICPCI, o.Board.PlatformHAL.ASICPCI,
+		script := strings.ReplaceAll(bindASICIRQ, "@ASIC_PCI@",
 			o.Board.PlatformHAL.ASICPCI)
+		if err := writeFile(rootfs, "/etc/nosaic/bind-asic-irq.sh", script, 0o755); err != nil {
+			return err
+		}
 		after := []string{}
 		if o.Board.PlatformHAL.Driver != "" {
 			after = append(after, "asic-release")
 		}
 		services = append(services, svcgen.Service{
 			Name:    "asic-irq",
-			Exec:    bind,
+			Exec:    "/etc/nosaic/bind-asic-irq.sh",
 			After:   after,
 			Restart: "never",
 		})
