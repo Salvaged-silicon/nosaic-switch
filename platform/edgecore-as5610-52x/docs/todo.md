@@ -42,6 +42,31 @@ This is the first real test of the per-ASIC split. Sharing most of `nosd-td2p`
 means the split was drawn in the right place; copying it means it was not, and
 the fix belongs in a shared layer rather than in a third copy.
 
+### The kernel cannot build a device tree
+
+x86_64 boards describe themselves through ACPI and need no device tree, so
+nothing in the kernel recipe has ever compiled one. This board cannot boot
+without it: `platform/accton-as5610-52x/dts/as5610-52x.dts` exists in EdgeNOS,
+`model = "powerpc-accton-as5610-52x-r0"`, `compatible = "accton,as5610_52x",
+"fsl,P2020RDB"`.
+
+The kernel package is per-architecture and a device tree is per-board, so this
+is not simply a file to add to the recipe. The project plan already says the
+shape -- "per-board defconfig + DTS as data" -- and the decision to make is
+whether the DTB is built by the image builder from the board directory, or
+whether a board contributes a small package of its own.
+
+Two smaller things were fixed while establishing this, and are worth knowing
+because both would have produced a kernel that builds and does not boot:
+
+- `arch/powerpc/arch.yml` named `corenet32_smp_defconfig`. The P2020 is an
+  mpc85xx part -- `CONFIG_PPC_P2020` is in `platforms/85xx/Kconfig` with its
+  own `p2020.c` -- and CoreNet starts with the e500mc parts. It is
+  `mpc85xx_smp_defconfig`, `_smp` because the P2020 is dual core.
+- `kernel_image` was `vmlinux`. `CONFIG_PPC_P2020` selects `DEFAULT_UIMAGE`,
+  and U-Boot on this class of board loads a uImage; a bare vmlinux is not
+  something it can start.
+
 ### The board's own hardware is undescribed
 
 There is no platform HAL for it. From EdgeNOS's manifest it needs at least a

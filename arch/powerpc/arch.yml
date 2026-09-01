@@ -47,8 +47,20 @@ qemu_machine: "ppce500"
 qemu_cpu: ""
 
 meson_cpu: ppc
-kernel_defconfig: corenet32_smp_defconfig
-kernel_image: vmlinux
+# mpc85xx, not corenet. The P2020 is an e500v2 part and CONFIG_PPC_P2020 lives
+# in arch/powerpc/platforms/85xx/Kconfig, with its own p2020.c; CoreNet begins
+# with the e500mc parts (P4080 and later). corenet32_smp_defconfig was here
+# first and would have produced a kernel for the wrong platform family --
+# which builds, and does not boot.
+#
+# _smp because the P2020 is dual core. Both are generated defconfigs, merged
+# from mpc85xx_base.config and the 85xx fragments by arch/powerpc/Makefile.
+kernel_defconfig: mpc85xx_smp_defconfig
+
+# uImage, not vmlinux. CONFIG_PPC_P2020 selects DEFAULT_UIMAGE, and U-Boot on
+# this class of board loads a uImage; a bare vmlinux is not something it can
+# start.
+kernel_image: arch/powerpc/boot/uImage
 elf_machine: "EM_PPC"
 
 status: canary

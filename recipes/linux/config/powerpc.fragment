@@ -1,0 +1,47 @@
+# PowerPC e500v2 (Freescale P2020) — the AS5610-52X.
+#
+# The architecture's defconfig is mpc85xx_smp_defconfig, which already carries
+# the platform. This fragment is for what a switch needs on top of it, and for
+# the things a defconfig aimed at reference boards leaves out.
+
+# The platform. P2020 support is generic across the DS/RDB boards, and this
+# board's device tree is compatible with "fsl,P2020RDB".
+CONFIG_PPC_P2020=y
+CONFIG_MPC85xx_RDB=y
+
+# Console. ttyS0 at 115200 on this board -- the vendor kernel command line is
+# console=ttyS0,115200, and a wrong rate makes a working board look hung.
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_OF_PLATFORM=y
+
+# The switch ASIC is reached from userspace by mapping its PCI BAR, so PCI has
+# to be there and the P2020's controller with it. Note the chip appears on PCI
+# domain 1, not 0 -- a P2020 has more than one controller.
+CONFIG_PCI=y
+CONFIG_FSL_PCI=y
+
+# Contiguous DMA for the switch chip. The vendor kernel command line carries
+# cma=32M; the Trident+ needs a contiguous region for its DMA rings the same
+# way the Trident2+ does, and on this board it comes from CMA rather than from
+# a memmap= reservation.
+CONFIG_CMA=y
+CONFIG_DMA_CMA=y
+
+# Storage. The operating system lives on a NAND-backed block device at
+# /dev/sda with an ordinary partition table; the NOR flash holds firmware only
+# and is reached as MTD.
+CONFIG_MTD=y
+CONFIG_MTD_PHYSMAP=y
+CONFIG_MTD_PHYSMAP_OF=y
+CONFIG_MTD_CFI=y
+CONFIG_MTD_CFI_INTELEXT=y
+CONFIG_MTD_CFI_AMDSTD=y
+
+# The management port. Freescale's own MAC on this SoC.
+CONFIG_GIANFAR=y
+
+# Big-endian, and stated rather than inherited: this is the first NOSaic
+# architecture that is not little-endian, and a great deal of code has never
+# been compiled for one.
+CONFIG_CPU_BIG_ENDIAN=y
