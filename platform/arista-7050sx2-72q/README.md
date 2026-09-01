@@ -19,6 +19,7 @@ NOSaic's first real board, and the one M6 is written against.
 - **[Running from RAM](docs/running.md)** — the development loop, no flash written
 - **[Build](docs/build.md)** — building an image for it
 - **[Hardware reference](docs/hardware.md)** — registers, port map, quirks
+- **[Capabilities](docs/capabilities.md)** — what the silicon can do against what NOSaic uses
 - **[Install](docs/install.md)** — the flash route (not yet proven here)
 
 ## What works
