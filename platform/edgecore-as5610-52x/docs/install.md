@@ -126,6 +126,64 @@ established before anything else could be risked.
 belongs on the block device.
 
 
+## What the netboot proved, 2026-09-01
+
+It ran. Nothing was written to the switch -- `sda1 sda2 < sda5 sda6 > sda3`
+enumerated during the boot, EdgeNOS's layout untouched -- and the box was
+returned to EdgeNOS afterwards.
+
+```
+Bytes transferred = 53674684 (33302bc hex)
+Using 'nosaic' configuration
+Verifying Hash Integrity ... crc32+ OK        (kernel, ramdisk and fdt)
+Booting using the fdt blob at 0x03000000
+Uncompressing Kernel Image ... OK
+Linux version 6.12.105 (nosaic@nosaic)
+  (powerpc-nosaic-linux-gnu-gcc (crosstool-NG 1.28.0) 15.2.0)
+Memory: 1997400K/2097152K available
+Run /init as init process
+NOSAIC-INITRAMFS booting from RAM, no partitions used
+NOSAIC-INITRAMFS overlay assembled (persistent=no)
+NOSAIC-BOOT userspace reached (s6)
+NOSAIC-S6 compile rc=0
+s6-rc-init: fatal: unable to supervise service directories in
+            /run/s6-rc/servicedirs: Value too large for defined data type
+```
+
+So spike S1's instruction audit was right where QEMU could not be: a
+soft-float generic-PowerPC toolchain on gcc-15.2.0 produces a kernel and a
+userspace that this e500v2 executes. The whole boot chain works -- FIT, device
+tree, big-endian kernel, squashfs, overlayfs, init handover.
+
+**Two defects, and only real hardware would have found either.**
+
+The first is in the list above: `EOVERFLOW` from `s6-rc-init`. Without
+`-D_FILE_OFFSET_BITS=64` a 32-bit program gets the narrow `stat` and `readdir`,
+and a value that does not fit is returned as an error rather than truncated --
+an inode number above 2^32 will do it, and overlayfs synthesises inode numbers
+with the layer index in the high bits. Fixed for every 32-bit architecture at
+once, because `off_t` and `ino_t` are ABI: a library built one way and a
+program built the other disagree about `struct stat` and nothing warns.
+
+The second cost a boot to find. This U-Boot is from 2013 and knows crc32, md5
+and sha1; the FIT was hashed with sha256. What it prints is:
+
+```
+Verifying Hash Integrity ... sha256 error!
+Unsupported hash algorithm for 'hash' hash node in 'kernel' image node
+Bad Data Hash
+ERROR: can't get kernel image!
+```
+
+The last two lines arrive last and read like a corrupt image. The line that
+says what is actually wrong is the one above them.
+
+**Getting back is not automatic.** Magic sysrq is compiled in, the serial BREAK
+trigger works, and `reboot(b)` is listed as permitted -- and sending it left the
+board hard down, console silent to a CR, for several minutes. The APC outlet
+(3, on `10.101.107.10`) is what recovered it. Treat sysrq here as a way to
+*read* state, not to reset the board.
+
 ## Trying it without installing
 
 This is the way to run NOSaic on this switch today, and it is the direct

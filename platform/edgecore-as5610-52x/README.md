@@ -1,6 +1,13 @@
 # Edgecore AS5610-52X
 
-NOSaic's third board, and the first that is not x86_64. Nothing runs on it yet.
+NOSaic's third board, and the first that is not x86_64.
+
+**It boots.** On 2026-09-01 the board ran a NOSaic image over TFTP from the
+U-Boot prompt, nothing written to its disk: our own PowerPC toolchain, our
+kernel, our device tree, squashfs mounted, overlay assembled, `/sbin/init`
+reached. It stops in `s6-rc-init` on a 32-bit large-file-support defect that is
+fixed but not yet re-verified on the hardware. See [install.md](docs/install.md)
+for how to repeat it and [todo.md](docs/todo.md) for what is left.
 
 | | |
 |---|---|
@@ -11,7 +18,7 @@ NOSaic's third board, and the first that is not x86_64. Nothing runs on it yet.
 | Boot | U-Boot + ONIE, on NOR flash |
 | Console | ttyS0 @ **115200** |
 | Device tree | `powerpc-accton-as5610-52x-r0` — Accton is the ODM, Edgecore the brand |
-| Status | **planned** — see below |
+| Status | **bringup** — boots to userspace over the network; no install yet |
 
 - **[Hardware reference](docs/hardware.md)** — what has been read off a running unit
 - **[Build](docs/build.md)** — what exists and what is missing

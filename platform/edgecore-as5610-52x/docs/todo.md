@@ -9,6 +9,24 @@ unit running EdgeNOS rather than produced here.
 
 ## Required — nothing works without these
 
+### 32-bit large-file support — fixed, not yet re-verified on hardware
+
+The board's first boot reached `/sbin/init` and stopped in `s6-rc-init` with
+`EOVERFLOW`. Every 32-bit package now builds with `-D_FILE_OFFSET_BITS=64`;
+what remains is to rebuild the PowerPC packages and repeat the netboot.
+
+Worth stating because it will come up again on the next 32-bit board: this is
+an ABI-wide switch, not a per-package workaround. `off_t` and `ino_t` change
+size, so a library built one way and a program built the other disagree about
+`struct stat` silently.
+
+**Still open: `_TIME_BITS=64`.** 32-bit `time_t` overflows in January 2038, and
+a project whose premise is keeping abandoned hardware running is exactly the
+project that will still have these boards then. glibc 2.42 supports it and it
+depends on `_FILE_OFFSET_BITS=64`, which is now set — but it is a second
+ABI-wide change and it wants doing deliberately, with every 32-bit package
+rebuilt together, rather than folded into a boot fix.
+
 ### ~~The PowerPC toolchain~~ — spike S1 passed
 
 **Done, and it was the biggest unknown here.** `make toolchain ARCH=powerpc`
