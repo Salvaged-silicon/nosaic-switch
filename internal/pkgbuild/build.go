@@ -77,8 +77,8 @@ func buildEnv(o Options) []string {
 		"STRIP=" + t + "-strip",
 		"OBJCOPY=" + t + "-objcopy",
 		"OBJDUMP=" + t + "-objdump",
-		"CFLAGS=-O2 -pipe -I" + filepath.Join(staging, "usr", "include"),
-		"CXXFLAGS=-O2 -pipe -I" + filepath.Join(staging, "usr", "include"),
+		"CFLAGS=-O2 -pipe" + lfs(o) + " -I" + filepath.Join(staging, "usr", "include"),
+		"CXXFLAGS=-O2 -pipe" + lfs(o) + " -I" + filepath.Join(staging, "usr", "include"),
 		// -L finds a library named on the command line. It does NOT find that
 		// library's own dependencies: for a DT_NEEDED recorded inside a shared
 		// object, GNU ld searches -rpath-link, then -rpath, then the defaults,
@@ -568,4 +568,33 @@ func runAfter(o Options, srcDir string, env []string) error {
 		}
 	}
 	return nil
+}
+
+// lfs turns on large-file support on 32-bit architectures.
+//
+// Without it glibc gives a 32-bit program the narrow stat and readdir, and any
+// value that does not fit -- an inode number above 2^32, a file over 2 GiB --
+// comes back as EOVERFLOW rather than being truncated. That is not a rare
+// corner: overlayfs synthesises inode numbers with the layer index in the high
+// bits, so an ordinary directory read on an overlay root can produce one.
+//
+// The AS5610 is the first 32-bit board in the fleet and it found this on its
+// first boot. Everything worked -- kernel, device tree, squashfs, the overlay
+// -- and then s6-rc-init could not read its own service directory:
+//
+//	s6-rc-init: fatal: unable to supervise service directories in
+//	/run/s6-rc/servicedirs: Value too large for defined data type
+//
+// Set for the whole architecture rather than per recipe, because off_t and
+// ino_t are in the ABI: a library built one way and a program built the other
+// disagree about the shape of a struct stat, and that failure is silent.
+// glibc is excluded because it is the thing being selected between: it
+// compiles both the narrow and the wide interfaces and decides which one a
+// caller gets from this very macro. Defining it in glibc's own build is not a
+// preference, it is a contradiction, and glibc's configure says so.
+func lfs(o Options) string {
+	if o.Arch.Bits == 32 && o.Recipe.Name != "glibc" {
+		return " -D_FILE_OFFSET_BITS=64"
+	}
+	return ""
 }
