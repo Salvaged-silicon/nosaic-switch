@@ -38,11 +38,41 @@ so `polled_irq_delay` either sits below that and spins, or above it and polls
 perhaps fifty times a second. There is no value that both sleeps and polls
 often enough to deliver packets.
 
-**The fix is interrupt delivery in the BDE** — MSI or INTx through UIO or vfio.
-`nosaic_interrupt_connect` returns -1 today, deliberately, because during
-bring-up an interrupt path was one more thing that could be wrong. It is now
-the thing that is wrong. With interrupts the polling thread is not needed at
-all.
+**Interrupt delivery is built, and does not work yet.** This is the closest
+thing on this list to finished, and the remaining gap is a specific one.
+
+What works, measured on the switch with `polled_irq_mode=0`:
+
+  - the chip binds to `uio_pci_generic` at boot — it declares INTA, which that
+    driver requires
+  - `IRQ 33` counts up by about one per received packet
+  - `nosaic_interrupt_connect` starts a thread blocked in `read()` on
+    `/dev/uioN` that calls the SDK's own ISR and re-arms afterwards
+    (`uio_pci_generic` masks INTx in its handler and offers no `irqcontrol`,
+    so nothing unmasks it but us)
+  - **`bcmPOLL` disappears entirely.** Its replacement uses 0.07 s of CPU in
+    eight minutes, and idle load average falls from 2.07 to **0.16**
+
+What does not: the datapath stops forwarding. Clearing `polled_irq_mode` also
+clears `SOC_F_POLLED`, which changes how the SDK waits for DMA — instead of
+polling the descriptor it waits on a semaphore the ISR is supposed to signal
+(`src/soc/common/dma.c:3959`). The interrupts arrive, the ISR is called, and
+the RX descriptors stay `!done`, so packets are never reaped.
+
+The gap is therefore between *the ISR being called* and *the DMA completion
+being recognised*; everything either side of it is proven. Two candidates are
+not yet eliminated: whether the CMIC interrupt mask covers the packet-DMA
+channels when the SDK believes it is interrupt-driven, and whether the four
+`*_intr_enable=0` properties — set when there were no interrupts at all — now
+need to be 1.
+
+`polled_irq_mode` stays at 1 until that is closed. Polled costs a core and
+works; interrupt-driven costs nothing and does not.
+
+One near-miss worth keeping: `soc_dma_wait_timeout- Not polled` appears
+thousands of times in the log and is **not** an error. It is a `LOG_VERBOSE`
+line meaning the DMA took the interrupt-driven path, and "timeout" is part of
+the function name.
 
 ### Management traffic follows learned routes
 
