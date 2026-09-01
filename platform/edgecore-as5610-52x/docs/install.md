@@ -157,13 +157,25 @@ tree, big-endian kernel, squashfs, overlayfs, init handover.
 
 **Two defects, and only real hardware would have found either.**
 
-The first is in the list above: `EOVERFLOW` from `s6-rc-init`. Without
-`-D_FILE_OFFSET_BITS=64` a 32-bit program gets the narrow `stat` and `readdir`,
-and a value that does not fit is returned as an error rather than truncated --
-an inode number above 2^32 will do it, and overlayfs synthesises inode numbers
-with the layer index in the high bits. Fixed for every 32-bit architecture at
-once, because `off_t` and `ino_t` are ABI: a library built one way and a
-program built the other disagree about `struct stat` and nothing warns.
+The first is in the list above: `EOVERFLOW` from `s6-rc-init`, and the cause is
+that **reading a directory is enough**. Without `-D_FILE_OFFSET_BITS=64` glibc
+gives a 32-bit program the narrow `readdir`, which refuses any entry whose
+`d_ino` or `d_off` does not fit in 32 bits. `d_off` is not an offset -- it is an
+opaque cookie the filesystem picks, and tmpfs picks large ones. So an ordinary
+`readdir` of an ordinary tmpfs directory returns NULL with `errno` set, and
+`s6rc_servicedir_manage` checks `errno` after its loop exactly as it should:
+
+```c
+errno = 0 ;
+d = readdir(dir) ;
+if (!d) break ;
+...
+if (errno) goto err ;
+```
+
+Fixed for every 32-bit architecture at once, because `off_t` and `ino_t` are
+ABI: a library built one way and a program built the other disagree about
+`struct stat` and nothing warns.
 
 The second cost a boot to find. This U-Boot is from 2013 and knows crc32, md5
 and sha1; the FIT was hashed with sha256. What it prints is:

@@ -572,11 +572,16 @@ func runAfter(o Options, srcDir string, env []string) error {
 
 // lfs turns on large-file support on 32-bit architectures.
 //
-// Without it glibc gives a 32-bit program the narrow stat and readdir, and any
-// value that does not fit -- an inode number above 2^32, a file over 2 GiB --
-// comes back as EOVERFLOW rather than being truncated. That is not a rare
-// corner: overlayfs synthesises inode numbers with the layer index in the high
-// bits, so an ordinary directory read on an overlay root can produce one.
+// Without it glibc gives a 32-bit program the narrow stat and readdir, and a
+// value that does not fit is returned as EOVERFLOW rather than truncated.
+//
+// Reading a directory is enough to hit it, which is what makes this a boot
+// failure rather than a corner case. glibc's non-LFS readdir() refuses an
+// entry whose d_ino or d_off does not fit in 32 bits, and d_off is not an
+// offset -- it is an opaque cookie the filesystem chooses. tmpfs allocates
+// large ones, so an ordinary readdir of an ordinary tmpfs directory returns
+// NULL with errno set, and a caller that checks errno after the loop, as it
+// should, reports a failure it cannot explain.
 //
 // The AS5610 is the first 32-bit board in the fleet and it found this on its
 // first boot. Everything worked -- kernel, device tree, squashfs, the overlay
