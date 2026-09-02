@@ -85,7 +85,10 @@
 
 #define TAP_MTU        9216
 #define MIN_FRAME      60
-#define MAX_TAPS       8
+/* Enough for every front-panel port on the largest board here, which is 52.
+ * It was 8, sized for a two-port test on the 7050SX2, and a board asking for
+ * ten got eight without being told -- see the refusal below. */
+#define MAX_TAPS       64
 #define RX_PRIORITY    100
 
 struct tap {
@@ -397,8 +400,21 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 {
 	int i, rv;
 
-	if (n > MAX_TAPS)
-		n = MAX_TAPS;
+	/*
+	 * Refuse rather than truncate.
+	 *
+	 * Quietly dropping the taps past the limit produces a switch that is
+	 * short a few ports for no stated reason, and the failure surfaces
+	 * somewhere else entirely: the network service waits forever for an
+	 * interface that was silently never made, and takes the routing daemons
+	 * down with it. Saying so here costs one line and points at the cause.
+	 */
+	if (n > MAX_TAPS) {
+		fprintf(stderr, "tap: %d taps requested but at most %d are "
+			"supported; refusing rather than silently making %d\n",
+			n, MAX_TAPS, MAX_TAPS);
+		return -1;
+	}
 	tap_unit = unit;
 
 	rv = bcm_pkt_alloc(unit, TAP_MTU + 8, BCM_TX_CRC_APPEND, &tx_pkt);

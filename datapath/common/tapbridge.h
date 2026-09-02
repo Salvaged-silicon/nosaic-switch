@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-#ifndef NOSAIC_TD2P_TAPBRIDGE_H
-#define NOSAIC_TD2P_TAPBRIDGE_H
+#ifndef NOSAIC_TAPBRIDGE_H
+#define NOSAIC_TAPBRIDGE_H
 
 /* One hardware port presented to Linux under a name. */
 struct tap_spec {
