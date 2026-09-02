@@ -38,19 +38,28 @@
 	 * devmem_is_allowed() permits mapping it through /dev/mem even with
 	 * CONFIG_STRICT_DEVMEM=y, which this kernel sets.
 	 *
-	 * 0x78000000 is 1920 MB, near the top of this board's 2 GB and well clear
-	 * of everything a boot touches -- the kernel unpacks at 0x0, the RAM-boot
-	 * initramfs lands at 0x03100000 and the FIT is staged at 0x08000000.
-	 * pci1 declares no dma-ranges, so fsl_pci programs a 1:1 inbound window
-	 * over DRAM and the chip can reach this.
+	 * 0x28000000 is 640 MB, and the address matters more than it looks.
+	 *
+	 * This kernel splits memory at 768 MB -- "Normal [mem 0x0-0x2fffffff],
+	 * HighMem [mem 0x30000000-0x7fffffff]" -- and dma_alloc_coherent, which
+	 * is how the vendor's kernel BDE obtains this memory, allocates from the
+	 * Normal zone. A pool in highmem is one no kernel DMA allocator would
+	 * ever hand out, which is a poor place to be when the chip will not fetch
+	 * from it. It sat at 0x78000000 for exactly that reason: high, out of the
+	 * way, and untested against how this hardware actually reaches memory.
+	 *
+	 * Still clear of everything a boot touches: the kernel unpacks at 0x0,
+	 * the RAM-boot initramfs lands at 0x03100000 and the FIT is staged at
+	 * 0x10000000. pci1 declares no dma-ranges, so fsl_pci programs a 1:1
+	 * inbound window over DRAM.
 	 */
 	reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
 
-		nosaic_dma: nosaic-dma@78000000 {
-			reg = <0x0 0x78000000 0x0 0x04000000>;
+		nosaic_dma: nosaic-dma@28000000 {
+			reg = <0x0 0x28000000 0x0 0x04000000>;
 			no-map;
 		};
 	};

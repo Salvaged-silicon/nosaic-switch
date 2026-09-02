@@ -592,12 +592,38 @@ So the work is ordinary rather than speculative:
    all three was a guess that the chip should match the host, and matching the
    machine that works is better grounded than a guess.
 
-   **What is left.** The CMICe DMA engine is the last untouched thing — it is
-   the one piece of the BDE knowingly carried over from the CMICm board without
-   examination, and `_soc_xgs3_mem_slam` is precisely where a difference would
-   show. Worth reading how the SDK sets up SBUS DMA channels for a CMICe and
-   checking what the CMICm assumption cost. A bus trace would settle it faster
-   than reasoning, if one can be had.
+   **EdgeNOS wrote down why it uses a kernel module, and it is the best map of
+   what is left.** `asic/edged/bde_interface.c` opens with four reasons raw
+   `/dev/mem` was not enough on this board:
+
+   | Their reason | Where NOSaic stands |
+   |---|---|
+   | PPC needs eieio/sync barriers for MMIO; `ioread32` has them | **Answered.** `datapath/common/mmio.h`, and `soc_attach` completing is the proof |
+   | CMIC registers above `0x10000` need proper PIO access | **Unexamined.** The BAR is 256 KB and the accessors reach the whole of it, but "proper" is doing work in that sentence |
+   | DMA coherent memory must come from the kernel DMA API | **Partly.** A `no-map` reserved region is not what `dma_alloc_coherent` returns, and the difference has not been characterised |
+   | IRQ handling for DMA completion | **Not answered.** There is no interrupt delivery at all |
+
+   Two of those four are live candidates for the SLAM DMA that never completes,
+   and neither is a guess: they are what the people who got this chip working
+   said mattered.
+
+   **Ruled out so far**, each on the board rather than by argument: the inbound
+   ATMU window (enabled, 2 GB, 1:1); CPU cache (`dcbf` in `sflush`/`sinval`);
+   DMA byte order (matched to the working machine); and the pool's location
+   (moved from `0x78000000` in highmem to `0x28000000` in the Normal zone,
+   since `dma_alloc_coherent` allocates from Normal and a pool no kernel
+   allocator would hand out is a poor place to be — kept regardless, because
+   being where the working mechanism would have put it is worth having).
+
+   `polled_irq_mode=1` is also kept: with no interrupt delivery, redirecting
+   the SDK's handler thread to poll is correct whatever else is wrong. It
+   introduces a segfault on the failure path, after `soc_misc_init` has already
+   returned, which is worth knowing and is not the thing being chased.
+
+   **The next move is the fourth row.** Either deliver interrupts — which means
+   the CMICe interrupt path, the piece of the BDE knowingly carried over from
+   CMICm unexamined — or establish that SLAM DMA completion can be polled at
+   all on this chip. A bus trace would settle it faster than reasoning.
 
 7. **~~`soc_misc_init` times out~~ — passed, see above. Kept for the record.**
 
