@@ -29,6 +29,7 @@
 #include <string.h>
 
 #include "bde.h"
+#include "mmio.h"
 #include "props.h"
 #include "sdk.h"
 
@@ -76,7 +77,7 @@ static uint32 nosaic_read(soc_cm_dev_t *dev, uint32 addr)
 		fprintf(stderr, "nosd-td2p: read past BAR0: %#x\n", addr);
 		return 0xffffffff;
 	}
-	return *(volatile uint32 *)((volatile char *)b->bar + addr);
+	return nosaic_mmio_rd32((volatile char *)b->bar + addr);
 }
 
 static void nosaic_write(soc_cm_dev_t *dev, uint32 addr, uint32 data)
@@ -87,7 +88,7 @@ static void nosaic_write(soc_cm_dev_t *dev, uint32 addr, uint32 data)
 		fprintf(stderr, "nosd-td2p: write past BAR0: %#x\n", addr);
 		return;
 	}
-	*(volatile uint32 *)((volatile char *)b->bar + addr) = data;
+	nosaic_mmio_wr32((volatile char *)b->bar + addr, data);
 }
 
 /*

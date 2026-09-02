@@ -20,8 +20,12 @@ conflicts: [nosd]
 # Built from this repository rather than fetched, so there is no source: stanza.
 # The BDE is ours; the SDK it will drive is the openbcm package, staged rather
 # than shipped.
+# The whole datapath tree, not just this ASIC's directory: datapath/common
+# carries the MMIO ordering that differs per host architecture, and a second
+# ASIC needs the same header rather than a copy of it. build.subdir selects
+# which one is built.
 source:
-  local: datapath/td2p
+  local: datapath
 
 depends: [glibc]
 
@@ -32,6 +36,7 @@ build_depends: [openbcm]
 
 build:
   system: make
+  subdir: td2p
   targets: [nosd-td2p, strip]
   env:
     # Where the staged SDK is. Its headers land under include/openbcm and its
@@ -43,8 +48,10 @@ build:
   # No install target in the makefile: it is three files, and stating where
   # the binary lands here keeps that decision in the recipe where a reader
   # looks for it.
+  # Relative to the source root, which is the whole datapath tree -- so the
+  # binary is under the subdir the build ran in.
   stage:
-    - src: nosd-td2p
+    - src: td2p/nosd-td2p
       dst: /usr/sbin/nosd-td2p
 
   # The virtual name everything above the datapath uses. A symlink rather than

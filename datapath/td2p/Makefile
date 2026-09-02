@@ -13,6 +13,9 @@
 CC      = $(CROSS_COMPILE)gcc
 CFLAGS  ?= -O2 -g
 CFLAGS  += -Wall -Wextra -Wno-unused-parameter
+# Shared with the other ASIC datapaths: MMIO ordering that differs per host
+# architecture and has no business being written twice.
+CFLAGS  += -I../common
 LDFLAGS ?=
 
 OBJS = main.o bde.o props.o
