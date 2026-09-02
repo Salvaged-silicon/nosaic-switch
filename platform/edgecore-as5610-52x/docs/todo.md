@@ -361,7 +361,39 @@ So the work is ordinary rather than speculative:
    Using the vendor SDK to get the initialisation hand-reproduction cannot
    match is the argument the project plan already makes for the 7050SX2; this
    board is the second piece of evidence for it.
-4. **The SDK attaches to a vector table it accepts, then segfaults.**
+4. ~~**The SDK attaches to a vector table it accepts, then segfaults.**~~
+   **soc_attach completes, 2026-09-02.**
+
+   ```
+   config       119 properties from /etc/nosaic
+   CMIC_REVID_DEVID   0x0002b846  -> device 0xb846 rev 0x02
+   dma pool     64 MiB at 0x78000000     dma readback OK
+   === handing the chip to the SDK ===
+   ATTACHED  soc_attach completed
+   ```
+
+   **Which also settles the ordering question.** `soc_attach` is chip
+   initialisation proper and drives S-Channel — the multi-write sequence whose
+   failure EdgeNOS described as "broke S-Channel within seconds". It completed.
+   So the barriers in `datapath/common/mmio.h` hold under a sequence and not
+   merely one register at a time, and the userspace BDE needs no kernel shim on
+   this architecture.
+
+   The last thing in the way was one character per line. EdgeNOS's config.bcm
+   writes `portmap_1.0=65:10`, because the SDK's own config.bcm parser
+   understands `name.unit`. Nothing parses that when the SDK asks
+   `config_var_get` instead: it asks for the bare name, the unit implied by the
+   device. So every suffixed property read as unset, and an unset port map is
+   what the walk in `soc_counter_attach` faulted on. The 7050SX2's files have
+   no suffixes anywhere, which is what pointed at it.
+
+   `sal_config_refresh: cannot read file: config.bcm` is still printed and is
+   not a problem: the SDK looks for the file, does not find one, and takes
+   every variable through the vector instead.
+
+   *Old text follows, for the record of how it was diagnosed.*
+
+   **The SDK attaches to a vector table it accepts, then segfaults.**
    Where this stands as of 2026-09-02, on the board:
 
    ```
