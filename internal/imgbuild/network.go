@@ -139,7 +139,16 @@ apply_routes() {
 while read -r kind dest via gw rest; do
     [ "$kind" = "route" ] || continue
     [ "$via" = "via" ] || continue
-    ip route show | grep -q "^${dest} via ${gw}\|^default via ${gw}" && continue
+    # Present already? Match the destination, and only the destination.
+    #
+    # This used to also accept "^default via ${gw}", which makes every other
+    # route through the same gateway look like it is already installed. The
+    # management pin -- 10.22.1.0/24 via the same router as the default route --
+    # was skipped every boot for that reason, and the switch went back to
+    # carrying its own management traffic across the datapath. A route named
+    # "default" prints as "default via ..." anyway, so the extra alternative
+    # was never needed for the case it was presumably written for.
+    ip route show | grep -q "^${dest} via ${gw}" && continue
     if ip route add "$dest" via "$gw" $rest 2>/dev/null; then
         say "route $dest via $gw"
     fi
