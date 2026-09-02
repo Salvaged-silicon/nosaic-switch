@@ -1,6 +1,14 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-#ifndef NOSAIC_TD2P_PROPS_H
-#define NOSAIC_TD2P_PROPS_H
+/*
+ * Chip properties, read from key=value files.
+ *
+ * Shared between ASIC datapaths because a properties file reader is not
+ * ASIC-specific -- the third thing to end up here, after MMIO ordering, and
+ * pointing the same way: what these two daemons have in common is the
+ * plumbing, and what differs is the silicon.
+ */
+#ifndef NOSAIC_PROPS_H
+#define NOSAIC_PROPS_H
 
 /* Load key=value properties. Returns how many were read, or -1. */
 int nosaic_props_load(const char *path);

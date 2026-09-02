@@ -69,6 +69,7 @@
 #include "bde.h"
 #include "sdk.h"
 #include "mmio.h"
+#include "props.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -90,6 +91,20 @@ int main(int argc, char **argv)
 			return 0;
 		} else
 			bdf = argv[i];
+	}
+
+	/* Every *.conf in /etc/nosaic, in name order: asic.conf carries the SDK
+	 * properties for this board model and portmap.conf which lane reaches
+	 * which cage. Reported rather than required, so a register probe still
+	 * works on a box with no configuration installed. */
+	{
+		int n = nosaic_props_load_dir("/etc/nosaic");
+
+		if (n > 0)
+			printf("config       %d properties from /etc/nosaic\n", n);
+		else
+			printf("config       none in /etc/nosaic -- an attach will not "
+			       "get past the port map\n");
 	}
 
 	if (nosaic_tdp_bde_open(&b, bdf) != 0)

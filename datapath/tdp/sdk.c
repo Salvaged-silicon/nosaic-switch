@@ -21,6 +21,7 @@
 #include "bde.h"
 #include "sdk.h"
 #include "mmio.h"
+#include "props.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -176,13 +177,22 @@ static int nosaic_sinval(soc_cm_dev_t *dev, void *addr, int length)
 	return 0;
 }
 
-/* Chip configuration lookup. The SDK asks for variables it would otherwise
- * read from config.bcm; returning NULL means "not set", and it falls back to
- * its compiled-in default, which is what a board with no config.bcm wants. */
+/*
+ * Chip configuration lookup — what the SDK would otherwise read from
+ * config.bcm.
+ *
+ * NULL means "not set" and the SDK falls back to its compiled-in default,
+ * which is right for most properties and fatal for one: without a port map it
+ * walks its own port table looking for a terminator that was never written.
+ * That is not a hypothetical, it is where soc_attach segfaulted before these
+ * files existed -- soc_counter_attach, counter.c:7974.
+ */
 static char *nosaic_config_var_get(soc_cm_dev_t *dev, const char *name)
 {
-	(void)dev; (void)name;
-	return NULL;
+	(void)dev;
+	/* The SDK's prototype is not const-correct; the value is not modified,
+	 * and casting here keeps that fact in one place. */
+	return (char *)nosaic_props_get(name);
 }
 
 /*

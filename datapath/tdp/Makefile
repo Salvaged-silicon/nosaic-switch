@@ -3,6 +3,13 @@
 # Only the BDE and its probe so far: enough to establish that userspace
 # register access to this chip is correct before the SDK is allowed near it.
 # CROSS_COMPILE is honoured because the package builder passes it.
+# The recipe asks for `clean build strip` in one invocation, and the package
+# builder passes -j. Those three are a sequence, not independent goals: run in
+# parallel, clean deletes the binary another target has just decided is up to
+# date, and strip then fails on a file that is not there. Nothing here takes
+# long enough for parallelism within one datapath to be worth a race.
+.NOTPARALLEL:
+
 CC      = $(CROSS_COMPILE)gcc
 CFLAGS  ?= -O2 -g
 CFLAGS  += -Wall -Wextra -Wno-unused-parameter
@@ -36,7 +43,7 @@ endif
 # binary was built without the SDK, which is a better answer than a link error
 # naming a symbol -- and it keeps the probe's argument handling identical
 # whether or not the vendor tree was staged.
-OBJS += probe.o bde.o sdk.o
+OBJS += probe.o bde.o sdk.o ../common/props.o
 
 all: tdp-probe
 
@@ -46,14 +53,15 @@ tdp-probe: $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-probe.o: probe.c bde.h sdk.h ../common/mmio.h
+probe.o: probe.c bde.h sdk.h ../common/mmio.h ../common/props.h
 bde.o:   bde.c   bde.h ../common/mmio.h
-sdk.o:   sdk.c   bde.h sdk.h ../common/mmio.h
+sdk.o:   sdk.c   bde.h sdk.h ../common/mmio.h ../common/props.h
+../common/props.o: ../common/props.c ../common/props.h
 
 strip: tdp-probe
 	$(CROSS_COMPILE)strip -s tdp-probe
 
 clean:
-	rm -f *.o tdp-probe
+	rm -f *.o ../common/*.o tdp-probe
 
 .PHONY: all clean strip

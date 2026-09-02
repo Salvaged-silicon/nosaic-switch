@@ -10,6 +10,13 @@
 # which is what a contributor without the SDK staged can do and what CI runs;
 # SDK_DIR turns on the vector layer that lets the SDK drive the chip. Making it
 # unconditional would mean nobody can build this without a 1.8 GB vendor tree.
+# The recipe asks for `clean build strip` in one invocation, and the package
+# builder passes -j. Those three are a sequence, not independent goals: run in
+# parallel, clean deletes the binary another target has just decided is up to
+# date, and strip then fails on a file that is not there. Nothing here takes
+# long enough for parallelism within one datapath to be worth a race.
+.NOTPARALLEL:
+
 CC      = $(CROSS_COMPILE)gcc
 CFLAGS  ?= -O2 -g
 CFLAGS  += -Wall -Wextra -Wno-unused-parameter
@@ -18,7 +25,7 @@ CFLAGS  += -Wall -Wextra -Wno-unused-parameter
 CFLAGS  += -I../common
 LDFLAGS ?=
 
-OBJS = main.o bde.o props.o
+OBJS = main.o bde.o ../common/props.o
 
 # SDK_DIR points at the staged prefix. The openbcm package puts its headers in
 # include/openbcm and its archives in lib/openbcm, so both get that suffix --
@@ -74,12 +81,12 @@ strip: nosd-td2p
 	$(CROSS_COMPILE)strip $<
 	@echo "    stripped to $$(stat -c%s nosd-td2p) bytes"
 
-main.o: main.c bde.h sdk.h props.h
+main.o: main.c bde.h sdk.h ../common/props.h
 bde.o: bde.c bde.h
-sdk.o: sdk.c bde.h sdk.h props.h
+sdk.o: sdk.c bde.h sdk.h ../common/props.h
 tapbridge.o: tapbridge.c tapbridge.h
-l3sync.o: l3sync.c l3sync.h props.h
-props.o: props.c props.h
+l3sync.o: l3sync.c l3sync.h ../common/props.h
+../common/props.o: ../common/props.c ../common/props.h
 
 clean:
 	rm -f nosd-td2p *.o
