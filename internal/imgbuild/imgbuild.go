@@ -710,9 +710,31 @@ poweroff -f
 		if n := o.Board.NetWaitSecs; n > 0 {
 			exec = fmt.Sprintf("/bin/sh -c \"NOSAIC_NET_WAIT=%d /etc/nosaic/apply-network.sh\"", n)
 		}
+		/*
+		 * After the datapath, on a board that has one.
+		 *
+		 * Two things follow from the edge and neither is cosmetic. At boot
+		 * it stops this running before the front-panel interfaces exist,
+		 * which is what made it wait sixty seconds for swp49 and then give
+		 * up. And because it is a oneshot, s6-rc treats it as done for
+		 * good once it has succeeded -- so without the edge, stopping the
+		 * datapath leaves it "up" while every interface it configured has
+		 * been deleted, and bringing the datapath back does not re-run it.
+		 *
+		 * That is exactly the state this board kept ending up in: a
+		 * restart of nosd alone, addresses gone, adjacencies gone, and the
+		 * service that would restore them reporting success. With the edge
+		 * s6-rc stops it with the datapath and re-runs it after, which is
+		 * what makes `s6-rc -u change default` a working recovery.
+		 */
+		netAfter := []string{}
+		if datapathInstalled(o, packages) {
+			netAfter = append(netAfter, "nosd")
+		}
 		services = append(services, svcgen.Service{
 			Name:    "network-config",
 			Exec:    exec,
+			After:   netAfter,
 			Restart: "never",
 		})
 	}
