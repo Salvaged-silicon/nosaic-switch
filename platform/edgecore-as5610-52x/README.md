@@ -67,25 +67,44 @@ Two of the three already exist in the tree:
 - **Nothing has been installed on it.** The unit in the lab runs EdgeNOS, and
   every fact in these pages was read off it rather than produced by NOSaic.
 
-## Known: the chip does not survive a hard kill of nosd
+## Stopping nosd
 
-`kill -9` on a running `nosd` leaves the chip mid-operation, and the next attach
-cannot fully recover it. The symptoms are specific and worth recognising:
+Stop it through the supervisor, and pass a timeout:
+
+    s6-rc -t 30000 -d change nosd
+
+Without `-t`, s6 computes a deadline from an infinite relative time and
+overflows this board's 32-bit `time_t`:
+
+    s6-svlisten: fatal: unable to subscribe to events ...: Value too large
+    s6-rc: warning: unable to stop service ospfd: command exited 111
+
+Same root cause as the `s6-rc-init` overflow the image build already works
+around with `-t`; it reaches anyone typing `s6-rc` by hand. A graceful stop and
+start is safe -- the chip comes back to 52 ports and its links.
+
+`kill -9` is not. It leaves the chip mid-operation, and the next attach comes
+back with TXPLL lock failures, 48 of 52 ports and no link at all, while
+reporting that it is serving:
 
     WC40 : TXPLL did not lock: u=0 p=29
     soc_reg32_read: invalid S-Channel reply, expected READ_REG_ACK
-    Warning: Port xe19: Failed to configure initial settings: Feature unavailable
     bcm_init failed in port
 
-A retry then gets further and still lands short -- 48 of 52 ports enabled and no
-link at all, on a board that had all 52 and five links a minute earlier. Nothing
-reports an error at that point, which is what makes it worth writing down: the
-daemon says it is serving and the switch is quietly crippled.
+Only a board reset clears it, so this is about how the chip is left rather than
+the init sequence. The daemon should reset the chip on the way in and out; until
+it does, do not `kill -9` a datapath daemon on this board.
 
-Only a board reset clears it. A cold boot comes back to 52 ports and five links
-every time, so this is about how the chip is left, not about the init sequence.
+## The bring-up tool forwards; the daemon does not
 
-Stop `nosd` through the supervisor, which lets it exit between operations. The
-real fix is for the daemon to reset the chip on the way out and on the way in --
-`soc_reset_init` as it stands is evidently not enough after an interrupted
-sequence -- and until then, do not `kill -9` a datapath daemon on this board.
+`tdp-probe --ports` and `--stats` put every port into one VLAN and force them
+all to spanning-tree forwarding. That is what demonstrates the chip moving
+frames, and it is a bridging loop wherever two ports reach the same neighbour.
+This board has exactly that -- swp1 and swp2 both go to the same upstream -- and
+nothing here runs spanning tree, so nothing breaks the loop from this end. The
+neighbour sees its own BPDUs come back and shuts the path down. The tool now
+says so every time it does it.
+
+`nosd` enables ports and leaves them blocked. Which ports forward, and in which
+VLAN, belongs to the configuration model, and until there is one the safe
+default is the honest one.

@@ -24,7 +24,10 @@ int nosaic_tdp_sdk_bcm_init(int unit);
 
 /* Enable every port and put it in spanning-tree forwarding. bcm_init leaves
  * both off, so nothing forwards until this runs. */
-int nosaic_tdp_sdk_ports_up(int unit);
+/* forward: put every port into spanning-tree forwarding in the default VLAN.
+ * That is a loop wherever two ports reach the same neighbour, so it is for
+ * bring-up on a known topology, not for a daemon that boots unattended. */
+int nosaic_tdp_sdk_ports_up(int unit, int forward);
 
 /* Sample every port's counters twice, `seconds` apart, and print what moved.
  * A delta is the only form of this that answers whether traffic is flowing. */

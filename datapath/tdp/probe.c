@@ -260,7 +260,7 @@ int main(int argc, char **argv)
 					 * configuring a chip that has no
 					 * forwarding tables yet. */
 					if (ports &&
-					    nosaic_tdp_sdk_ports_up(unit) != 0)
+					    nosaic_tdp_sdk_ports_up(unit, !serve) != 0)
 						attach_failed = 1;
 					else if (stats)
 						nosaic_tdp_sdk_stats(unit, 5);

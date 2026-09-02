@@ -578,7 +578,7 @@ int nosaic_tdp_sdk_bcm_init(int unit)
  * this reports is what the chip says about itself, which is the thing worth
  * knowing first.
  */
-int nosaic_tdp_sdk_ports_up(int unit)
+int nosaic_tdp_sdk_ports_up(int unit, int forward)
 {
 	bcm_port_config_t cfg;
 	bcm_port_t port;
@@ -600,12 +600,29 @@ int nosaic_tdp_sdk_ports_up(int unit)
 			continue;
 		}
 
-		/* Forwarding on the default spanning tree group. Without this the
-		 * port links, counts frames in, and drops every one of them --
-		 * which looks like a forwarding bug and is not one. */
-		rv = bcm_port_stp_set(unit, port, BCM_STG_STP_FORWARD);
-		if (rv < 0)
-			printf("  port %-3d stp failed: %s\n", port, soc_errmsg(rv));
+		/*
+		 * Forwarding is opt-in, and the default leaves the port blocked
+		 * where bcm_init left it.
+		 *
+		 * Putting every port into one VLAN and forcing them all to
+		 * forward is what makes a chip demonstrably move frames, and it
+		 * is also a bridging loop the moment two of those ports reach
+		 * the same neighbour -- the normal case for a switch with
+		 * redundant uplinks, and the case on this board, which has two
+		 * links to the same upstream. Nothing here runs spanning tree,
+		 * so nothing breaks the loop from this end; the neighbour sees
+		 * its own BPDUs return and shuts the path down, and the first
+		 * symptom is a network that has gone quiet.
+		 *
+		 * Which ports forward, and in which VLAN, is a decision for the
+		 * configuration model. Until there is one, the honest default is
+		 * the safe one.
+		 */
+		if (forward) {
+			rv = bcm_port_stp_set(unit, port, BCM_STG_STP_FORWARD);
+			if (rv < 0)
+				printf("  port %-3d stp failed: %s\n", port, soc_errmsg(rv));
+		}
 
 		up++;
 		if (bcm_port_link_status_get(unit, port, &link) == BCM_E_NONE && link)
@@ -614,7 +631,12 @@ int nosaic_tdp_sdk_ports_up(int unit)
 		       link ? "LINK UP" : "down");
 	}
 
-	printf("ports        %d enabled, %d with link\n", up, linked);
+	printf("ports        %d enabled, %d with link%s\n", up, linked,
+	       forward ? ", all forwarding in one VLAN" : ", none forwarding");
+	if (forward)
+		printf("WARNING      every port forwards in VLAN 1 and no spanning tree\n"
+		       "             runs here, so two ports reaching the same neighbour\n"
+		       "             is a loop. Bring-up on a known topology only.\n");
 
 	/*
 	 * Link scan, so link state is tracked rather than sampled once.
@@ -724,8 +746,55 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 		       SOC_PORT_NAME(unit, port), di, dou, dni, dno);
 	}
 
-	if (!moving)
-		printf("  (no counter moved -- nothing is being received or sent)\n");
+	/*
+	 * "Nothing moved" is two different findings and they need different work:
+	 * the chip saw no traffic, or the counters are not being collected at
+	 * all. A delta of zero looks identical in both cases.
+	 *
+	 * The absolute totals do NOT tell them apart, which is worth stating
+	 * because it is the obvious idea and it is wrong: bcm_init zeroes every
+	 * counter, so in a process that has just initialised the chip the totals
+	 * cover exactly the same window the delta does. Both are zero for both
+	 * reasons.
+	 *
+	 * What does tell them apart is whether the call works. A counter subsystem
+	 * that is not running fails the read; one that is running returns a number,
+	 * and a zero from it is a fact about the network rather than about us.
+	 */
+	if (!moving) {
+		int linked = 0, ok = 0, failed = 0;
+		int last = BCM_E_NONE;
+
+		printf("  (no counter moved in %d seconds)\n", seconds);
+		BCM_PBMP_ITER(cfg.port, port) {
+			int link = 0;
+
+			if (port < 0 || port >= 128)
+				continue;
+			if (bcm_port_link_status_get(unit, port, &link) != BCM_E_NONE || !link)
+				continue;
+			linked++;
+			v = 0;
+			rv = bcm_stat_get32(unit, port, snmpIfInNUcastPkts, &v);
+			if (rv == BCM_E_NONE) {
+				ok++;
+			} else {
+				failed++;
+				last = rv;
+			}
+		}
+
+		if (linked == 0)
+			printf("  no port has link, so there is nothing to count\n");
+		else if (failed)
+			printf("  %d of %d linked ports cannot be read (%s) -- the counters\n"
+			       "  are not being collected, and this says nothing about\n"
+			       "  whether the chip is forwarding\n",
+			       failed, linked, soc_errmsg(last));
+		else
+			printf("  all %d linked ports answer, so collection works and the\n"
+			       "  neighbours are genuinely sending nothing\n", ok);
+	}
 	return 0;
 }
 
@@ -797,9 +866,9 @@ int nosaic_tdp_sdk_bcm_init(int unit)
 	return -1;
 }
 
-int nosaic_tdp_sdk_ports_up(int unit)
+int nosaic_tdp_sdk_ports_up(int unit, int forward)
 {
-	(void)unit;
+	(void)unit; (void)forward;
 	return -1;
 }
 
