@@ -135,22 +135,33 @@ while : ; do
     fi
     sleep "$POLL_SECS"
 done
-if [ -s "$ABSENT" ]; then
-    say "never appeared after ${WAIT_SECS}s: $(tr "\n" " " < "$ABSENT")"
-fi
-rm -f "$ABSENT"
+ABSENT_FINAL="$ABSENT"
 
+apply_routes() {
 while read -r kind dest via gw rest; do
     [ "$kind" = "route" ] || continue
     [ "$via" = "via" ] || continue
+    ip route show | grep -q "^${dest} via ${gw}\|^default via ${gw}" && continue
     if ip route add "$dest" via "$gw" $rest 2>/dev/null; then
         say "route $dest via $gw"
-    else
-        ip route show | grep -q "$gw" \
-            && say "route $dest via $gw already present" \
-            || say "route $dest via $gw FAILED (is the gateway reachable?)"
     fi
 done < "$CONF"
+}
+
+# Once now and once at the end. The first pass is what makes the box reachable
+# while the wait above is still running: a route whose gateway is already on a
+# configured interface works immediately, and holding it back until every
+# interface in the file has appeared means no management for the whole timeout
+# -- which is exactly the situation where someone wants to log in and find out
+# why. Front-panel ports create their routes on the second pass.
+apply_routes
+
+if [ -s "$ABSENT_FINAL" ]; then
+    say "never appeared after ${WAIT_SECS}s: $(tr "\n" " " < "$ABSENT_FINAL")"
+fi
+rm -f "$ABSENT_FINAL"
+
+apply_routes
 
 say done
 `
