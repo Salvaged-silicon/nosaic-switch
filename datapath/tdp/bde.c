@@ -220,7 +220,57 @@ int nosaic_tdp_bde_open(struct nosaic_tdp_bde *b, const char *bdf)
 		fprintf(stderr, "nosd-tdp: %s: %s\n", path, strerror(errno));
 		return -1;
 	}
+
+	/*
+	 * Bus mastering, so the chip can reach host memory.
+	 *
+	 * The SDK programs most tables through SBUS DMA: it builds a descriptor
+	 * in the DMA pool and has the chip fetch it. A device that cannot master
+	 * the bus never fetches anything, and the symptom is not "DMA is off" --
+	 * it is a table operation that times out, which reads as broken silicon
+	 * or a bad port map. This board produced it as
+	 *
+	 *   soc_misc_init(0) returned -9 (Operation timed out)
+	 *
+	 * with everything else correct: chip identified, DMA pool mapped and
+	 * readable, soc_attach completed.
+	 *
+	 * Nothing enables this for us. No kernel driver is bound to the device,
+	 * and the firmware left it clear.
+	 */
+	{
+		uint32_t cmd = nosaic_tdp_bde_cfg_read(b, 0x04);
+
+		if (!(cmd & (1u << 2))) {
+			nosaic_tdp_bde_cfg_write(b, 0x04, cmd | (1u << 2));
+			if (!(nosaic_tdp_bde_cfg_read(b, 0x04) & (1u << 2))) {
+				fprintf(stderr, "nosd-tdp: bus mastering did not enable; "
+					"COMMAND reads %#06x\n",
+					(unsigned)nosaic_tdp_bde_cfg_read(b, 0x04));
+				return -1;
+			}
+		}
+	}
 	return 0;
+}
+
+uint32_t nosaic_tdp_bde_cfg_read(struct nosaic_tdp_bde *b, uint32_t addr)
+{
+	uint32_t v = 0;
+
+	if (pread(b->cfg_fd, &v, 4, addr) != 4)
+		return 0xffffffffu;
+	return v;
+}
+
+void nosaic_tdp_bde_cfg_write(struct nosaic_tdp_bde *b, uint32_t addr, uint32_t data)
+{
+	/* Reported rather than discarded: a configuration write that does not
+	 * land is how bus mastering silently stays off, and the failure then
+	 * appears much later as a table operation timing out. */
+	if (pwrite(b->cfg_fd, &data, 4, addr) != 4)
+		fprintf(stderr, "nosd-tdp: PCI config write to %#x failed: %s\n",
+			addr, strerror(errno));
 }
 
 void nosaic_tdp_bde_set_endian(struct nosaic_tdp_bde *b)

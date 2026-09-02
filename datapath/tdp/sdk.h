@@ -14,4 +14,12 @@
  */
 int nosaic_tdp_sdk_attach(struct nosaic_tdp_bde *b, uint16_t dev_id, uint8_t rev_id);
 
+/* Reset the chip and bring the SOC layer up. Separate from the BCM layer
+ * because a failure in one says something different from a failure in the
+ * other, and because the reset has to happen exactly once. */
+int nosaic_tdp_sdk_soc_init(int unit);
+
+/* The rest: misc, MMU, and the BCM layer above them. */
+int nosaic_tdp_sdk_bcm_init(int unit);
+
 #endif

@@ -73,19 +73,12 @@ static void nosaic_write(soc_cm_dev_t *dev, uint32 addr, uint32 data)
 
 static uint32 nosaic_pci_conf_read(soc_cm_dev_t *dev, uint32 addr)
 {
-	struct nosaic_tdp_bde *b = bde_of(dev);
-	uint32_t v = 0;
-
-	if (pread(b->cfg_fd, &v, 4, addr) != 4)
-		return 0xffffffff;
-	return v;
+	return nosaic_tdp_bde_cfg_read(bde_of(dev), addr);
 }
 
 static void nosaic_pci_conf_write(soc_cm_dev_t *dev, uint32 addr, uint32 data)
 {
-	struct nosaic_tdp_bde *b = bde_of(dev);
-
-	(void)pwrite(b->cfg_fd, &data, 4, addr);
+	nosaic_tdp_bde_cfg_write(bde_of(dev), addr, data);
 }
 
 /*
@@ -342,6 +335,104 @@ int nosaic_tdp_sdk_attach(struct nosaic_tdp_bde *b, uint16_t dev_id, uint8_t rev
 }
 
 /*
+ * soc_init and friends are declared here rather than by including <soc/drv.h>.
+ *
+ * That header is written for the SDK's own translation units and needs the
+ * generated per-chip register database, which only exists once the SDK's full
+ * chip-selection defines are in scope. Pulling it in to reach four functions
+ * would mean replicating the SDK's build configuration here and keeping it in
+ * step -- a larger and more fragile dependency than the declarations.
+ *
+ * If a signature ever changes the linker will not notice, which is the cost of
+ * doing it this way and the reason it is confined to this one place.
+ */
+extern int soc_reset_init(int unit);
+extern int soc_misc_init(int unit);
+extern int soc_mmu_init(int unit);
+extern int bcm_attach(int unit, char *type, char *subtype, int remunit);
+extern int bcm_init(int unit);
+
+/*
+ * Bring the SOC layer up, resetting the chip on the way.
+ *
+ * soc_reset_init rather than soc_init, and the difference is the whole
+ * problem. Both call soc_do_init; soc_init passes FALSE for the reset argument
+ * and soc_reset_init passes TRUE.
+ *
+ * So soc_init initialises a chip it assumes is already reset. On a switch
+ * running the vendor OS, or one where the SDK's kernel BDE loaded, that holds.
+ * Here nothing has ever reset this chip -- NOSaic mapped it and no driver is
+ * bound to it at all -- and its pipeline blocks are still held.
+ *
+ * The 7050SX2 found this the expensive way: soc_init returned success after
+ * twenty-six thousand lines of initialisation and the first table write then
+ * got no SBUS acknowledgement, which reads as broken silicon or a bad port
+ * map. Taking the finding rather than repeating the discovery.
+ */
+int nosaic_tdp_sdk_soc_init(int unit)
+{
+	int rv = soc_reset_init(unit);
+
+	if (rv < 0) {
+		fprintf(stderr, "nosd-tdp: soc_reset_init(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * The rest of bring-up, in the order the SDK's own diagnostic shell uses.
+ *
+ * Each step is announced before it runs rather than after: any of them can sit
+ * for a long time or not return at all, and on a serial console the last line
+ * printed is the only evidence of where it stopped.
+ */
+int nosaic_tdp_sdk_bcm_init(int unit)
+{
+	int rv;
+
+	printf("  soc_misc_init...\n");
+	fflush(stdout);
+	rv = soc_misc_init(unit);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-tdp: soc_misc_init(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+
+	printf("  soc_mmu_init...\n");
+	fflush(stdout);
+	rv = soc_mmu_init(unit);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-tdp: soc_mmu_init(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+
+	/* NULL type: the SDK picks the driver family from the device it already
+	 * knows about, which for every Ethernet switch in this SDK is "esw". */
+	printf("  bcm_attach...\n");
+	fflush(stdout);
+	rv = bcm_attach(unit, NULL, NULL, unit);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-tdp: bcm_attach(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+
+	printf("  bcm_init...\n");
+	fflush(stdout);
+	rv = bcm_init(unit);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-tdp: bcm_init(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+	return 0;
+}
+
+/*
  * A hook the SDK's SAL expects the application to supply. It is called during
  * initialisation whether or not there is anything to do, so it has to exist:
  * without it the link fails naming a symbol that appears nowhere in this tree.
@@ -359,6 +450,18 @@ int nosaic_tdp_sdk_attach(struct nosaic_tdp_bde *b, uint16_t dev_id, uint8_t rev
 {
 	(void)b; (void)dev_id; (void)rev_id;
 	fprintf(stderr, "nosd-tdp: built without the SDK; rebuild with SDK_DIR set\n");
+	return -1;
+}
+
+int nosaic_tdp_sdk_soc_init(int unit)
+{
+	(void)unit;
+	return -1;
+}
+
+int nosaic_tdp_sdk_bcm_init(int unit)
+{
+	(void)unit;
 	return -1;
 }
 

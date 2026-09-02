@@ -71,6 +71,10 @@ void nosaic_tdp_bde_set_endian(struct nosaic_tdp_bde *b);
  */
 int nosaic_tdp_bde_selftest(struct nosaic_tdp_bde *b, uint32_t *raw);
 
+/* PCI configuration space, read and written as a file. */
+uint32_t nosaic_tdp_bde_cfg_read(struct nosaic_tdp_bde *b, uint32_t addr);
+void     nosaic_tdp_bde_cfg_write(struct nosaic_tdp_bde *b, uint32_t addr, uint32_t data);
+
 uint32_t nosaic_tdp_bde_rd(struct nosaic_tdp_bde *b, uint32_t off);
 void     nosaic_tdp_bde_wr(struct nosaic_tdp_bde *b, uint32_t off, uint32_t v);
 

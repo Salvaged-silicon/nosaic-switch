@@ -78,7 +78,7 @@ int main(int argc, char **argv)
 {
 	struct nosaic_tdp_bde b;
 	const char *bdf = NULL;
-	int set_endian = 0, attach = 0, attach_failed = 0, rc;
+	int set_endian = 0, attach = 0, init = 0, attach_failed = 0, rc;
 	uint32_t raw = 0, es;
 
 	for (int i = 1; i < argc; i++) {
@@ -86,8 +86,10 @@ int main(int argc, char **argv)
 			set_endian = 1;
 		else if (!strcmp(argv[i], "--attach"))
 			attach = set_endian = 1;
+		else if (!strcmp(argv[i], "--init"))
+			init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--help")) {
-			printf("usage: tdp-probe [--set-endian] [--attach] [<pci-bdf>]\n");
+			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [<pci-bdf>]\n");
 			return 0;
 		} else
 			bdf = argv[i];
@@ -166,11 +168,21 @@ int main(int argc, char **argv)
 		} else {
 			printf("\n=== handing the chip to the SDK ===\n");
 			unit = nosaic_tdp_sdk_attach(&b, b.device_id, (raw >> 16) & 0xff);
-			printf("%s\n", unit >= 0
-			       ? "ATTACHED  soc_attach completed"
-			       : "ATTACH FAILED  see above");
-			if (unit < 0)
+			if (unit < 0) {
+				printf("ATTACH FAILED  see above\n");
 				attach_failed = 1;
+			} else {
+				printf("ATTACHED  soc_attach completed\n");
+				if (!init) {
+					printf("  (--init runs the rest of bring-up)\n");
+				} else if (nosaic_tdp_sdk_soc_init(unit) != 0 ||
+					   nosaic_tdp_sdk_bcm_init(unit) != 0) {
+					printf("INIT FAILED  see above\n");
+					attach_failed = 1;
+				} else {
+					printf("INITIALISED  the chip is up\n");
+				}
+			}
 		}
 	}
 
