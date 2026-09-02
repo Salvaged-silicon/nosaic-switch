@@ -77,7 +77,7 @@ int main(int argc, char **argv)
 {
 	struct nosaic_tdp_bde b;
 	const char *bdf = NULL;
-	int set_endian = 0, attach = 0, rc;
+	int set_endian = 0, attach = 0, attach_failed = 0, rc;
 	uint32_t raw = 0, es;
 
 	for (int i = 1; i < argc; i++) {
@@ -155,7 +155,7 @@ int main(int argc, char **argv)
 			       ? "ATTACHED  soc_attach completed"
 			       : "ATTACH FAILED  see above");
 			if (unit < 0)
-				rc = -1;
+				attach_failed = 1;
 		}
 	}
 
@@ -167,5 +167,11 @@ int main(int argc, char **argv)
 		       "      and must not be run against a live datapath\n");
 
 	nosaic_tdp_bde_close(&b);
-	return rc == 0 ? 0 : 2;
+	/* Two different results, reported separately: the identity check is
+	 * about this mapping, and the attach is about everything the SDK does
+	 * behind it. Folding them into one verdict said the identity had failed
+	 * when it had passed. */
+	if (rc != 0)
+		return 2;
+	return attach_failed ? 3 : 0;
 }

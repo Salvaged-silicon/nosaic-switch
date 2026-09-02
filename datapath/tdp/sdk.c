@@ -151,6 +151,91 @@ static void *nosaic_p2l(soc_cm_dev_t *dev, sal_paddr_t addr)
 	return (char *)b->dma + off;
 }
 
+/*
+ * Cache maintenance around DMA.
+ *
+ * No-ops, and the reason is the mapping rather than an assumption that
+ * coherency is free: the DMA pool is reserved with no-map and opened through
+ * /dev/mem with O_SYNC, which on this architecture gives an uncached guarded
+ * mapping. There is no dirty line to flush and none to invalidate.
+ *
+ * Written out rather than left unset because the SDK requires them, and
+ * because if the mapping ever becomes cacheable these are the two functions
+ * that have to grow bodies -- and the failure without them would be corrupt
+ * descriptors rather than an error.
+ */
+static int nosaic_sflush(soc_cm_dev_t *dev, void *addr, int length)
+{
+	(void)dev; (void)addr; (void)length;
+	return 0;
+}
+
+static int nosaic_sinval(soc_cm_dev_t *dev, void *addr, int length)
+{
+	(void)dev; (void)addr; (void)length;
+	return 0;
+}
+
+/* Chip configuration lookup. The SDK asks for variables it would otherwise
+ * read from config.bcm; returning NULL means "not set", and it falls back to
+ * its compiled-in default, which is what a board with no config.bcm wants. */
+static char *nosaic_config_var_get(soc_cm_dev_t *dev, const char *name)
+{
+	(void)dev; (void)name;
+	return NULL;
+}
+
+/*
+ * Interrupts. Declared and doing nothing, which leaves the SDK in polled mode.
+ *
+ * The Trident2+ board delivers interrupts through uio_pci_generic and gets a
+ * core back for it. That work does not carry over unexamined: this chip has a
+ * CMICe rather than a CMICm and its interrupt path differs, so it is left for
+ * after the datapath works at all. Polled is slow, not wrong.
+ */
+static int nosaic_interrupt_connect(soc_cm_dev_t *dev,
+				    soc_cm_isr_func_t handler, void *data)
+{
+	(void)dev; (void)handler; (void)data;
+	return 0;
+}
+
+static int nosaic_interrupt_disconnect(soc_cm_dev_t *dev)
+{
+	(void)dev;
+	return 0;
+}
+
+static uint64 nosaic_read64(soc_cm_dev_t *dev, uint32 addr)
+{
+	struct nosaic_tdp_bde *b = bde_of(dev);
+
+	if ((size_t)addr + 8 > b->bar_len) {
+		fprintf(stderr, "nosd-tdp: 64-bit read past BAR0: %#x\n", addr);
+		return ~(uint64)0;
+	}
+	/* Two 32-bit accesses rather than one 64-bit: the barriers are defined
+	 * for words, and a 64-bit load to this window is not something the CMIC
+	 * is documented to accept. High word first, matching big-endian order. */
+	{
+		uint32 hi = nosaic_mmio_rd32((volatile char *)b->bar + addr);
+		uint32 lo = nosaic_mmio_rd32((volatile char *)b->bar + addr + 4);
+		return ((uint64)hi << 32) | lo;
+	}
+}
+
+static void nosaic_write64(soc_cm_dev_t *dev, uint32 addr, uint64 data)
+{
+	struct nosaic_tdp_bde *b = bde_of(dev);
+
+	if ((size_t)addr + 8 > b->bar_len) {
+		fprintf(stderr, "nosd-tdp: 64-bit write past BAR0: %#x\n", addr);
+		return;
+	}
+	nosaic_mmio_wr32((volatile char *)b->bar + addr, (uint32)(data >> 32));
+	nosaic_mmio_wr32((volatile char *)b->bar + addr + 4, (uint32)data);
+}
+
 int nosaic_tdp_sdk_attach(struct nosaic_tdp_bde *b, uint16_t dev_id, uint8_t rev_id)
 {
 	soc_cm_device_vectors_t v;
@@ -192,15 +277,40 @@ int nosaic_tdp_sdk_attach(struct nosaic_tdp_bde *b, uint16_t dev_id, uint8_t rev
 
 	memset(&v, 0, sizeof(v));
 	v.init            = 1;
+	v.bus_type        = NOSAIC_BUS_TYPE;
+
+	/*
+	 * The three that make this board different from the 7050SX2.
+	 *
+	 * They tell the SDK the byte order the chip is presenting, and they must
+	 * agree with what was just written to CMIC_ENDIAN_SELECT -- PIO, packet
+	 * DMA and everything else, all big-endian, matching the host. The
+	 * Trident2+ sets all three to 0 because x86 is little-endian and the
+	 * chip's default suits it.
+	 *
+	 * Disagreement here is not an error the SDK reports: it byte-swaps or
+	 * fails to, and every register and descriptor is wrong in the same
+	 * direction.
+	 */
+	v.big_endian_pio    = 1;
+	v.big_endian_packet = 1;
+	v.big_endian_other  = 1;
+
+	v.config_var_get       = nosaic_config_var_get;
+	v.interrupt_connect    = nosaic_interrupt_connect;
+	v.interrupt_disconnect = nosaic_interrupt_disconnect;
 	v.read            = nosaic_read;
 	v.write           = nosaic_write;
+	v.read64          = nosaic_read64;
+	v.write64         = nosaic_write64;
 	v.pci_conf_read   = nosaic_pci_conf_read;
 	v.pci_conf_write  = nosaic_pci_conf_write;
 	v.salloc          = nosaic_salloc;
 	v.sfree           = nosaic_sfree;
+	v.sflush          = nosaic_sflush;
+	v.sinval          = nosaic_sinval;
 	v.l2p             = nosaic_l2p;
 	v.p2l             = nosaic_p2l;
-	v.bus_type        = NOSAIC_BUS_TYPE;
 
 	/*
 	 * soc_cm_device_init installs the vectors and then calls soc_attach,

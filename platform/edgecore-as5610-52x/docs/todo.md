@@ -361,7 +361,44 @@ So the work is ordinary rather than speculative:
    Using the vendor SDK to get the initialisation hand-reproduction cannot
    match is the argument the project plan already makes for the 7050SX2; this
    board is the second piece of evidence for it.
-4. **`nosd-tdp` itself**, as a sibling of `nosd-td2p` — `provides: [nosd]`,
+4. **The SDK attaches to a vector table it accepts, then segfaults.**
+   Where this stands as of 2026-09-02, on the board:
+
+   ```
+   CMIC_REVID_DEVID   0x0002b846  -> device 0xb846 rev 0x02
+   dma pool     64 MiB at 0x78000000     dma readback OK
+   === handing the chip to the SDK ===
+   sal_config_refresh: cannot read file: config.bcm, variables not loaded
+   Segmentation fault
+   ```
+
+   The first attempt returned `SOC_E_PARAM` from `soc_cm_device_init`, which is
+   what a vector table missing something required looks like. Adding
+   `config_var_get`, `interrupt_connect`/`disconnect`, `sflush`/`sinval`,
+   `read64`/`write64` and the three `big_endian_*` flags got past it — so the
+   table is now accepted and the crash is inside `soc_attach`, which is chip
+   initialisation proper.
+
+   `big_endian_pio`, `big_endian_packet` and `big_endian_other` are the ones
+   that make this board different from the 7050SX2, which sets all three to 0.
+   They must agree with what was written to `CMIC_ENDIAN_SELECT`, and
+   disagreement is not an error the SDK reports — it byte-swaps or fails to,
+   and everything is wrong in the same direction.
+
+   **Two candidates for the crash, in order.** The SDK says plainly that it
+   could not read `config.bcm` and loaded no variables; this board needs chip
+   configuration — port mapping above all — and EdgeNOS carries a 3.2 KB
+   `config.bcm` for it in `/etc/edged/`. A NULL where a configured value was
+   expected is the ordinary way that ends. The other is ordering: `soc_attach`
+   is the first thing that drives S-Channel, which is the sequence the barriers
+   exist for, and a crash is not the symptom one would predict but it is not
+   excluded either.
+
+   Distinguishing them needs a backtrace, which means the next step is a build
+   with symbols and either gdb on the board or a core dumped and read here.
+   Guessing between the two would be cheap and wrong.
+
+5. **`nosd-tdp` itself**, as a sibling of `nosd-td2p` — `provides: [nosd]`,
    `conflicts: [nosd]`. The two share a northbound contract and most of their
    structure; whether they can share code is the first honest test of whether
    the per-ASIC split was drawn in the right place, which is what the project
