@@ -95,7 +95,7 @@ int main(int argc, char **argv)
 	 */
 	static struct nosaic_tdp_bde b;
 	const char *bdf = NULL;
-	int set_endian = 0, attach = 0, init = 0, ports = 0, stats = 0, serve = 0, bridge = 0, selftest = 0, rx = 0, attach_failed = 0, rc;
+	int set_endian = 0, attach = 0, init = 0, ports = 0, stats = 0, serve = 0, bridge = 0, selftest = 0, rx = 0, txwire = 0, attach_failed = 0, rc;
 	uint32_t raw = 0, es;
 
 	/*
@@ -137,6 +137,8 @@ int main(int argc, char **argv)
 		/* Bridging every port together in one VLAN is a loop wherever two
 		 * of them reach the same neighbour, so it is never implied by
 		 * another flag -- it has to be asked for by name. */
+		else if (!strcmp(argv[i], "--txtest"))
+			txwire = ports = init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--rx"))
 			rx = ports = init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--selftest"))
@@ -144,7 +146,7 @@ int main(int argc, char **argv)
 		else if (!strcmp(argv[i], "--bridge"))
 			bridge = ports = init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--help")) {
-			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [--ports] [--stats] [--serve] [--bridge] [--selftest] [--rx] [<pci-bdf>]\n");
+			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [--ports] [--stats] [--serve] [--bridge] [--selftest] [--rx] [--txtest] [<pci-bdf>]\n");
 			return 0;
 		} else
 			bdf = argv[i];
@@ -276,7 +278,10 @@ int main(int argc, char **argv)
 					else if (rx)
 						nosaic_tdp_sdk_rx(unit, 45);
 					else if (selftest &&
-						 nosaic_tdp_sdk_selftest(unit, 100) != 0)
+						 nosaic_tdp_sdk_selftest(unit, 100, 0) != 0)
+						attach_failed = 1;
+					else if (txwire &&
+						 nosaic_tdp_sdk_selftest(unit, 20, 1) != 0)
 						attach_failed = 1;
 
 					/*

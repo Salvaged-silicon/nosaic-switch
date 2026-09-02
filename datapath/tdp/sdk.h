@@ -40,7 +40,7 @@ int nosaic_tdp_sdk_stats(int unit, int seconds);
 /* Loop a dark port back on itself in the MAC and send frames to it from the
  * CPU. Proves injection, transmit, receive and counting without needing anything
  * on the wire; nothing leaves the box. */
-int nosaic_tdp_sdk_selftest(int unit, int frames);
+int nosaic_tdp_sdk_selftest(int unit, int frames, int on_wire);
 
 /* Start the CPU receive path and count what arrives from the wire. Frames a
  * neighbour sends are discarded until this runs, which makes a live port look

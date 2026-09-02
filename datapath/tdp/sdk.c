@@ -748,6 +748,33 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 	else
 		printf("link scan    every 250 ms\n");
 
+	/*
+	 * Enrol every port with the scanner. Starting it is not the same thing.
+	 *
+	 * BCM_LINKSCAN_MODE_NONE is the default, so a running scanner with no
+	 * ports registered scans nothing and reports nothing -- and the damage
+	 * is not that link state goes stale. A port enters the MAC-enable
+	 * bitmap (soc_link_mask2) when linkscan processes a link-up event for
+	 * it, and bcm_tx ANDs its target bitmap against that one:
+	 *
+	 *   soc_link_mask2_get(unit, &tx_macpbmp);
+	 *   BCM_PBMP_AND(tx_pbmp, tx_macpbmp);          [src/bcm/common/tx.c:5454]
+	 *   ...
+	 *   if (BCM_PBMP_IS_NULL(tx_pbmp) && ...) return BCM_E_NONE;
+	 *
+	 * An unregistered port is therefore ANDed out, and bcm_tx returns
+	 * SUCCESS having transmitted nothing. The symptom is a transmit path
+	 * that accounts for every frame and delivers none: tx-ok climbing,
+	 * tx-err zero, the port's own egress counters flat, and the neighbour
+	 * receiving silence. Receive is unaffected, which makes it look like a
+	 * cable fault in one direction.
+	 */
+	rv = bcm_linkscan_mode_set_pbm(unit, cfg.port, BCM_LINKSCAN_MODE_SW);
+	if (rv < 0)
+		printf("  link scan enrolment failed: %s\n", soc_errmsg(rv));
+	else
+		printf("link scan    all ports enrolled (software scan)\n");
+
 	BCM_PBMP_ITER(cfg.port, port) {
 		int link = 0;
 
@@ -1035,7 +1062,7 @@ int nosaic_tdp_sdk_rx(int unit, int seconds)
  * A port with no link is chosen deliberately. One with a neighbour would have
  * its traffic counted too, and looping a live port back on itself is rude.
  */
-int nosaic_tdp_sdk_selftest(int unit, int frames)
+int nosaic_tdp_sdk_selftest(int unit, int frames, int on_wire)
 {
 	bcm_port_config_t cfg;
 	bcm_port_t port, chosen = -1;
@@ -1051,24 +1078,31 @@ int nosaic_tdp_sdk_selftest(int unit, int frames)
 	BCM_PBMP_ITER(cfg.port, port) {
 		int link = 0;
 
-		if (bcm_port_link_status_get(unit, port, &link) == BCM_E_NONE && !link) {
+		if (bcm_port_link_status_get(unit, port, &link) != BCM_E_NONE)
+			continue;
+		/* wire: the first port with a neighbour, transmitted at for real.
+		 * loopback: the first without one, looped inside the MAC. */
+		if (link == !!on_wire) {
 			chosen = port;
 			break;
 		}
 	}
 	if (chosen < 0) {
-		printf("selftest     no dark port to borrow; every port has a neighbour\n");
+		printf("selftest     no %s port available\n",
+		       on_wire ? "linked" : "dark");
 		return 0;
 	}
 	port = chosen;
 
-	rv = bcm_port_loopback_set(unit, port, BCM_PORT_LOOPBACK_MAC);
-	if (rv < 0) {
-		printf("selftest     %s: loopback refused: %s\n",
-		       SOC_PORT_NAME(unit, port), soc_errmsg(rv));
-		return -1;
+	if (!on_wire) {
+		rv = bcm_port_loopback_set(unit, port, BCM_PORT_LOOPBACK_MAC);
+		if (rv < 0) {
+			printf("selftest     %s: loopback refused: %s\n",
+			       SOC_PORT_NAME(unit, port), soc_errmsg(rv));
+			return -1;
+		}
+		sleep(1);
 	}
-	sleep(1);
 
 	bcm_stat_sync_get32(unit, port, snmpIfInUcastPkts, &rx0);
 	bcm_stat_sync_get32(unit, port, snmpIfOutUcastPkts, &tx0);
@@ -1111,10 +1145,26 @@ int nosaic_tdp_sdk_selftest(int unit, int frames)
 	bcm_stat_sync_get32(unit, port, snmpIfOutUcastPkts, &tx1);
 
 	bcm_pkt_free(unit, pkt);
-	(void)bcm_port_loopback_set(unit, port, BCM_PORT_LOOPBACK_NONE);
+	if (!on_wire)
+		(void)bcm_port_loopback_set(unit, port, BCM_PORT_LOOPBACK_NONE);
 
-	printf("selftest     %s in MAC loopback: sent %d, tx counted %u, rx counted %u\n",
-	       SOC_PORT_NAME(unit, port), sent, tx1 - tx0, rx1 - rx0);
+	printf("selftest     %s %s: sent %d, tx counted %u, rx counted %u\n",
+	       SOC_PORT_NAME(unit, port),
+	       on_wire ? "onto the wire" : "in MAC loopback",
+	       sent, tx1 - tx0, rx1 - rx0);
+	if (on_wire) {
+		/* Only the transmit half is ours to judge here: what comes back
+		 * depends on a neighbour. Egress counting is the question --
+		 * whether a frame the SDK accepted actually left the port. */
+		if (sent && (tx1 - tx0) >= (uint32)sent) {
+			printf("selftest     PASS  directed transmit reaches the wire\n");
+			return 0;
+		}
+		printf("selftest     FAIL  the SDK accepted %d frames and the port\n"
+		       "             transmitted %u -- they are being dropped between\n"
+		       "             bcm_tx and the MAC\n", sent, tx1 - tx0);
+		return -1;
+	}
 	if (sent && (rx1 - rx0) >= (uint32)sent && (tx1 - tx0) >= (uint32)sent) {
 		printf("selftest     PASS  cpu injection, transmit, receive and counters\n"
 		       "             all work; only the cable is untested\n");
@@ -1370,9 +1420,9 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 	return -1;
 }
 
-int nosaic_tdp_sdk_selftest(int unit, int frames)
+int nosaic_tdp_sdk_selftest(int unit, int frames, int on_wire)
 {
-	(void)unit; (void)frames;
+	(void)unit; (void)frames; (void)on_wire;
 	return -1;
 }
 
