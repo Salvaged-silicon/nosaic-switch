@@ -254,6 +254,7 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 		return -1;
 	}
 
+
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sock >= 0) {
 		/* A distinct locally-administered MAC per port. */
