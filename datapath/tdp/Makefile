@@ -37,6 +37,11 @@ CFLAGS  += $(shell cat $(SDK_DEFINES_FILE))
 CFLAGS  += -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
+# Intercept the SAL's sleep. The SDK busy-waits for anything under 20 ms, which
+# puts a floor under polled interrupt mode and therefore under punt latency; see
+# __wrap_sal_usleep in sdk.c. Its declaration is weak and its definition is not,
+# so this is the way to replace it without a duplicate symbol.
+LDFLAGS += -Wl,--wrap=sal_usleep
 # Shared with nosd-td2p: punting ports to Linux and mirroring the kernel FIB
 # into the chip are the same problem on any Broadcom ASIC, and both are written
 # against bcm_* alone. They need the SDK, so they live inside this branch.

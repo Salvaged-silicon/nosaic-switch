@@ -118,24 +118,27 @@ and swp2 going to the same upstream. The tool says so every time it does it.
 
 ## Punt latency
 
-Pinging a directly connected neighbour from the switch itself, idle box, four
-OSPF adjacencies up:
+Pinging the Nexus, which answers ICMP in hardware, from this switch:
 
-    min 6.0 ms   median 23 ms   p90 93 ms   max 100 ms
+    min 0.699 ms   avg 1.66 ms   max 2.689 ms
 
-It was min 8.5 / median 27 / p90 591 / max 1591 until the periodic work moved
-off the packet thread. `nosaic_tap_pump` calls its tick on every poll wakeup
-rather than on a timer, so the FIB mirror was running once per received frame
-and `nosaic_tap_stats()` -- `bcm_stat_sync()` across all 52 ports, out of
-hardware -- every thirtieth frame. Both now run on a thread that sleeps between
-passes, and the pump blocks on packets and nothing else.
+That is the punt path: tap, chip transmit, wire, and back through the receive
+path to the CPU.
 
-What is left is the floor, not contention: a median of 23 ms against a 20 ms
-`polled_irq_delay` is the poll interval, and that cannot go lower without
-spinning a core (see asic.conf). Removing it means real interrupts, which need a
-kernel path to userspace -- `uio_pci_generic` is in-tree, so taking it does not
-reopen the argument against shipping the vendor's BDE modules.
+**Measure against a hardware responder.** Every earlier figure here was taken
+against the Arista 7050SX2 on swp8, which is another NOSaic box with a punt path
+of its own, and that neighbour -- not this board -- was most of the number. It
+read as median 27 ms with a tail past a second, and the same box pinging the
+Nexus at the same moment was answering in about one millisecond. A slow reply
+from a switch that punts is not evidence about the switch doing the pinging.
 
-Transit is unaffected either way: it is forwarded in hardware and never reaches
-the CPU. This is control-plane traffic only -- which still includes every
-routing protocol, so the floor is worth removing eventually.
+Two real problems did come out of chasing it, and both are fixed. The periodic
+work ran on the packet thread, and `nosaic_tap_pump` calls its tick on every
+poll wakeup rather than on a timer, so the FIB mirror ran once per received
+frame and `bcm_stat_sync()` across all 52 ports every thirtieth frame; that is
+now a thread of its own. And the poll interval could not go below 20 ms without
+spinning a core, because the SDK busy-waits for short sleeps; `sdk.c` wraps
+`sal_usleep` so it can.
+
+Transit does not use this path at all -- it is forwarded in hardware and never
+reaches the CPU.

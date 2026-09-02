@@ -53,6 +53,9 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <sched.h>
+#include <time.h>
+#include <errno.h>
 
 /* Bus and device type, from include/sal/types.h. A PCI-attached switch chip --
  * stated rather than defaulted, because the SDK selects access paths from it
@@ -1370,6 +1373,56 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 			       "  neighbours really are sending nothing\n", ok);
 	}
 	return 0;
+}
+
+/*
+ * The SAL's sleep, which busy-waits for anything short.
+ *
+ * The SDK's own version (src/sal/core/unix/thread.c:729) is:
+ *
+ *     if (usec < (2 * SECOND_USEC)/HZ) { do { sched_yield(); } while (...); }
+ *
+ * and userspace HZ is 100 whatever the kernel is built with, so every sleep
+ * under 20 ms spins. That sets a floor under polled interrupt mode: the poll
+ * thread's delay is what punt latency is made of, and any delay short enough to
+ * be quick costs an entire core. Measured on this board, punt round trip tracks
+ * the delay directly -- 20 ms of delay gives 37 ms average, 100 ms gives 975 ms
+ * -- so the floor is the latency.
+ *
+ * The declaration is marked weak but the definition is not, so replacing it
+ * outright is a duplicate-symbol error. --wrap is the targeted way in: calls
+ * from the rest of the SDK land here, and this can still hand the short ones
+ * back to the original. nanosleep actually sleeps, which removes the floor and
+ * lets the poll interval be chosen for latency rather than to dodge a
+ * busy-wait.
+ *
+ * Short delays keep the old behaviour deliberately. The SDK uses sal_usleep for
+ * hardware timing -- settling a PLL, spacing MDIO transactions -- where the
+ * value is a minimum and the cost of overshooting is init that takes longer than
+ * it should. Below the threshold a real sleep would overshoot by a lot, since
+ * nanosleep cannot resolve a microsecond, so those stay a spin. Above it, the
+ * caller is waiting on something slow and a real sleep is what it wanted.
+ */
+#define NOSAIC_SLEEP_SPIN_US 500
+
+extern void __real_sal_usleep(unsigned int usec);
+
+void __wrap_sal_usleep(unsigned int usec)
+{
+	struct timespec ts;
+
+	/* Short delays go to the SDK's own version, spin and all. It is the
+	 * right shape for a hardware timing gap and nanosleep cannot resolve
+	 * one anyway. */
+	if (usec < NOSAIC_SLEEP_SPIN_US) {
+		__real_sal_usleep(usec);
+		return;
+	}
+
+	ts.tv_sec = usec / 1000000u;
+	ts.tv_nsec = (long)(usec % 1000000u) * 1000L;
+	while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
+		;
 }
 
 /*
