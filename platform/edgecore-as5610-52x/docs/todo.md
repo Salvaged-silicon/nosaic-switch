@@ -225,11 +225,27 @@ sets. The bench found what the vendor already documented in a makefile.
 
 So the work is ordinary rather than speculative:
 
-1. **Build openbcm for powerpc.** The recipe hardcodes `platform=x86-64-fc28`
-   in its targets and again in the `after:` step that captures the SDK's
-   defines. It needs to select the platform by architecture — and deliberately
-   *not* by adding a Broadcom-specific field to `arch/*/arch.yml`, which is
-   exactly the leak the project plan warns about.
+1. ~~**Build openbcm for powerpc.**~~ **Done, 2026-09-02, first attempt.**
+   `openbcm_6.5.24_powerpc.nos`, 13,146 files, 172 static archives — the same
+   count as the x86_64 build:
+
+   ```
+   bcm56840_a0.o, bcm56840_b0.o   ELF 32-bit MSB relocatable, PowerPC
+   libsoc_mcm.a 774M   libbcm.a 36M
+   104 SDK defines: -DBE_HOST=1 -DSYS_BE_PIO=1 -DSYS_BE_OTHER=1
+                    -DSYS_BE_PACKET=0 -DBCM_ALL_CHIPS
+   ```
+
+   The Trident+ chip database is compiled in and big-endian. Checked rather
+   than assumed, because the recipe's own comment warns that this target can
+   succeed having compiled nothing — hence the archive count, the object
+   listing and the `file` output above.
+
+   **What it does not prove:** that any of it runs. This is a compile and link
+   for the right architecture with the right chip, and nothing has touched
+   silicon. The defines matter beyond this build — anything linking against
+   these libraries must compile with the same 104, or `soc_cm_device_vectors_t`
+   shifts and every memory ID changes, with no diagnostic of any kind.
 2. **A CMICe BDE.** `datapath/td2p/bde.c` is written for the 7050SX2's CMICm.
    This chip has a CMICe, and the interrupt and DMA paths differ. This is the
    part with real unknowns left.
