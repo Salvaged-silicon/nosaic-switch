@@ -58,7 +58,19 @@ static uint32 nosaic_read(soc_cm_dev_t *dev, uint32 addr)
 	struct nosaic_tdp_bde *b = bde_of(dev);
 
 	if ((size_t)addr + 4 > b->bar_len) {
-		fprintf(stderr, "nosd-tdp: read past BAR0: %#x\n", addr);
+		static int complained;
+
+		if (!complained) {
+			complained = 1;
+			/* Once, with the state that made the decision. A bounds
+			 * check that rejects an offset plainly inside the BAR is
+			 * not a bounds problem -- it is the BDE pointer, and the
+			 * two are told apart by printing it. */
+			fprintf(stderr, "nosd-tdp: read past BAR0: %#x "
+				"(bde=%p bar=%p bar_len=%zu dma_phys=%#llx)\n",
+				addr, (void *)b, (void *)b->bar, b->bar_len,
+				(unsigned long long)b->dma_phys);
+		}
 		return 0xffffffff;
 	}
 	return nosaic_mmio_rd32((volatile char *)b->bar + addr);

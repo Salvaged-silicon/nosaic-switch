@@ -76,7 +76,23 @@
 
 int main(int argc, char **argv)
 {
-	struct nosaic_tdp_bde b;
+	/*
+	 * Static, not a local, and that is not style.
+	 *
+	 * Its address is handed to the SDK as the device cookie and kept there
+	 * for the life of the device: every register access the SDK makes comes
+	 * back through it, from whichever thread the SDK is running -- and with
+	 * polled_irq_mode there is a thread reading interrupt status behind us.
+	 * A pointer a library keeps has no business living in a stack frame.
+	 *
+	 * As a local it read back as bar=(nil), bar_len=0 and a nonsense
+	 * dma_phys, which turned every SDK register access into "read past
+	 * BAR0" and every read into 0xffffffff. What that looks like from above
+	 * is a chip that will not answer: parity errors dispatched from status
+	 * registers that are all ones, a DMA engine that never completes, and
+	 * bcm_attach failing to allocate.
+	 */
+	static struct nosaic_tdp_bde b;
 	const char *bdf = NULL;
 	int set_endian = 0, attach = 0, init = 0, attach_failed = 0, rc;
 	uint32_t raw = 0, es;

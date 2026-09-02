@@ -676,6 +676,28 @@ So the work is ordinary rather than speculative:
    allocator would have put it, byte order matches the working machine, and the
    cache is handled.
 
+   **A bug of mine was found underneath all of this and is fixed.** The probe
+   declared the BDE as a local in `main()` and handed its address to the SDK as
+   the device cookie. The SDK keeps that for the life of the device and calls
+   back through it from its own threads — and with `polled_irq_mode` there is a
+   thread reading interrupt status. Printing the state at the bounds check gave
+
+   ```
+   read past BAR0: 0x50 (bde=0xbf8547b8 bar=(nil) bar_len=0 dma_phys=0xfed380c0...)
+   ```
+
+   a stack address holding nothing. Every SDK register access was rejected and
+   returned `0xffffffff`, which from above looks like a chip that will not
+   answer: parity errors dispatched from all-ones status registers, a DMA
+   engine that never completes, `bcm_attach` failing to allocate. It is
+   `static` now and the rejected accesses are gone.
+
+   **It did not change the DMA failure or the `bcm_attach` error**, both of
+   which reproduce with register access verified correct — so the conclusions
+   above stand. But it was underneath some of the evidence for them, and
+   anything that turns on a single observation from before this fix is worth
+   re-checking rather than trusted.
+
    That makes the CMICe interrupt path the next real piece of work rather than
    one more thing to try — and it is the same piece the BDE has been carrying
    over from CMICm unexamined since the start. Until it exists,
