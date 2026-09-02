@@ -172,16 +172,36 @@ static struct l3if *if_by_name(const char *n)
 }
 
 /*
- * /proc/net/route prints the in-kernel big-endian address read back as a host
- * u32, so on a little-endian box the bytes come out reversed: 10.101.101.0
- * appears as 0065650A.
+ * /proc/net/route prints an in-kernel __be32 with %08X, which formats the
+ * value, not the bytes -- so what it prints depends on the host's byte order.
+ *
+ * On a little-endian box the big-endian bytes read back as a reversed u32:
+ * 10.101.101.0 appears as 0065650A, and it has to be swapped. On a big-endian
+ * box those same bytes already are the host-order value, printed as 0A656500,
+ * and swapping corrupts it.
+ *
+ * Swapping unconditionally is therefore right on x86 and wrong on PowerPC, and
+ * it was written on x86. On the AS5610 every route was fed to the resolver with
+ * its gateway reversed -- 10.101.101.26 arriving as 26.101.101.10 -- so no
+ * cached next hop matched and no ARP entry was found:
+ *
+ *   l3: 1.255.101.10/ffffffff via 26.101.101.10 dev swp6 unresolved: -7
+ *
+ * The next hops and host entries were correct throughout, because those come
+ * from /proc/net/arp, which prints dotted quads and needs no conversion. So the
+ * chip had interfaces, next hops and hosts and not one route, and the failure
+ * looked like a routing problem rather than four bytes in the wrong order.
  */
 static uint32_t be_hex_to_host(const char *h)
 {
 	uint32_t v = (uint32_t)strtoul(h, NULL, 16);
 
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	return v;
+#else
 	return ((v & 0xff) << 24) | ((v & 0xff00) << 8) |
 	       ((v >> 8) & 0xff00) | ((v >> 24) & 0xff);
+#endif
 }
 
 /* Our own address on an interface, for the "this is me" entries. */
@@ -708,7 +728,26 @@ static void poll_routes(void)
 		m = be_hex_to_host(mask);
 		g = be_hex_to_host(gw);
 
-		if (nexthop(ifp, (int)(ifp - ifs), g, &eg) != BCM_E_NONE) {
+		rv = nexthop(ifp, (int)(ifp - ifs), g, &eg);
+		if (rv != BCM_E_NONE) {
+			/* Say why, once. An unresolved route is the difference
+			 * between a switch that routes in hardware and one that
+			 * punts every transit packet to the CPU, and the count
+			 * alone does not distinguish "the neighbour is not in
+			 * ARP yet", which fixes itself, from "the egress object
+			 * could not be built", which does not. */
+			static int said;
+
+			if (!said) {
+				said = 1;
+				fprintf(stderr, "l3: %u.%u.%u.%u/%08x via "
+					"%u.%u.%u.%u dev %s unresolved: %d (%s)\n",
+					d >> 24, (d >> 16) & 0xff, (d >> 8) & 0xff,
+					d & 0xff, m,
+					g >> 24, (g >> 16) & 0xff, (g >> 8) & 0xff,
+					g & 0xff, iface, rv, bcm_errmsg(rv));
+				fflush(stderr);
+			}
 			st_unresolved++;
 			continue;
 		}
@@ -1201,8 +1240,13 @@ void nosaic_l3_poll(void)
 	 * already closed one lead on the strength of a return code that meant
 	 * nothing, and "the route was accepted" and "the route is in the ASIC"
 	 * are different claims. */
-	now = st_added + st_moved + st_gone + st_failed + st_host +
-	      st6_added + st6_moved + st6_gone + st6_failed + st6_host;
+	/* st_unresolved belongs in this sum. Leaving it out meant a run where
+	 * every route failed to resolve reported nothing new after the first
+	 * time, so a stale line kept saying "unresolved 174" while the real
+	 * count climbed into the thousands -- and the absence of fresh output
+	 * read as "nothing is happening" rather than "everything is failing". */
+	now = st_added + st_moved + st_gone + st_failed + st_host + st_unresolved +
+	      st6_added + st6_moved + st6_gone + st6_failed + st6_host + st6_unresolved;
 	if (++ticks % 60 == 0 && now != last) {
 		last = now;
 		nosaic_l3_stats();
