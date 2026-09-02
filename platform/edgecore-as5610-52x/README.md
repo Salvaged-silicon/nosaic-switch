@@ -95,16 +95,23 @@ Only a board reset clears it, so this is about how the chip is left rather than
 the init sequence. The daemon should reset the chip on the way in and out; until
 it does, do not `kill -9` a datapath daemon on this board.
 
-## The bring-up tool forwards; the daemon does not
+## Per-port service VLANs are the resting state
 
-`tdp-probe --ports` and `--stats` put every port into one VLAN and force them
-all to spanning-tree forwarding. That is what demonstrates the chip moving
-frames, and it is a bridging loop wherever two ports reach the same neighbour.
-This board has exactly that -- swp1 and swp2 both go to the same upstream -- and
-nothing here runs spanning tree, so nothing breaks the loop from this end. The
-neighbour sees its own BPDUs come back and shuts the path down. The tool now
-says so every time it does it.
+`nosd` puts every front-panel port in its own VLAN, 3300+port, with the port
+untagged and the CPU tagged, and empties VLAN 1. That is Cumulus's layout on
+this board, by way of EdgeNOS's `vlan_init_resv_per_port()`, and it is what both
+of them boot into -- so it is not a guess, it is what the two pieces of software
+known to work on this hardware actually do.
 
-`nosd` enables ports and leaves them blocked. Which ports forward, and in which
-VLAN, belongs to the configuration model, and until there is one the safe
-default is the honest one.
+The point is that a port is forwarding and fully usable while being alone in its
+VLAN, so there is nothing to bridge to and no loop to form whatever the cabling
+looks like. Bridging becomes something you ask for.
+
+Emptying VLAN 1 is not tidiness. EdgeNOS's note is specific: leaving it
+populated lets the chip's L2 forwarding pick the wrong egress when the CPU
+injects a tagged frame on a service VID, and they watched it happen.
+
+`tdp-probe --ports` and `--stats` instead bridge every port together in VLAN 1.
+That is what demonstrates the chip moving frames between ports, and it is a loop
+wherever two ports reach the same neighbour -- which this board has, with swp1
+and swp2 going to the same upstream. The tool says so every time it does it.

@@ -42,6 +42,7 @@
 #include <soc/drv.h>
 #include <bcm/port.h>
 #include <bcm/stg.h>
+#include <bcm/vlan.h>
 #include <bcm/link.h>
 #include <bcm/error.h>
 #include <stdarg.h>
@@ -565,6 +566,85 @@ int nosaic_tdp_sdk_bcm_init(int unit)
 }
 
 /*
+ * Cumulus's per-port service VLANs, which is what this board's ports are
+ * supposed to look like at rest.
+ *
+ * Every front-panel port gets VID 3300+port with exactly two members: the port
+ * itself untagged, and the CPU tagged. VLAN 1 is emptied. That is lifted from
+ * Cumulus's own baseline on this hardware, by way of EdgeNOS, and it is the
+ * default both of them boot into -- so it is not a guess about what works here,
+ * it is what the two pieces of software known to work here actually do.
+ *
+ * It solves the problem that putting every port in one VLAN creates. A port is
+ * forwarding and fully usable, and it is alone in its VLAN, so there is nothing
+ * for it to bridge to and no loop to form no matter what the cabling looks
+ * like. Bridging becomes something you ask for rather than something you get.
+ *
+ * Emptying VLAN 1 is not tidiness. EdgeNOS's note is specific: leaving it
+ * populated lets the chip's L2 forwarding pick the wrong egress when the CPU
+ * injects a tagged frame on a service VID, and they watched it happen.
+ *
+ * The CPU membership is what makes the port reachable from software later. It
+ * is tagged because the chip strips the tag on the way out of the one untagged
+ * member, so what lands on the wire is ordinary untagged Ethernet -- the shape
+ * a neighbour expects, and the reason Cumulus does it this way rather than
+ * sending straight to a port.
+ */
+static int service_vlans(int unit, bcm_port_config_t *cfg)
+{
+	bcm_port_t port;
+	bcm_pbmp_t all, none;
+	int made = 0, rv;
+
+	BCM_PBMP_CLEAR(none);
+
+	/* VLAN 1 emptied first, ports and CPU alike. */
+	BCM_PBMP_ASSIGN(all, cfg->port);
+	BCM_PBMP_OR(all, cfg->cpu);
+	rv = bcm_vlan_port_remove(unit, 1, all);
+	if (rv < 0 && rv != BCM_E_NOT_FOUND)
+		printf("  vlan 1 not emptied: %s\n", soc_errmsg(rv));
+
+	BCM_PBMP_ITER(cfg->port, port) {
+		bcm_vlan_t vid = (bcm_vlan_t)(NOSAIC_TDP_SERVICE_VLAN_BASE + port);
+		bcm_pbmp_t pbmp, ubmp;
+
+		rv = bcm_vlan_create(unit, vid);
+		if (rv < 0 && rv != BCM_E_EXISTS) {
+			printf("  vlan %d create failed: %s\n", vid, soc_errmsg(rv));
+			continue;
+		}
+
+		/* The port untagged. */
+		BCM_PBMP_CLEAR(pbmp);
+		BCM_PBMP_CLEAR(ubmp);
+		BCM_PBMP_PORT_ADD(pbmp, port);
+		BCM_PBMP_PORT_ADD(ubmp, port);
+		rv = bcm_vlan_port_add(unit, vid, pbmp, ubmp);
+		if (rv < 0) {
+			printf("  vlan %d: port %d not added: %s\n", vid, port, soc_errmsg(rv));
+			continue;
+		}
+
+		/* The CPU tagged, so software can reach this port later. */
+		rv = bcm_vlan_port_add(unit, vid, cfg->cpu, none);
+		if (rv < 0)
+			printf("  vlan %d: cpu not added: %s\n", vid, soc_errmsg(rv));
+
+		/* Untagged ingress on this port lands in its own VLAN. */
+		rv = bcm_port_untagged_vlan_set(unit, port, vid);
+		if (rv < 0)
+			printf("  port %d pvid failed: %s\n", port, soc_errmsg(rv));
+
+		made++;
+	}
+
+	printf("service vlan %d ports isolated in their own VLAN (%d..)\n",
+	       made, NOSAIC_TDP_SERVICE_VLAN_BASE + 1);
+	return made;
+}
+
+/*
  * Enable every port the chip reports and put it in forwarding.
  *
  * bcm_init leaves ports attached but administratively down and, on the ports
@@ -590,6 +670,11 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 			unit, rv, soc_errmsg(rv));
 		return -1;
 	}
+
+	/* Isolation first: a port must land in its own VLAN before it is allowed
+	 * to forward, or there is a window where it bridges into VLAN 1. */
+	if (!forward)
+		service_vlans(unit, &cfg);
 
 	BCM_PBMP_ITER(cfg.port, port) {
 		int link = 0;
@@ -618,11 +703,17 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 		 * configuration model. Until there is one, the honest default is
 		 * the safe one.
 		 */
-		if (forward) {
-			rv = bcm_port_stp_set(unit, port, BCM_STG_STP_FORWARD);
-			if (rv < 0)
-				printf("  port %-3d stp failed: %s\n", port, soc_errmsg(rv));
-		}
+		/*
+		 * Forwarding either way -- what differs is what the port is
+		 * forwarding into. By default that is its own service VLAN,
+		 * where it is the only member, so the port is fully usable and
+		 * cannot bridge to anything. With --ports/--stats it is VLAN 1
+		 * along with every other port, which moves frames and forms a
+		 * loop wherever two ports share a neighbour.
+		 */
+		rv = bcm_port_stp_set(unit, port, BCM_STG_STP_FORWARD);
+		if (rv < 0)
+			printf("  port %-3d stp failed: %s\n", port, soc_errmsg(rv));
 
 		up++;
 		if (bcm_port_link_status_get(unit, port, &link) == BCM_E_NONE && link)
@@ -632,9 +723,9 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 	}
 
 	printf("ports        %d enabled, %d with link%s\n", up, linked,
-	       forward ? ", all forwarding in one VLAN" : ", none forwarding");
+	       forward ? ", all bridged together in VLAN 1" : "");
 	if (forward)
-		printf("WARNING      every port forwards in VLAN 1 and no spanning tree\n"
+		printf("WARNING      every port forwards in one VLAN and no spanning tree\n"
 		       "             runs here, so two ports reaching the same neighbour\n"
 		       "             is a loop. Bring-up on a known topology only.\n");
 

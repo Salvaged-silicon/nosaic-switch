@@ -24,7 +24,11 @@ int nosaic_tdp_sdk_bcm_init(int unit);
 
 /* Enable every port and put it in spanning-tree forwarding. bcm_init leaves
  * both off, so nothing forwards until this runs. */
-/* forward: put every port into spanning-tree forwarding in the default VLAN.
+/* Cumulus's per-port service VLAN base: port N sits alone in VLAN 3300+N.
+ * Taken from Cumulus's baseline dump on this board by way of EdgeNOS. */
+#define NOSAIC_TDP_SERVICE_VLAN_BASE 3300
+
+/* forward: bridge every port together in the default VLAN.
  * That is a loop wherever two ports reach the same neighbour, so it is for
  * bring-up on a known topology, not for a daemon that boots unattended. */
 int nosaic_tdp_sdk_ports_up(int unit, int forward);
