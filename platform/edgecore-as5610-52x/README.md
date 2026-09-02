@@ -115,3 +115,39 @@ injects a tagged frame on a service VID, and they watched it happen.
 That is what demonstrates the chip moving frames between ports, and it is a loop
 wherever two ports reach the same neighbour -- which this board has, with swp1
 and swp2 going to the same upstream. The tool says so every time it does it.
+
+## Known: punt latency is poor once the control plane is busy
+
+Pinging a directly connected neighbour from the switch itself, on an idle box
+with four OSPF adjacencies up:
+
+    min 8.5 ms   median 27 ms   p90 591 ms   max 1591 ms
+
+Transit is unaffected -- that is forwarded in hardware and never reaches the
+CPU. This is only traffic to and from the box, but that includes every routing
+protocol, so it is worth fixing rather than tolerating.
+
+Two effects, and they need different work.
+
+**The baseline.** The same measurement with OSPF down was 0.99-3.39 ms, so 27 ms
+is not the floor of the punt path -- it is contention. Every punted frame, every
+frame injected from Linux, and all the periodic chip work run on one thread:
+`nosaic_tap_pump` calls `datapath_tick` between poll cycles, and the tick mirrors
+the kernel FIB and reads chip counters. `nosaic_tap_stats()` is the expensive one,
+because `bcm_stat_sync()` pulls counters for all 52 ports out of the hardware
+while the packet path waits for it.
+
+**The tail.** p90 of 591 ms against a median of 27 is periodic blocking, not
+load, and it matches work that happens on a timer rather than per packet.
+
+The fix is to take the periodic work off the packet thread, not to make it
+cheaper or rarer -- rarer only moves the stall further apart. Until then, do not
+read punt latency as a measure of the datapath: `--selftest` and hardware
+counters say what the chip is doing, and this number says what one thread in
+userspace is doing.
+
+Separately, `polled_irq_delay` cannot go below 20 ms without spinning a core
+(see asic.conf). Real interrupts would remove both the floor and that tradeoff;
+they need a kernel path to userspace -- `uio_pci_generic` is the obvious one,
+and it is in-tree, so it does not reopen the argument against shipping the
+vendor's BDE modules.
