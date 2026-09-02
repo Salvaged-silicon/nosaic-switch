@@ -295,6 +295,12 @@ int main(int argc, char **argv)
 						printf("SERVING  datapath up; "
 						       "link and counters tracked\n");
 						fflush(stdout);
+						/* Taps and the FIB mirror, then pump.
+						 * Returns only on failure; if there
+						 * are no taps it returns at once and
+						 * the chip still forwards, so wait
+						 * rather than exit. */
+						nosaic_tdp_sdk_run(unit);
 						for (;;)
 							pause();
 					}

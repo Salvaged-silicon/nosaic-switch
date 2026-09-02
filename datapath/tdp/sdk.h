@@ -47,4 +47,8 @@ int nosaic_tdp_sdk_selftest(int unit, int frames);
  * identical to a dead one in the accept counters. */
 int nosaic_tdp_sdk_rx(int unit, int seconds);
 
+/* Bring the declared taps up, give each a router interface, and pump frames
+ * between the chip and Linux until something fails. Only returns on failure. */
+int nosaic_tdp_sdk_run(int unit);
+
 #endif

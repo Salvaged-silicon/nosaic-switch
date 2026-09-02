@@ -46,6 +46,8 @@
 #include <bcm/pkt.h>
 #include <bcm/tx.h>
 #include <bcm/rx.h>
+#include "tapbridge.h"
+#include "l3sync.h"
 #include <bcm/link.h>
 #include <bcm/error.h>
 #include <stdarg.h>
@@ -722,6 +724,30 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 	if (!forward)
 		service_vlans(unit, &cfg);
 
+	/*
+	 * Link scan, so link state is tracked rather than sampled once.
+	 *
+	 * Started before the ports are enabled, not after, because it is
+	 * edge-driven: it records transitions it sees. A port already up when
+	 * the scanner starts may never appear in the bitmap it maintains -- and
+	 * the transmit path ANDs its own port bitmap with that one, builds no
+	 * descriptor for a port that is missing, and returns no error. Frames
+	 * then vanish with every counter and every status call saying the link
+	 * is fine. nosd-td2p enables link scan first for the same reason.
+	 *
+	 * Without it bcm_port_link_status_get still reads the PHY, so a caller
+	 * that asks gets a true answer -- but nothing asks, and nothing reacts.
+	 * A port that goes down stays in the flood set and its share of every
+	 * flooded frame is sent into a dead fibre. Software scan rather than
+	 * hardware: it costs a MIIM read per port per interval, and the hardware
+	 * scanner on this chip wants the MIIM interrupt this BDE does not carry.
+	 */
+	rv = bcm_linkscan_enable_set(unit, 250000);
+	if (rv < 0)
+		printf("  link scan unavailable: %s\n", soc_errmsg(rv));
+	else
+		printf("link scan    every 250 ms\n");
+
 	BCM_PBMP_ITER(cfg.port, port) {
 		int link = 0;
 
@@ -775,21 +801,6 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 		       "             runs here, so two ports reaching the same neighbour\n"
 		       "             is a loop. Bring-up on a known topology only.\n");
 
-	/*
-	 * Link scan, so link state is tracked rather than sampled once.
-	 *
-	 * Without it bcm_port_link_status_get still reads the PHY, so a caller
-	 * that asks gets a true answer -- but nothing asks, and nothing reacts.
-	 * A port that goes down stays in the flood set and its share of every
-	 * flooded frame is sent into a dead fibre. Software scan rather than
-	 * hardware: it costs a MIIM read per port per interval, and the hardware
-	 * scanner on this chip wants the MIIM interrupt this BDE does not carry.
-	 */
-	rv = bcm_linkscan_enable_set(unit, 250000);
-	if (rv < 0)
-		printf("  link scan unavailable: %s\n", soc_errmsg(rv));
-	else
-		printf("link scan    every 250 ms\n");
 
 	/* Link state read straight after enabling a port is not an answer. The
 	 * MAC has just been let out of reset, the SerDes has not finished
@@ -810,6 +821,119 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 	}
 	printf("settled      %d with link\n", linked);
 	return 0;
+}
+
+/*
+ * Put the front-panel ports on the Linux stack and keep the chip in step.
+ *
+ * This is the piece that turns an initialised chip into a switch anything else
+ * can use. Until a port exists as a Linux interface, nothing above the datapath
+ * can address it: no ARP, no routing daemon, no ping, no management over the
+ * front panel. The chip forwards, and it forwards in isolation.
+ *
+ * Both halves are shared with nosd-td2p rather than written again, because
+ * neither is Trident-specific: tapbridge punts frames between a chip port and a
+ * tap device, and l3sync mirrors the kernel's routing table into the chip's L3
+ * tables. They were moved to datapath/common unchanged, and the 7050SX2 binary
+ * rebuilt byte-identical afterwards, which is the only evidence worth having
+ * that a move like that changed nothing.
+ *
+ * Taps are declared as properties, not derived, because which ports should be
+ * on the Linux stack is a board's decision and a deployment's decision:
+ *
+ *     tap_swp1=1:3301
+ *
+ * name, logical port, and the VLAN the port already sits in. The VLAN matters
+ * -- a routed port that sends untagged into a service VLAN it is not a member
+ * of has its frames dropped at the far end -- and it is the service VLAN this
+ * file already created, so the two cannot drift.
+ */
+/*
+ * The periodic work, and the only window into a running daemon.
+ *
+ * The FIB mirror has to run whether or not a packet arrives, so it hangs off
+ * the pump's timeout rather than off traffic. The tap counters are printed
+ * because there is otherwise no way to ask a running nosd anything: --stats
+ * and --rx each reinitialise the chip, so using them means stopping the
+ * daemon, which changes the thing being measured. Once a minute into the log
+ * costs nothing and answers "is this tap passing frames in both directions",
+ * which is the question that comes up every time something does not work.
+ */
+static void datapath_tick(void)
+{
+	static int ticks;
+
+	nosaic_l3_poll();
+	if (++ticks % 30 == 0)
+		nosaic_tap_stats();
+}
+
+int nosaic_tdp_sdk_run(int unit)
+{
+	struct tap_spec specs[64];
+	char names[64][32];
+	int ntap = 0, i;
+
+	for (i = 0; i < nosaic_props_count() && ntap < 64; i++) {
+		const char *name = nosaic_props_name(i);
+		const char *val = nosaic_props_value(i);
+		const char *colon;
+
+		if (name == NULL || strncmp(name, "tap_", 4) != 0)
+			continue;
+		snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
+		specs[ntap].name = names[ntap];
+		specs[ntap].port = atoi(val);
+		specs[ntap].vlan = 0;
+		specs[ntap].mtu = 0;
+		colon = strchr(val, ':');
+		if (colon != NULL) {
+			specs[ntap].vlan = atoi(colon + 1);
+			colon = strchr(colon + 1, ':');
+			if (colon != NULL)
+				specs[ntap].mtu = atoi(colon + 1);
+		}
+		ntap++;
+	}
+
+	if (ntap == 0) {
+		printf("taps         none declared; no port is on the Linux stack\n"
+		       "             (add tap_<name>=<port>:<vlan> to have one)\n");
+		return 0;
+	}
+
+	if (nosaic_tap_start(unit, specs, ntap) < 0) {
+		fprintf(stderr, "nosd-tdp: could not bridge ports to Linux\n");
+		return -1;
+	}
+
+	/* A router interface per tap, with the tap's own MAC read back rather
+	 * than the one we think we asked for: an interface whose MAC differs
+	 * from the tap's answers ARP and then drops everything addressed to the
+	 * reply. */
+	for (i = 0; i < nosaic_tap_count(); i++) {
+		const char *name;
+		unsigned char mac[6];
+		int port, vlan, mtu;
+
+		if (nosaic_tap_info(i, &name, &port, &vlan, &mtu, mac) != 0)
+			continue;
+		if (vlan <= 0) {
+			printf("l3           %s has no vlan, so it gets no router interface\n",
+			       name);
+			continue;
+		}
+		nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
+	}
+
+	printf("taps         %d port(s) on the Linux stack\n", nosaic_tap_count());
+	fflush(stdout);
+
+	/* Pumping is this thread's job now. The kernel's routing table is
+	 * mirrored on the pump's timeout, so it happens whether or not a packet
+	 * ever arrives. */
+	nosaic_tap_pump(datapath_tick, 1000);
+	return -1;   /* the pump only returns when it has failed */
 }
 
 /*
@@ -1255,6 +1379,12 @@ int nosaic_tdp_sdk_selftest(int unit, int frames)
 int nosaic_tdp_sdk_rx(int unit, int seconds)
 {
 	(void)unit; (void)seconds;
+	return -1;
+}
+
+int nosaic_tdp_sdk_run(int unit)
+{
+	(void)unit;
 	return -1;
 }
 
