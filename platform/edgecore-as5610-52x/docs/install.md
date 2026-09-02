@@ -157,25 +157,48 @@ tree, big-endian kernel, squashfs, overlayfs, init handover.
 
 **Two defects, and only real hardware would have found either.**
 
-The first is in the list above: `EOVERFLOW` from `s6-rc-init`, and the cause is
-that **reading a directory is enough**. Without `-D_FILE_OFFSET_BITS=64` glibc
-gives a 32-bit program the narrow `readdir`, which refuses any entry whose
-`d_ino` or `d_off` does not fit in 32 bits. `d_off` is not an offset -- it is an
-opaque cookie the filesystem picks, and tmpfs picks large ones. So an ordinary
-`readdir` of an ordinary tmpfs directory returns NULL with `errno` set, and
-`s6rc_servicedir_manage` checks `errno` after its loop exactly as it should:
+The first is in the list above: `EOVERFLOW` from `s6-rc-init`. **s6 is using an
+infinite deadline that will not fit a 32-bit `time_t`.** Without `-t`, s6 passes
+`TAIN_INFINITE_RELATIVE`, and skalibs converts an absolute deadline through a
+range check that only exists when `time_t` is 4 bytes:
 
 ```c
-errno = 0 ;
-d = readdir(dir) ;
-if (!d) break ;
-...
-if (errno) goto err ;
+#if SKALIBS_SIZEOFTIME < 8
+  if ((uu >> 32) && (uu >> 32) != 0xffffffffUL)
+    return (errno = EOVERFLOW, 0) ;
+#endif
 ```
 
-Fixed for every 32-bit architecture at once, because `off_t` and `ino_t` are
-ABI: a library built one way and a program built the other disagree about
-`struct stat` and nothing warns.
+The failure then surfaces against whatever file the operation was working on --
+"unable to supervise service directories in /run/s6-rc/servicedirs" -- which
+reads as a broken file rather than a deadline that does not fit.
+
+It is invisible everywhere else. On a 64-bit target that check is compiled out.
+Under `qemu-user` the binary is 32-bit but the syscalls land on the host's
+64-bit kernel, so the same binaries that failed on the board returned `rc=0`
+locally. Only a real 32-bit kernel shows it.
+
+The fix is a finite deadline on both calls, confirmed on the board before being
+written down:
+
+```
+s6-rc-init          -c /run/s6-rc-compiled /run/service   -> 111, EOVERFLOW
+s6-rc-init -t 30000 -c /run/s6-rc-compiled /run/service   -> 0
+s6-rc              -u change default                      -> 111, EOVERFLOW
+s6-rc -t 120000    -u change default                      -> 0, everything up
+```
+
+`s6-rc` needs its own because it spawns `s6-svlisten`, which subscribes the same
+way and failed identically.
+
+**A wrong turn worth recording**, because the evidence pointed at it and it was
+wrong. The same `EOVERFLOW` is what glibc returns from a non-LFS `readdir` or
+`stat`, and the failing function is a plain `readdir` loop -- so the first
+diagnosis was missing large-file support. Every 32-bit package was rebuilt with
+`-D_FILE_OFFSET_BITS=64`, the new `s6-rc-init` was confirmed to import
+`readdir64`, and it failed in exactly the same way. That flag is still set,
+because it is correct for a 32-bit target and every distribution does it -- but
+it fixed nothing here, and the tree should not pretend otherwise.
 
 The second cost a boot to find. This U-Boot is from 2013 and knows crc32, md5
 and sha1; the FIT was hashed with sha256. What it prints is:

@@ -575,24 +575,22 @@ func runAfter(o Options, srcDir string, env []string) error {
 // Without it glibc gives a 32-bit program the narrow stat and readdir, and a
 // value that does not fit is returned as EOVERFLOW rather than truncated.
 //
-// Reading a directory is enough to hit it, which is what makes this a boot
-// failure rather than a corner case. glibc's non-LFS readdir() refuses an
-// entry whose d_ino or d_off does not fit in 32 bits, and d_off is not an
-// offset -- it is an opaque cookie the filesystem chooses. tmpfs allocates
-// large ones, so an ordinary readdir of an ordinary tmpfs directory returns
-// NULL with errno set, and a caller that checks errno after the loop, as it
-// should, reports a failure it cannot explain.
-//
-// The AS5610 is the first 32-bit board in the fleet and it found this on its
-// first boot. Everything worked -- kernel, device tree, squashfs, the overlay
-// -- and then s6-rc-init could not read its own service directory:
-//
-//	s6-rc-init: fatal: unable to supervise service directories in
-//	/run/s6-rc/servicedirs: Value too large for defined data type
+// glibc's non-LFS readdir() refuses an entry whose d_ino or d_off does not fit
+// in 32 bits, its stat() refuses a file over 2 GiB, and both report EOVERFLOW
+// rather than truncating. Buildroot turns this on for every 32-bit target and
+// so does every distribution that ships one; NOSaic builds its own userspace,
+// so it has to say so itself.
 //
 // Set for the whole architecture rather than per recipe, because off_t and
 // ino_t are in the ABI: a library built one way and a program built the other
 // disagree about the shape of a struct stat, and that failure is silent.
+//
+// Honesty about why this was written: it was added to fix the AS5610's first
+// boot, which stopped in s6-rc-init with "Value too large for defined data
+// type". It did not fix it -- that was s6 converting an infinite deadline to a
+// 32-bit time_t, and the rebuilt binaries failed identically. This is kept
+// because it is correct for a 32-bit target regardless, not because it is the
+// fix for anything observed.
 // glibc is excluded because it is the thing being selected between: it
 // compiles both the narrow and the wide interfaces and decides which one a
 // caller gets from this very macro. Defining it in glibc's own build is not a

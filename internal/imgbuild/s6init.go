@@ -98,11 +98,25 @@ echo "NOSAIC-S6 compile rc=$?"
         rescue=1
     else
         echo "NOSAIC-S6 scan directory live after ${n}s"
-        s6-rc-init -c /run/s6-rc-compiled /run/service
+        # -t is not optional on a 32-bit board, and the reason is not obvious.
+        #
+        # Without it s6 uses TAIN_INFINITE_RELATIVE as the deadline, and
+        # converting that to a 32-bit time_t overflows -- so the subscribe path
+        # fails with EOVERFLOW, which surfaces as "Value too large for defined
+        # data type" against whatever file it was working on. It reads like a
+        # broken file rather than a deadline that will not fit.
+        #
+        # Invisible everywhere else: on a 64-bit target skalibs compiles the
+        # range check out entirely, and under qemu-user the syscalls land on
+        # the host's 64-bit kernel. Only a real 32-bit kernel shows it.
+        s6-rc-init -t 30000 -c /run/s6-rc-compiled /run/service
         rc=$?
         echo "NOSAIC-S6 init rc=$rc"
         [ $rc -eq 0 ] || rescue=1
-        s6-rc -u change default
+        # Same reason, and it needs its own: s6-rc spawns s6-svlisten, which
+        # subscribes the same way and failed identically until given a deadline
+        # that fits.
+        s6-rc -t 120000 -u change default
         rc=$?
         echo "NOSAIC-S6 change rc=$rc"
         [ $rc -eq 0 ] || rescue=1

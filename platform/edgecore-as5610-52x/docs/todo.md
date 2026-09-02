@@ -9,16 +9,22 @@ unit running EdgeNOS rather than produced here.
 
 ## Required — nothing works without these
 
-### 32-bit large-file support — fixed, not yet re-verified on hardware
+### ~~The board boots to a login~~ — done, 2026-09-02
 
-The board's first boot reached `/sbin/init` and stopped in `s6-rc-init` with
-`EOVERFLOW`. Every 32-bit package now builds with `-D_FILE_OFFSET_BITS=64`;
-what remains is to rebuild the PowerPC packages and repeat the netboot.
+Every service comes up: `s6rc-oneshot-runner dropbear getty-console ospf6d
+ospfd zebra frr-dirs frr-siteconf network nosd`, a getty on ttyS0, and a login
+as `admin`. `/proc/mtd` lists `onie`, `u-boot-env`, `board_eeprom` and `uboot`,
+so the OS can reach the bootloader environment and therefore ONIE.
 
-Worth stating because it will come up again on the next 32-bit board: this is
-an ABI-wide switch, not a per-package workaround. `off_t` and `ino_t` change
-size, so a library built one way and a program built the other disagree about
-`struct stat` silently.
+What stopped it was s6 using an infinite deadline that does not fit a 32-bit
+`time_t`; both `s6-rc-init` and `s6-rc` now get a finite `-t`. Details and the
+wrong turn taken first are in [install.md](install.md).
+
+`-D_FILE_OFFSET_BITS=64` is set for every 32-bit architecture and is **not**
+what fixed this -- it was added on the wrong diagnosis and kept because it is
+correct for a 32-bit target anyway. It is still an ABI-wide switch rather than
+a per-package one: `off_t` and `ino_t` change size, so a library built one way
+and a program built the other disagree about `struct stat` silently.
 
 EdgeNOS never met this, and the reason is instructive rather than incidental:
 its userland is a **Buildroot 2023.02.9** base, and Buildroot turns large-file
@@ -129,6 +135,21 @@ whatever its installer, and TFTP into RAM writes nothing at all. See
 [install.md](install.md). That is the analogue of how the 7050SX2 was first
 booted, and it is the right order: prove the image runs before designing the
 partition table it will live in.
+
+### FRR cannot write its log
+
+Visible the moment the services started:
+
+```
+can't open logfile /var/log/frr.log
+ZEBRA: Disabling MPLS support (no kernel support)
+```
+
+Neither is fatal -- zebra, ospfd and ospf6d all run -- and neither should be
+left. The first is a directory the image does not create or a permission the
+`frr` account does not have; the second is a kernel option this board's
+fragment does not set, and whether MPLS is wanted here is a real question
+rather than an oversight to correct blindly.
 
 ### Overlay upper has no xattr support in a RAM boot
 

@@ -2,12 +2,20 @@
 
 NOSaic's third board, and the first that is not x86_64.
 
-**It boots.** On 2026-09-01 the board ran a NOSaic image over TFTP from the
-U-Boot prompt, nothing written to its disk: our own PowerPC toolchain, our
-kernel, our device tree, squashfs mounted, overlay assembled, `/sbin/init`
-reached. It stops in `s6-rc-init` on a 32-bit large-file-support defect that is
-fixed but not yet re-verified on the hardware. See [install.md](docs/install.md)
-for how to repeat it and [todo.md](docs/todo.md) for what is left.
+**It boots to a login.** On 2026-09-02 the board ran a NOSaic image over TFTP
+from the U-Boot prompt, nothing written to its disk: our own PowerPC toolchain,
+our kernel, our device tree, squashfs mounted, overlay assembled, every service
+started and a login on the console.
+
+```
+Linux 6.12.105 ppc
+s6rc-oneshot-runner dropbear getty-console ospf6d ospfd zebra
+frr-dirs frr-siteconf network nosd
+```
+
+Nothing is installed on it: the image runs from RAM and the switch returns to
+its previous OS on a power cycle. See [install.md](docs/install.md) for how to
+repeat it and [todo.md](docs/todo.md) for what is left.
 
 | | |
 |---|---|
