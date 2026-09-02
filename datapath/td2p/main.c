@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "bde.h"
@@ -48,6 +49,13 @@ static long elapsed_ms(const struct timespec *then, const struct timespec *now)
  * It looked like a rate limit somewhere in the SDK, and it was this. The 1000
  * ms passed to the pump is a poll TIMEOUT -- the longest it will wait when
  * nothing is happening -- and never a guarantee of how often this is called.
+ *
+ * The guards below fixed the rate. They did not fix the thread: this still ran
+ * where packets are moved, so once a second the packet path stopped for as long
+ * as a FIB mirror takes. Measured from the AS5610 pinging this box, that showed
+ * up as a steady 5-26 ms with a spike to 82-118 ms about once a second, against
+ * 1 ms to a neighbour that answers in hardware. So it runs on its own thread
+ * now, and the pump does nothing but move packets.
  */
 static void datapath_tick(void)
 {
@@ -72,6 +80,20 @@ static void datapath_tick(void)
 		last_stats = now;
 		nosaic_tap_stats();
 	}
+}
+
+
+/* Runs datapath_tick off the packet path. The guards inside it still decide
+ * how often each piece actually does anything; this only decides how often it
+ * is asked. */
+static void *periodic(void *arg)
+{
+	(void)arg;
+	for (;;) {
+		sleep(1);
+		datapath_tick();
+	}
+	return NULL;
 }
 
 
@@ -462,7 +484,23 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 			 * handle the other direction. */
 			/* The routing table has to be mirrored whether or not any
 			 * packet arrives, so it runs on the pump's timeout. */
-			nosaic_tap_pump(datapath_tick, 1000);
+			/* The periodic work has a thread of its own; the pump
+			 * blocks on packets alone. A NULL tick makes poll()
+			 * wait indefinitely rather than waking for work it no
+			 * longer has. */
+			{
+				pthread_t th;
+				int trv = pthread_create(&th, NULL,
+							 periodic, NULL);
+
+				if (trv != 0) {
+					fprintf(stderr, "nosd: no periodic "
+						"thread (%s); routes will not "
+						"be mirrored\n", strerror(trv));
+					return 1;
+				}
+			}
+			nosaic_tap_pump(NULL, 0);
 			return 1;   /* pump only returns on failure */
 		}
 	}
