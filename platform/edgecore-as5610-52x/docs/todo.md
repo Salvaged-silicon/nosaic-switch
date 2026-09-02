@@ -192,6 +192,59 @@ datapath daemon that does not exist. This is the same blocker as `nosd-tdp`,
 recorded separately because it is what "NOSaic replaces EdgeNOS here" actually
 waits on -- the control plane is done.
 
+### nosd-tdp — the datapath, and it is not blocked on the unknowns it looked blocked on
+
+This is the one remaining thing between "NOSaic boots here" and "NOSaic
+replaces EdgeNOS here". Nothing forwards, no front-panel port exists, and OSPF
+has nothing to run on. Three questions had to be answered before it could even
+be scoped, and all three are now answered, on this SDK, without hardware.
+
+**Does OpenBCM 6.5.24 support this chip?** Yes. `include/soc/devids.h:842`
+defines `BCM56846_DEVICE_ID 0xb846`, and `src/soc/esw/drv.c:5038` handles it in
+the same cases as the rest of the Trident+ family. The register and memory
+database is `src/soc/mcm/bcm56840_a0.c` — the family base, shared by the
+whole 5684x line, which is why grepping for the exact part number finds only
+eight files and looks discouraging. EdgeNOS reached the same conclusion from
+the other direction: its datapath includes `bcm56840_a0_defs.h`.
+
+**Does the SDK build big-endian?** Yes, and it has a PowerPC platform for it.
+`make/Makefile.linux-bmw-2_6` is Broadcom's own PPC big-endian target:
+
+```
+CROSS_COMPILE = powerpc-wrs-linux-gnu-...
+CFGFLAGS += -DSYS_BE_PIO=1 -DSYS_BE_PACKET=0 -DSYS_BE_OTHER=1
+ENDIAN = BE_HOST=1
+```
+
+**Does it configure with our toolchain?** Yes. `make platform=bmw-2_6 -n` with
+`CROSS_COMPILE=powerpc-nosaic-linux-gnu-` resolves and emits exactly
+`-DBE_HOST=1 -DSYS_BE_PIO=1 -DSYS_BE_OTHER=1 -DSYS_BE_PACKET=0`. That last set
+is worth pausing on: EdgeNOS's switchdb carries "BE PIO needs SYS_BE_PIO=1" as
+a hard-won quirk, and it turns out to be what the SDK's own PowerPC platform
+sets. The bench found what the vendor already documented in a makefile.
+
+So the work is ordinary rather than speculative:
+
+1. **Build openbcm for powerpc.** The recipe hardcodes `platform=x86-64-fc28`
+   in its targets and again in the `after:` step that captures the SDK's
+   defines. It needs to select the platform by architecture — and deliberately
+   *not* by adding a Broadcom-specific field to `arch/*/arch.yml`, which is
+   exactly the leak the project plan warns about.
+2. **A CMICe BDE.** `datapath/td2p/bde.c` is written for the 7050SX2's CMICm.
+   This chip has a CMICe, and the interrupt and DMA paths differ. This is the
+   part with real unknowns left.
+3. **`nosd-tdp` itself**, as a sibling of `nosd-td2p` — `provides: [nosd]`,
+   `conflicts: [nosd]`. The two share a northbound contract and most of their
+   structure; whether they can share code is the first honest test of whether
+   the per-ASIC split was drawn in the right place, which is what the project
+   plan says this board is for.
+
+Every define the SDK is built with must also be set when compiling against it.
+The openbcm recipe already captures them into `sdk-defines.txt` for exactly
+this reason: `INCLUDE_RCPU` shifts `soc_cm_device_vectors_t` by a pointer and
+`BCM_ALL_CHIPS` changes every memory ID, and neither mismatch produces a
+compile error, a link error, or a log line.
+
 ### The board's own hardware is undescribed
 
 There is no platform HAL for it. From EdgeNOS's manifest it needs at least a
