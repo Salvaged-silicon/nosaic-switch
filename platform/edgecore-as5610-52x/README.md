@@ -116,38 +116,26 @@ That is what demonstrates the chip moving frames between ports, and it is a loop
 wherever two ports reach the same neighbour -- which this board has, with swp1
 and swp2 going to the same upstream. The tool says so every time it does it.
 
-## Known: punt latency is poor once the control plane is busy
+## Punt latency
 
-Pinging a directly connected neighbour from the switch itself, on an idle box
-with four OSPF adjacencies up:
+Pinging a directly connected neighbour from the switch itself, idle box, four
+OSPF adjacencies up:
 
-    min 8.5 ms   median 27 ms   p90 591 ms   max 1591 ms
+    min 6.0 ms   median 23 ms   p90 93 ms   max 100 ms
 
-Transit is unaffected -- that is forwarded in hardware and never reaches the
-CPU. This is only traffic to and from the box, but that includes every routing
-protocol, so it is worth fixing rather than tolerating.
+It was min 8.5 / median 27 / p90 591 / max 1591 until the periodic work moved
+off the packet thread. `nosaic_tap_pump` calls its tick on every poll wakeup
+rather than on a timer, so the FIB mirror was running once per received frame
+and `nosaic_tap_stats()` -- `bcm_stat_sync()` across all 52 ports, out of
+hardware -- every thirtieth frame. Both now run on a thread that sleeps between
+passes, and the pump blocks on packets and nothing else.
 
-Two effects, and they need different work.
+What is left is the floor, not contention: a median of 23 ms against a 20 ms
+`polled_irq_delay` is the poll interval, and that cannot go lower without
+spinning a core (see asic.conf). Removing it means real interrupts, which need a
+kernel path to userspace -- `uio_pci_generic` is in-tree, so taking it does not
+reopen the argument against shipping the vendor's BDE modules.
 
-**The baseline.** The same measurement with OSPF down was 0.99-3.39 ms, so 27 ms
-is not the floor of the punt path -- it is contention. Every punted frame, every
-frame injected from Linux, and all the periodic chip work run on one thread:
-`nosaic_tap_pump` calls `datapath_tick` between poll cycles, and the tick mirrors
-the kernel FIB and reads chip counters. `nosaic_tap_stats()` is the expensive one,
-because `bcm_stat_sync()` pulls counters for all 52 ports out of the hardware
-while the packet path waits for it.
-
-**The tail.** p90 of 591 ms against a median of 27 is periodic blocking, not
-load, and it matches work that happens on a timer rather than per packet.
-
-The fix is to take the periodic work off the packet thread, not to make it
-cheaper or rarer -- rarer only moves the stall further apart. Until then, do not
-read punt latency as a measure of the datapath: `--selftest` and hardware
-counters say what the chip is doing, and this number says what one thread in
-userspace is doing.
-
-Separately, `polled_irq_delay` cannot go below 20 ms without spinning a core
-(see asic.conf). Real interrupts would remove both the floor and that tradeoff;
-they need a kernel path to userspace -- `uio_pci_generic` is the obvious one,
-and it is in-tree, so it does not reopen the argument against shipping the
-vendor's BDE modules.
+Transit is unaffected either way: it is forwarded in hardware and never reaches
+the CPU. This is control-plane traffic only -- which still includes every
+routing protocol, so the floor is worth removing eventually.

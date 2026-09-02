@@ -52,6 +52,7 @@
 #include <bcm/error.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 /* Bus and device type, from include/sal/types.h. A PCI-attached switch chip --
  * stated rather than defaulted, because the SDK selects access paths from it
@@ -876,23 +877,39 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
  * file already created, so the two cannot drift.
  */
 /*
- * The periodic work, and the only window into a running daemon.
+ * The periodic work, on a thread of its own.
  *
- * The FIB mirror has to run whether or not a packet arrives, so it hangs off
- * the pump's timeout rather than off traffic. The tap counters are printed
- * because there is otherwise no way to ask a running nosd anything: --stats
- * and --rx each reinitialise the chip, so using them means stopping the
- * daemon, which changes the thing being measured. Once a minute into the log
- * costs nothing and answers "is this tap passing frames in both directions",
- * which is the question that comes up every time something does not work.
+ * It used to hang off the pump's tick, which was wrong twice over. The pump
+ * calls its tick on every poll wakeup rather than on a timer, so the FIB mirror
+ * ran once per received frame and the counter dump -- bcm_stat_sync() across all
+ * 52 ports, out of hardware -- ran every thirtieth frame. And even correctly
+ * timed it would still be the wrong thread: anything slow there is time the
+ * packet path is not moving packets.
+ *
+ * The cost was measurable and large. Pinging a directly connected neighbour
+ * from the box: median 27 ms, p90 591 ms, max 1591 ms, against 0.99-3.39 ms for
+ * the same path with the control plane quiet. The tail is the shape of periodic
+ * blocking rather than load, which is what pointed here.
+ *
+ * So the pump now blocks on packets and nothing else, and this thread sleeps
+ * between passes. The two touch the same SDK, which is thread-safe, and the
+ * same tap counters, where a torn read costs an inaccurate log line and nothing
+ * else.
  */
-static void datapath_tick(void)
+static void *periodic(void *arg)
 {
-	static int ticks;
+	unsigned long ticks = 0;
 
-	nosaic_l3_poll();
-	if (++ticks % 30 == 0)
-		nosaic_tap_stats();
+	(void)arg;
+	for (;;) {
+		sleep(1);
+		nosaic_l3_poll();
+		/* Once a minute. It is a diagnostic, and it reads every port's
+		 * counters out of the chip, so it is not free even here. */
+		if (++ticks % 60 == 0)
+			nosaic_tap_stats();
+	}
+	return NULL;
 }
 
 int nosaic_tdp_sdk_run(int unit)
@@ -956,10 +973,25 @@ int nosaic_tdp_sdk_run(int unit)
 	printf("taps         %d port(s) on the Linux stack\n", nosaic_tap_count());
 	fflush(stdout);
 
-	/* Pumping is this thread's job now. The kernel's routing table is
-	 * mirrored on the pump's timeout, so it happens whether or not a packet
-	 * ever arrives. */
-	nosaic_tap_pump(datapath_tick, 1000);
+	/* The FIB mirror and the counter dump run on their own thread; this one
+	 * does nothing but move packets. A NULL tick makes the pump block in
+	 * poll() until a frame arrives rather than waking on a timer it no
+	 * longer has any work for. */
+	{
+		pthread_t th;
+		int rv2 = pthread_create(&th, NULL, periodic, NULL);
+
+		if (rv2 != 0) {
+			/* Without it the kernel's routes never reach the chip.
+			 * Better to say so than to forward in software and look
+			 * merely slow. */
+			fprintf(stderr, "nosd-tdp: no periodic thread (%s); "
+				"routes will not be mirrored\n", strerror(rv2));
+			return -1;
+		}
+	}
+
+	nosaic_tap_pump(NULL, 0);
 	return -1;   /* the pump only returns when it has failed */
 }
 
