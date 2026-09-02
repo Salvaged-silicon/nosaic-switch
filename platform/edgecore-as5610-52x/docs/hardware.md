@@ -272,10 +272,28 @@ QSFP port p (49-52): bus = 66 + (p - 49)
 ```
 
 Nine buses per group of eight ports: the sub-mux takes one (buses 10, 19, 28,
-37, 46, 55) and its eight channels take the rest. **Do not hard-code these.**
-EdgeNOS's ONLP layer carries a different set — SFP on 22-69, GPIO on 17 — from
-an older kernel, and it is simply wrong here. Its *addresses* are still right;
-only the bus numbers moved.
+37, 46, 55) and its eight channels take the rest.
+
+**Do not hard-code these, and the evidence is in EdgeNOS's own tree.** The bus
+numbers moved between kernel versions, and three different answers survive
+side by side:
+
+| Source | SFP ports | QSFP | GPIO |
+|---|---|---|---|
+| `onlp/sfpi.c` | buses 22-69 | 18-21 | 17 |
+| `onlp/platform_lib.h` | `21 + port` | `port - 49 + 18` | — |
+| `platform.py` | `11 + 9*((p-1)/8) + ((p-1)%8)` | `66 + (p-49)` | 64 |
+
+Only the last matches the running switch. The addresses never moved; the bus
+numbers did, because they are allocated in probe order and the probe order is a
+property of the kernel and the device tree, not of the board.
+
+So the formula above documents *this* device tree and should not be written
+into code. The durable way to find a port's bus is to walk it: the mux devices
+appear in sysfs as `i2c-N/of_node` pointing at `.../i2c@3100/mux@75/i2c@0/...`,
+so a port's bus can be resolved from the topology that actually loaded rather
+than from a number someone wrote down against a kernel that has since been
+replaced.
 
 ### GPIO: four expanders on bus 64, and four more the device tree forgot
 
@@ -292,25 +310,45 @@ Pins 0-3 driven high deassert QSFP reset. The per-module control byte is bit0
 `MODSEL_L` (0 = selected), bit1 `RST_L` (1 = not reset), bit2 `LPMODE`
 (0 = high power) — so `0x02` is a selected, running, full-power module.
 
-**And then the gap.** Bus 65 — ch3 of the same mux — is empty in Linux, because
-the device tree describes its contents in comments and declares no nodes. The
-chips are physically there; a read-only probe of the running switch:
+**Bus 65 — ch3 of the same mux — has no Linux devices on it**, because the
+device tree describes its contents in comments and declares no nodes. The chips
+are there; a read-only probe of the running switch:
 
 ```
 bus 65:  0x20 ACK -> 0x00   0x21 ACK -> 0x00
          0x22 ACK -> 0x00   0x23 ACK -> 0xff
 ```
 
-Those are the four expanders carrying **SFP MOD_ABS, TX_FAULT, RX_LOS and
-TX_DISABLE for ports 1-48** — presence, fault, loss-of-signal and the ability
-to turn a transmitter off. ONLP has the map (`0x20` = MOD_ABS ports 0-39,
-active low = present; `0x23` = ports 40-47 plus QSFP presence) and calls them
-PCA9506, a 40-pin part, which fits "ports 0-39" far better than the 8-pin
-pca9538 the device tree names on the neighbouring channel.
+Those four expanders carry **SFP MOD_ABS, TX_FAULT, RX_LOS and TX_DISABLE for
+ports 1-48**. ONLP has the map — `0x20` = MOD_ABS ports 0-39, active low =
+present; `0x23` = ports 40-47 plus QSFP presence — and calls them PCA9506, a
+40-pin part, which fits "ports 0-39" better than the 8-pin `pca9538` the device
+tree names on the neighbouring channel.
 
-Until those nodes exist, NOSaic cannot tell whether an SFP is fitted, cannot
-see a transmitter fault, and cannot disable a transmitter. Adding them is
-device-tree work, not driver work.
+**This is not a blocker, and it is worth being precise about why.** EdgeNOS
+drives all of it and has no device tree nodes either: it opens `/dev/i2c-N` and
+does raw transactions.
+
+```c
+i2c_read (I2C_BUS_GPIO_CTRL_2, I2C_ADDR_SFP_MOD_ABS,    offset, &val)
+i2c_write(I2C_BUS_GPIO_CTRL_2, I2C_ADDR_SFP_TX_DISABLE, offset, &val)
+i2c_read (I2C_BUS_GPIO_CTRL_1, 0x70, 0x01, &val)   /* QSFP lpmode */
+```
+
+Note the last line: even the four expanders that *are* bound as gpiochips on
+bus 64 are driven by raw I2C rather than through `/sys/class/gpio`. So the
+board has two ways in, and the vendor stack uses the lower one for everything.
+
+The choice for NOSaic is therefore a design decision rather than a missing
+capability:
+
+- **Declare them in the device tree** and get `gpiochip`s, a kernel driver
+  handling the register banks, and no bus numbers in our code.
+- **Raw I2C**, as EdgeNOS does — proven on this hardware, and it works today
+  with no device tree change at all.
+
+The first is tidier and the second is what is known to work. Either way the
+information is reachable now.
 
 ### LEDs are not on this bus
 
