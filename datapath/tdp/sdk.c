@@ -615,6 +615,25 @@ int nosaic_tdp_sdk_ports_up(int unit)
 	}
 
 	printf("ports        %d enabled, %d with link\n", up, linked);
+
+	/* Link state read straight after enabling a port is not an answer. The
+	 * MAC has just been let out of reset, the SerDes has not finished
+	 * training, and on a board with SFP+ cages the module may not have been
+	 * looked at yet -- so every port reads down whether or not anything is
+	 * plugged into it, which is indistinguishable from a real fault.
+	 * A couple of seconds is long enough for training to settle. */
+	sleep(2);
+	linked = 0;
+	BCM_PBMP_ITER(cfg.port, port) {
+		int link = 0;
+
+		if (bcm_port_link_status_get(unit, port, &link) == BCM_E_NONE && link) {
+			linked++;
+			printf("  port %-3d %-8s LINK UP after settling\n",
+			       port, SOC_PORT_NAME(unit, port));
+		}
+	}
+	printf("settled      %d with link\n", linked);
 	return 0;
 }
 
