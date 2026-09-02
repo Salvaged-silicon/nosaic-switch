@@ -20,6 +20,13 @@ an ABI-wide switch, not a per-package workaround. `off_t` and `ino_t` change
 size, so a library built one way and a program built the other disagree about
 `struct stat` silently.
 
+EdgeNOS never met this, and the reason is instructive rather than incidental:
+its userland is a **Buildroot 2023.02.9** base, and Buildroot turns large-file
+support on for every 32-bit target as a matter of course. Inheriting a
+distribution's userland inherits its defaults. Building one from source means
+owning them, and this is the first of those defaults NOSaic has had to
+discover for itself.
+
 **Still open: `_TIME_BITS=64`.** 32-bit `time_t` overflows in January 2038, and
 a project whose premise is keeping abandoned hardware running is exactly the
 project that will still have these boards then. glibc 2.42 supports it and it
@@ -122,6 +129,31 @@ whatever its installer, and TFTP into RAM writes nothing at all. See
 [install.md](install.md). That is the analogue of how the 7050SX2 was first
 booted, and it is the right order: prove the image runs before designing the
 partition table it will live in.
+
+### Overlay upper has no xattr support in a RAM boot
+
+The first boot logged:
+
+```
+overlayfs: failed to set xattr on upper
+overlayfs: ...falling back to redirect_dir=nofollow.
+overlayfs: ...falling back to uuid=null.
+```
+
+`CONFIG_TMPFS_XATTR` is not set, and in a RAM boot the overlay's upper layer is
+a tmpfs. Overlayfs fell back and the boot continued, so this is not what stopped
+it -- but the fallback is not free: opaque directory markers are an xattr, and
+without them removing a directory that exists in the lower layer and recreating
+it does not behave the way it should. On a disk boot the upper is ext4 and the
+question does not arise, which is why no board has met it before.
+
+Deliberately not changed while the large-file fix is being verified -- one
+variable at a time, and it costs a full kernel rebuild.
+
+Related, from EdgeNOS's build notes and not yet a problem here: `mksquashfs` on
+a container overlay filesystem can fail trying to write `security.selinux` and
+exit non-zero. Their fix was `-no-xattrs` on both mksquashfs and unsquashfs.
+NOSaic's builds have not hit it.
 
 ### The board's own hardware is undescribed
 
