@@ -23,10 +23,23 @@ source:
 
 depends: [glibc]
 
+# Staged to build against, never shipped: the SDK is 874 MB of static archives
+# and what leaves here is the binary that linked them.
+build_depends: [openbcm]
+
 build:
   system: make
   subdir: tdp
-  targets: [tdp-probe, strip]
+  env:
+    # Where the staged SDK is. Without it the makefile builds only the BDE and
+    # its probe, which is deliberate -- a contributor without the vendor tree
+    # can still build, test and change everything else here.
+    SDK_DIR: "${STAGING}/usr"
+  # clean first: the source is this repository, so a local build leaves
+  # object files in the tree that get copied in. make then finds them
+  # newer than their sources and links the wrong architecture -- caught
+  # by the arch check, but only after a full build.
+  targets: [clean, tdp-probe, strip]
 
   # Relative to the source root, which is the whole datapath tree.
   stage:

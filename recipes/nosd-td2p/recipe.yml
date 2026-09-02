@@ -37,7 +37,11 @@ build_depends: [openbcm]
 build:
   system: make
   subdir: td2p
-  targets: [nosd-td2p, strip]
+  # clean first: the source is this repository, so a local build leaves
+  # object files in the tree that get copied in. make then finds them
+  # newer than their sources and links the wrong architecture -- caught
+  # by the arch check, but only after a full build.
+  targets: [clean, nosd-td2p, strip]
   env:
     # Where the staged SDK is. Its headers land under include/openbcm and its
     # archives under lib/openbcm, so this points at the parent of both and the

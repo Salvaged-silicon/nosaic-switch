@@ -67,6 +67,7 @@
  * running: forwarding stops immediately. Read-only by default.
  */
 #include "bde.h"
+#include "sdk.h"
 #include "mmio.h"
 
 #include <stdio.h>
@@ -76,14 +77,16 @@ int main(int argc, char **argv)
 {
 	struct nosaic_tdp_bde b;
 	const char *bdf = NULL;
-	int set_endian = 0, rc;
+	int set_endian = 0, attach = 0, rc;
 	uint32_t raw = 0, es;
 
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--set-endian"))
 			set_endian = 1;
+		else if (!strcmp(argv[i], "--attach"))
+			attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--help")) {
-			printf("usage: tdp-probe [--set-endian] [<pci-bdf>]\n");
+			printf("usage: tdp-probe [--set-endian] [--attach] [<pci-bdf>]\n");
 			return 0;
 		} else
 			bdf = argv[i];
@@ -135,6 +138,25 @@ int main(int argc, char **argv)
 		printf("dma readback %s\n", *p == pat ? "OK" : "FAILED");
 	} else {
 		printf("dma pool     unavailable (see above)\n");
+	}
+
+	/* --attach hands the chip to the SDK, which is the first thing that
+	 * drives S-Channel and therefore the first real test of whether the
+	 * barriers hold under a sequence rather than a single register. */
+	if (attach) {
+		int unit;
+
+		if (rc != 0) {
+			printf("\nnot attaching: the identity check has to pass first\n");
+		} else {
+			printf("\n=== handing the chip to the SDK ===\n");
+			unit = nosaic_tdp_sdk_attach(&b, b.device_id, (raw >> 16) & 0xff);
+			printf("%s\n", unit >= 0
+			       ? "ATTACHED  soc_attach completed"
+			       : "ATTACH FAILED  see above");
+			if (unit < 0)
+				rc = -1;
+		}
 	}
 
 	printf("\n%s\n", rc == 0
