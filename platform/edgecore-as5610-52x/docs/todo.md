@@ -385,18 +385,46 @@ So the work is ordinary rather than speculative:
    disagreement is not an error the SDK reports — it byte-swaps or fails to,
    and everything is wrong in the same direction.
 
-   **Two candidates for the crash, in order.** The SDK says plainly that it
-   could not read `config.bcm` and loaded no variables; this board needs chip
-   configuration — port mapping above all — and EdgeNOS carries a 3.2 KB
-   `config.bcm` for it in `/etc/edged/`. A NULL where a configured value was
-   expected is the ordinary way that ends. The other is ordering: `soc_attach`
-   is the first thing that drives S-Channel, which is the sequence the barriers
-   exist for, and a crash is not the symptom one would predict but it is not
-   excluded either.
+   **Diagnosed, and it is the configuration rather than the barriers.** The
+   kernel logs enough to place it exactly, with no debugger needed:
 
-   Distinguishing them needs a backtrace, which means the next step is a build
-   with symbols and either gdb on the board or a core dumped and read here.
-   Guessing between the two would be cheap and wrong.
+   ```
+   tdp-probe[521]: segfault (11) at 1ec8d3c nip 1007e490 lr 1007e46c
+                   in tdp-probe[10000000+3e9d000]
+   code: ... 3d2801ed <80e98d3c> ...
+   ```
+
+   The binary is mapped at `0x10000000`, so the fault is at offset `0x7e490`,
+   which `addr2line` against an unstripped build of the same sources puts in
+   **`soc_counter_attach`, `src/soc/common/counter.c:7974`**. The faulting
+   instruction is `lwz r7,-29380(r9)` after `addis r9,r8,0x1ed` — a base
+   register plus a large constant, and the fault address `0x01ec8d3c` says the
+   base was zero.
+
+   Line 7974 is `blk = SOC_PORT_BLOCK(unit, phy_port)`, inside
+
+   ```c
+   /* We can't use pbmp_valid calculations, so we must do this manually. */
+   for (phy_port = 0; ; phy_port++) {
+   ```
+
+   an **unbounded** loop that stops only when the port table reports the end of
+   the list. With no port configuration loaded there is no terminator and it
+   walks until it faults. That is the SDK behaving reasonably given nothing to
+   work from, and it matches the line it printed first: `sal_config_refresh:
+   cannot read file: config.bcm, variables not loaded`.
+
+   So the barriers are not implicated, and the next step is not debugging.
+
+   **What it needs is what the 7050SX2 already has.** That board carries
+   `config/asic.conf` — Broadcom `config.bcm` content, one property per line —
+   and `props.c` answers `config_var_get` from it. This board needs the same
+   two things, plus the port map, which the SDK cannot bring up a port without:
+   EdgeNOS has a 3.2 KB `config.bcm` for the AS5610 in `/etc/edged/`.
+
+   `props.c` is the third thing both datapaths want and neither should own — a
+   properties file reader is not ASIC-specific. `datapath/common/` already
+   holds `mmio.h` for the same reason.
 
 5. **`nosd-tdp` itself**, as a sibling of `nosd-td2p` — `provides: [nosd]`,
    `conflicts: [nosd]`. The two share a northbound contract and most of their
