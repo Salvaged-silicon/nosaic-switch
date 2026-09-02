@@ -546,11 +546,34 @@ So the work is ordinary rather than speculative:
    family, and check whether this SDK build registers the Trident+ BCM driver
    at all — `soc_attach` succeeding only proves the SOC layer knows the chip.
 
-   Also still set from the earlier bisect: `table_dma_enable=0` and
-   `tslam_dma_enable=0`. That bisect never returned a clean answer because its
-   first run hit the corruption, and it should be re-run now that a test means
-   something — table DMA is how the SDK programs most of the chip, and leaving
-   it off is a bring-up crutch rather than a decision.
+   **The DMA bisect is clean now, and DMA is the real blocker.**
+
+   ```
+   DMA on   soc_misc_init(0) returned -9 (Operation timed out)
+   DMA off  soc_misc_init ok, soc_mmu_init ok, reaches bcm_attach
+   ```
+
+   The chip is not getting what the CPU writes into the pool. Two explanations
+   ruled out:
+
+   - **Addressing.** The P2020's inbound ATMU window for pci1 reads enabled,
+     2 GB, targeting local memory with a zero base — 1:1 over DRAM, so
+     `0x78000000` is reachable as written. `l2p` returns CPU physical, which is
+     what that mapping makes correct.
+   - **CPU cache.** `sflush` and `sinval` were no-ops on the argument that a
+     `no-map` region mapped through `/dev/mem` with `O_SYNC` is uncached.
+     Implementing them properly with `dcbf` over the cache line changed
+     nothing, so either the mapping was already uncached or the cache was never
+     the problem. The implementations are kept: they are correct either way and
+     the no-op version was an assumption rather than a finding.
+
+   What is left, roughly in order: the CMICe's DMA engine may need setup the
+   CMICm path does not, since this is the one piece of the BDE knowingly
+   carried over without examination; the SDK may want an interrupt for DMA
+   completion even with `tdma_intr_enable=0`; or the descriptor contents are
+   wrong in a way only a bus trace or the SDK's own debug output will show.
+   Turning on the SDK's SBUS/DMA logging is the cheap next move and has not
+   been tried.
 
 7. **~~`soc_misc_init` times out~~ — passed, see above. Kept for the record.**
 

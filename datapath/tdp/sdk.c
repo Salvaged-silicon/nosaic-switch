@@ -25,6 +25,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #ifdef NOSAIC_WITH_SDK
@@ -148,25 +149,55 @@ static void *nosaic_p2l(soc_cm_dev_t *dev, sal_paddr_t addr)
 /*
  * Cache maintenance around DMA.
  *
- * No-ops, and the reason is the mapping rather than an assumption that
- * coherency is free: the DMA pool is reserved with no-map and opened through
- * /dev/mem with O_SYNC, which on this architecture gives an uncached guarded
- * mapping. There is no dirty line to flush and none to invalidate.
+ * These were no-ops on the reasoning that the pool is reserved no-map and
+ * opened through /dev/mem with O_SYNC, so the mapping is uncached and there is
+ * nothing to flush. That reasoning may be right and is not worth betting the
+ * DMA engine on: if the mapping is cacheable after all, a descriptor the CPU
+ * has written sits in the cache, the chip fetches the memory behind it, and
+ * the operation times out rather than failing in a way that names a cache.
  *
- * Written out rather than left unset because the SDK requires them, and
- * because if the mapping ever becomes cacheable these are the two functions
- * that have to grow bodies -- and the failure without them would be corrupt
- * descriptors rather than an error.
+ * Which is what this board does. With DMA enabled soc_misc_init times out;
+ * with table_dma_enable=0 and tslam_dma_enable=0 it passes and bring-up
+ * reaches bcm_attach. So the chip is not getting what the CPU wrote.
+ *
+ * dcbf writes a dirty line back and invalidates it, which serves both
+ * directions: before the chip reads, the CPU's writes are in memory; before
+ * the CPU reads, its stale copies are gone. It is user-mode accessible, unlike
+ * dcbi. The loop steps by the cache line, which is 32 bytes on an e500v2 and
+ * read from the device tree rather than assumed -- a wrong stride either does
+ * too much work or misses lines.
  */
+#if defined(__powerpc__) || defined(__PPC__)
+#define NOSAIC_CACHE_LINE 32
+
+static void cache_flush_range(void *addr, int length)
+{
+	char *p = (char *)((uintptr_t)addr & ~(uintptr_t)(NOSAIC_CACHE_LINE - 1));
+	char *end = (char *)addr + length;
+
+	for (; p < end; p += NOSAIC_CACHE_LINE)
+		__asm__ __volatile__("dcbf 0,%0" : : "r"(p) : "memory");
+	__asm__ __volatile__("sync" ::: "memory");
+}
+#else
+static void cache_flush_range(void *addr, int length)
+{
+	(void)addr; (void)length;
+	__asm__ __volatile__("" ::: "memory");
+}
+#endif
+
 static int nosaic_sflush(soc_cm_dev_t *dev, void *addr, int length)
 {
-	(void)dev; (void)addr; (void)length;
+	(void)dev;
+	cache_flush_range(addr, length);
 	return 0;
 }
 
 static int nosaic_sinval(soc_cm_dev_t *dev, void *addr, int length)
 {
-	(void)dev; (void)addr; (void)length;
+	(void)dev;
+	cache_flush_range(addr, length);
 	return 0;
 }
 
