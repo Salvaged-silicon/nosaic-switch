@@ -458,7 +458,70 @@ So the work is ordinary rather than speculative:
    properties file reader is not ASIC-specific. `datapath/common/` already
    holds `mmio.h` for the same reason.
 
-5. **`nosd-tdp` itself**, as a sibling of `nosd-td2p` — `provides: [nosd]`,
+5. **A RAM-booted image can read a large file wrong, and it blocks everything
+   above it.** This is now the first thing to fix.
+
+   `/usr/sbin/tdp-probe` is 125 MB. Read from the running switch it does not
+   match the package it was built from, and the difference is pages of zeros
+   where code should be:
+
+   ```
+   md5 on the box   24ebc77043c05d66c2805da9e6ad6120
+   md5 in the image 6e446d72f55def6d229ecd2895d2a679
+   bytes at 0x29f4004:  00 00 00 00 00 00 00 00   (should be 3d 20 17 d6)
+   ```
+
+   It is not the file and not the transfer. The squashfs on the build host
+   holds the correct bytes, and U-Boot verified the FIT's crc32 over the
+   initramfs that contains it. It is not decompression either, because
+   **dropping caches and reading again gives the correct md5**. Nothing is
+   logged: no squashfs error, no OOM, 1.88 GB free.
+
+   So it is the page cache, in the stack a RAM boot builds: a squashfs file
+   inside an initramfs unpacked to tmpfs, attached to a loop device, mounted,
+   and an overlay on top. A disk-installed image mounts squashfs from a
+   partition and has none of that.
+
+   The symptom above it is a jump into a zero page:
+
+   ```
+   tdp-probe[522]: illegal instruction (4) at 129f4004 nip 129f4004
+   code: ... 00000000 <00000000> 00000000 ...
+   ```
+
+   which reads as an unsupported opcode on a soft-float e500v2 — the one thing
+   this architecture is expected to produce — and is nothing of the kind. It
+   cost a round of chasing a toolchain problem that did not exist.
+
+   **Everything below is untrustworthy until this is fixed**, because a test
+   that fails may have read a corrupt binary. Two candidate directions: carry
+   the root filesystem in the initramfs as a plain cpio so it unpacks into
+   tmpfs with no loop and no squashfs — more RAM, one layer instead of four —
+   or find the actual bug, which is worth doing since disk-booted boards share
+   squashfs even if not the loop.
+
+6. **`soc_misc_init` times out, cause not yet established.**
+
+   ```
+   ATTACHED  soc_attach completed
+     soc_misc_init...
+   nosd-tdp: soc_misc_init(0) returned -9 (Operation timed out)
+   ```
+
+   Ruled out so far. **Bus mastering** is enabled — and the check that said
+   otherwise was reading PCI config space without byte-swapping, which is a bug
+   in the reader rather than the chip. **Interrupts**: every path that can wait
+   on one now polls, `miim`/`tdma`/`tslam`/`schan_intr_enable=0`, because
+   `nosd-tdp` delivers no interrupts and the 7050SX2's asic.conf records
+   exactly this failure. Neither changed the timeout.
+
+   The bisect that would settle the next candidate — DMA addressing, whether
+   the chip sees the pool where we think it does through the PCIe inbound
+   window — is `table_dma_enable=0` and `tslam_dma_enable=0`, now set. Its
+   first run hit the corruption above and told us nothing, which is why that
+   comes first.
+
+7. **`nosd-tdp` itself**, as a sibling of `nosd-td2p` — `provides: [nosd]`,
    `conflicts: [nosd]`. The two share a northbound contract and most of their
    structure; whether they can share code is the first honest test of whether
    the per-ASIC split was drawn in the right place, which is what the project
