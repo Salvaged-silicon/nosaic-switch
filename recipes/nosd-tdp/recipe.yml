@@ -64,8 +64,7 @@ build:
     - target: /usr/sbin/tdp-probe
       path: /usr/sbin/nosd
 
-services:
-  - name: nosd
-    exec: /usr/sbin/nosd --serve
-    after: [network]
-    restart: always
+# No services stanza. The image builder writes the nosd unit itself, because the
+# daemon's name and ordering are the same on every board and only it knows what
+# else that board runs. Its exec line is a bare /usr/sbin/nosd, so this binary
+# decides from argv[0] rather than from a flag that would not survive the trip.

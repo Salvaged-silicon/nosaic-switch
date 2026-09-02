@@ -66,3 +66,26 @@ Two of the three already exist in the tree:
   drawn in the right place.
 - **Nothing has been installed on it.** The unit in the lab runs EdgeNOS, and
   every fact in these pages was read off it rather than produced by NOSaic.
+
+## Known: the chip does not survive a hard kill of nosd
+
+`kill -9` on a running `nosd` leaves the chip mid-operation, and the next attach
+cannot fully recover it. The symptoms are specific and worth recognising:
+
+    WC40 : TXPLL did not lock: u=0 p=29
+    soc_reg32_read: invalid S-Channel reply, expected READ_REG_ACK
+    Warning: Port xe19: Failed to configure initial settings: Feature unavailable
+    bcm_init failed in port
+
+A retry then gets further and still lands short -- 48 of 52 ports enabled and no
+link at all, on a board that had all 52 and five links a minute earlier. Nothing
+reports an error at that point, which is what makes it worth writing down: the
+daemon says it is serving and the switch is quietly crippled.
+
+Only a board reset clears it. A cold boot comes back to 52 ports and five links
+every time, so this is about how the chip is left, not about the init sequence.
+
+Stop `nosd` through the supervisor, which lets it exit between operations. The
+real fix is for the daemon to reset the chip on the way out and on the way in --
+`soc_reset_init` as it stands is evidently not enough after an interrupted
+sequence -- and until then, do not `kill -9` a datapath daemon on this board.

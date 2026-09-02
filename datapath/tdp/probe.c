@@ -98,6 +98,29 @@ int main(int argc, char **argv)
 	int set_endian = 0, attach = 0, init = 0, ports = 0, stats = 0, serve = 0, attach_failed = 0, rc;
 	uint32_t raw = 0, es;
 
+	/*
+	 * Invoked as `nosd`, be the daemon.
+	 *
+	 * The service that starts this is generic -- every ASIC's provider
+	 * installs a /usr/sbin/nosd and the unit names that and nothing else, so
+	 * the exec line carries no arguments and cannot carry any that mean
+	 * something to one chip and not another. A flag in the recipe does not
+	 * survive that: the image builder writes the unit, and it wrote
+	 * `exec /usr/sbin/nosd`, which ran a bare probe that attached to nothing
+	 * and exited 2 in a restart loop.
+	 *
+	 * Deciding from argv[0] puts the choice where the name already is. The
+	 * probe modes stay reachable by calling tdp-probe, which is the other
+	 * half of what this binary is for.
+	 */
+	{
+		const char *me = strrchr(argv[0], '/');
+
+		me = me ? me + 1 : argv[0];
+		if (!strcmp(me, "nosd"))
+			serve = ports = init = attach = set_endian = 1;
+	}
+
 	for (int i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "--set-endian"))
 			set_endian = 1;
