@@ -35,8 +35,32 @@
  *
  * So the check does what it exists for: it says the mapping is wrong before
  * anything is built on top of it, rather than letting chip initialisation fail
- * later for a reason that names nothing. --set-endian is the other half, and
- * needs a board with no datapath running.
+ * later for a reason that names nothing.
+ *
+ * The other half, on the same board netbooted into NOSaic so nothing was
+ * driving the chip:
+ *
+ *   CMIC_ENDIAN_SELECT (0x174)  0x00000000  (as found -- power-on default)
+ *   CMIC_REVID_DEVID   (0x178)  0x46b80200  -> device 0x0200 rev 0xb8
+ *   writing CMIC_ENDIAN_SELECT and retrying
+ *   CMIC_ENDIAN_SELECT (0x174)  0x07070707  (after write)
+ *   CMIC_REVID_DEVID   (0x178)  0x0002b846  -> device 0xb846 rev 0x02
+ *   PASS
+ *
+ * Which settles it. A userspace BDE over an mmap'd BAR reaches this chip on
+ * PowerPC, correctly, with the chip put into big-endian PIO and the barriers
+ * in datapath/common/mmio.h supplying the ordering the kernel's ioread32 would
+ * otherwise have supplied. No kernel module, and the same BDE model as the
+ * 7050SX2.
+ *
+ * The register reads back with its low byte replicated across all four --
+ * 0x07 written, 0x07070707 read -- which also explains what a live EdgeNOS
+ * shows: 0x04040404, ES_BIG_ENDIAN_DMA_OTHER alone, PIO left little-endian
+ * because its ioctl path swaps for it.
+ *
+ * Still unproven: ordering under load. This is one register at a time, and
+ * S-Channel is a sequence. The barriers are there for it, but only traffic
+ * will say.
  *
  * Writing CMIC_ENDIAN_SELECT changes how every subsequent access is
  * interpreted, so --set-endian must not be used on a switch whose datapath is

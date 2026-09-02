@@ -294,11 +294,33 @@ So the work is ordinary rather than speculative:
    `ES_BIG_ENDIAN_PIO` and let the chip present host order, or leave it and
    swap in the accessor.
 
-   **The decision is to keep the userspace BDE.** What is still unproven is
-   ordering, and that is a barrier in the accessor rather than a change of
-   approach. A small kernel shim over `ioread32` remains the fallback if
-   S-Channel proves unstable once there is traffic, but nothing so far argues
-   for paying that price up front.
+   **The decision is to keep the userspace BDE**, and it is now demonstrated
+   rather than argued. On the board netbooted into NOSaic, with nothing driving
+   the chip, `tdp-probe --set-endian`:
+
+   ```
+   CMIC_ENDIAN_SELECT (0x174)  0x00000000  (power-on default)
+   CMIC_REVID_DEVID   (0x178)  0x46b80200  -> device 0x0200 rev 0xb8
+   ... writing CMIC_ENDIAN_SELECT and retrying
+   CMIC_ENDIAN_SELECT (0x174)  0x07070707
+   CMIC_REVID_DEVID   (0x178)  0x0002b846  -> device 0xb846 rev 0x02
+   PASS
+   ```
+
+   A userspace BDE over an mmap'd BAR reaches this chip on PowerPC, correctly,
+   with the chip in big-endian PIO and `datapath/common/mmio.h` supplying the
+   ordering the kernel's `ioread32` would otherwise have supplied. No kernel
+   module, and the same BDE model as the 7050SX2.
+
+   The register reads back with its low byte replicated across all four — 0x07
+   written, 0x07070707 read — which also explains what a live EdgeNOS shows:
+   `0x04040404` is `ES_BIG_ENDIAN_DMA_OTHER` alone, PIO left little-endian
+   because the ioctl path swaps for it.
+
+   **Still unproven: ordering under load.** This is one register at a time and
+   S-Channel is a sequence. The barriers exist for it; only traffic will say.
+   A kernel shim over `ioread32` remains the fallback, and there is now much
+   less reason to expect needing it.
 
 3. **Most of EdgeNOS's chip-init work does not carry over, and that is good
    news.** `edged` links **OpenMDK**, not the full OpenBCM SDK, and OpenMDK

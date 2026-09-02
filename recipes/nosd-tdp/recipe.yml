@@ -1,0 +1,35 @@
+# nosd-tdp — the Trident+ datapath, for the BCM56840 family.
+#
+# The AS5610-52X's BCM56846 is a member of that family and shares its register
+# database (src/soc/mcm/bcm56840_a0.c in the SDK), which is why grepping the
+# SDK for the exact part number finds almost nothing and looks discouraging.
+#
+# DELIBERATELY NOT YET `provides: [nosd]`. This package installs the BDE probe
+# and no daemon: there is nothing here that can drive a datapath, and claiming
+# the virtual name would put a symlink at /usr/sbin/nosd pointing at something
+# that does not exist. The board's asic: tdp already pulls this package in by
+# name, so the probe reaches the image without that claim being made.
+name: nosd-tdp
+version: "0.1.0"
+summary: Trident+ (BCM56840 family) datapath — BDE and bring-up probe
+
+license: Apache-2.0
+redistributable: true
+
+# The whole datapath tree, because datapath/common carries the MMIO ordering
+# this shares with nosd-td2p. build.subdir selects which ASIC is built.
+source:
+  local: datapath
+
+depends: [glibc]
+
+build:
+  system: make
+  subdir: tdp
+  targets: [tdp-probe, strip]
+
+  # Relative to the source root, which is the whole datapath tree.
+  stage:
+    - src: tdp/tdp-probe
+      dst: /usr/sbin/tdp-probe
+      mode: "0755"
