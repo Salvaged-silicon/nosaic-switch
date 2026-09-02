@@ -254,21 +254,49 @@ int nosaic_tdp_bde_open(struct nosaic_tdp_bde *b, const char *bdf)
 	return 0;
 }
 
+/*
+ * PCI configuration space is little-endian by definition, whatever the host.
+ *
+ * sysfs hands back the raw bytes, so on a big-endian machine loading them into
+ * a uint32_t gives the word reversed. That is not a subtle failure in one
+ * place: it makes every capability, BAR and command bit wrong. It showed up as
+ *
+ *   bus mastering did not enable; COMMAND reads 0x6001000
+ *
+ * where 0x06001000 reversed is 0x00100006 -- STATUS 0x0010 and COMMAND 0x0006,
+ * memory space and bus master both already set. The chip was fine and the
+ * reader was not.
+ *
+ * The Trident2+ BDE does not do this and does not need to: x86 is
+ * little-endian and the bytes land in the order they were meant.
+ */
+static uint32_t cfg_swap(uint32_t v)
+{
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	return ((v & 0xffu) << 24) | ((v & 0xff00u) << 8) |
+	       ((v >> 8) & 0xff00u) | ((v >> 24) & 0xffu);
+#else
+	return v;
+#endif
+}
+
 uint32_t nosaic_tdp_bde_cfg_read(struct nosaic_tdp_bde *b, uint32_t addr)
 {
 	uint32_t v = 0;
 
 	if (pread(b->cfg_fd, &v, 4, addr) != 4)
 		return 0xffffffffu;
-	return v;
+	return cfg_swap(v);
 }
 
 void nosaic_tdp_bde_cfg_write(struct nosaic_tdp_bde *b, uint32_t addr, uint32_t data)
 {
+	uint32_t raw = cfg_swap(data);
+
 	/* Reported rather than discarded: a configuration write that does not
 	 * land is how bus mastering silently stays off, and the failure then
 	 * appears much later as a table operation timing out. */
-	if (pwrite(b->cfg_fd, &data, 4, addr) != 4)
+	if (pwrite(b->cfg_fd, &raw, 4, addr) != 4)
 		fprintf(stderr, "nosd-tdp: PCI config write to %#x failed: %s\n",
 			addr, strerror(errno));
 }
