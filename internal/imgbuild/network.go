@@ -54,6 +54,23 @@ say() { echo "NOSAIC-NET $*"; }
 
 say "using $CONF"
 
+# Forwarding on. This is a router; a router that does not forward is the most
+# confusing possible state, because every interface is up, every route is
+# present, every neighbour is reachable from the box itself, and traffic that
+# arrives to be forwarded is silently discarded.
+#
+# Nothing else in the image sets it, and the default is off. EdgeNOS shipped the
+# same board with it unset and measured the result: ForwDatagrams=0 against
+# InAddrErrors=47341 -- forty-seven thousand packets accepted and dropped.
+#
+# Both families, because a box that routes IPv4 and drops IPv6 is a worse fault
+# than one that routes neither: half the traffic works.
+for f in /proc/sys/net/ipv4/ip_forward /proc/sys/net/ipv6/conf/all/forwarding; do
+    if [ -w "$f" ]; then
+        echo 1 > "$f" && say "forwarding on ($f)"
+    fi
+done
+
 # Interfaces first: a route cannot be installed through a device that has no
 # address, and the error if you try names neither.
 apply_ifaces() {
