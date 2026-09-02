@@ -4,11 +4,17 @@
 # database (src/soc/mcm/bcm56840_a0.c in the SDK), which is why grepping the
 # SDK for the exact part number finds almost nothing and looks discouraging.
 #
-# DELIBERATELY NOT YET `provides: [nosd]`. This package installs the BDE probe
-# and no daemon: there is nothing here that can drive a datapath, and claiming
-# the virtual name would put a symlink at /usr/sbin/nosd pointing at something
-# that does not exist. The board's asic: tdp already pulls this package in by
-# name, so the probe reaches the image without that claim being made.
+# This now claims `nosd`, on the condition the earlier note set for it: there is
+# something here that drives a datapath. tdp-probe --serve attaches the chip,
+# runs soc and bcm init, enables every port, puts them in forwarding and then
+# stays resident so the SDK's link scan and counter threads keep running. On the
+# AS5610-52X that is a switch which floods between front-panel ports in
+# hardware, measured rather than assumed.
+#
+# It is still one binary doing two jobs -- the probe modes remain, because
+# bring-up on the next board of this family will want them -- and it implements
+# none of switch-api yet. What it provides is the daemon the unit file names,
+# not the northbound contract, and the gap between those is the work left.
 name: nosd-tdp
 version: "0.1.0"
 summary: Trident+ (BCM56840 family) datapath — BDE and bring-up probe
@@ -22,6 +28,10 @@ source:
   local: datapath
 
 depends: [glibc]
+
+# Exclusive: two datapath daemons on one chip would fight over it.
+provides: [nosd]
+conflicts: [nosd]
 
 # Staged to build against, never shipped: the SDK is 874 MB of static archives
 # and what leaves here is the binary that linked them.
@@ -46,3 +56,16 @@ build:
     - src: tdp/tdp-probe
       dst: /usr/sbin/tdp-probe
       mode: "0755"
+
+  # The name everything above this layer uses. The unit, the CLI and the docs
+  # say `nosd`; which silicon is behind it is the image builder's business.
+  # A link rather than a second copy, because the binary is 125 MB.
+  links:
+    - target: /usr/sbin/tdp-probe
+      path: /usr/sbin/nosd
+
+services:
+  - name: nosd
+    exec: /usr/sbin/nosd --serve
+    after: [network]
+    restart: always

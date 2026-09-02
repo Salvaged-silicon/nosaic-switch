@@ -82,6 +82,20 @@ type Board struct {
 	// a matter of adding a directory.
 	DeviceTree string `yaml:"device_tree"`
 
+	// FrontPanelInit is a script under the board directory that brings the
+	// optics up: transmitters, cage control lines, retimers.
+	//
+	// Boards with a platform HAL driver do this through `nosaic platform tx`,
+	// which is where it belongs. A board being brought up does not have one
+	// yet, and the alternative to naming a script here is that its ports stay
+	// dark until it does -- which makes the datapath untestable for as long as
+	// the HAL takes. The two are not exclusive: a board grows a HAL and drops
+	// this field, and nothing above either notices.
+	//
+	// Installed to /etc/nosaic and run once, before nosd, since the daemon
+	// reads link state during bring-up and would see every port down.
+	FrontPanelInit string `yaml:"front_panel_init"`
+
 	// Flash layout, in MiB. Zero means the default, which suits a board with
 	// modest flash; a board with room should say so rather than inherit a
 	// number chosen for a virtual machine.

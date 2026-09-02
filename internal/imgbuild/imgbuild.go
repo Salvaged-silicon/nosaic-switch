@@ -816,6 +816,32 @@ poweroff -f
 		})
 	}
 
+	// The same job on a board that has no platform HAL yet.
+	//
+	// Identical in purpose to `transceivers` above and different in mechanism:
+	// a script the board ships, rather than a driver the HAL drives. A board
+	// being brought up has silicon before it has a HAL, and without this its
+	// ports stay dark for as long as the HAL takes -- which is exactly the
+	// period when being able to test the datapath matters most.
+	//
+	// Both are never emitted: a board with a HAL driver uses it.
+	if o.Board.PlatformHAL.Driver == "" && o.Board.FrontPanelInit != "" {
+		src := filepath.Join(filepath.Dir(o.Board.Path), o.Board.FrontPanelInit)
+		b, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("front_panel_init: %w", err)
+		}
+		if err := writeFile(rootfs, "/etc/nosaic/front-panel-init.sh", string(b), 0o755); err != nil {
+			return err
+		}
+		services = append(services, svcgen.Service{
+			Name:    "transceivers",
+			Exec:    "/etc/nosaic/front-panel-init.sh",
+			Restart: "never",
+		})
+		fmt.Fprintf(o.Log, "    front-panel init from %s\n", o.Board.FrontPanelInit)
+	}
+
 	// The datapath.
 	//
 	// Named `nosd` rather than nosd-td2p: the unit, the CLI and the docs only
@@ -832,6 +858,11 @@ poweroff -f
 		}
 		if o.Board.PlatformHAL.ASICPCI != "" {
 			after = append(after, "asic-irq")
+		}
+		// The optics before the datapath: nosd reads link state as it brings
+		// ports up, and every port reads down until the transmitters are on.
+		if o.Board.PlatformHAL.Driver == "" && o.Board.FrontPanelInit != "" {
+			after = append(after, "transceivers")
 		}
 		services = append(services, svcgen.Service{
 			Name:    "nosd",

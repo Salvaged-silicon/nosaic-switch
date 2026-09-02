@@ -50,6 +50,11 @@ u_boot_ramdisk_addr: "0x03100000"
 # this file. Compiled at image time and carried inside the FIT.
 device_tree: dts/as5610-52x.dts
 
+# No platform HAL on this board yet, so the optics are brought up by a script
+# rather than by `nosaic platform tx`. Without it every port links down: the
+# cages power up with TX_DISABLE asserted and the retimers unprogrammed.
+front_panel_init: scripts/sfp-init.sh
+
 # How long the network service waits for interfaces named in network.conf.
 # The swp ports come from the datapath daemon, and there is no nosd-tdp yet, so
 # they cannot appear at all -- the default 600 would be ten minutes of waiting

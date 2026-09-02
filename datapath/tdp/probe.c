@@ -73,6 +73,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 int main(int argc, char **argv)
 {
@@ -94,7 +95,7 @@ int main(int argc, char **argv)
 	 */
 	static struct nosaic_tdp_bde b;
 	const char *bdf = NULL;
-	int set_endian = 0, attach = 0, init = 0, ports = 0, stats = 0, attach_failed = 0, rc;
+	int set_endian = 0, attach = 0, init = 0, ports = 0, stats = 0, serve = 0, attach_failed = 0, rc;
 	uint32_t raw = 0, es;
 
 	for (int i = 1; i < argc; i++) {
@@ -108,8 +109,10 @@ int main(int argc, char **argv)
 			ports = init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--stats"))
 			stats = ports = init = attach = set_endian = 1;
+		else if (!strcmp(argv[i], "--serve"))
+			serve = ports = init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--help")) {
-			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [--ports] [--stats] [<pci-bdf>]\n");
+			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [--ports] [--stats] [--serve] [<pci-bdf>]\n");
 			return 0;
 		} else
 			bdf = argv[i];
@@ -238,6 +241,26 @@ int main(int argc, char **argv)
 						attach_failed = 1;
 					else if (stats)
 						nosaic_tdp_sdk_stats(unit, 5);
+
+					/*
+					 * Stay. The chip keeps forwarding after
+					 * this process exits -- the tables are
+					 * in silicon and nothing tears them down
+					 * -- but everything that makes it a
+					 * switch rather than a frozen snapshot
+					 * lives in the SDK's threads: link scan,
+					 * counter collection, and the interrupt
+					 * poll that carries both. Exiting takes
+					 * those with it, so a port that goes
+					 * down afterwards is never noticed.
+					 */
+					if (serve && !attach_failed) {
+						printf("SERVING  datapath up; "
+						       "link and counters tracked\n");
+						fflush(stdout);
+						for (;;)
+							pause();
+					}
 				}
 			}
 		}

@@ -616,6 +616,22 @@ int nosaic_tdp_sdk_ports_up(int unit)
 
 	printf("ports        %d enabled, %d with link\n", up, linked);
 
+	/*
+	 * Link scan, so link state is tracked rather than sampled once.
+	 *
+	 * Without it bcm_port_link_status_get still reads the PHY, so a caller
+	 * that asks gets a true answer -- but nothing asks, and nothing reacts.
+	 * A port that goes down stays in the flood set and its share of every
+	 * flooded frame is sent into a dead fibre. Software scan rather than
+	 * hardware: it costs a MIIM read per port per interval, and the hardware
+	 * scanner on this chip wants the MIIM interrupt this BDE does not carry.
+	 */
+	rv = bcm_linkscan_enable_set(unit, 250000);
+	if (rv < 0)
+		printf("  link scan unavailable: %s\n", soc_errmsg(rv));
+	else
+		printf("link scan    every 250 ms\n");
+
 	/* Link state read straight after enabling a port is not an answer. The
 	 * MAC has just been let out of reset, the SerDes has not finished
 	 * training, and on a board with SFP+ cages the module may not have been
