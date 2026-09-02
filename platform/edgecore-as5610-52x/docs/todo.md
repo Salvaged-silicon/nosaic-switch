@@ -246,10 +246,54 @@ So the work is ordinary rather than speculative:
    silicon. The defines matter beyond this build — anything linking against
    these libraries must compile with the same 104, or `soc_cm_device_vectors_t`
    shifts and every memory ID changes, with no diagnostic of any kind.
-2. **A CMICe BDE.** `datapath/td2p/bde.c` is written for the 7050SX2's CMICm.
-   This chip has a CMICe, and the interrupt and DMA paths differ. This is the
-   part with real unknowns left.
-3. **`nosd-tdp` itself**, as a sibling of `nosd-td2p` — `provides: [nosd]`,
+2. **A CMICe BDE — and the harder half is PowerPC, not CMICe.**
+   `datapath/td2p/bde.c` is written for the 7050SX2's CMICm, and this chip has
+   a CMICe whose interrupt and DMA paths differ. That much was expected. What
+   was not is this, from EdgeNOS's `asic/edged/bde_interface.c`:
+
+   > Cumulus's switchd accesses BAR0 via `/dev/mem` mmap. We have the mmap set
+   > up in `bar0_map` but use ioctl here because plain userspace stores miss
+   > the PPC MMIO barriers + endianness that the kernel's `ioread32`/
+   > `iowrite32` applies. **Tried direct mmap once — broke S-Channel within
+   > seconds.**
+
+   NOSaic's whole BDE strategy is a userspace one over an mmap'd BAR, chosen on
+   the 7050SX2 to avoid owning a patched kernel module. On this board that is
+   the path that failed. The difference is the architecture, not the chip: on
+   PowerPC an MMIO store needs an explicit `eieio` and the byte order is not
+   the CPU's, and a plain `volatile` store provides neither.
+
+   It is not a dead end — Cumulus does exactly this from userspace, so it
+   works. EdgeNOS records what it would take: explicit `eieio` barriers and
+   confirming the **PAXB endianness register at `BAR0+0x2030`**. That is a
+   handful of inline-asm lines and one register to establish, not a redesign.
+   But it has to be done deliberately, and "broke S-Channel within seconds" is
+   the failure mode to expect if it is not.
+
+   Worth noting the SDK is already on this side of the argument: the PowerPC
+   platform sets `SYS_BE_PIO=1`, which is precisely the statement that
+   programmed I/O to this chip is big-endian.
+
+3. **Most of EdgeNOS's chip-init work does not carry over, and that is good
+   news.** `edged` links **OpenMDK**, not the full OpenBCM SDK, and OpenMDK
+   omits chip initialisation the full SDK performs. That is what
+   `asic/edged/cumulus_replicate.c` exists to paper over — four chip memories
+   found by cross-correlating register and memory dumps against a live Cumulus
+   capture:
+
+   ```
+   EPC_LINK_BMAP     egress-pipeline port bitmap
+   L2_USER_ENTRY     63 protocol-MAC CPU-trap rules
+   EGR_VLAN(_STG)    53 service-VID egress rows + STG state
+   FP_TCAM/POLICY    100 chip-side trap rules
+   ```
+
+   That is the single largest piece of reverse engineering in EdgeNOS's
+   datapath, it is still incomplete, and NOSaic should not inherit any of it.
+   Using the vendor SDK to get the initialisation hand-reproduction cannot
+   match is the argument the project plan already makes for the 7050SX2; this
+   board is the second piece of evidence for it.
+4. **`nosd-tdp` itself**, as a sibling of `nosd-td2p` — `provides: [nosd]`,
    `conflicts: [nosd]`. The two share a northbound contract and most of their
    structure; whether they can share code is the first honest test of whether
    the per-ASIC split was drawn in the right place, which is what the project
