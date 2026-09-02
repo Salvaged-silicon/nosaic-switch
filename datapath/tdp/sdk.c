@@ -43,6 +43,8 @@
 #include <bcm/port.h>
 #include <bcm/stg.h>
 #include <bcm/vlan.h>
+#include <bcm/pkt.h>
+#include <bcm/tx.h>
 #include <bcm/link.h>
 #include <bcm/error.h>
 #include <stdarg.h>
@@ -767,6 +769,118 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 }
 
 /*
+ * Prove the datapath without asking the neighbours for anything.
+ *
+ * Every forwarding measurement so far has depended on something else on the
+ * wire sending frames, which made "the counters did not move" ambiguous in the
+ * worst way: it can mean the chip is broken, or it can mean the lab is quiet,
+ * and those need completely different work. On this board it meant the second
+ * one, and it cost a lot of time to establish that.
+ *
+ * MAC loopback settles it internally. The port's transmit path is wired back to
+ * its own receive path inside the MAC, so a frame the CPU sends to that port
+ * comes back in on the same port. Nothing leaves the box -- the loop is behind
+ * the SerDes -- so this is safe to run on a live switch and on a port with
+ * nothing plugged into it.
+ *
+ * What it proves, in one shot: the CPU can inject (packet DMA out), the MAC can
+ * transmit, the MAC can receive, and the counters reflect both. Those are the
+ * pieces every forwarding claim rests on, and the only piece it leaves out is
+ * the cable.
+ *
+ * A port with no link is chosen deliberately. One with a neighbour would have
+ * its traffic counted too, and looping a live port back on itself is rude.
+ */
+int nosaic_tdp_sdk_selftest(int unit, int frames)
+{
+	bcm_port_config_t cfg;
+	bcm_port_t port, chosen = -1;
+	uint32 rx0 = 0, tx0 = 0, rx1 = 0, tx1 = 0;
+	bcm_pkt_t *pkt = NULL;
+	uint8 *buf;
+	int rv, i, sent = 0;
+	static const int len = 68;
+
+	if (bcm_port_config_get(unit, &cfg) < 0)
+		return -1;
+
+	BCM_PBMP_ITER(cfg.port, port) {
+		int link = 0;
+
+		if (bcm_port_link_status_get(unit, port, &link) == BCM_E_NONE && !link) {
+			chosen = port;
+			break;
+		}
+	}
+	if (chosen < 0) {
+		printf("selftest     no dark port to borrow; every port has a neighbour\n");
+		return 0;
+	}
+	port = chosen;
+
+	rv = bcm_port_loopback_set(unit, port, BCM_PORT_LOOPBACK_MAC);
+	if (rv < 0) {
+		printf("selftest     %s: loopback refused: %s\n",
+		       SOC_PORT_NAME(unit, port), soc_errmsg(rv));
+		return -1;
+	}
+	sleep(1);
+
+	bcm_stat_sync_get32(unit, port, snmpIfInUcastPkts, &rx0);
+	bcm_stat_sync_get32(unit, port, snmpIfOutUcastPkts, &tx0);
+
+	rv = bcm_pkt_alloc(unit, len, BCM_TX_CRC_APPEND, &pkt);
+	if (rv < 0 || pkt == NULL) {
+		printf("selftest     packet alloc failed: %s\n", soc_errmsg(rv));
+		(void)bcm_port_loopback_set(unit, port, BCM_PORT_LOOPBACK_NONE);
+		return -1;
+	}
+
+	/* A plain unicast frame to a made-up address. Nothing learns from it and
+	 * nothing forwards it anywhere: it goes out the port and comes straight
+	 * back in through the MAC's own loop. */
+	buf = pkt->pkt_data[0].data;
+	memset(buf, 0, len);
+	buf[0] = 0x02; buf[1] = 0x00; buf[2] = 0x00;
+	buf[3] = 0x00; buf[4] = 0x00; buf[5] = 0x01;   /* dst, locally administered */
+	buf[6] = 0x02; buf[7] = 0x00; buf[8] = 0x00;
+	buf[9] = 0x00; buf[10] = 0x00; buf[11] = 0x02; /* src */
+	buf[12] = 0x08; buf[13] = 0x00;                /* ethertype IPv4 */
+
+	pkt->flags |= BCM_PKT_F_NO_VTAG;
+	BCM_PBMP_CLEAR(pkt->tx_pbmp);
+	BCM_PBMP_CLEAR(pkt->tx_upbmp);
+	BCM_PBMP_PORT_ADD(pkt->tx_pbmp, port);
+	BCM_PBMP_PORT_ADD(pkt->tx_upbmp, port);
+
+	for (i = 0; i < frames; i++) {
+		rv = bcm_tx(unit, pkt, NULL);
+		if (rv < 0) {
+			printf("selftest     transmit %d failed: %s\n", i, soc_errmsg(rv));
+			break;
+		}
+		sent++;
+	}
+	sleep(2);
+
+	bcm_stat_sync_get32(unit, port, snmpIfInUcastPkts, &rx1);
+	bcm_stat_sync_get32(unit, port, snmpIfOutUcastPkts, &tx1);
+
+	bcm_pkt_free(unit, pkt);
+	(void)bcm_port_loopback_set(unit, port, BCM_PORT_LOOPBACK_NONE);
+
+	printf("selftest     %s in MAC loopback: sent %d, tx counted %u, rx counted %u\n",
+	       SOC_PORT_NAME(unit, port), sent, tx1 - tx0, rx1 - rx0);
+	if (sent && (rx1 - rx0) >= (uint32)sent && (tx1 - tx0) >= (uint32)sent) {
+		printf("selftest     PASS  cpu injection, transmit, receive and counters\n"
+		       "             all work; only the cable is untested\n");
+		return 0;
+	}
+	printf("selftest     FAIL  the chip did not account for its own frames\n");
+	return -1;
+}
+
+/*
  * Per-port counters, sampled twice, reported as a delta.
  *
  * Absolute counters answer the wrong question during bring-up. What matters is
@@ -805,13 +919,26 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 	BCM_PBMP_ITER(cfg.port, port) {
 		if (port < 0 || port >= 128)
 			continue;
-		bcm_stat_get32(unit, port, snmpIfInUcastPkts, &in0[port]);
-		bcm_stat_get32(unit, port, snmpIfOutUcastPkts, &out0[port]);
-		bcm_stat_get32(unit, port, snmpIfInNUcastPkts, &inn0[port]);
-		bcm_stat_get32(unit, port, snmpIfOutNUcastPkts, &outn0[port]);
+		bcm_stat_sync_get32(unit, port, snmpIfInUcastPkts, &in0[port]);
+		bcm_stat_sync_get32(unit, port, snmpIfOutUcastPkts, &out0[port]);
+		bcm_stat_sync_get32(unit, port, snmpIfInNUcastPkts, &inn0[port]);
+		bcm_stat_sync_get32(unit, port, snmpIfOutNUcastPkts, &outn0[port]);
 	}
 
-	printf("sampling counters for %d seconds...\n", seconds);
+	/*
+	 * The sync variants, which force a read from the hardware.
+	 *
+	 * bcm_stat_get32 returns a software copy that the counter thread
+	 * refreshes on a timer. It succeeds whether or not that thread has ever
+	 * run, so a zero from it means either no traffic or no collection, and
+	 * nothing distinguishes them at the call site. Reading zero and
+	 * concluding "the network is quiet" on that basis is exactly the mistake
+	 * this file has already made once.
+	 *
+	 * bcm_stat_sync_get32 goes to the chip. A zero from it is a fact about
+	 * the wire.
+	 */
+	printf("sampling counters for %d seconds (read from hardware)...\n", seconds);
 	sleep(seconds);
 
 	printf("  %-8s %10s %10s %10s %10s\n",
@@ -821,13 +948,13 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 
 		if (port < 0 || port >= 128)
 			continue;
-		v = 0; bcm_stat_get32(unit, port, snmpIfInUcastPkts, &v);
+		v = 0; bcm_stat_sync_get32(unit, port, snmpIfInUcastPkts, &v);
 		di = v - in0[port];
-		v = 0; bcm_stat_get32(unit, port, snmpIfOutUcastPkts, &v);
+		v = 0; bcm_stat_sync_get32(unit, port, snmpIfOutUcastPkts, &v);
 		dou = v - out0[port];
-		v = 0; bcm_stat_get32(unit, port, snmpIfInNUcastPkts, &v);
+		v = 0; bcm_stat_sync_get32(unit, port, snmpIfInNUcastPkts, &v);
 		dni = v - inn0[port];
-		v = 0; bcm_stat_get32(unit, port, snmpIfOutNUcastPkts, &v);
+		v = 0; bcm_stat_sync_get32(unit, port, snmpIfOutNUcastPkts, &v);
 		dno = v - outn0[port];
 
 		if (!di && !dou && !dni && !dno)
@@ -866,7 +993,7 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 				continue;
 			linked++;
 			v = 0;
-			rv = bcm_stat_get32(unit, port, snmpIfInNUcastPkts, &v);
+			rv = bcm_stat_sync_get32(unit, port, snmpIfInNUcastPkts, &v);
 			if (rv == BCM_E_NONE) {
 				ok++;
 			} else {
@@ -883,8 +1010,8 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 			       "  whether the chip is forwarding\n",
 			       failed, linked, soc_errmsg(last));
 		else
-			printf("  all %d linked ports answer, so collection works and the\n"
-			       "  neighbours are genuinely sending nothing\n", ok);
+			printf("  all %d linked ports read clean from hardware, so the\n"
+			       "  neighbours really are sending nothing\n", ok);
 	}
 	return 0;
 }
@@ -966,6 +1093,12 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 int nosaic_tdp_sdk_stats(int unit, int seconds)
 {
 	(void)unit; (void)seconds;
+	return -1;
+}
+
+int nosaic_tdp_sdk_selftest(int unit, int frames)
+{
+	(void)unit; (void)frames;
 	return -1;
 }
 

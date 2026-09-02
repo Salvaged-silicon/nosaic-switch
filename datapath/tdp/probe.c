@@ -95,7 +95,7 @@ int main(int argc, char **argv)
 	 */
 	static struct nosaic_tdp_bde b;
 	const char *bdf = NULL;
-	int set_endian = 0, attach = 0, init = 0, ports = 0, stats = 0, serve = 0, attach_failed = 0, rc;
+	int set_endian = 0, attach = 0, init = 0, ports = 0, stats = 0, serve = 0, bridge = 0, selftest = 0, attach_failed = 0, rc;
 	uint32_t raw = 0, es;
 
 	/*
@@ -134,8 +134,15 @@ int main(int argc, char **argv)
 			stats = ports = init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--serve"))
 			serve = ports = init = attach = set_endian = 1;
+		/* Bridging every port together in one VLAN is a loop wherever two
+		 * of them reach the same neighbour, so it is never implied by
+		 * another flag -- it has to be asked for by name. */
+		else if (!strcmp(argv[i], "--selftest"))
+			selftest = ports = init = attach = set_endian = 1;
+		else if (!strcmp(argv[i], "--bridge"))
+			bridge = ports = init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--help")) {
-			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [--ports] [--stats] [--serve] [<pci-bdf>]\n");
+			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [--ports] [--stats] [--serve] [--bridge] [--selftest] [<pci-bdf>]\n");
 			return 0;
 		} else
 			bdf = argv[i];
@@ -260,10 +267,13 @@ int main(int argc, char **argv)
 					 * configuring a chip that has no
 					 * forwarding tables yet. */
 					if (ports &&
-					    nosaic_tdp_sdk_ports_up(unit, !serve) != 0)
+					    nosaic_tdp_sdk_ports_up(unit, bridge) != 0)
 						attach_failed = 1;
 					else if (stats)
 						nosaic_tdp_sdk_stats(unit, 5);
+					else if (selftest &&
+						 nosaic_tdp_sdk_selftest(unit, 100) != 0)
+						attach_failed = 1;
 
 					/*
 					 * Stay. The chip keeps forwarding after

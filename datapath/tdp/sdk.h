@@ -37,4 +37,9 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward);
  * A delta is the only form of this that answers whether traffic is flowing. */
 int nosaic_tdp_sdk_stats(int unit, int seconds);
 
+/* Loop a dark port back on itself in the MAC and send frames to it from the
+ * CPU. Proves injection, transmit, receive and counting without needing anything
+ * on the wire; nothing leaves the box. */
+int nosaic_tdp_sdk_selftest(int unit, int frames);
+
 #endif
