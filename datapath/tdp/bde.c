@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -173,6 +174,77 @@ int nosaic_tdp_bde_map_dma(struct nosaic_tdp_bde *b)
 	return 0;
 }
 
+static uint32_t cfg_swap(uint32_t v);
+
+/*
+ * Bus mastering on every bridge between the chip and memory, not just the chip.
+ *
+ * A bridge's Bus Master Enable does not describe the bridge; it controls
+ * whether the bridge forwards transactions from its secondary bus upstream. On
+ * this board the switch sits behind the P2020's PCIe root port, and Linux binds
+ * no driver to either -- so nothing calls pci_set_master() on either one, and
+ * the root port came out of firmware with the bit clear.
+ *
+ * The chip's own bit was set and every descriptor was correct. Every DMA the
+ * chip issued was then discarded one hop later, at a device nobody was looking
+ * at, and each engine reported it in its own vocabulary:
+ *
+ *   soc_counter_thread: DMA did not finish buf32=0xb3a71600     (counters)
+ *   soc_misc_init(0) returned -9 (Operation timed out)          (SLAM)
+ *   Starting DV: c=0 dv=0x18761438  ... then nothing, forever   (packet TX)
+ *
+ * Three unrelated-looking failures, one cause, none of them naming it -- which
+ * is why this cost days and why the check below is by hierarchy rather than by
+ * device. Walking the sysfs path is what makes it general: it fixes the bridge
+ * we know about and any other that turns up between here and memory.
+ */
+static void enable_upstream_mastering(const char *bdf)
+{
+	char link[PATH_MAX], path[PATH_MAX];
+	char *seg, *save;
+	ssize_t n;
+
+	snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s", bdf);
+	n = readlink(path, link, sizeof(link) - 1);
+	if (n < 0)
+		return;
+	link[n] = '\0';
+
+	/* The symlink target spells out the hierarchy, parent first. Everything
+	 * that looks like a BDF except the device itself is a bridge we are
+	 * behind. */
+	for (seg = strtok_r(link, "/", &save); seg; seg = strtok_r(NULL, "/", &save)) {
+		unsigned dom, bus, dev, fn;
+		uint32_t cmd, raw;
+		int fd;
+
+		if (sscanf(seg, "%x:%x:%x.%x", &dom, &bus, &dev, &fn) != 4)
+			continue;
+		if (!strcmp(seg, bdf))
+			continue;
+
+		snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/config", seg);
+		fd = open(path, O_RDWR);
+		if (fd < 0)
+			continue;
+
+		raw = 0;
+		if (pread(fd, &raw, 4, 0x04) == 4) {
+			cmd = cfg_swap(raw);
+			if (!(cmd & (1u << 2))) {
+				raw = cfg_swap(cmd | (1u << 2));
+				if (pwrite(fd, &raw, 4, 0x04) == 4)
+					printf("bus master   enabled on bridge %s\n", seg);
+				else
+					fprintf(stderr, "nosd-tdp: could not enable bus "
+						"mastering on bridge %s: %s\n",
+						seg, strerror(errno));
+			}
+		}
+		close(fd);
+	}
+}
+
 int nosaic_tdp_bde_open(struct nosaic_tdp_bde *b, const char *bdf)
 {
 	char path[512];
@@ -240,6 +312,8 @@ int nosaic_tdp_bde_open(struct nosaic_tdp_bde *b, const char *bdf)
 	 */
 	{
 		uint32_t cmd = nosaic_tdp_bde_cfg_read(b, 0x04);
+
+		enable_upstream_mastering(b->bdf);
 
 		if (!(cmd & (1u << 2))) {
 			nosaic_tdp_bde_cfg_write(b, 0x04, cmd | (1u << 2));
