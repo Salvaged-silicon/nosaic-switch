@@ -17,10 +17,29 @@
 struct nosaic_tdp_bde {
 	char           bdf[32];
 	uint16_t       device_id;      /* as PCI reports it */
-	int            bar_fd, cfg_fd;
+	int            bar_fd, cfg_fd, mem_fd;
 	volatile void *bar;
 	size_t         bar_len;
+
+	/* The DMA pool, from the device tree's reserved-memory. */
+	void          *dma;
+	uint64_t       dma_phys;
+	size_t         dma_len, dma_used;
 };
+
+/*
+ * Map the DMA pool the device tree reserved for us.
+ *
+ * Found rather than configured: the board's device tree carries a
+ * reserved-memory node, and reading its address out of /proc/device-tree
+ * means the daemon and the device tree cannot disagree about where the pool
+ * is. The 7050SX2 takes a base address from the kernel command line and an
+ * environment variable, which is two places to get it wrong.
+ *
+ * Returns 0 on success, -1 if there is no such node or it cannot be mapped.
+ * Not fatal on its own -- the probe wants to report it rather than die.
+ */
+int nosaic_tdp_bde_map_dma(struct nosaic_tdp_bde *b);
 
 /* bdf may be NULL, in which case the first Broadcom switch on the bus is
  * taken. Returns 0 on success. */

@@ -39,3 +39,12 @@ local.mk
 # than to the board. Kept beside the board it configures, out of the public
 # tree.
 *.site.conf
+
+# Datapath build artifacts. They live in the source tree because that is where
+# make runs, and a stale one is worse than none: the package builder copies the
+# tree, make finds the binary newer than its sources, and the wrong
+# architecture's object files ship. The arch check catches it, but only after a
+# full build.
+datapath/*/*.o
+datapath/*/nosd-*
+datapath/*/tdp-probe

@@ -105,12 +105,80 @@ void nosaic_tdp_bde_wr(struct nosaic_tdp_bde *b, uint32_t off, uint32_t v)
 	nosaic_mmio_wr32((volatile char *)b->bar + off, v);
 }
 
+/* Read a big-endian value of `cells` 32-bit words. Device tree property data
+ * is big-endian regardless of the host, though on this board they agree. */
+static uint64_t be_cells(const unsigned char *p, int cells)
+{
+	uint64_t v = 0;
+	for (int i = 0; i < cells * 4; i++)
+		v = (v << 8) | p[i];
+	return v;
+}
+
+int nosaic_tdp_bde_map_dma(struct nosaic_tdp_bde *b)
+{
+	const char *base = "/proc/device-tree/reserved-memory";
+	DIR *d = opendir(base);
+	struct dirent *e;
+	unsigned char reg[32];
+	int found = 0;
+
+	if (!d) {
+		fprintf(stderr, "nosd-tdp: no %s: this kernel has no reserved memory\n", base);
+		return -1;
+	}
+	while ((e = readdir(d)) && !found) {
+		char path[512];
+		int fd, n;
+
+		if (strncmp(e->d_name, "nosaic-dma", 10) != 0)
+			continue;
+		snprintf(path, sizeof(path), "%s/%s/reg", base, e->d_name);
+		if ((fd = open(path, O_RDONLY)) < 0)
+			continue;
+		n = read(fd, reg, sizeof(reg));
+		close(fd);
+		/* #address-cells = 2 and #size-cells = 2 at the root, so the
+		 * property is four 32-bit words. */
+		if (n < 16)
+			continue;
+		b->dma_phys = be_cells(reg, 2);
+		b->dma_len  = (size_t)be_cells(reg + 8, 2);
+		found = 1;
+	}
+	closedir(d);
+
+	if (!found) {
+		fprintf(stderr, "nosd-tdp: no nosaic-dma node under %s\n", base);
+		return -1;
+	}
+
+	b->mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+	if (b->mem_fd < 0) {
+		fprintf(stderr, "nosd-tdp: /dev/mem: %s\n", strerror(errno));
+		return -1;
+	}
+	b->dma = mmap(NULL, b->dma_len, PROT_READ | PROT_WRITE, MAP_SHARED,
+		      b->mem_fd, (off_t)b->dma_phys);
+	if (b->dma == MAP_FAILED) {
+		/* The likely cause is the region still being System RAM, which
+		 * means the node lacks no-map: CONFIG_STRICT_DEVMEM then refuses
+		 * it, and it refuses it with EPERM rather than anything that
+		 * names the reason. */
+		fprintf(stderr, "nosd-tdp: mapping the DMA pool at %#llx: %s\n",
+			(unsigned long long)b->dma_phys, strerror(errno));
+		b->dma = NULL;
+		return -1;
+	}
+	return 0;
+}
+
 int nosaic_tdp_bde_open(struct nosaic_tdp_bde *b, const char *bdf)
 {
 	char path[512];
 
 	memset(b, 0, sizeof(*b));
-	b->bar_fd = b->cfg_fd = -1;
+	b->bar_fd = b->cfg_fd = b->mem_fd = -1;
 
 	if (bdf) {
 		snprintf(b->bdf, sizeof(b->bdf), "%s", bdf);
@@ -187,9 +255,15 @@ void nosaic_tdp_bde_close(struct nosaic_tdp_bde *b)
 		munmap((void *)b->bar, b->bar_len);
 		b->bar = NULL;
 	}
+	if (b->dma) {
+		munmap(b->dma, b->dma_len);
+		b->dma = NULL;
+	}
 	if (b->bar_fd >= 0)
 		close(b->bar_fd);
 	if (b->cfg_fd >= 0)
 		close(b->cfg_fd);
-	b->bar_fd = b->cfg_fd = -1;
+	if (b->mem_fd >= 0)
+		close(b->mem_fd);
+	b->bar_fd = b->cfg_fd = b->mem_fd = -1;
 }

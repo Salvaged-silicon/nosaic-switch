@@ -21,6 +21,40 @@
 		pci1 = &pci1;
 	};
 
+	/*
+	 * A DMA pool for the datapath, reserved here because there is nowhere
+	 * else on this architecture to reserve it.
+	 *
+	 * The SDK programs most chip tables through SBUS DMA: it builds a
+	 * descriptor in host memory and has the chip fetch it, so the daemon
+	 * needs a block of physically contiguous memory whose address it knows.
+	 * The 7050SX2 gets one with memmap= on the kernel command line, which is
+	 * an x86 parameter and does not exist here. CMA is the other candidate
+	 * and is not usable either: this kernel has CONFIG_CMA but PowerPC has no
+	 * HAVE_DMA_CONTIGUOUS, so DMA_CMA cannot be selected and CmaTotal reads 0.
+	 *
+	 * no-map keeps it out of the kernel's linear mapping, which has a second
+	 * effect worth stating: the region stops being System RAM, so
+	 * devmem_is_allowed() permits mapping it through /dev/mem even with
+	 * CONFIG_STRICT_DEVMEM=y, which this kernel sets.
+	 *
+	 * 0x78000000 is 1920 MB, near the top of this board's 2 GB and well clear
+	 * of everything a boot touches -- the kernel unpacks at 0x0, the RAM-boot
+	 * initramfs lands at 0x03100000 and the FIT is staged at 0x08000000.
+	 * pci1 declares no dma-ranges, so fsl_pci programs a 1:1 inbound window
+	 * over DRAM and the chip can reach this.
+	 */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		nosaic_dma: nosaic-dma@78000000 {
+			reg = <0x0 0x78000000 0x0 0x04000000>;
+			no-map;
+		};
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;

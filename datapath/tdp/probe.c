@@ -118,6 +118,25 @@ int main(int argc, char **argv)
 		       raw, raw & 0xffff, (raw >> 16) & 0xff);
 	}
 
+	/* The DMA pool. Reported rather than required: a board whose device tree
+	 * has not been updated yet still gets a useful register report. */
+	printf("\n");
+	if (nosaic_tdp_bde_map_dma(&b) == 0) {
+		volatile uint32_t *p = (volatile uint32_t *)b.dma;
+		uint32_t pat = 0xa5c30f5au;
+
+		printf("dma pool     %zu MiB at %#llx\n",
+		       b.dma_len >> 20, (unsigned long long)b.dma_phys);
+		/* Written and read back through the mapping, because a region
+		 * that maps and does not hold what was put in it is worse than
+		 * one that fails to map: the SDK would build descriptors there
+		 * and the chip would fetch nothing that means anything. */
+		*p = pat;
+		printf("dma readback %s\n", *p == pat ? "OK" : "FAILED");
+	} else {
+		printf("dma pool     unavailable (see above)\n");
+	}
+
 	printf("\n%s\n", rc == 0
 	       ? "PASS  the chip identifies itself correctly through this mapping"
 	       : "FAIL  the identity read back does not match what PCI reported");

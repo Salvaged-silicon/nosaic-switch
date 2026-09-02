@@ -317,6 +317,26 @@ So the work is ordinary rather than speculative:
    `0x04040404` is `ES_BIG_ENDIAN_DMA_OTHER` alone, PIO left little-endian
    because the ioctl path swaps for it.
 
+   **The DMA pool works too**, which was the other prerequisite and needed a
+   different answer from the 7050SX2's. That board reserves memory with
+   `memmap=` on the kernel command line; `memmap=` is an x86 parameter and does
+   not exist on PowerPC, and CMA is not available either — this kernel has
+   `CONFIG_CMA` but PowerPC has no `HAVE_DMA_CONTIGUOUS`, so `DMA_CMA` cannot
+   be selected and `CmaTotal` reads 0.
+
+   The answer is a device-tree `reserved-memory` node with `no-map`, which the
+   BDE finds by reading `/proc/device-tree/reserved-memory` rather than being
+   told an address — so the daemon and the device tree cannot disagree about
+   where the pool is. `no-map` has a second effect worth knowing: the region
+   stops being System RAM, so `devmem_is_allowed()` permits mapping it through
+   `/dev/mem` even with `CONFIG_STRICT_DEVMEM=y`, which this kernel sets.
+
+   ```
+   reserved-memory:  nosaic-dma@78000000
+   dma pool     64 MiB at 0x78000000
+   dma readback OK
+   ```
+
    **Still unproven: ordering under load.** This is one register at a time and
    S-Channel is a sequence. The barriers exist for it; only traffic will say.
    A kernel shim over `ioread32` remains the fallback, and there is now much
