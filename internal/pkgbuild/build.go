@@ -113,7 +113,7 @@ func buildEnv(o Options) []string {
 		}
 	}
 
-	for k, v := range o.Recipe.Build.Env {
+	for k, v := range o.Recipe.Build.ForArch(o.Arch.ID).Env {
 		env = append(env, k+"="+expand(o, v))
 	}
 	sort.Strings(env)
@@ -194,7 +194,9 @@ func run(o Options, dir string, env []string, name string, args ...string) error
 
 // runBuild configures, compiles and stage-installs the package.
 func runBuild(o Options, srcDir, stage string) error {
-	b := o.Recipe.Build
+	// Per-architecture overrides applied before anything reads the stanza, so
+	// one recipe covers architectures whose builds genuinely differ.
+	b := o.Recipe.Build.ForArch(o.Arch.ID)
 	env := buildEnv(o)
 	jobs := "-j" + strconv.Itoa(o.Jobs)
 
@@ -560,7 +562,7 @@ func runPrepare(o Options, srcDir string, env []string) error {
 }
 
 func runAfter(o Options, srcDir string, env []string) error {
-	for _, c := range o.Recipe.Build.After {
+	for _, c := range o.Recipe.Build.ForArch(o.Arch.ID).After {
 		cmd := expand(o, c)
 		fmt.Fprintf(o.Log, "    $ %s\n", cmd)
 		if err := run(o, srcDir, env, "sh", "-c", cmd); err != nil {

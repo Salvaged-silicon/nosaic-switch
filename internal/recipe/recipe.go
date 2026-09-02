@@ -145,6 +145,19 @@ type Build struct {
 	// that separating them would be a distinction without a difference.
 	Targets []string `yaml:"targets"`
 
+	// Arch overrides parts of this stanza for one architecture, keyed by arch
+	// id. Anything it sets replaces the value above; anything it leaves empty
+	// keeps it.
+	//
+	// For the rare package whose build genuinely differs per architecture in a
+	// way no substitution expresses. The OpenBCM SDK is the case that forced
+	// it: it selects a whole platform definition by name -- x86-64-fc28 or
+	// bmw-2_6 -- and those names share nothing with the architecture id, so
+	// ${ARCH} cannot reach them. The alternative was to put the SDK's platform
+	// names in arch/*/arch.yml, which would be one vendor's build system
+	// leaking into the definition of an architecture.
+	Arch map[string]ArchBuild `yaml:"arch"`
+
 	// Subdir is where the build runs, relative to the source root. Several
 	// projects put the entry point for a given platform in its own directory
 	// and expect make to be run there; the OpenBCM SDK is one.
@@ -465,4 +478,41 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// ArchBuild is the per-architecture half of a Build stanza.
+//
+// Deliberately a small set of fields rather than a second Build: a recipe that
+// needs to differ by architecture in more ways than this is a recipe that
+// should be read twice before it is made to work.
+type ArchBuild struct {
+	Targets []string          `yaml:"targets"`
+	After   []string          `yaml:"after"`
+	Env     map[string]string `yaml:"env"`
+}
+
+// ForArch returns this Build with any overrides for the named architecture
+// applied.
+func (b Build) ForArch(arch string) Build {
+	o, ok := b.Arch[arch]
+	if !ok {
+		return b
+	}
+	if len(o.Targets) > 0 {
+		b.Targets = o.Targets
+	}
+	if len(o.After) > 0 {
+		b.After = o.After
+	}
+	if len(o.Env) > 0 {
+		merged := map[string]string{}
+		for k, v := range b.Env {
+			merged[k] = v
+		}
+		for k, v := range o.Env {
+			merged[k] = v
+		}
+		b.Env = merged
+	}
+	return b
 }

@@ -98,6 +98,38 @@ build:
       | sort -u > sdk-defines.txt
     - "echo \"    captured $(wc -l < sdk-defines.txt) SDK defines\""
 
+  # PowerPC is a different platform definition, not a different flag. The SDK
+  # selects a whole target by name and those names share nothing with the
+  # architecture id, so no substitution reaches them.
+  #
+  # bmw-2_6 is Broadcom's own PowerPC big-endian target
+  # (make/Makefile.linux-bmw-2_6). It sets
+  #
+  #   CFGFLAGS += -DSYS_BE_PIO=1 -DSYS_BE_PACKET=0 -DSYS_BE_OTHER=1
+  #   ENDIAN = BE_HOST=1
+  #
+  # which is worth knowing: EdgeNOS carries "BE PIO needs SYS_BE_PIO=1" as a
+  # quirk found on the bench, and it is what the vendor's PowerPC platform sets
+  # by default. Verified to resolve with our toolchain before being written
+  # here -- `make platform=bmw-2_6 -n` emits exactly those four defines.
+  arch:
+    powerpc:
+      targets:
+        - platform=bmw-2_6
+        - LINUX_MAKE_USER=1
+        - LINUX_MAKE_SHARED_LIB=0
+        - SHAREDLIBVER=1
+        - user_libs
+        - bcm
+      after:
+        - >-
+          make platform=bmw-2_6 -n 2>/dev/null
+          | grep -m1 BCM_ALL_CHIPS
+          | tr ' ' '\n' | grep '^-D'
+          | grep -vE '^-D(__KERNEL__|USE_LINUX_BDE_MMAP|"?KBUILD)'
+          | sort -u > sdk-defines.txt
+        - "echo \"    captured $(wc -l < sdk-defines.txt) SDK defines\""
+
   mkdirs:
     - sdk-6.5.24/build/linux/user/common
 
