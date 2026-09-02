@@ -223,3 +223,45 @@ func TestSingleQuotesInExecAreRefused(t *testing.T) {
 		t.Fatalf("double quotes must remain usable: %v", err)
 	}
 }
+
+// A verbose service keeps its output out of the console and says so there.
+//
+// Both halves matter and they pull against each other. The redirect exists
+// because a datapath daemon carrying a vendor SDK writes tens of thousands of
+// initialisation lines, which on a 9600 baud console is ten minutes of nothing
+// usable. The breadcrumb exists because without it that service is
+// indistinguishable on the console from one that never started -- which is the
+// wrong conclusion to reach while looking at a board that will not come up.
+func TestVerboseRedirectsAndLeavesABreadcrumb(t *testing.T) {
+	svc := Service{
+		Name:    "nosd",
+		Exec:    "/usr/sbin/nosd",
+		Restart: "always",
+		Verbose: true,
+	}
+	run := gen(t, s6{}, svc)["/etc/s6-rc/source/nosd/run"]
+
+	if !strings.Contains(run, "exec >/var/log/nosd.log 2>&1") {
+		t.Errorf("verbose service does not redirect to its log:\n%s", run)
+	}
+	if !strings.Contains(run, "/dev/console") {
+		t.Errorf("verbose service leaves nothing on the console:\n%s", run)
+	}
+	if !strings.Contains(run, "/var/log/nosd.log' >/dev/console") {
+		t.Errorf("the console line does not name the log:\n%s", run)
+	}
+	// Order is the whole trick: the breadcrumb has to be written before the
+	// redirect it is describing is installed, or it lands in the log file it
+	// is meant to point at.
+	if strings.Index(run, "/dev/console") > strings.Index(run, "exec >/var/log") {
+		t.Errorf("breadcrumb comes after the redirect, so it goes into the log:\n%s", run)
+	}
+
+	// A quiet service keeps the old behaviour: nothing redirected, nothing
+	// announced.
+	svc.Verbose = false
+	quiet := gen(t, s6{}, svc)["/etc/s6-rc/source/nosd/run"]
+	if strings.Contains(quiet, "/var/log/nosd.log") {
+		t.Errorf("non-verbose service should not redirect:\n%s", quiet)
+	}
+}

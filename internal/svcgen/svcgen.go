@@ -278,7 +278,23 @@ func logRedirect(s Service) string {
 		return ""
 	}
 	path := "/var/log/" + bareName(s.Name) + ".log"
-	return "mkdir -p /var/log\n" +
+
+	// One line to the console saying where the rest went.
+	//
+	// Without it a verbose service is indistinguishable on the console from
+	// one that never started, and the console is exactly where someone looks
+	// when a board will not come up. That cost real time on the AS5610: nosd
+	// was crash-looping and the console showed nothing at all, which reads as
+	// "the service is missing" rather than "the service is failing loudly
+	// somewhere else".
+	//
+	// Redirected to the console explicitly rather than just printed, because
+	// this runs after `exec 2>&1` and has to escape the redirect that is about
+	// to be installed on the next line. Failure is ignored: a board with no
+	// /dev/console should not lose its datapath over a breadcrumb.
+	return "echo '" + bareName(s.Name) + ": output to " + path +
+		"' >/dev/console 2>/dev/null || true\n" +
+		"mkdir -p /var/log\n" +
 		"exec >" + path + " 2>&1\n"
 }
 
