@@ -136,20 +136,20 @@ whatever its installer, and TFTP into RAM writes nothing at all. See
 booted, and it is the right order: prove the image runs before designing the
 partition table it will live in.
 
-### FRR cannot write its log
+### ~~FRR cannot write its log~~ — gone
 
-Visible the moment the services started:
+It was FRR running on its packaged default configuration, because nothing
+installed the board's own frr.conf. Shipping that fixed it: our configuration
+logs to syslog and never opens /var/log/frr.log. The remaining line from that
+boot is
 
 ```
-can't open logfile /var/log/frr.log
 ZEBRA: Disabling MPLS support (no kernel support)
 ```
 
-Neither is fatal -- zebra, ospfd and ospf6d all run -- and neither should be
-left. The first is a directory the image does not create or a permission the
-`frr` account does not have; the second is a kernel option this board's
-fragment does not set, and whether MPLS is wanted here is a real question
-rather than an oversight to correct blindly.
+which is a kernel option this board's fragment does not set. Whether MPLS is
+wanted on a Trident+ switch is a real question rather than an oversight to
+correct blindly, so it is left until someone answers it.
 
 ### Overlay upper has no xattr support in a RAM boot
 
@@ -175,6 +175,22 @@ Related, from EdgeNOS's build notes and not yet a problem here: `mksquashfs` on
 a container overlay filesystem can fail trying to write `security.selinux` and
 exit non-zero. Their fix was `-no-xattrs` on both mksquashfs and unsquashfs.
 NOSaic's builds have not hit it.
+
+### OSPF has no interfaces to run on
+
+Verified over ssh on the running board:
+
+```
+hostname nosaic-as5610
+OSPF Routing Process, Router ID: 10.101.101.241
+show ip ospf interface brief -> No such interface name
+```
+
+The configuration is right and loaded; there is simply nothing to run it on,
+because every OSPF interface is a front-panel port and those come from a
+datapath daemon that does not exist. This is the same blocker as `nosd-tdp`,
+recorded separately because it is what "NOSaic replaces EdgeNOS here" actually
+waits on -- the control plane is done.
 
 ### The board's own hardware is undescribed
 

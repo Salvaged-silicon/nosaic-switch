@@ -118,13 +118,34 @@ done < "$CONF"
 return $missing
 }
 
+apply_routes() {
+while read -r kind dest via gw rest; do
+    [ "$kind" = "route" ] || continue
+    [ "$via" = "via" ] || continue
+    ip route show | grep -q "^${dest} via ${gw}\|^default via ${gw}" && continue
+    if ip route add "$dest" via "$gw" $rest 2>/dev/null; then
+        say "route $dest via $gw"
+    fi
+done < "$CONF"
+}
+
 ABSENT=$(mktemp 2>/dev/null || echo /tmp/nosaic-net-absent)
 deadline=$(( $(date +%s) + WAIT_SECS ))
 announced=""
+routed=0
 while : ; do
     : > "$ABSENT"
     apply_ifaces
     missing=$?
+    # After the first pass, whatever exists is configured -- so put its routes
+    # in now rather than at the end. Otherwise a board still waiting for
+    # front-panel ports has no default route, and is unreachable for the whole
+    # timeout: exactly when someone wants to log in and find out why the ports
+    # are missing.
+    if [ "$routed" -eq 0 ]; then
+        apply_routes
+        routed=1
+    fi
     [ "$missing" -eq 0 ] && break
     now=$(date +%s)
     [ "$now" -ge "$deadline" ] && break
@@ -136,17 +157,6 @@ while : ; do
     sleep "$POLL_SECS"
 done
 ABSENT_FINAL="$ABSENT"
-
-apply_routes() {
-while read -r kind dest via gw rest; do
-    [ "$kind" = "route" ] || continue
-    [ "$via" = "via" ] || continue
-    ip route show | grep -q "^${dest} via ${gw}\|^default via ${gw}" && continue
-    if ip route add "$dest" via "$gw" $rest 2>/dev/null; then
-        say "route $dest via $gw"
-    fi
-done < "$CONF"
-}
 
 # Once now and once at the end. The first pass is what makes the box reachable
 # while the wait above is still running: a route whose gateway is already on a
