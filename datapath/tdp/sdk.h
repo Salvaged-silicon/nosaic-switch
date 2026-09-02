@@ -42,4 +42,9 @@ int nosaic_tdp_sdk_stats(int unit, int seconds);
  * on the wire; nothing leaves the box. */
 int nosaic_tdp_sdk_selftest(int unit, int frames);
 
+/* Start the CPU receive path and count what arrives from the wire. Frames a
+ * neighbour sends are discarded until this runs, which makes a live port look
+ * identical to a dead one in the accept counters. */
+int nosaic_tdp_sdk_rx(int unit, int seconds);
+
 #endif

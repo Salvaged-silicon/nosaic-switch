@@ -45,6 +45,7 @@
 #include <bcm/vlan.h>
 #include <bcm/pkt.h>
 #include <bcm/tx.h>
+#include <bcm/rx.h>
 #include <bcm/link.h>
 #include <bcm/error.h>
 #include <stdarg.h>
@@ -596,7 +597,8 @@ static int service_vlans(int unit, bcm_port_config_t *cfg)
 {
 	bcm_port_t port;
 	bcm_pbmp_t all, none;
-	int made = 0, rv;
+	bcm_stg_t stg;
+	int made = 0, stgs = 0, rv;
 
 	BCM_PBMP_CLEAR(none);
 
@@ -638,11 +640,53 @@ static int service_vlans(int unit, bcm_port_config_t *cfg)
 		if (rv < 0)
 			printf("  port %d pvid failed: %s\n", port, soc_errmsg(rv));
 
+		/*
+		 * Forwarding in *this VLAN's* spanning tree group, for the port
+		 * and for the CPU.
+		 *
+		 * bcm_port_stp_set only touches the default group. A VLAN
+		 * created here does not land in the default group, and the chip
+		 * defaults every port in a non-default group to BLOCKING -- so
+		 * a frame classified into a service VLAN is dropped at the
+		 * bridging stage even though the port is enabled, a member,
+		 * and forwarding as far as bcm_port_stp_set is concerned.
+		 *
+		 * It is silent. Trident+ fires no drop counter for an STP
+		 * discard, so the port shows octets arriving, no errors, no CRC
+		 * faults, and nothing accepted -- which reads as a broken
+		 * receive path and is not one. EdgeNOS hit exactly this and
+		 * wrote it down (core/datapath/vlan.c:168): "that's the actual
+		 * reason our chip MAC RX worked but RX never reached the CPU
+		 * port". It cost this tree a day to arrive at the same place.
+		 *
+		 * The CPU needs it as much as the port does: it is the other
+		 * member of every one of these VLANs, and a blocked CPU port
+		 * means nothing is ever punted.
+		 */
+		if (bcm_vlan_stg_get(unit, vid, &stg) == BCM_E_NONE) {
+			bcm_port_t cpu;
+
+			rv = bcm_stg_stp_set(unit, stg, port, BCM_STG_STP_FORWARD);
+			if (rv < 0)
+				printf("  vlan %d: port %d stg %d: %s\n",
+				       vid, port, stg, soc_errmsg(rv));
+			BCM_PBMP_ITER(cfg->cpu, cpu) {
+				rv = bcm_stg_stp_set(unit, stg, cpu, BCM_STG_STP_FORWARD);
+				if (rv < 0)
+					printf("  vlan %d: cpu %d stg %d: %s\n",
+					       vid, cpu, stg, soc_errmsg(rv));
+			}
+			stgs++;
+		} else {
+			printf("  vlan %d: no spanning tree group\n", vid);
+		}
+
 		made++;
 	}
 
-	printf("service vlan %d ports isolated in their own VLAN (%d..)\n",
-	       made, NOSAIC_TDP_SERVICE_VLAN_BASE + 1);
+	printf("service vlan %d ports isolated in their own VLAN (%d..), "
+	       "%d forwarding in their STG\n",
+	       made, NOSAIC_TDP_SERVICE_VLAN_BASE + 1, stgs);
 	return made;
 }
 
@@ -766,6 +810,82 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 	}
 	printf("settled      %d with link\n", linked);
 	return 0;
+}
+
+/*
+ * Turn on the CPU receive path and count what arrives.
+ *
+ * Without this, a frame from a neighbour is received correctly, classified into
+ * its port's service VLAN, offered to the only other member of that VLAN -- the
+ * CPU -- and dropped, because nothing has started the receive path to take it.
+ * The chip counts that as a discard, and every "accepted" counter stays zero.
+ *
+ * That is not a subtle distinction when reading counters. rx-octets and
+ * discards move while rx-ucast and rx-mcast do not, so a port carrying real
+ * traffic looks exactly like a port on a dead cable if the accept counters are
+ * all you print -- which is the mistake made here twice, once concluding the
+ * neighbours were silent when they were not.
+ *
+ * Starting reception makes those frames real, and is what any switch has to do
+ * anyway: ARP, LLDP, spanning tree and every routing protocol arrive this way.
+ */
+static volatile int rx_seen;
+static volatile int rx_port_seen[128];
+
+static bcm_rx_t rx_count(int unit, bcm_pkt_t *pkt, void *cookie)
+{
+	(void)unit;
+	(void)cookie;
+	rx_seen++;
+	if (pkt && pkt->src_port >= 0 && pkt->src_port < 128)
+		rx_port_seen[pkt->src_port]++;
+	/* Handled, not owned: the SDK keeps the buffer and recycles it. */
+	return BCM_RX_HANDLED;
+}
+
+int nosaic_tdp_sdk_rx(int unit, int seconds)
+{
+	bcm_rx_cfg_t cfg;
+	int rv, i, total;
+
+	bcm_rx_cfg_t_init(&cfg);
+	cfg.pkt_size = 1560;
+	cfg.pkts_per_chain = 16;
+	cfg.global_pps = 0;              /* no rate limit */
+	cfg.max_burst = 0;
+	cfg.chan_cfg[1].chains = 4;
+	cfg.chan_cfg[1].cos_bmp = 0xffffffff;
+
+	rv = bcm_rx_register(unit, "nosaic", rx_count, 100, NULL, BCM_RCO_F_ALL_COS);
+	if (rv < 0) {
+		printf("rx           register failed: %s\n", soc_errmsg(rv));
+		return -1;
+	}
+
+	rv = bcm_rx_start(unit, &cfg);
+	if (rv < 0) {
+		printf("rx           start failed: %s\n", soc_errmsg(rv));
+		return -1;
+	}
+
+	printf("rx           started; listening %d seconds\n", seconds);
+	rx_seen = 0;
+	for (i = 0; i < 128; i++)
+		rx_port_seen[i] = 0;
+	sleep(seconds);
+	total = rx_seen;
+
+	for (i = 0; i < 128; i++)
+		if (rx_port_seen[i])
+			printf("  %-8s %d packets to the CPU\n",
+			       SOC_PORT_NAME(unit, i), rx_port_seen[i]);
+
+	printf("rx           %d packets received from the wire\n", total);
+	if (total == 0)
+		printf("rx           nothing arrived -- either no neighbour is sending,\n"
+		       "             or ingress is not reaching the CPU\n");
+	(void)bcm_rx_stop(unit, &cfg);
+	return total > 0 ? 0 : -1;
 }
 
 /*
@@ -1002,6 +1122,36 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 			}
 		}
 
+		/*
+		 * Anything arriving at all, even to be thrown away.
+		 *
+		 * The unicast and multicast counters above only count frames the
+		 * chip accepted. A port whose receive path is delivering
+		 * corrupted symbols -- a mis-programmed retimer, a SerDes that
+		 * locked but is sampling wrongly -- has carrier, has a neighbour
+		 * transmitting, and shows zero in all four, because every frame
+		 * failed its CRC and was counted somewhere else entirely. Octets
+		 * and errors separate "nothing is arriving" from "nothing
+		 * arriving is intelligible", and those are very different faults.
+		 */
+		BCM_PBMP_ITER(cfg.port, port) {
+			uint32 oct = 0, err = 0, disc = 0, crc = 0, tagged = 0;
+			int link = 0;
+
+			if (port < 0 || port >= 128)
+				continue;
+			if (bcm_port_link_status_get(unit, port, &link) != BCM_E_NONE || !link)
+				continue;
+			bcm_stat_sync_get32(unit, port, snmpIfInOctets, &oct);
+			bcm_stat_sync_get32(unit, port, snmpIfInErrors, &err);
+			bcm_stat_sync_get32(unit, port, snmpIfInDiscards, &disc);
+			bcm_stat_sync_get32(unit, port, snmpEtherStatsCRCAlignErrors, &crc);
+			bcm_stat_sync_get32(unit, port, snmpBcmRxVlanTagFrame, &tagged);
+			if (oct || err || disc || crc)
+				printf("  %-8s rx-octets %u  errors %u  discards %u  crc %u  tagged %u\n",
+				       SOC_PORT_NAME(unit, port), oct, err, disc, crc, tagged);
+		}
+
 		if (linked == 0)
 			printf("  no port has link, so there is nothing to count\n");
 		else if (failed)
@@ -1099,6 +1249,12 @@ int nosaic_tdp_sdk_stats(int unit, int seconds)
 int nosaic_tdp_sdk_selftest(int unit, int frames)
 {
 	(void)unit; (void)frames;
+	return -1;
+}
+
+int nosaic_tdp_sdk_rx(int unit, int seconds)
+{
+	(void)unit; (void)seconds;
 	return -1;
 }
 
