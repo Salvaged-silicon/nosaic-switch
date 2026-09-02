@@ -34,3 +34,8 @@ local.mk
 /platform/*/config/portmap.conf
 /platform/*/config/polarity.conf
 /platform/*/config/authorized_keys
+
+# Site configuration: real addressing that belongs to a particular lab rather
+# than to the board. Kept beside the board it configures, out of the public
+# tree.
+*.site.conf

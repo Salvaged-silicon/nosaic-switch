@@ -30,7 +30,9 @@ repeat it and [todo.md](docs/todo.md) for what is left.
 
 - **[Hardware reference](docs/hardware.md)** — what has been read off a running unit
 - **[Build](docs/build.md)** — what exists and what is missing
-- **[Install](docs/install.md)** — the ONIE route
+- **[Install](docs/install.md)** — the ONIE route, and how to boot it over TFTP
+- **[Configuration](docs/configuration.md)** — what this switch is set up to do,
+  captured from the EdgeNOS installation it has to replace
 
 ## Why this board
 

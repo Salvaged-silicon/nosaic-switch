@@ -703,9 +703,13 @@ poweroff -f
 	}
 
 	if hasNet {
+		exec := "/etc/nosaic/apply-network.sh"
+		if n := o.Board.NetWaitSecs; n > 0 {
+			exec = fmt.Sprintf("/bin/sh -c \"NOSAIC_NET_WAIT=%d /etc/nosaic/apply-network.sh\"", n)
+		}
 		services = append(services, svcgen.Service{
 			Name:    "network-config",
-			Exec:    "/etc/nosaic/apply-network.sh",
+			Exec:    exec,
 			Restart: "never",
 		})
 	}

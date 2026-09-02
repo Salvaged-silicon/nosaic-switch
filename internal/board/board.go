@@ -63,6 +63,15 @@ type Board struct {
 	UBootFDTAddr     string `yaml:"u_boot_fdt_addr"`
 	UBootRamdiskAddr string `yaml:"u_boot_ramdisk_addr"`
 
+	// NetWaitSecs bounds how long the network service waits for interfaces
+	// named in network.conf to appear. Zero means the default.
+	//
+	// Front-panel interfaces exist only once the datapath daemon has created
+	// them, so waiting is right -- but a board whose datapath does not exist
+	// yet waits the whole time for interfaces that cannot appear, and the
+	// service transition it is part of gives up first.
+	NetWaitSecs int `yaml:"net_wait_secs"`
+
 	// DeviceTree is a .dts under the board directory, compiled at image time
 	// and carried inside the FIT.
 	//

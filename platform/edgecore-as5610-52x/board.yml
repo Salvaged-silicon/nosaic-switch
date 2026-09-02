@@ -45,6 +45,13 @@ u_boot_ramdisk_addr: "0x03100000"
 # this file. Compiled at image time and carried inside the FIT.
 device_tree: dts/as5610-52x.dts
 
+# How long the network service waits for interfaces named in network.conf.
+# The swp ports come from the datapath daemon, and there is no nosd-tdp yet, so
+# they cannot appear at all -- the default 600 would be ten minutes of waiting
+# for something impossible, and the service transition it belongs to gives up
+# first. Raise this to the default once the datapath exists.
+net_wait_secs: 60
+
 profile: minimal
 kernel: ""
 
