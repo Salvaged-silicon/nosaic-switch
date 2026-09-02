@@ -95,14 +95,39 @@ echo "NOSAIC-S6 compile rc=$?"
     done
     if [ ! -p /run/service/.s6-svscan/control ]; then
         echo "NOSAIC-S6-FAIL the scan directory never went live after ${n}s"
+        rescue=1
     else
         echo "NOSAIC-S6 scan directory live after ${n}s"
         s6-rc-init -c /run/s6-rc-compiled /run/service
-        echo "NOSAIC-S6 init rc=$?"
+        rc=$?
+        echo "NOSAIC-S6 init rc=$rc"
+        [ $rc -eq 0 ] || rescue=1
         s6-rc -u change default
-        echo "NOSAIC-S6 change rc=$?"
+        rc=$?
+        echo "NOSAIC-S6 change rc=$rc"
+        [ $rc -eq 0 ] || rescue=1
     fi
     /etc/nosaic/selftest.sh
+
+    # If the service database did not come up, nothing started -- including the
+    # getty. The box is then reachable only by power-cycling it, which tells you
+    # nothing about why. So put a shell on the console instead.
+    #
+    # Deliberately unauthenticated, and deliberately only on this path: it
+    # exists because the alternative is a switch that boots to silence. The
+    # supervised getty is what runs when the system is working, and it asks who
+    # you are.
+    if [ "${rescue:-0}" = 1 ]; then
+        echo "NOSAIC-S6-FAIL the service database did not come up"
+        echo "NOSAIC-RESCUE shell on the console; the system is NOT running"
+        # Enough to diagnose with, gathered before the prompt so it is in the
+        # console log even if nobody is watching.
+        echo "--- date:"      ; date
+        echo "--- mounts:"    ; cat /proc/mounts
+        echo "--- servicedirs:" ; ls -la /run/s6-rc/servicedirs 2>&1 | head -20
+        echo "--- stat:"      ; busybox stat /run/s6-rc/servicedirs 2>&1 | head -12
+        setsid sh -c 'exec sh -i < /dev/console > /dev/console 2>&1' &
+    fi
 ) &
 
 exec s6-svscan /run/service

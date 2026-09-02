@@ -71,3 +71,23 @@ CONFIG_CPU_BIG_ENDIAN=y
 # clue. Found in EdgeNOS's boot notes rather than on the bench, which is the
 # only reason it did not cost a day.
 # CONFIG_PHYS_64BIT is not set
+
+# The chips this board's device tree actually declares. Without their drivers
+# the nodes are described and nothing binds to them, which is silent: the
+# hardware is simply absent.
+#
+# The RTC is the one that matters most. EdgeNOS's kernel binds it and sets the
+# clock from it at boot -- "rtc-pcf8563 2-0051: setting system clock to
+# 2026-09-02" -- and without the driver NOSaic comes up with no wall clock at
+# all. A switch with no clock writes logs nobody can order, and anything that
+# checks a certificate date is wrong before it starts.
+CONFIG_RTC_DRV_PCF8563=y
+# EEPROMs: the board identity and MAC addresses live in one of these.
+CONFIG_EEPROM_AT24=y
+# Temperature sensors on the I2C tree -- max6697 and the ne1617a-compatible
+# part -- which the platform HAL will need before it can regulate anything.
+CONFIG_SENSORS_MAX6697=y
+CONFIG_SENSORS_LM90=y
+# The pca9538 GPIO expander. The pca9546/9548 muxes are already covered by
+# CONFIG_I2C_MUX_PCA954x above.
+CONFIG_GPIO_PCA953X=y
