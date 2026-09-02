@@ -25,11 +25,18 @@ management port. Nothing in NOSaic reads `board_eeprom` yet, which is why
 
 ## Addressing
 
-Management is `end0` — the P2020's own eTSEC behind a BCM54610C PHY, named
-`end0` by this kernel rather than `eth0`. It holds `10.1.1.238/24` with a
-default via `10.1.1.1`, learned by DHCP on the running box and pinned in
-configuration here, because a router that renumbers itself on a lease change is
-one you cannot find again.
+Management is the P2020's own eTSEC behind a BCM54610C PHY, holding
+`10.1.1.238/24` with a default via `10.1.1.1` — learned by DHCP on the running
+box and pinned in configuration here, because a router that renumbers itself on
+a lease change is one you cannot find again.
+
+**It is `eth0` under NOSaic and `end0` under EdgeNOS.** Same hardware, same
+gianfar driver, different name: EdgeNOS runs systemd, whose predictable naming
+renames a device-tree NIC to `end0`; NOSaic runs s6 and nothing renames
+anything, so the kernel's `eth0` stands. Transcribing the name from `ip addr`
+on the running switch is therefore wrong, and it fails quietly — the interface
+is never configured and is reported absent next to the front-panel ports that
+genuinely are missing. Found exactly that way on the first configured boot.
 
 Ten front-panel ports are routed, all at **MTU 1600** to match their OSPF
 neighbours — a mismatch is an adjacency that reaches ExStart and stops. The

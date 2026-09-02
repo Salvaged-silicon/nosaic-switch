@@ -206,3 +206,40 @@ else
 fi
 exit 0
 `
+
+// writeBoardFRR installs the board's routing configuration, if it has one.
+//
+// The FRR package ships a default frr.conf identical on every switch built
+// from the image; a board that has its own routing to do replaces it here, the
+// same way it replaces the addressing with network.conf. Without this a board
+// could record its OSPF configuration in its own directory and have it reach
+// nothing, which is worse than not recording it.
+//
+// Ownership is the part that bites: frr.conf is 0640 and the daemons run as
+// frr, so a file landing root-owned is a daemon that starts, reads nothing,
+// and reports that OSPF is not enabled. The ids come from the recipe's own
+// users: declaration.
+func writeBoardFRR(o Options, rootfs string) (bool, error) {
+	src := filepath.Join(o.Root, "platform", o.Board.ID, "config", "frr.conf")
+	b, err := os.ReadFile(src)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := writeFile(rootfs, "/etc/frr/frr.conf", string(b), 0o640); err != nil {
+		return false, err
+	}
+	if err := os.Chown(filepath.Join(rootfs, "etc/frr/frr.conf"), frrUID, frrGID); err != nil {
+		return false, fmt.Errorf("frr.conf ownership: %w", err)
+	}
+	fmt.Fprintf(o.Log, "    routing configuration from the board\n")
+	return true, nil
+}
+
+// The frr account, from recipes/frr/recipe.yml.
+const (
+	frrUID = 101
+	frrGID = 101
+)

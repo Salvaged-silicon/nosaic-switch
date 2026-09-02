@@ -679,6 +679,9 @@ poweroff -f
 	if err != nil {
 		return err
 	}
+	if _, err := writeBoardFRR(o, rootfs); err != nil {
+		return err
+	}
 	var services []svcgen.Service
 
 	// Services the installed packages declared.
