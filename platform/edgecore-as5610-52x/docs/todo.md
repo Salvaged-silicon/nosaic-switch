@@ -274,6 +274,32 @@ So the work is ordinary rather than speculative:
    platform sets `SYS_BE_PIO=1`, which is precisely the statement that
    programmed I/O to this chip is big-endian.
 
+   **Settled by measurement, 2026-09-02.** `spike/cmic-probe.c` and a `devmem`
+   read of the live board:
+
+   ```
+   BAR0 physical       0xa0000000  (0001:01:00.0, device 0xb846)
+   CMIC_ENDIAN_SELECT  0x04040404
+   CMIC_REVID_DEVID    0x46B80200   byteswapped 0x0002B846
+   ```
+
+   `0x0002B846` is device `0xb846` revision 2. **A plain volatile read of an
+   mmap'd BAR from userspace reaches this chip and returns the correct
+   register**, byte-swapped. So userspace access is not the problem and
+   EdgeNOS's revert to ioctl was not because the BAR is unreachable.
+
+   The chip is in little-endian PIO today, which is why the kernel's
+   `ioread32` — `le32_to_cpu` on a big-endian host — gives `edged` the right
+   answer where a raw load does not. Endianness is therefore a choice: set
+   `ES_BIG_ENDIAN_PIO` and let the chip present host order, or leave it and
+   swap in the accessor.
+
+   **The decision is to keep the userspace BDE.** What is still unproven is
+   ordering, and that is a barrier in the accessor rather than a change of
+   approach. A small kernel shim over `ioread32` remains the fallback if
+   S-Channel proves unstable once there is traffic, but nothing so far argues
+   for paying that price up front.
+
 3. **Most of EdgeNOS's chip-init work does not carry over, and that is good
    news.** `edged` links **OpenMDK**, not the full OpenBCM SDK, and OpenMDK
    omits chip initialisation the full SDK performs. That is what
