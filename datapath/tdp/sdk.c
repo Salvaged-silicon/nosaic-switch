@@ -638,6 +638,82 @@ int nosaic_tdp_sdk_ports_up(int unit)
 }
 
 /*
+ * Per-port counters, sampled twice, reported as a delta.
+ *
+ * Absolute counters answer the wrong question during bring-up. What matters is
+ * not that a port has seen 4000 frames since some unknown reset, but that the
+ * number is moving -- and, for forwarding, that frames arriving on one port
+ * leave by another. A delta over a known interval says both; a snapshot says
+ * neither.
+ *
+ * Non-unicast is counted separately because on a quiet lab segment it is
+ * nearly all of the traffic. The neighbours here emit spanning tree and
+ * discovery frames continuously and address them to multicast, so a switch
+ * that floods correctly shows those arriving on one port and leaving every
+ * other port in the VLAN. That is the cheapest honest forwarding test
+ * available without a generator, and it needs no cabling changes.
+ */
+int nosaic_tdp_sdk_stats(int unit, int seconds)
+{
+	bcm_port_config_t cfg;
+	bcm_port_t port;
+	uint32 in0[128], out0[128], inn0[128], outn0[128];
+	uint32 v;
+	int rv, moving = 0;
+
+	rv = bcm_port_config_get(unit, &cfg);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-tdp: bcm_port_config_get(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+
+	memset(in0, 0, sizeof(in0));
+	memset(out0, 0, sizeof(out0));
+	memset(inn0, 0, sizeof(inn0));
+	memset(outn0, 0, sizeof(outn0));
+
+	BCM_PBMP_ITER(cfg.port, port) {
+		if (port < 0 || port >= 128)
+			continue;
+		bcm_stat_get32(unit, port, snmpIfInUcastPkts, &in0[port]);
+		bcm_stat_get32(unit, port, snmpIfOutUcastPkts, &out0[port]);
+		bcm_stat_get32(unit, port, snmpIfInNUcastPkts, &inn0[port]);
+		bcm_stat_get32(unit, port, snmpIfOutNUcastPkts, &outn0[port]);
+	}
+
+	printf("sampling counters for %d seconds...\n", seconds);
+	sleep(seconds);
+
+	printf("  %-8s %10s %10s %10s %10s\n",
+	       "port", "rx-ucast", "tx-ucast", "rx-mcast", "tx-mcast");
+	BCM_PBMP_ITER(cfg.port, port) {
+		uint32 di, dou, dni, dno;
+
+		if (port < 0 || port >= 128)
+			continue;
+		v = 0; bcm_stat_get32(unit, port, snmpIfInUcastPkts, &v);
+		di = v - in0[port];
+		v = 0; bcm_stat_get32(unit, port, snmpIfOutUcastPkts, &v);
+		dou = v - out0[port];
+		v = 0; bcm_stat_get32(unit, port, snmpIfInNUcastPkts, &v);
+		dni = v - inn0[port];
+		v = 0; bcm_stat_get32(unit, port, snmpIfOutNUcastPkts, &v);
+		dno = v - outn0[port];
+
+		if (!di && !dou && !dni && !dno)
+			continue;
+		moving++;
+		printf("  %-8s %10u %10u %10u %10u\n",
+		       SOC_PORT_NAME(unit, port), di, dou, dni, dno);
+	}
+
+	if (!moving)
+		printf("  (no counter moved -- nothing is being received or sent)\n");
+	return 0;
+}
+
+/*
  * The SAL's DMA allocator, which the SDK calls with no device context.
  *
  * This has to be defined here or the linker takes the one in the SDK's own
@@ -708,6 +784,12 @@ int nosaic_tdp_sdk_bcm_init(int unit)
 int nosaic_tdp_sdk_ports_up(int unit)
 {
 	(void)unit;
+	return -1;
+}
+
+int nosaic_tdp_sdk_stats(int unit, int seconds)
+{
+	(void)unit; (void)seconds;
 	return -1;
 }
 

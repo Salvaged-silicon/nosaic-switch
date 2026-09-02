@@ -26,4 +26,8 @@ int nosaic_tdp_sdk_bcm_init(int unit);
  * both off, so nothing forwards until this runs. */
 int nosaic_tdp_sdk_ports_up(int unit);
 
+/* Sample every port's counters twice, `seconds` apart, and print what moved.
+ * A delta is the only form of this that answers whether traffic is flowing. */
+int nosaic_tdp_sdk_stats(int unit, int seconds);
+
 #endif
