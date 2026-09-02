@@ -567,13 +567,37 @@ So the work is ordinary rather than speculative:
      the problem. The implementations are kept: they are correct either way and
      the no-op version was an assumption rather than a finding.
 
-   What is left, roughly in order: the CMICe's DMA engine may need setup the
-   CMICm path does not, since this is the one piece of the BDE knowingly
-   carried over without examination; the SDK may want an interrupt for DMA
-   completion even with `tdma_intr_enable=0`; or the descriptor contents are
-   wrong in a way only a bus trace or the SDK's own debug output will show.
-   Turning on the SDK's SBUS/DMA logging is the cheap next move and has not
-   been tried.
+   **The SDK's own log now says what fails**, which it could not before because
+   nosd-tdp discarded it. `bsl_init` is wired up and everything is let through:
+
+   ```
+   base: 44c addr: 44c, block: -1, index: 0, pindex: 0, gransh: 2   (x23)
+   SlamDmaTimeOut:_soc_xgs3_mem_slam, Abort Failed
+   soc_mem_write_range: write CPU_COS_MAP.ipipe0[0-127] failed: Operation timed out
+   soc_mem_clear: unit 0 memory CPU_COS_MAP.* returns Operation timed out
+   ```
+
+   A SLAM DMA that never completes, and whose abort also fails. Everything
+   before it — chip identification, the DMA pool, `soc_attach` — is fine.
+
+   **Three explanations ruled out, each with evidence rather than argument:**
+
+   | Ruled out | How |
+   |---|---|
+   | Addressing | pci1's inbound ATMU window reads enabled, 2 GB, local memory, zero base — 1:1 over DRAM, so `0x78000000` is reachable as `l2p` reports it |
+   | CPU cache | `sflush`/`sinval` implemented with `dcbf` over the cache line; no change |
+   | DMA byte order | Set to match the vendor OS running on this board with working DMA — `CMIC_ENDIAN_SELECT` `DMA_OTHER` alone, packet DMA little-endian, `big_endian_packet=0` to agree; no change |
+
+   The endianness one is worth keeping even though it fixed nothing: setting
+   all three was a guess that the chip should match the host, and matching the
+   machine that works is better grounded than a guess.
+
+   **What is left.** The CMICe DMA engine is the last untouched thing — it is
+   the one piece of the BDE knowingly carried over from the CMICm board without
+   examination, and `_soc_xgs3_mem_slam` is precisely where a difference would
+   show. Worth reading how the SDK sets up SBUS DMA channels for a CMICe and
+   checking what the CMICm assumption cost. A bus trace would settle it faster
+   than reasoning, if one can be had.
 
 7. **~~`soc_misc_init` times out~~ — passed, see above. Kept for the record.**
 

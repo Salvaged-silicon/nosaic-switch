@@ -91,4 +91,25 @@ static inline void nosaic_mmio_barrier(void)
 #define NOSAIC_ES_BIG_ENDIAN_DMA_PACKET 0x02000002
 #define NOSAIC_ES_BIG_ENDIAN_DMA_OTHER  0x04000004
 
+/*
+ * What a big-endian host should select, and it is not all three.
+ *
+ * Read off the vendor OS running on this hardware with working DMA: its
+ * CMIC_ENDIAN_SELECT is 0x04040404, which is DMA_OTHER alone. PIO is left
+ * little-endian there because that stack reaches the chip through the kernel's
+ * ioread32, which byte-swaps for it; NOSaic reads registers directly, so PIO
+ * has to be big-endian here.
+ *
+ * Packet DMA stays little-endian either way, matching the machine that works.
+ * Setting all three was a guess that the chip should simply match the host,
+ * and it produced a SLAM DMA that never completed:
+ *
+ *   SlamDmaTimeOut:_soc_xgs3_mem_slam, Abort Failed
+ *   soc_mem_write_range: write CPU_COS_MAP.ipipe0[0-127] failed
+ *
+ * The vectors handed to the SDK must agree with whatever is selected here, or
+ * it byte-swaps descriptors the chip does not, and nothing reports it.
+ */
+#define NOSAIC_ES_BE_HOST (NOSAIC_ES_BIG_ENDIAN_PIO | NOSAIC_ES_BIG_ENDIAN_DMA_OTHER)
+
 #endif /* NOSAIC_MMIO_H */

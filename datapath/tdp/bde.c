@@ -304,9 +304,7 @@ void nosaic_tdp_bde_cfg_write(struct nosaic_tdp_bde *b, uint32_t addr, uint32_t 
 void nosaic_tdp_bde_set_endian(struct nosaic_tdp_bde *b)
 {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-	uint32_t es = NOSAIC_ES_BIG_ENDIAN_PIO |
-		      NOSAIC_ES_BIG_ENDIAN_DMA_PACKET |
-		      NOSAIC_ES_BIG_ENDIAN_DMA_OTHER;
+	uint32_t es = NOSAIC_ES_BE_HOST;
 
 	nosaic_tdp_bde_wr(b, NOSAIC_CMIC_ENDIAN_SELECT, es);
 	nosaic_mmio_barrier();

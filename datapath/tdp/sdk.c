@@ -37,6 +37,9 @@
 #include <soc/cmext.h>
 #include <soc/cmtypes.h>
 #include <soc/error.h>
+#include <shared/bsltypes.h>
+#include <shared/bslext.h>
+#include <stdarg.h>
 
 /* Bus and device type, from include/sal/types.h. A PCI-attached switch chip --
  * stated rather than defaulted, because the SDK selects access paths from it
@@ -270,12 +273,47 @@ static void nosaic_write64(soc_cm_dev_t *dev, uint32 addr, uint64 data)
 	nosaic_mmio_wr32((volatile char *)b->bar + addr + 4, (uint32)data);
 }
 
+/*
+ * The SDK's own log, sent to stderr.
+ *
+ * Without it the SDK's diagnosis of its own failures is discarded and all that
+ * survives is the return code -- which is how "soc_misc_init returned -9" has
+ * been the entire evidence for a DMA engine that is not working. The SDK knows
+ * more than that and says so.
+ */
+static int nosaic_bsl_out(bsl_meta_t *meta, const char *fmt, va_list args)
+{
+	(void)meta;
+	return vfprintf(stderr, fmt, args);
+}
+
+/* Let everything through. This is bring-up: the message that matters is the
+ * one nobody predicted, and filtering is how it gets thrown away. */
+static int nosaic_bsl_check(bsl_packed_meta_t meta)
+{
+	(void)meta;
+	return 1;
+}
+
+static void nosaic_bsl_start(void)
+{
+	bsl_config_t cfg;
+
+	bsl_config_t_init(&cfg);
+	cfg.out_hook = nosaic_bsl_out;
+	cfg.check_hook = nosaic_bsl_check;
+	if (bsl_init(&cfg) < 0)
+		fprintf(stderr, "nosd-tdp: could not start the SDK log; "
+			"failures below will be numbers without sentences\n");
+}
+
 int nosaic_tdp_sdk_attach(struct nosaic_tdp_bde *b, uint16_t dev_id, uint8_t rev_id)
 {
 	soc_cm_device_vectors_t v;
 	int unit, rv;
 
 	sal_dev = b;
+	nosaic_bsl_start();
 
 	/*
 	 * Byte order first, before the SDK reads anything.
@@ -317,17 +355,19 @@ int nosaic_tdp_sdk_attach(struct nosaic_tdp_bde *b, uint16_t dev_id, uint8_t rev
 	 * The three that make this board different from the 7050SX2.
 	 *
 	 * They tell the SDK the byte order the chip is presenting, and they must
-	 * agree with what was just written to CMIC_ENDIAN_SELECT -- PIO, packet
-	 * DMA and everything else, all big-endian, matching the host. The
-	 * Trident2+ sets all three to 0 because x86 is little-endian and the
-	 * chip's default suits it.
+	 * agree with what was written to CMIC_ENDIAN_SELECT. Not all three: the
+	 * vendor OS running on this hardware with working DMA selects DMA_OTHER
+	 * alone, leaving packet DMA little-endian, and only PIO differs here
+	 * because NOSaic reads registers directly instead of through a kernel
+	 * that swaps for it. The Trident2+ sets all three to 0, x86 being
+	 * little-endian and the chip's default suiting it.
 	 *
 	 * Disagreement here is not an error the SDK reports: it byte-swaps or
 	 * fails to, and every register and descriptor is wrong in the same
 	 * direction.
 	 */
 	v.big_endian_pio    = 1;
-	v.big_endian_packet = 1;
+	v.big_endian_packet = 0;   /* left little-endian, as the working machine has it */
 	v.big_endian_other  = 1;
 
 	v.config_var_get       = nosaic_config_var_get;
