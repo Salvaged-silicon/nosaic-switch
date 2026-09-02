@@ -209,6 +209,92 @@ happens to be right at 100%; `fan_set(50)` produces 127, whose low five bits
 are 31, so asking for half speed gives full speed. The shell fan controller in
 the same tree uses the correct 0–31 scale, so the two disagree with each other.
 
+### The I2C mux tree, and how a port becomes a bus number
+
+**70 buses.** Two controllers, and everything else is behind muxes.
+
+```
+i2c-0  board control    pca9548 @0x70 -> ch0 RTC(2-0051)  ch1 PSU1 eeprom
+                                         ch2 PSU2 eeprom  ch4 USB hub
+                                         ch5 VT1165M      ch6 ICS83905I
+                                         ch7 max6697 + ne1617a
+
+i2c-1  ports            pca9546 @0x75 -> 4 x pca9548 @0x74  SFP  1-32
+                        pca9546 @0x76 -> 2 x pca9548 @0x74  SFP 33-48
+                                         ch2 -> bus 64  four pca9538 (GPIO)
+                                         ch3 -> bus 65  SFP status  <-- NOT IN THE DTS
+                        pca9546 @0x77 -> 4 buses           QSFP 49-52
+```
+
+Each port bus carries the module's EEPROM at `0x50` (and its DOM page at
+`0x51`) plus a **DS100DF410 retimer at `0x27`** — one per port, on the port's
+own bus, which is why the retimer is reached through the mux like everything
+else.
+
+Bus numbers are allocated by probe order, so they are a property of this device
+tree rather than of the board. Verified against the running unit:
+
+```
+SFP  port p (1-48):  bus = 11 + 9 * ((p-1) / 8) + ((p-1) % 8)
+QSFP port p (49-52): bus = 66 + (p - 49)
+```
+
+Nine buses per group of eight ports: the sub-mux takes one (buses 10, 19, 28,
+37, 46, 55) and its eight channels take the rest. **Do not hard-code these.**
+EdgeNOS's ONLP layer carries a different set — SFP on 22-69, GPIO on 17 — from
+an older kernel, and it is simply wrong here. Its *addresses* are still right;
+only the bus numbers moved.
+
+### GPIO: four expanders on bus 64, and four more the device tree forgot
+
+Bound and working, `pca9538` on ch2 of the `0x76` mux:
+
+| Device | gpiochip | Contents |
+|---|---|---|
+| `64-0070` | 504 | QSFP `RESET_L[3:0]` on pins 0-3, `MODSEL_L[3:0]` on pins 4-7 |
+| `64-0071` | 496 | QSFP `MODSEL`/`INT` |
+| `64-0072` | 488 | SFP 40-47 rate select |
+| `64-0073` | 480 | misc |
+
+Pins 0-3 driven high deassert QSFP reset. The per-module control byte is bit0
+`MODSEL_L` (0 = selected), bit1 `RST_L` (1 = not reset), bit2 `LPMODE`
+(0 = high power) — so `0x02` is a selected, running, full-power module.
+
+**And then the gap.** Bus 65 — ch3 of the same mux — is empty in Linux, because
+the device tree describes its contents in comments and declares no nodes. The
+chips are physically there; a read-only probe of the running switch:
+
+```
+bus 65:  0x20 ACK -> 0x00   0x21 ACK -> 0x00
+         0x22 ACK -> 0x00   0x23 ACK -> 0xff
+```
+
+Those are the four expanders carrying **SFP MOD_ABS, TX_FAULT, RX_LOS and
+TX_DISABLE for ports 1-48** — presence, fault, loss-of-signal and the ability
+to turn a transmitter off. ONLP has the map (`0x20` = MOD_ABS ports 0-39,
+active low = present; `0x23` = ports 40-47 plus QSFP presence) and calls them
+PCA9506, a 40-pin part, which fits "ports 0-39" far better than the 8-pin
+pca9538 the device tree names on the neighbouring channel.
+
+Until those nodes exist, NOSaic cannot tell whether an SFP is fitted, cannot
+see a transmitter fault, and cannot disable a transmitter. Adding them is
+device-tree work, not driver work.
+
+### LEDs are not on this bus
+
+Worth stating because the mux tree looks like it should own them. It does not.
+
+- **Front-panel port LEDs** come from the BCM56846's two LED microprocessors
+  (LEDUP0, LEDUP1) running microcode, driven by the datapath daemon. EdgeNOS
+  loads a passthrough microcode and writes link state itself, having found the
+  fully-autonomous path lit the wrong ports: the chip-side link bits its
+  hardware scan reads are seeded stale at init, and making it correct needs a
+  board `PORT_ORDER_REMAP` only obtainable from a live Cumulus capture.
+- **System and locator LEDs** are CPLD registers `0x13` and `0x15`.
+
+So the LED work on this board is datapath work plus two CPLD registers, and
+none of it goes through I2C.
+
 ### Temperatures
 
 `max6697` at `0x4d` on I2C bus 0 channel 7, **seven channels**, reading 31–39 °C

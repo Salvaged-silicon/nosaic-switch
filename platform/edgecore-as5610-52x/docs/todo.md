@@ -245,6 +245,24 @@ this reason: `INCLUDE_RCPU` shifts `soc_cm_device_vectors_t` by a pointer and
 `BCM_ALL_CHIPS` changes every memory ID, and neither mismatch produces a
 compile error, a link error, or a log line.
 
+### The device tree is missing the SFP status expanders
+
+Four I2C GPIO expanders carrying **MOD_ABS, TX_FAULT, RX_LOS and TX_DISABLE for
+ports 1-48** are described in `dts/as5610-52x.dts` as comments and declared as
+nothing. The chips are present — a read-only probe of bus 65 on the running
+switch gets an ACK at `0x20`, `0x21`, `0x22` and `0x23` — so this is device
+tree work, not a hardware question.
+
+Until it is done NOSaic cannot tell whether an optic is fitted, cannot see a
+transmitter fault, and cannot disable a transmitter. Every one of those is
+table stakes for a switch.
+
+ONLP has the map and calls them PCA9506, a 40-pin part, which fits "ports 0-39"
+in a way the 8-pin `pca9538` named on the neighbouring channel does not. Its
+bus numbers are stale — it predates this device tree — but its addresses are
+right. Worth confirming the part from the board before writing the nodes:
+`nxp,pca9505`/`pca9506` needs `CONFIG_GPIO_PCA953X`, which this kernel now has.
+
 ### The platform HAL — now specified, and two vendor bugs not to inherit
 
 Everything it needs to talk to is written down in
