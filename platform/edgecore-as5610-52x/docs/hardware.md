@@ -231,6 +231,38 @@ Each port bus carries the module's EEPROM at `0x50` (and its DOM page at
 own bus, which is why the retimer is reached through the mux like everything
 else.
 
+**Two different parts, and the difference is not just width.** Three PCA9546
+(4-channel) and seven PCA9548 (8-channel). Both are *switches* rather than
+one-hot multiplexers: the channel-select register is a bitmask and more than
+one channel can be open at once.
+
+That is the whole reason isolation matters here. Every port channel presents
+**the same three addresses** — `0x50`, `0x51`, `0x27`. Two channels open
+together means two EEPROMs answering as `0x50`, and a read returns whichever
+device wins the bus. The failure is not an error; it is optic A's serial number
+reported for port B.
+
+`i2c-mux-idle-disconnect` is what closes the channel when the transfer ends.
+The load-bearing one is the **root** mux on each branch: nothing behind a
+sub-mux is reachable unless its parent has that branch open, so a disconnecting
+PCA9546 isolates all eight ports below it whatever the PCA9548 does.
+
+The running EdgeNOS device tree applies it to the three port muxes and not to
+the board-control PCA9548 — defensible, since that mux's channels carry
+distinct addresses (RTC `0x51`, PSU EEPROMs `0x3a`/`0x39`, thermal `0x4d`/`0x18`)
+and have nothing to collide over:
+
+```
+mux@70 (board control)  compatible i2c@0 i2c@1 i2c@2 i2c@7 name reg
+mux@75 (ports)          compatible i2c-mux-idle-disconnect i2c@0 ... reg
+                                   ^ present here, absent above
+```
+
+NOSaic's copy of the device tree declares it on **all ten**. That is stricter
+than what is running and costs a few extra bus transactions; it is kept because
+the cost of being wrong is silent cross-talk between ports, and no amount of
+staring at a bus trace makes that obvious after the fact.
+
 Bus numbers are allocated by probe order, so they are a property of this device
 tree rather than of the board. Verified against the running unit:
 
