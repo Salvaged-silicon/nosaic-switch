@@ -523,7 +523,36 @@ So the work is ordinary rather than speculative:
    or find the actual bug, which is worth doing since disk-booted boards share
    squashfs even if not the loop.
 
-6. **`soc_misc_init` times out, cause not yet established.**
+6. **Bring-up reaches `bcm_attach`.** With a trustworthy image, most of the
+   sequence passes:
+
+   ```
+   ATTACHED  soc_attach completed
+     soc_misc_init...        ok
+     soc_mmu_init...         ok
+     bcm_attach...
+   nosd-tdp: bcm_attach(0) returned -2 (Out of memory)
+   ```
+
+   `soc_misc_init` and `soc_mmu_init` both pass now, which they did not before
+   the RAM-boot fix — so the timeout recorded below was very likely the
+   corruption rather than anything about the chip. Worth remembering the next
+   time something here looks like a hardware fault.
+
+   `bcm_attach` returning `BCM_E_MEMORY` is not our DMA pool: `salloc` reports
+   exhaustion by name and said nothing, and the box has 1.8 GB free. So it is
+   an allocation or a lookup inside the SDK's own BCM layer. Two things to try,
+   cheapest first: pass `"esw"` explicitly rather than NULL for the driver
+   family, and check whether this SDK build registers the Trident+ BCM driver
+   at all — `soc_attach` succeeding only proves the SOC layer knows the chip.
+
+   Also still set from the earlier bisect: `table_dma_enable=0` and
+   `tslam_dma_enable=0`. That bisect never returned a clean answer because its
+   first run hit the corruption, and it should be re-run now that a test means
+   something — table DMA is how the SDK programs most of the chip, and leaving
+   it off is a bring-up crutch rather than a decision.
+
+7. **~~`soc_misc_init` times out~~ — passed, see above. Kept for the record.**
 
    ```
    ATTACHED  soc_attach completed
