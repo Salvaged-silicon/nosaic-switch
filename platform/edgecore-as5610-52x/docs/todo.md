@@ -640,13 +640,47 @@ So the work is ordinary rather than speculative:
    error. The failure is inside the chip's SLAM engine or in a precondition for
    running it that is not a register we are getting wrong.
 
-   That is a much smaller space than it was, and it is where this stops for
-   now. What would move it: the SDK's own `soc_mem_slam` path for a
-   non-CMICm chip is short and worth reading line by line against what the
-   chip actually has set; and comparing `CMIC_CONFIG` and the CMIC clock or
-   enable bits between a working vendor OS and this, which the register-diff
-   harness EdgeNOS built for exactly that purpose (`/tmp/regdump.in`, see its
-   operations doc) already exists to do.
+   **Both of those were done, and between them they name the answer.**
+
+   Reading the SDK's non-CMICm SLAM path (`mem.c:8395` onward) shows it does
+   use a host buffer — `WRITE_CMIC_SLAM_DMA_PCIMEM_START_ADDRr(unit,
+   soc_cm_l2p(unit, buffer))` — allocated through `soc_cm_salloc` and freed
+   through `soc_cm_sfree`, so through our pool. `l2p` now complains loudly if
+   it is ever handed a pointer outside that pool instead of quietly returning
+   0, which would hand the chip physical address zero and look exactly like a
+   dead engine. **It never complains.** Every address the chip is given is in
+   the pool and correctly translated.
+
+   And the captured Cumulus configuration for this board
+   (`newnos/docs/cumulus_capture_2026_06_07/config.bcm`) settles what the only
+   known-working software on this chip does:
+
+   | | Cumulus | NOSaic |
+   |---|---|---|
+   | `polled_irq_mode` | 0 | 1 |
+   | `miim_intr_enable` | 1 | 0 |
+   | `tdma_intr_enable` | 1 | 0 |
+   | `tslam_intr_enable` | 1 | 0 |
+   | `tslam_dma_enable` | 1 | 1 |
+   | `table_dma_enable` | 1 | 1 |
+
+   Its own comments name what those mean: *"Table SLAM DMA operation should use
+   interrupt rather than poll for completion."* Cumulus takes the interrupt
+   for every one of them.
+
+   **So the conclusion is that DMA on this chip wants interrupt delivery, and
+   NOSaic has none.** The polled path exists in the SDK and is what
+   `tslam_intr_enable=0` selects; it reaches the right register, the engine is
+   enabled, and `DONEf` never sets. Everything else is verified: registers read
+   and write correctly, the addresses are right, the pool is where a kernel
+   allocator would have put it, byte order matches the working machine, and the
+   cache is handled.
+
+   That makes the CMICe interrupt path the next real piece of work rather than
+   one more thing to try — and it is the same piece the BDE has been carrying
+   over from CMICm unexamined since the start. Until it exists,
+   `table_dma_enable=0` and `tslam_dma_enable=0` are how this board gets
+   through `soc_misc_init`, at the cost of programming every table by PIO.
 
 7. **~~`soc_misc_init` times out~~ — passed, see above. Kept for the record.**
 

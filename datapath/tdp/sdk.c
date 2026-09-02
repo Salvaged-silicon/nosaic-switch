@@ -119,6 +119,9 @@ static void *nosaic_salloc(soc_cm_dev_t *dev, int size, const char *name)
 	b->dma_used += aligned;
 	memset(p, 0, aligned);
 	return p;
+	/* Note: sfree does not reclaim, so dma_used only grows. That is fine for
+	 * initialisation, which is what this pool exists for, and would not be
+	 * for a daemon that allocates per packet. */
 }
 
 static void nosaic_sfree(soc_cm_dev_t *dev, void *ptr)
@@ -127,15 +130,33 @@ static void nosaic_sfree(soc_cm_dev_t *dev, void *ptr)
 	(void)ptr;   /* see above: the pool outlives every allocation from it */
 }
 
-/* Physical address of a pointer into the pool. The chip is given these, so
- * getting it wrong is a DMA to somewhere else in RAM. */
+/*
+ * Physical address of a pointer into the pool. The chip is given these, so
+ * getting it wrong is a DMA to somewhere else in RAM.
+ *
+ * A pointer that is not in the pool is a bug somewhere above, and returning 0
+ * for it -- which this used to do quietly -- hands the chip physical address
+ * zero and waits for a completion that cannot come. That is indistinguishable
+ * from a dead DMA engine, so it says so instead. Once, because if it happens
+ * at all it happens for every entry in a table.
+ */
 static sal_paddr_t nosaic_l2p(soc_cm_dev_t *dev, void *addr)
 {
 	struct nosaic_tdp_bde *b = bde_of(dev);
 	size_t off = (char *)addr - (char *)b->dma;
+	static int complained;
 
-	if (!b->dma || off >= b->dma_len)
+	if (!b->dma || (char *)addr < (char *)b->dma || off >= b->dma_len) {
+		if (!complained) {
+			complained = 1;
+			fprintf(stderr,
+				"nosd-tdp: l2p(%p) is outside the DMA pool "
+				"(%p..%p) -- the chip would be told to read "
+				"physical address 0\n",
+				addr, b->dma, (char *)b->dma + b->dma_len);
+		}
 		return 0;
+	}
 	return (sal_paddr_t)(b->dma_phys + off);
 }
 
