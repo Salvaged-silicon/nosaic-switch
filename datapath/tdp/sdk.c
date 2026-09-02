@@ -40,6 +40,7 @@
 #include <shared/bsltypes.h>
 #include <shared/bslext.h>
 #include <stdarg.h>
+#include <stdlib.h>
 
 /* Bus and device type, from include/sal/types.h. A PCI-attached switch chip --
  * stated rather than defaulted, because the SDK selects access paths from it
@@ -326,12 +327,28 @@ static int nosaic_bsl_out(bsl_meta_t *meta, const char *fmt, va_list args)
 	return vfprintf(stderr, fmt, args);
 }
 
-/* Let everything through. This is bring-up: the message that matters is the
- * one nobody predicted, and filtering is how it gets thrown away. */
+/*
+ * Warnings and worse by default; everything with NOSAIC_SDK_VERBOSE set.
+ *
+ * Letting everything through is the right instinct during bring-up -- the
+ * message that matters is the one nobody predicted -- and it is not free. A
+ * single --init produced 2.8 million lines, which on a serial console or an
+ * ssh pipe takes longer than the initialisation it is describing, and with
+ * table DMA disabled the initialisation is already slow.
+ *
+ * So the default is quiet enough to finish and the verbose mode is one
+ * environment variable away, which is the balance that was actually wanted.
+ * bslSeverityWarn is 3 and lower numbers are more severe.
+ */
 static int nosaic_bsl_check(bsl_packed_meta_t meta)
 {
-	(void)meta;
-	return 1;
+	static int verbose = -1;
+
+	if (verbose < 0)
+		verbose = getenv("NOSAIC_SDK_VERBOSE") != NULL;
+	if (verbose)
+		return 1;
+	return BSL_SEVERITY_GET(meta) <= bslSeverityWarn;
 }
 
 static void nosaic_bsl_start(void)
