@@ -620,10 +620,33 @@ So the work is ordinary rather than speculative:
    introduces a segfault on the failure path, after `soc_misc_init` has already
    returned, which is worth knowing and is not the thing being chased.
 
-   **The next move is the fourth row.** Either deliver interrupts — which means
-   the CMICe interrupt path, the piece of the BDE knowingly carried over from
-   CMICm unexamined — or establish that SLAM DMA completion can be polled at
-   all on this chip. A bus trace would settle it faster than reasoning.
+   **Interrupts are not it, and the register path is not it either.** Both
+   checked rather than assumed:
+
+   - The SDK's SLAM wait is a **poll**, not an interrupt wait — it reads
+     `CMIC_SLAM_DMA_CFG` in a loop for `DONEf`/`ERRORf` (`mem.c:8670`). Which
+     the log confirms: `addr: 44c` repeated is that register being read, and
+     `CMIC_SLAM_DMA_CFG` is `0x44C` (`cmic.h:592`). So EdgeNOS's fourth reason
+     does not apply to this path.
+   - Those registers are at `0x444`–`0x44C`, far below the `0x10000` their
+     second reason is about, and the BAR is 256 KB.
+   - **Register writes land.** `tdp-probe` now writes a pattern to
+     `CMIC_SLAM_DMA_ENTRY_COUNT` and reads it back: `wrote 0x00000055 read
+     0x00000055 OK`. Reads were already proven by the chip identifying itself;
+     this proves the other direction, which nothing had.
+
+   So the CPU-to-chip register path works in both directions, the poll reaches
+   the right register, and the engine is enabled and never reports done or
+   error. The failure is inside the chip's SLAM engine or in a precondition for
+   running it that is not a register we are getting wrong.
+
+   That is a much smaller space than it was, and it is where this stops for
+   now. What would move it: the SDK's own `soc_mem_slam` path for a
+   non-CMICm chip is short and worth reading line by line against what the
+   chip actually has set; and comparing `CMIC_CONFIG` and the CMIC clock or
+   enable bits between a working vendor OS and this, which the register-diff
+   harness EdgeNOS built for exactly that purpose (`/tmp/regdump.in`, see its
+   operations doc) already exists to do.
 
 7. **~~`soc_misc_init` times out~~ — passed, see above. Kept for the record.**
 

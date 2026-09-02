@@ -138,6 +138,34 @@ int main(int argc, char **argv)
 		       raw, raw & 0xffff, (raw >> 16) & 0xff);
 	}
 
+	/*
+	 * Does a register write actually land?
+	 *
+	 * Everything so far proves reads work -- the chip identifies itself --
+	 * and proves one write worked, CMIC_ENDIAN_SELECT, whose effect was
+	 * visible in the next read. Neither proves the general case, and the
+	 * failure being chased is a DMA engine that is enabled by a write and
+	 * then never reports done.
+	 *
+	 * CMIC_SLAM_DMA_ENTRY_COUNT is the safe one to try: it is a scratch
+	 * count register for an engine that is not running, adjacent to the
+	 * config register the SDK polls, and writing it while nothing is in
+	 * flight has no effect on anything.
+	 */
+	{
+		uint32_t save = nosaic_tdp_bde_rd(&b, 0x448);
+		uint32_t pat = 0x00000055u, back;
+
+		nosaic_tdp_bde_wr(&b, 0x448, pat);
+		back = nosaic_tdp_bde_rd(&b, 0x448);
+		nosaic_tdp_bde_wr(&b, 0x448, save);
+		printf("\nregister write  0x448: wrote %#010x read %#010x  %s\n",
+		       pat, back, back == pat ? "OK" : "MISMATCH");
+		if (back != pat)
+			printf("  writes are not landing as written; everything above\n"
+			       "  this line only ever proved that reads work\n");
+	}
+
 	/* The DMA pool. Reported rather than required: a board whose device tree
 	 * has not been updated yet still gets a useful register report. */
 	printf("\n");
