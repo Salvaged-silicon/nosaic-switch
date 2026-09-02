@@ -136,10 +136,96 @@ microprocessors are disabled and the board controller drives the panel through
 memory-mapped registers; here there is microcontroller firmware to load, which
 is the mechanism NOSaic has not implemented on any board.
 
-## Sensors
+## Sensors, fans and PSUs
 
-`hwmon0` and `hwmon1` are present under the vendor OS. Neither has been
-identified, and the platform HAL for this board does not exist.
+Read off the running unit on 2026-09-02. The platform HAL for this board does
+not exist yet; this is what it has to talk to.
+
+### The CPLD is where the box hardware lives
+
+Memory-mapped on the localbus at physical **`0xEA000000`**, 0x100 bytes — not
+on I2C. Fans, PSUs, the front LEDs, reset and the watchdog are all behind it.
+
+| Offset | Contents |
+|---|---|
+| `0x00` | version (reads `0x10` on this unit) |
+| `0x01` | **PSU2** status |
+| `0x02` | **PSU1** status |
+| `0x03` | fan status |
+| `0x0d` | fan PWM |
+| `0x10` | reset |
+| `0x11` | interrupt status |
+| `0x13` | `led_sys` |
+| `0x15` | `led_loc` |
+
+A live dump, for shape:
+
+```
+00: 10 00 02 10 00 07 ea ea 0f 07 aa fa fa 14 00 fa
+10: ff ff 00 6f ff 01 ea ea ea ea ea ea 08 ea ea ea
+```
+
+### PSUs: active-low, and PSU1 is in the higher register
+
+**present = bit0 is `0`**, power-good = bit1. PSU1's status is in `0x02` and
+PSU2's in `0x01` — the order is inverted relative to their names, which is not
+a typo here.
+
+This matters because EdgeNOS's own CPLD driver gets it wrong, and says so: its
+`psu1_present` reads bit0 of `0x01` active-*high*, so on a running switch both
+PSUs report absent. EdgeNOS's Python HAL bypasses the driver and decodes the
+registers itself, with the comment that the map below is the Cumulus-proven
+one. Decoding this unit's dump that way:
+
+```
+PSU1  reg 0x02 = 0x02  -> present, power-good
+PSU2  reg 0x01 = 0x00  -> present, NOT power-good
+```
+
+which is a plausible reading of a switch with a second supply fitted and not
+energised. It is not proof: an empty bay might also read `0x00`. Distinguishing
+them means looking at the box, and until someone does, treat PSU2's state here
+as unconfirmed rather than as a fault to chase.
+
+### Fans: four, one PWM between them, and the scale is 5 bits
+
+Four fans, a single board-wide status register and a single PWM. **No per-fan
+tachometer** — nothing reports RPM, so "is that fan spinning" is not a question
+this hardware answers. `hwmon` shows no fan at all; it is CPLD-only.
+
+**The PWM is 0–31, not 0–255.** From the working fan controller:
+
+| PWM | Duty | Threshold |
+|---|---|---|
+| 10 | ~32% | below 40 °C |
+| 14 | ~45% | 40 °C |
+| 20 | ~64% | 50 °C |
+| 26 | ~83% | 60 °C |
+| 31 | 100% | 72 °C critical, 75 °C halts after ~30 s |
+
+EdgeNOS's Python HAL has this wrong in the other direction: `fan_set()`
+computes `pct * 255 / 100` and clamps to 255, writing into a five-bit field. It
+happens to be right at 100%; `fan_set(50)` produces 127, whose low five bits
+are 31, so asking for half speed gives full speed. The shell fan controller in
+the same tree uses the correct 0–31 scale, so the two disagree with each other.
+
+### Temperatures
+
+`max6697` at `0x4d` on I2C bus 0 channel 7, **seven channels**, reading 31–39 °C
+on an idle unit. A second sensor, an `ne1617a` at `0x18`, is on the same
+channel. Both are in the device tree and our kernel now has drivers for them.
+
+`bde_tmon` is the third hwmon device and is **not** a board sensor: it is the
+Broadcom die's own monitor, from an EdgeNOS kernel module. It reads **150 °C**
+on an idle switch. The working fan controller explicitly skips it:
+
+```sh
+[ "$(cat .../name)" = "bde_tmon" ] && continue
+```
+
+and also discards any reading at or above 120 °C. Any thermal loop NOSaic
+writes must do the same, or the fans sit at full forever — or the box halts on
+a sensor that is not measuring the board.
 
 ## What has not been established
 

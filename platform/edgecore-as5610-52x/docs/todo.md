@@ -245,6 +245,36 @@ this reason: `INCLUDE_RCPU` shifts `soc_cm_device_vectors_t` by a pointer and
 `BCM_ALL_CHIPS` changes every memory ID, and neither mismatch produces a
 compile error, a link error, or a log line.
 
+### The platform HAL — now specified, and two vendor bugs not to inherit
+
+Everything it needs to talk to is written down in
+[hardware.md](hardware.md#sensors-fans-and-psus), read off the running unit
+rather than inferred: the CPLD at `0xEA000000` with its register map, PSU
+decoding, the fan PWM scale, and which temperature sensors are real.
+
+Two things EdgeNOS gets wrong, both worth not copying:
+
+- **The CPLD driver mis-decodes PSU presence.** It reads bit0 of `0x01`
+  active-high, so a running switch reports both supplies absent. The correct
+  map is PSU1 in `0x02`, PSU2 in `0x01`, present when bit0 is `0`. EdgeNOS's
+  own Python HAL bypasses the driver for exactly this reason.
+- **`fan_set()` uses the wrong scale.** It writes `pct * 255 / 100` into a
+  five-bit field, so 50% becomes 127, whose low bits are 31 — full speed. The
+  shell fan controller in the same tree uses the correct 0–31 range, so the two
+  disagree.
+
+And one hazard that is not a bug: **`bde_tmon` reads 150 °C on an idle
+switch.** It is the Broadcom die's own monitor, not a board sensor. A thermal
+loop that includes it runs the fans at full permanently, or halts the box. The
+working controller skips it by name and discards anything at or above 120 °C.
+
+What remains is ordinary implementation: NOSaic's `platform-hal` has a driver
+interface the 7050SX2 already implements, and this board needs its own — plus
+the decision about whether the CPLD is reached through a kernel driver, as
+EdgeNOS does, or mapped directly the way the 7050SX2's SCD is. There is no
+`platform_hal` stanza in `board.yml` yet, which is why the thermal service is
+not generated for this board at all.
+
 ### The board's own hardware is undescribed
 
 There is no platform HAL for it. From EdgeNOS's manifest it needs at least a
