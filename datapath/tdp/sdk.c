@@ -39,6 +39,11 @@
 #include <soc/error.h>
 #include <shared/bsltypes.h>
 #include <shared/bslext.h>
+#include <soc/drv.h>
+#include <bcm/port.h>
+#include <bcm/stg.h>
+#include <bcm/link.h>
+#include <bcm/error.h>
 #include <stdarg.h>
 #include <stdlib.h>
 
@@ -560,6 +565,60 @@ int nosaic_tdp_sdk_bcm_init(int unit)
 }
 
 /*
+ * Enable every port the chip reports and put it in forwarding.
+ *
+ * bcm_init leaves ports attached but administratively down and, on the ports
+ * it does bring into a VLAN, blocked by spanning tree. Both are deliberate --
+ * a chip that started forwarding the instant it initialised would loop a
+ * network before anyone configured it -- and both have to be undone before a
+ * single frame moves.
+ *
+ * The port numbers here are the SDK's, not the front panel's. Translating
+ * between the two is the port map's job and belongs above this layer; what
+ * this reports is what the chip says about itself, which is the thing worth
+ * knowing first.
+ */
+int nosaic_tdp_sdk_ports_up(int unit)
+{
+	bcm_port_config_t cfg;
+	bcm_port_t port;
+	int rv, up = 0, linked = 0;
+
+	rv = bcm_port_config_get(unit, &cfg);
+	if (rv < 0) {
+		fprintf(stderr, "nosd-tdp: bcm_port_config_get(%d) returned %d (%s)\n",
+			unit, rv, soc_errmsg(rv));
+		return -1;
+	}
+
+	BCM_PBMP_ITER(cfg.port, port) {
+		int link = 0;
+
+		rv = bcm_port_enable_set(unit, port, 1);
+		if (rv < 0) {
+			printf("  port %-3d enable failed: %s\n", port, soc_errmsg(rv));
+			continue;
+		}
+
+		/* Forwarding on the default spanning tree group. Without this the
+		 * port links, counts frames in, and drops every one of them --
+		 * which looks like a forwarding bug and is not one. */
+		rv = bcm_port_stp_set(unit, port, BCM_STG_STP_FORWARD);
+		if (rv < 0)
+			printf("  port %-3d stp failed: %s\n", port, soc_errmsg(rv));
+
+		up++;
+		if (bcm_port_link_status_get(unit, port, &link) == BCM_E_NONE && link)
+			linked++;
+		printf("  port %-3d %-8s %s\n", port, SOC_PORT_NAME(unit, port),
+		       link ? "LINK UP" : "down");
+	}
+
+	printf("ports        %d enabled, %d with link\n", up, linked);
+	return 0;
+}
+
+/*
  * The SAL's DMA allocator, which the SDK calls with no device context.
  *
  * This has to be defined here or the linker takes the one in the SDK's own
@@ -622,6 +681,12 @@ int nosaic_tdp_sdk_soc_init(int unit)
 }
 
 int nosaic_tdp_sdk_bcm_init(int unit)
+{
+	(void)unit;
+	return -1;
+}
+
+int nosaic_tdp_sdk_ports_up(int unit)
 {
 	(void)unit;
 	return -1;

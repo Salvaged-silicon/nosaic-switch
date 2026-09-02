@@ -22,4 +22,8 @@ int nosaic_tdp_sdk_soc_init(int unit);
 /* The rest: misc, MMU, and the BCM layer above them. */
 int nosaic_tdp_sdk_bcm_init(int unit);
 
+/* Enable every port and put it in spanning-tree forwarding. bcm_init leaves
+ * both off, so nothing forwards until this runs. */
+int nosaic_tdp_sdk_ports_up(int unit);
+
 #endif

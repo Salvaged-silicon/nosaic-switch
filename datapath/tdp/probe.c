@@ -94,7 +94,7 @@ int main(int argc, char **argv)
 	 */
 	static struct nosaic_tdp_bde b;
 	const char *bdf = NULL;
-	int set_endian = 0, attach = 0, init = 0, attach_failed = 0, rc;
+	int set_endian = 0, attach = 0, init = 0, ports = 0, attach_failed = 0, rc;
 	uint32_t raw = 0, es;
 
 	for (int i = 1; i < argc; i++) {
@@ -104,8 +104,10 @@ int main(int argc, char **argv)
 			attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--init"))
 			init = attach = set_endian = 1;
+		else if (!strcmp(argv[i], "--ports"))
+			ports = init = attach = set_endian = 1;
 		else if (!strcmp(argv[i], "--help")) {
-			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [<pci-bdf>]\n");
+			printf("usage: tdp-probe [--set-endian] [--attach] [--init] [--ports] [<pci-bdf>]\n");
 			return 0;
 		} else
 			bdf = argv[i];
@@ -225,6 +227,13 @@ int main(int argc, char **argv)
 					attach_failed = 1;
 				} else {
 					printf("INITIALISED  the chip is up\n");
+					/* Only now is there anything to enable.
+					 * Ports before bcm_init would be
+					 * configuring a chip that has no
+					 * forwarding tables yet. */
+					if (ports &&
+					    nosaic_tdp_sdk_ports_up(unit) != 0)
+						attach_failed = 1;
 				}
 			}
 		}
