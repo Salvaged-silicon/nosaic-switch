@@ -28,10 +28,15 @@ u_boot_entry: "0x00000000"
 #
 # The vendor stages at 0x02000000, which is right for its own 5 MB image and
 # wrong for ours. A RAM-booted image carries the whole root filesystem, so the
-# initramfs runs from 0x03100000 to about 0x059b0000 -- staging on top of that
-# has the copy overwrite its own source partway through. 0x08000000 is clear of
-# it, and this board has 2 GB.
-u_boot_stage: "0x08000000"
+# initramfs unpacks from 0x03100000 upward -- staging on top of that has the
+# copy overwrite its own source partway through.
+#
+# 0x10000000 (256 MB) rather than something tighter, because the initramfs grew
+# when the RAM boot stopped carrying a squashfs and started carrying the tree:
+# 42 MB became 78 MB, which put its top within a megabyte of a stage address of
+# 0x08000000. That margin is not worth defending. This board has 2 GB and the
+# only cost of staging higher is address space nothing else wants.
+u_boot_stage: "0x10000000"
 # U-Boot 2013.01 here knows crc32, md5 and sha1. A FIT hashed with sha256
 # transfers, reports the configuration it found, and then fails with
 # "ERROR: can't get kernel image!" -- which reads like a corrupt image rather

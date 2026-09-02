@@ -458,8 +458,31 @@ So the work is ordinary rather than speculative:
    properties file reader is not ASIC-specific. `datapath/common/` already
    holds `mmio.h` for the same reason.
 
-5. **A RAM-booted image can read a large file wrong, and it blocks everything
-   above it.** This is now the first thing to fix.
+5. ~~**A RAM-booted image can read a large file wrong.**~~ **Fixed.**
+
+   `switch_root` deletes the initramfs to free the memory it occupies, and it
+   deleted the file the loop device was reading the root filesystem out of. The
+   loop device keeps the inode alive so this mostly worked, and mostly was the
+   problem: a 125 MB binary read back with pages of zeros in the middle,
+   deterministic enough to crash in the same place and transient enough that
+   dropping caches and reading again returned the correct bytes.
+
+   The image is now moved onto its own tmpfs before it is mounted. A separate
+   tmpfs is a separate filesystem and `switch_root` does not descend into
+   those, so the file stays where the loop device left it. Five consecutive
+   reads on the board now match the package byte for byte.
+
+   A tree-in-the-initramfs approach was tried first and is worth recording as
+   the wrong answer: it removes the loop and the squashfs, but the lower
+   directory then lives in the initramfs that `switch_root` is about to delete,
+   and the board panics with `Attempted to kill init! exitcode=0x00000100`. The
+   loop device was never the problem -- it was the only thing holding the file
+   together.
+
+   *Old text follows, for the record of how it was found.*
+
+   **A RAM-booted image can read a large file wrong, and it blocks everything
+   above it.**
 
    `/usr/sbin/tdp-probe` is 125 MB. Read from the running switch it does not
    match the package it was built from, and the difference is pages of zeros

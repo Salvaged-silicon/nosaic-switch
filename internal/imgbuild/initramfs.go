@@ -46,7 +46,27 @@ echo "NOSAIC-INITRAMFS starting"
 # to ignore warnings.
 if [ -f /nosaic-rootfs.sqsh ]; then
     echo "NOSAIC-INITRAMFS booting from RAM, no partitions used"
-    mount -t squashfs -o ro,loop /nosaic-rootfs.sqsh /mnt/image \
+    # The image is moved onto its own tmpfs before it is mounted, and that is
+    # not tidiness.
+    #
+    # switch_root deletes the initramfs to free the memory it occupies, and it
+    # deletes whatever is still sitting in it -- including the file a loop
+    # device is reading the root filesystem out of. The loop device keeps the
+    # inode alive so this mostly works, and mostly is the problem: a 125 MB
+    # binary read back with pages of zeros in the middle of it, deterministic
+    # enough to crash in the same place and transient enough that dropping
+    # caches and reading again returned the correct bytes. What that looks like
+    # from userspace is a jump into a zero page, reported as an illegal
+    # instruction -- which on a soft-float e500v2 reads as the toolchain fault
+    # this architecture is expected to produce, and is not one.
+    #
+    # A separate tmpfs is a separate filesystem, and switch_root does not
+    # descend into those. The file stays where the loop device left it.
+    mount -t tmpfs tmpfs /mnt/rootsrc 2>/dev/null \
+        || fail "no tmpfs for the embedded rootfs"
+    mv /nosaic-rootfs.sqsh /mnt/rootsrc/ \
+        || fail "cannot move the embedded rootfs onto its own tmpfs"
+    mount -t squashfs -o ro,loop /mnt/rootsrc/nosaic-rootfs.sqsh /mnt/image \
         || fail "the embedded rootfs will not mount"
     echo "NOSAIC-INITRAMFS image mounted"
     echo "NOSAIC-BOOT-SLOT ram"
@@ -247,7 +267,7 @@ exec switch_root /mnt/root /sbin/init || fail "switch_root failed"
 func buildInitramfs(o Options, work, rootfs string, embed string) (string, error) {
 	fmt.Fprintf(o.Log, "==> building the initramfs\n")
 	dir := filepath.Join(work, "initramfs")
-	for _, d := range []string{"bin", "sbin", "proc", "sys", "dev", "mnt"} {
+	for _, d := range []string{"bin", "sbin", "proc", "sys", "dev", "mnt", "mnt/rootsrc"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
 			return "", err
 		}
