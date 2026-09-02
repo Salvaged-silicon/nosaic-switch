@@ -106,9 +106,10 @@ static void nosaic_pci_conf_write(soc_cm_dev_t *dev, uint32 addr, uint32 data)
  * with what asked for it, because "out of memory" on its own does not say
  * which table was being built.
  */
-static void *nosaic_salloc(soc_cm_dev_t *dev, int size, const char *name)
+/* One pool, two callers: the SDK reaches it through the device vector during
+ * chip initialisation and through the SAL hook above for packet buffers. */
+static void *pool_alloc(struct nosaic_tdp_bde *b, int size, const char *name)
 {
-	struct nosaic_tdp_bde *b = bde_of(dev);
 	size_t aligned;
 	void *p;
 
@@ -131,9 +132,14 @@ static void *nosaic_salloc(soc_cm_dev_t *dev, int size, const char *name)
 	b->dma_used += aligned;
 	memset(p, 0, aligned);
 	return p;
-	/* Note: sfree does not reclaim, so dma_used only grows. That is fine for
-	 * initialisation, which is what this pool exists for, and would not be
-	 * for a daemon that allocates per packet. */
+	/* Note: free does not reclaim, so dma_used only grows. That is fine for
+	 * initialisation and for a packet pool taken once at startup, and would
+	 * not be for something allocating per packet. */
+}
+
+static void *nosaic_salloc(soc_cm_dev_t *dev, int size, const char *name)
+{
+	return pool_alloc(bde_of(dev), size, name);
 }
 
 static void nosaic_sfree(soc_cm_dev_t *dev, void *ptr)
@@ -534,6 +540,41 @@ int nosaic_tdp_sdk_bcm_init(int unit)
 		return -1;
 	}
 	return 0;
+}
+
+/*
+ * The SAL's DMA allocator, which the SDK calls with no device context.
+ *
+ * This has to be defined here or the linker takes the one in the SDK's own
+ * liblubde.a -- and that one asks a kernel BDE module for its memory. There is
+ * no such module here, so it returns NULL, and the failure appears a long way
+ * from the cause:
+ *
+ *   RX: Starting rx pool with pkt count 256, packet size 16384
+ *   bcm_init failed in rx
+ *   bcm_attach(0) returned -2 (Out of memory)
+ *
+ * on a box with 1.8 GB free and a 64 MB pool that was never asked for a byte.
+ * Our own salloc reports exhaustion by name and stayed silent throughout,
+ * which is what said the allocation was going somewhere else.
+ *
+ * Defining a symbol an archive also defines is how a library like this is
+ * meant to be adapted: the object file wins over the archive member, and the
+ * SDK asks its host for memory instead of asking a driver we do not have.
+ */
+void *sal_dma_alloc(unsigned int size, char *name)
+{
+	if (!sal_dev) {
+		fprintf(stderr, "nosd-tdp: sal_dma_alloc(%u, %s) before the BDE was opened\n",
+			size, name ? name : "?");
+		return NULL;
+	}
+	return pool_alloc(sal_dev, (int)size, name ? name : "sal_dma");
+}
+
+void sal_dma_free(void *ptr)
+{
+	(void)ptr;   /* the pool outlives every allocation taken from it */
 }
 
 /*
