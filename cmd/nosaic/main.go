@@ -403,7 +403,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 		Board: b.ID, Arch: a.ID, Version: version.Version,
 		DTB:       dtb,
 		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
-		UBootStage: b.UBootStage, Console: b.Console,
+		UBootStage: b.UBootStage, Console: consoleArg(b),
 		FDTAddr: b.UBootFDTAddr, RamdiskAddr: b.UBootRamdiskAddr,
 		FITHash:         b.UBootFITHash,
 		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
@@ -430,7 +430,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 			Board: b.ID, Arch: a.ID, Version: version.Version,
 			DTB:       dtb,
 			UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
-			UBootStage: b.UBootStage, Console: b.Console,
+			UBootStage: b.UBootStage, Console: consoleArg(b),
 			FDTAddr: b.UBootFDTAddr, RamdiskAddr: b.UBootRamdiskAddr,
 			FITHash:      b.UBootFITHash,
 			KernelParams: b.KernelParams,
@@ -459,7 +459,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 		if stage == "" {
 			stage = "0x02000000"
 		}
-		fmt.Printf("  setenv bootargs 'console=%s'\n", b.Console)
+		fmt.Printf("  setenv bootargs 'console=%s'\n", consoleArg(b))
 		fmt.Printf("  tftpboot %s %s && bootm %s#nosaic\n", stage, filepath.Base(netboot), stage)
 		if fi, err := os.Stat(netboot); err == nil {
 			fmt.Printf("  %-42s %6.1f MiB\n", netboot, float64(fi.Size())/(1<<20))
@@ -799,4 +799,14 @@ func compileDeviceTree(root string, b *board.Board, outDir string) (string, erro
 		return "", fmt.Errorf("compiling %s: %w", src, err)
 	}
 	return out, nil
+}
+
+// consoleArg renders the console the way a kernel command line spells it.
+//
+// board.yml keeps the device and the speed apart because getty is handed the
+// device alone; bootargs wants them together. Composing here rather than
+// storing the joined form keeps one spelling authoritative.
+func consoleArg(b *board.Board) string {
+	dev, baud := b.ConsolePort()
+	return fmt.Sprintf("%s,%d", dev, baud)
 }

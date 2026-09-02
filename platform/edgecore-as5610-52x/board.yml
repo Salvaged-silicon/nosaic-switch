@@ -65,4 +65,5 @@ notes: >
   backend must install into a partition. Until it does, use the TFTP netboot
   path, which writes nothing.
 
-console: "ttyS0,115200"
+console: ttyS0
+console_baud: 115200

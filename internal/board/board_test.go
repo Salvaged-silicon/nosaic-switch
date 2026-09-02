@@ -63,3 +63,33 @@ func TestOtherBootloadersDoNotNeedAddresses(t *testing.T) {
 		}
 	}
 }
+
+// The kernel spells its console "ttyS0,115200"; getty is handed the device
+// alone. Writing the kernel's spelling into console: produces a getty opening
+// a device of that name, which does not exist -- so the board boots correctly
+// all the way to no login at all, which reads as a hang.
+func TestConsoleIsTheDeviceWithoutTheSpeed(t *testing.T) {
+	b := ubootBoard()
+	b.UBootArch, b.UBootLoad, b.UBootEntry = "ppc", "0x0", "0x0"
+	b.Console, b.ConsoleBaud = "ttyS0,115200", 0
+	errs := b.Validate(repoRoot)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "console_baud") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the kernel's console spelling was accepted: %v", errs)
+	}
+
+	b.Console, b.ConsoleBaud = "ttyS0", 115200
+	for _, e := range b.Validate(repoRoot) {
+		if strings.Contains(e, "console") {
+			t.Errorf("a correctly split console was rejected: %s", e)
+		}
+	}
+	if dev, baud := b.ConsolePort(); dev != "ttyS0" || baud != 115200 {
+		t.Errorf("ConsolePort: got %q %d", dev, baud)
+	}
+}

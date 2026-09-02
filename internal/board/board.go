@@ -234,6 +234,16 @@ func (b *Board) Validate(root string) []string {
 	// address cannot produce a bootable image, and finding that out after a
 	// full build wastes an hour.
 	if b.Boot == "uboot" {
+		// The kernel spells its console "ttyS0,115200" and getty is handed the
+		// device alone, so this field is the device alone. Getting it wrong costs
+		// a board that boots correctly all the way to a getty that cannot open
+		// what it was given, and shows nothing.
+		if strings.Contains(b.Console, ",") {
+			bad("console is the device on its own (%q), with the speed in console_baud: "+
+				"getty is given the device, not the kernel's console= string",
+				b.Console)
+		}
+
 		if b.UBootArch == "" {
 			bad("boot is uboot, so u_boot_arch is required (ppc, arm, arm64, x86)")
 		}

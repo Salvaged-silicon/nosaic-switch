@@ -110,8 +110,17 @@ func fillBoard(path, id string, opt map[string]string) error {
 	}
 	body := strings.Join(out, "\n")
 	if c := opt["console"]; c != "" {
+		// --console is spelled DEV,BAUD because that is how the kernel spells
+		// it on its command line. board.yml keeps them apart, because getty is
+		// handed the device on its own: writing "ttyS0,115200" into console:
+		// produces a getty opening a device of that name, which does not
+		// exist, and a board that boots to no login at all.
+		dev, baud, _ := strings.Cut(c, ",")
 		body += fmt.Sprintf("\n# Read off the running switch, not guessed: a wrong baud rate\n"+
-			"# makes a working board look hung.\nconsole: %q\n", c)
+			"# makes a working board look hung.\nconsole: %q\n", dev)
+		if baud != "" {
+			body += fmt.Sprintf("console_baud: %s\n", baud)
+		}
 	}
 	return os.WriteFile(path, []byte(body), 0o644)
 }
