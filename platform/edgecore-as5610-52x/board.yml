@@ -55,6 +55,11 @@ device_tree: dts/as5610-52x.dts
 # cages power up with TX_DISABLE asserted and the retimers unprogrammed.
 front_panel_init: scripts/sfp-init.sh
 
+# The fans, for the same reason. Without this the board runs at the duty it
+# powered up at -- 31 of 31, permanently -- which is safe and about three times
+# what it needs.
+cooling: scripts/cooling.sh
+
 # How long the network service waits for interfaces named in network.conf.
 # The swp ports come from the datapath daemon, and there is no nosd-tdp yet, so
 # they cannot appear at all -- the default 600 would be ten minutes of waiting
@@ -81,6 +86,18 @@ notes: >
   disk image would take ONIE with it and remove the way back, so the ONIE
   backend must install into a partition. Until it does, use the TFTP netboot
   path, which writes nothing.
+
+# No platform_hal stanza, and it is not an oversight.
+#
+# The HAL and everything that drives it live in the nosaic CLI, which is Go, and
+# the Go toolchain has ppc64 and ppc64le and has never had 32-bit big-endian
+# PowerPC. No Go binary runs on this board, so a HAL driver for it could be
+# written and could never be executed. Declaring one would also switch off the
+# front_panel_init fallback below, which does work.
+#
+# The board controller is still reachable -- it is a handful of byte registers
+# on the local bus at 0xea000000 -- so what would have been a HAL driver is a
+# shell script instead. See scripts/cooling.sh.
 
 console: ttyS0
 console_baud: 115200

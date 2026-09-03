@@ -421,7 +421,8 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 	}
 
 	// The CLI, which the cooling loop and the operator both need.
-	if err := installCLI(o.Root, rootfs, o.Arch.GoArch, o.Log); err != nil {
+	haveCLI, err := installCLI(o.Root, rootfs, o.Arch.GoArch, o.Log)
+	if err != nil {
 		return err
 	}
 
@@ -760,7 +761,7 @@ poweroff -f
 	// out, so a crash leaves the box cool and noisy rather than cool and
 	// unmanaged -- but noisy-forever is a bad resting state, and something has
 	// to bring regulation back.
-	if o.Board.PlatformHAL.Driver != "" {
+	if haveCLI && o.Board.PlatformHAL.Driver != "" {
 		services = append(services, svcgen.Service{
 			Name:    "thermal",
 			Exec:    "/usr/bin/nosaic platform thermal",
@@ -776,7 +777,7 @@ poweroff -f
 	// reset by the board, and which board is a different question from which
 	// silicon. A board whose chip needs no releasing simply has no HAL driver
 	// and gets no service.
-	if o.Board.PlatformHAL.Driver != "" && datapathInstalled(o, packages) {
+	if haveCLI && o.Board.PlatformHAL.Driver != "" && datapathInstalled(o, packages) {
 		services = append(services, svcgen.Service{
 			Name:    "asic-release",
 			Exec:    "/usr/bin/nosaic platform release-asic",
@@ -808,7 +809,7 @@ poweroff -f
 			return err
 		}
 		after := []string{}
-		if o.Board.PlatformHAL.Driver != "" {
+		if haveCLI && o.Board.PlatformHAL.Driver != "" {
 			after = append(after, "asic-release")
 		}
 		services = append(services, svcgen.Service{
@@ -830,7 +831,7 @@ poweroff -f
 	// Separate from asic-release because it is a different question -- one
 	// concerns the switch chip, the other the optics in front of it -- and a
 	// board might well want one without the other.
-	if o.Board.PlatformHAL.Driver != "" {
+	if haveCLI && o.Board.PlatformHAL.Driver != "" {
 		services = append(services, svcgen.Service{
 			Name:    "transceivers",
 			Exec:    "/usr/bin/nosaic platform tx all on",
@@ -864,6 +865,27 @@ poweroff -f
 		fmt.Fprintf(o.Log, "    front-panel init from %s\n", o.Board.FrontPanelInit)
 	}
 
+	// Cooling, on a board that cannot run the HAL.
+	//
+	// Emitted only when there is no HAL-driven thermal service above, so the
+	// two can never both be commanding the fans.
+	if o.Board.Cooling != "" && !(haveCLI && o.Board.PlatformHAL.Driver != "") {
+		src := filepath.Join(filepath.Dir(o.Board.Path), o.Board.Cooling)
+		b, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("cooling: %w", err)
+		}
+		if err := writeFile(rootfs, "/etc/nosaic/cooling.sh", string(b), 0o755); err != nil {
+			return err
+		}
+		services = append(services, svcgen.Service{
+			Name:    "cooling",
+			Exec:    "/etc/nosaic/cooling.sh",
+			Restart: "always",
+		})
+		fmt.Fprintf(o.Log, "    cooling from %s\n", o.Board.Cooling)
+	}
+
 	// The datapath.
 	//
 	// Named `nosd` rather than nosd-td2p: the unit, the CLI and the docs only
@@ -875,7 +897,7 @@ poweroff -f
 	// and the daemon would find nothing to open.
 	if datapathInstalled(o, packages) {
 		after := []string{"network"}
-		if o.Board.PlatformHAL.Driver != "" {
+		if haveCLI && o.Board.PlatformHAL.Driver != "" {
 			after = append(after, "asic-release")
 		}
 		if o.Board.PlatformHAL.ASICPCI != "" {

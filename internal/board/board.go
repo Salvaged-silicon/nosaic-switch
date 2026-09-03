@@ -96,6 +96,19 @@ type Board struct {
 	// reads link state during bring-up and would see every port down.
 	FrontPanelInit string `yaml:"front_panel_init"`
 
+	// Cooling is a script under the board directory that runs the fans.
+	//
+	// The same argument as FrontPanelInit and a sharper one: cooling belongs
+	// in the platform HAL, the HAL lives in the nosaic CLI, the CLI is Go, and
+	// Go has no 32-bit big-endian PowerPC target. A board on such an
+	// architecture cannot run the HAL at all, so either it controls its fans
+	// this way or it does not control them -- and "does not" means whatever
+	// duty the hardware powered up at, forever.
+	//
+	// Installed to /etc/nosaic and run as a supervised long-running service,
+	// because a cooling loop that exits is a switch with no cooling loop.
+	Cooling string `yaml:"cooling"`
+
 	// Flash layout, in MiB. Zero means the default, which suits a board with
 	// modest flash; a board with room should say so rather than inherit a
 	// number chosen for a virtual machine.
