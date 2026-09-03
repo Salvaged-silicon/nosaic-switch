@@ -181,6 +181,25 @@ into it.
 LEDs are reported raw and not settable. The two registers are known; what their
 bits mean is not.
 
+## ECMP
+
+swp1 and swp2 both face the Nexus at equal OSPF cost, so routes behind it have
+two paths. 150 packets across 30 destination addresses, forwarded through the
+box in hardware, came out 70 on swp1 and 80 on swp2.
+
+Two things had to be right and only one is obvious. `l3sync` reads routes over
+netlink, because `/proc/net/route` lists one gateway per prefix and would have
+programmed half of every ECMP route while reporting success. And the multipath
+hash has to be told what to look at: with a group correctly built and no hash
+inputs the chip picks the same member every time -- the same test went 100/0
+before `bcmSwitchHashControl` was set.
+
+**Test it with transit traffic, never from the box itself.** Traffic the switch
+originates leaves through the tap and is load-balanced by the *kernel*, so it
+spreads across both links whether or not the chip does anything at all. That
+reads as a pass and proves nothing; it is how the missing hash went unnoticed
+here for a commit.
+
 ## What is left before this replaces EdgeNOS
 
 Measured against `edgenos/platform/accton-as5610-52x`.
