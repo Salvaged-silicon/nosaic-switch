@@ -148,34 +148,28 @@ spinning a core, because the SDK busy-waits for short sleeps; `sdk.c` wraps
 Transit does not use this path at all -- it is forwarded in hardware and never
 reaches the CPU.
 
+## Environmentals
+
+`/etc/nosaic/platform.sh status` reads the board controller and the sensors:
+
+    cpld       version 1.0
+    fans       duty 10/31 (32%)  status 0x10
+    psu1       fitted, ok (reg 0x02)
+    psu2       fitted, no-power (reg 0x00)
+    leds       sys 0x6F  locator 0x01
+    temp       temp2    38C (crit 110C)
+
+The same script runs the fans as a supervised service (`platform.sh cool`).
+
+**The PSU decode is not what the register map suggests.** PSU1's status is in
+0x02 and PSU2's in 0x01 -- two registers, not two fields of one -- and presence
+is *active low*: bit 0 clear means fitted. Read the obvious way it reports no
+power supply on a running switch, which is how EdgeNOS's own kernel driver has
+it; its Python layer overrides that with this map and notes it came from
+Cumulus. "fitted, no-power" is the normal state for a second supply with nothing
+plugged into it.
+
+LEDs are reported raw and not settable. The two registers are known; what their
+bits mean is not, and writing a guess to a chassis LED is not worth it.
+
 ## What is left before this replaces EdgeNOS
-
-Measured against `edgenos/platform/accton-as5610-52x`, on 2026-09-03.
-
-**Working.** Chip init through the SDK; all 52 ports with link and per-port
-service VLANs; CPU punt on taps; hardware L3 with routes in DEFIP; OSPFv2 with
-four adjacencies and OSPFv3 with one; forwarding enabled; unattended boot to all
-of it. Punt latency 1.7 ms to a hardware responder.
-
-**Platform HAL -- the real gap.** `board.yml` has no `platform_hal` stanza, so
-`nosaic platform` and the thermal service never run here. Concretely:
-
-- **Fan control.** EdgeNOS runs `fan-controller.service`, a thermal-driven PWM
-  ramp against the CPLD. Nothing here controls fans. Not urgent and not safe to
-  leave: the board sits at 29-37 C against limits of 90-127 C, so the hardware
-  default is adequate today, and "adequate today" is not a cooling policy.
-- **The CPLD driver.** `as5610_52x_cpld` is absent, and it is what fan PWM, fan
-  status, PSU status and LEDs all go through. It gates everything above.
-- **Sensors are already there.** max6697 binds and gives seven temperatures;
-  nothing reads them.
-- **LEDs.** EdgeNOS has 219 lines of `led.c` for this board. The front panel is
-  dark.
-
-**ECMP.** EdgeNOS carries it; this has never exercised it, because no
-equal-cost route exists in the lab today. `l3sync` reads `/proc/net/route`,
-which cannot express multipath at all, so this is a real gap hiding behind an
-absence rather than something known to work.
-
-**ACLs.** Not a parity item. EdgeNOS never got them working either -- its own
-notes record the IFP-arming wall as open -- so this is new work for both trees,
-and `edgenos/docs/full-sdk-port-5610.md` is where to start.

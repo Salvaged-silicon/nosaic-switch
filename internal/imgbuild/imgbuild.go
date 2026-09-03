@@ -875,12 +875,12 @@ poweroff -f
 		if err != nil {
 			return fmt.Errorf("cooling: %w", err)
 		}
-		if err := writeFile(rootfs, "/etc/nosaic/cooling.sh", string(b), 0o755); err != nil {
+		if err := writeFile(rootfs, "/etc/nosaic/platform.sh", string(b), 0o755); err != nil {
 			return err
 		}
 		services = append(services, svcgen.Service{
 			Name:    "cooling",
-			Exec:    "/etc/nosaic/cooling.sh",
+			Exec:    "/etc/nosaic/platform.sh cool",
 			Restart: "always",
 		})
 		fmt.Fprintf(o.Log, "    cooling from %s\n", o.Board.Cooling)

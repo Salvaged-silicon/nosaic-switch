@@ -58,7 +58,7 @@ front_panel_init: scripts/sfp-init.sh
 # The fans, for the same reason. Without this the board runs at the duty it
 # powered up at -- 31 of 31, permanently -- which is safe and about three times
 # what it needs.
-cooling: scripts/cooling.sh
+cooling: scripts/platform.sh
 
 # How long the network service waits for interfaces named in network.conf.
 # The swp ports come from the datapath daemon, and there is no nosd-tdp yet, so
