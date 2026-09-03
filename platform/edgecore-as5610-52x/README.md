@@ -132,6 +132,11 @@ read as median 27 ms with a tail past a second, and the same box pinging the
 Nexus at the same moment was answering in about one millisecond. A slow reply
 from a switch that punts is not evidence about the switch doing the pinging.
 
+The neighbour turned out to be broken in a way that had nothing to do with
+either datapath: nosd-td2p passed every SDK message to its log, 176 KB/s, and
+that board RAM-boots, so the log had filled all 1.9 GB of its tmpfs. With the
+filter it already needed, its log stops growing and it answers in 1.3 ms.
+
 Two real problems did come out of chasing it, and both are fixed. The periodic
 work ran on the packet thread, and `nosaic_tap_pump` calls its tick on every
 poll wakeup rather than on a timer, so the FIB mirror ran once per received
