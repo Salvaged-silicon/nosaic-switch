@@ -147,3 +147,35 @@ spinning a core, because the SDK busy-waits for short sleeps; `sdk.c` wraps
 
 Transit does not use this path at all -- it is forwarded in hardware and never
 reaches the CPU.
+
+## What is left before this replaces EdgeNOS
+
+Measured against `edgenos/platform/accton-as5610-52x`, on 2026-09-03.
+
+**Working.** Chip init through the SDK; all 52 ports with link and per-port
+service VLANs; CPU punt on taps; hardware L3 with routes in DEFIP; OSPFv2 with
+four adjacencies and OSPFv3 with one; forwarding enabled; unattended boot to all
+of it. Punt latency 1.7 ms to a hardware responder.
+
+**Platform HAL -- the real gap.** `board.yml` has no `platform_hal` stanza, so
+`nosaic platform` and the thermal service never run here. Concretely:
+
+- **Fan control.** EdgeNOS runs `fan-controller.service`, a thermal-driven PWM
+  ramp against the CPLD. Nothing here controls fans. Not urgent and not safe to
+  leave: the board sits at 29-37 C against limits of 90-127 C, so the hardware
+  default is adequate today, and "adequate today" is not a cooling policy.
+- **The CPLD driver.** `as5610_52x_cpld` is absent, and it is what fan PWM, fan
+  status, PSU status and LEDs all go through. It gates everything above.
+- **Sensors are already there.** max6697 binds and gives seven temperatures;
+  nothing reads them.
+- **LEDs.** EdgeNOS has 219 lines of `led.c` for this board. The front panel is
+  dark.
+
+**ECMP.** EdgeNOS carries it; this has never exercised it, because no
+equal-cost route exists in the lab today. `l3sync` reads `/proc/net/route`,
+which cannot express multipath at all, so this is a real gap hiding behind an
+absence rather than something known to work.
+
+**ACLs.** Not a parity item. EdgeNOS never got them working either -- its own
+notes record the IFP-arming wall as open -- so this is new work for both trees,
+and `edgenos/docs/full-sdk-port-5610.md` is where to start.
