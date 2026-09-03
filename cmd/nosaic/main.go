@@ -397,22 +397,11 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 	if err != nil {
 		return err
 	}
-	artifact, err := backend.Wrap(boot.Image{
-		Kernel: res.Kernel, Initramfs: res.Initramfs,
-		Squashfs: res.Squashfs, Disk: res.Disk,
-		Board: b.ID, Arch: a.ID, Version: version.Version,
-		DTB:       dtb,
-		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
-		UBootStage: b.UBootStage, Console: consoleArg(b),
-		FDTAddr: b.UBootFDTAddr, RamdiskAddr: b.UBootRamdiskAddr,
-		FITHash:         b.UBootFITHash,
-		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
-		KernelParams:    b.KernelParams,
-	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
-	if err != nil {
-		return err
-	}
-
+	// Built BEFORE the installer is wrapped, because an installer for a
+	// U-Boot board has to carry the FIT: that firmware loads a raw partition,
+	// not a filesystem, so the boot image is placed at install time rather
+	// than found at boot.
+	//
 	// A board installed by ONIE still has U-Boot underneath it, and U-Boot can
 	// load a FIT over the network into RAM. That is the only way to try an
 	// image on such a board without writing its disk -- and on a board that
@@ -438,6 +427,23 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	artifact, err := backend.Wrap(boot.Image{
+		Kernel: res.Kernel, Initramfs: res.Initramfs,
+		Squashfs: res.Squashfs, Disk: res.Disk,
+		FIT: netboot, NOSBootCmd: b.UBootNOSBootCmd,
+		Board: b.ID, Arch: a.ID, Version: version.Version,
+		DTB:       dtb,
+		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,
+		UBootStage: b.UBootStage, Console: consoleArg(b),
+		FDTAddr: b.UBootFDTAddr, RamdiskAddr: b.UBootRamdiskAddr,
+		FITHash:         b.UBootFITHash,
+		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
+		KernelParams:    b.KernelParams,
+	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
+	if err != nil {
+		return err
 	}
 
 	fmt.Printf("\nimage for %s (%s profile)\n", b.ID, pr.Name)

@@ -32,6 +32,16 @@ type Image struct {
 	Squashfs string
 	Disk     string
 
+	// FIT is the U-Boot image, for an installer that has to place it where
+	// the firmware will look. Empty on boards whose bootloader finds the
+	// kernel for itself.
+	FIT string
+
+	// NOSBootCmd is the firmware boot command the installer should leave
+	// behind, for firmware that has to be told where the NOS is. Empty means
+	// the installer changes nothing about how the box boots.
+	NOSBootCmd string
+
 	Board   string
 	Arch    string
 	Version string

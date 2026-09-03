@@ -107,3 +107,39 @@ thermal:
 
 console: ttyS0
 console_baud: 115200
+
+# How this board's firmware reads its disk, and where it looks for the kernel.
+#
+# U-Boot 2013.01 here has NO GPT SUPPORT. Its binary carries no EFI or GUID
+# partition strings at all -- only "## Unknown partition table" -- so the GPT
+# layout every other NOSaic board uses would leave this switch unable to find
+# anything on its own disk. Verified by dumping mtd3 ("uboot") and reading it,
+# not assumed.
+partition_table: dos
+
+# A raw partition for the FIT, because this firmware loads a partition and not
+# a file: `usbboot <addr> <dev>:<part>` is a block read. The vendor's own OS
+# boots exactly this way, which makes it the one mechanism proven on this
+# hardware -- newnos/installer/ONIE_ISSUES.md issue 12 records an attempt to use
+# ext2load against an ext2 filesystem here and why it does not match the chain.
+#
+# 24 MiB against a FIT of about 11: room for the kernel and initramfs to grow
+# without repartitioning a fleet.
+fit_mib: 24
+
+# A DOS table has four primaries and the FIT takes one, so there is no separate
+# boot partition; the slot pointer lives on the data partition instead. Sized
+# for a 3.7 GiB disk with room to grow rather than to fill it.
+slot_mib: 384
+data_mib: 512
+
+# What the installer leaves in the firmware's own boot variable.
+#
+# Deliberately close to the vendor's: `usb start; usbiddev` is how this U-Boot
+# reaches the disk at all, and usbboot is a raw partition read. What differs is
+# the partition (1, our FIT) and the FIT configuration name (nosaic).
+#
+# ⚠ Only nos_bootcmd is written. newnos/BOOT.md records that setting fdt_high
+# or initrd_high to 0xffffffff breaks both this NOS and ONIE, so the installer
+# touches neither -- U-Boot's defaults place the FDT and initrd correctly.
+u_boot_nos_bootcmd: "usb start; usbiddev; setenv bootargs console=ttyS0,115200 cma=32M; usbboot 0x10000000 ${usbdev}:1 && bootm 0x10000000#nosaic"

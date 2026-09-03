@@ -134,17 +134,6 @@ fi
 # stateless rather than sitting in an initramfs shell in a rack somewhere.
 # The slot pointer, on its own journal-less filesystem. Read before anything
 # else, because it decides what gets mounted.
-mkdir -p /mnt/boot
-BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null || echo /dev/vda1)"
-if mount -t ext2 "$BOOTDEV" /mnt/boot 2>/dev/null; then
-    B=/mnt/boot/boot
-    mkdir -p $B
-else
-    echo "NOSAIC-INITRAMFS-WARN no boot partition; defaulting to slot a"
-    B=/tmp/boot
-    mkdir -p $B
-fi
-
 PERSIST=no
 DATA="$(findfs LABEL=nosaic-data 2>/dev/null || echo /dev/vda4)"
 if mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
@@ -154,6 +143,30 @@ if mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
 else
     echo "NOSAIC-INITRAMFS-WARN no data partition; booting stateless"
     mount -t tmpfs tmpfs /mnt/data || fail "cannot mount a fallback writable layer"
+fi
+
+mkdir -p /mnt/boot
+BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null || echo /dev/vda1)"
+if mount -t ext2 "$BOOTDEV" /mnt/boot 2>/dev/null; then
+    B=/mnt/boot/boot
+    mkdir -p $B
+elif [ "$PERSIST" = yes ]; then
+    # No boot partition, but a persistent one exists.
+    #
+    # A DOS partition table has only four primaries, and a board whose firmware
+    # reads the FIT out of a raw partition needs one of them for that -- so
+    # such a board has no separate boot filesystem. Putting the slot pointer on
+    # the data partition keeps A/B working there: what matters is that the
+    # choice survives a reboot, not which filesystem records it. Falling
+    # through to /tmp would silently make every upgrade non-reversible, because
+    # a trial that cannot record its attempt can never be rolled back.
+    B=/mnt/data/boot
+    mkdir -p $B
+    echo "NOSAIC-INITRAMFS slot state on the data partition"
+else
+    echo "NOSAIC-INITRAMFS-WARN no boot partition; defaulting to slot a"
+    B=/tmp/boot
+    mkdir -p $B
 fi
 
 # Slots are found by label first. The device names below are a fallback for a

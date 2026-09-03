@@ -67,7 +67,11 @@ func BuildDisk(o Options, squashfs string) (string, error) {
 	// its nominal size, which is how a filesystem built to the nominal size
 	// ends up written past the end of the disk.
 	const gptOverheadMiB = 8
-	total := int64(bootMiB+2*slotMiB+dataMiB+gptOverheadMiB) * 1024 * 1024
+	firstMiB := bootMiB
+	if o.Board.PartTable() == "dos" && o.Board.FITMiB > 0 {
+		firstMiB = o.Board.FITMiB
+	}
+	total := int64(firstMiB+2*slotMiB+dataMiB+gptOverheadMiB) * 1024 * 1024
 	if err := truncate(out, total); err != nil {
 		return "", err
 	}
@@ -75,12 +79,48 @@ func BuildDisk(o Options, squashfs string) (string, error) {
 	// GPT, with named partitions. The names are how the initramfs finds the
 	// data partition without depending on a device number that changes when
 	// hardware does.
+	//
+	// A board whose firmware cannot read GPT gets a DOS table instead. That is
+	// not a preference: U-Boot 2013.01 on the AS5610 has no GPT support
+	// compiled in -- its binary carries no EFI or GUID partition strings, only
+	// "## Unknown partition table" -- so a GPT install there yields a switch
+	// that finds nothing on its own disk. A DOS table has no partition names,
+	// so the initramfs falls back to filesystem labels and device order, which
+	// it already does.
+	//
+	// The FIT partition is first and raw. Firmware that reads a filesystem can
+	// be given a file; firmware that reads a partition has to be given a
+	// partition, and this board's own vendor OS boots exactly this way
+	// (usbboot from a raw partition). Using the mechanism already proven on
+	// the hardware beats using the tidier one that has never run there.
 	script := fmt.Sprintf(`label: gpt
 size=%dMiB, type=linux, name="nosaic-boot"
 size=%dMiB, type=linux, name="nosaic-slot-a"
 size=%dMiB, type=linux, name="nosaic-slot-b"
                 type=linux, name="nosaic-data"
 `, bootMiB, slotMiB, slotMiB)
+	fitMiB := o.Board.FITMiB
+	if o.Board.PartTable() == "dos" {
+		if fitMiB > 0 {
+			// Four primaries is all a DOS table has, so the FIT partition
+			// takes the slot the boot partition would have had and the slot
+			// state moves onto the data partition. Both are persistent; the
+			// difference is only which filesystem holds them.
+			script = fmt.Sprintf(`label: dos
+size=%dMiB, type=83
+size=%dMiB, type=83
+size=%dMiB, type=83
+             type=83
+`, fitMiB, slotMiB, slotMiB)
+		} else {
+			script = fmt.Sprintf(`label: dos
+size=%dMiB, type=83
+size=%dMiB, type=83
+size=%dMiB, type=83
+             type=83
+`, bootMiB, slotMiB, slotMiB)
+		}
+	}
 
 	cmd := exec.Command("sfdisk", "--quiet", out)
 	cmd.Stdin = stringsReader(script)
@@ -96,12 +136,18 @@ size=%dMiB, type=linux, name="nosaic-slot-b"
 		return "", fmt.Errorf("expected 4 partitions, got %d", len(parts))
 	}
 
-	boot, err := buildBootPartition(o, parts[0].Size*512)
-	if err != nil {
-		return "", err
-	}
-	if err := ddInto(boot, out, parts[0].Start*512, parts[0].Size*512, "boot"); err != nil {
-		return "", err
+	// Left as raw space where it holds the FIT: the installer writes the
+	// image into it, because the FIT does not exist yet at this point in the
+	// build -- it is made from the kernel and initramfs after the disk is
+	// assembled.
+	if !(o.Board.PartTable() == "dos" && o.Board.FITMiB > 0) {
+		boot, err := buildBootPartition(o, parts[0].Size*512)
+		if err != nil {
+			return "", err
+		}
+		if err := ddInto(boot, out, parts[0].Start*512, parts[0].Size*512, "boot"); err != nil {
+			return "", err
+		}
 	}
 
 	// Slot A gets the image. Slot B is left empty on purpose: a freshly

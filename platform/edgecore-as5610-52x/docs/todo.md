@@ -133,36 +133,56 @@ because both would have produced a kernel that builds and does not boot:
   and U-Boot on this class of board loads a uImage; a bare vmlinux is not
   something it can start.
 
-### The ONIE backend does not handle U-Boot platforms
+### ~~The ONIE backend does not handle U-Boot platforms~~ — built, 2026-09-03
 
-An installer builds — script plus a 488 MB disk image, with a genuine
-PowerPC uImage kernel inside it — and it would still not produce a bootable
-switch. Two of the four things wrong with it are fixed; two are not.
+The installer now produces something this board can boot. It is **not yet
+proven on the hardware**: it has been run end to end against a file, where it
+wrote the disk, placed the FIT and set the firmware variable correctly, but no
+switch has been installed with it.
 
-**Fixed.** The installer exports a full `PATH` before it does anything (ONIE
-gives it `/usr/bin:/bin`, and `fdisk`, `mke2fs`, `fw_setenv` and `reboot` all
-live outside that), and it reboots the switch itself with `/sbin/reboot`.
-The second matters more than it looks: ONIE's own `exec_installer` calls
-`reboot` without a path, that fails here, and its error handler then re-runs
-the step that resets the NOS boot command. A successful install undoes itself.
+**The GPT question is settled, by evidence rather than inference.** The note
+below reasoned that a boot command reading `${usbdev}:5` -- a *logical*
+partition, which only MBR has -- was "near proof" of no GPT support. It is now
+proof: `/dev/mtd3` is the U-Boot image and is readable from the running OS, and
+the binary contains no EFI, GUID or GPT strings at all -- only
+`## Unknown partition table`. It does carry `ext2load`, `fatload`, `usbboot`
+and `usbiddev`. So the board declares `partition_table: dos` and the disk
+builder emits a DOS table for it.
 
-**Still open — the FIT has nowhere to live.** `internal/boot/onie.go` writes
-the disk and stops; nothing sets `nos_bootcmd`, which is how an ONIE platform
-tells U-Boot where its NOS is. The reason that is not a two-line fix is the
-layout: NOSaic's boot partition is an ext2 filesystem holding a slot pointer,
-and a U-Boot board needs the FIT somewhere raw — one per slot, if A/B is to
-mean anything here.
+**The FIT now has somewhere to live.** `fit_mib: 24` gives it a raw partition
+of its own, first on the disk, and the installer writes the image into it after
+the table. Raw rather than a filesystem because that is what this firmware
+does: `usbboot` is a block read, and `ONIE_ISSUES.md` issue 12 records an
+earlier attempt to use `ext2load` here and why it does not match the chain.
+A DOS table has four primaries and the FIT takes one, so there is no separate
+boot partition and the slot pointer moves onto the data partition -- still
+persistent, so A/B still means something.
 
-**Still open — GPT against a DOS-only U-Boot.** NOSaic's image is GPT with
-named partitions. This board's boot command reads `${usbdev}:5`, a *logical*
-partition, which only MBR has; that is near proof its U-Boot has no GPT
-support. The answer is not to give this board a different table but to stop
-needing one: `usb read <addr> <lba> <count>` takes raw sectors and parses
-nothing, and it is recorded as working on this exact board. The installer knows
-the LBA because it just wrote the table.
+**One FIT, not one per slot.** An upgrade replaces the kernel for both slots,
+so a rollback returns the previous *root filesystem* under the current kernel.
+That is a real limitation and it is written down rather than papered over; two
+FIT partitions need either an extended partition or a firmware that can pick
+between them.
 
-Both remaining items are backend work rather than board work, which is the
-right shape: the board declares `boot: onie-sfx` and should not have to know.
+**What the ONIE docs cost, and saved.** `newnos/installer/ONIE_ISSUES.md` and
+`newnos/BOOT.md` are the record of doing this once already, and reading them
+changed the code three times: ONIE's busybox has no `partprobe` (`sync; sleep 2`
+instead), its `fw_setenv` prompts and silently writes nothing unless fed `y`,
+and `onie_boot_reason` must be cleared or the box installs perfectly and comes
+straight back to the installer. The worst of them was ours: the boot command
+was being interpolated into the installer inside double quotes, so the
+installer's own shell expanded `${usbdev}` -- unset under ONIE -- and would
+have written `usbboot 0x10000000 :1` into the firmware. Both values are now
+assigned once, single-quoted, and the build refuses a value containing a quote.
+
+**The safety net is real.** Only `mtd1` (`u-boot-env`) is writable; `onie`,
+`uboot` and `board_eeprom` are read-only in the device tree, so nothing the OS
+does can damage the bootloader or the recovery image. And `bootcmd` is
+`check_boot_reason; nos_bootcmd; onie_bootcmd` -- a `nos_bootcmd` that fails
+falls through to ONIE on its own. The dangerous case is not a broken install,
+it is an image that boots and then does not work.
+
+
 
 **Meanwhile there is a way to run on this board that needs none of it.** The
 build now emits a netboot FIT for any board that declares U-Boot addresses,

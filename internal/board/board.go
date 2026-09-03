@@ -60,6 +60,15 @@ type Board struct {
 	// only crc32.
 	UBootFITHash string `yaml:"u_boot_fit_hash"`
 
+	// UBootNOSBootCmd is what the installer writes into the firmware's
+	// nos_bootcmd, telling it where the NOS now lives.
+	//
+	// Board data because the commands differ per firmware: this board reaches
+	// its disk with `usb start; usbiddev` and loads a raw partition with
+	// usbboot, where another U-Boot would use ide, scsi or mmc. A generated
+	// guess would be wrong on every board but the one it was written for.
+	UBootNOSBootCmd string `yaml:"u_boot_nos_bootcmd"`
+
 	UBootFDTAddr     string `yaml:"u_boot_fdt_addr"`
 	UBootRamdiskAddr string `yaml:"u_boot_ramdisk_addr"`
 
@@ -107,6 +116,25 @@ type Board struct {
 	BootMiB int `yaml:"boot_mib"`
 	SlotMiB int `yaml:"slot_mib"`
 	DataMiB int `yaml:"data_mib"`
+
+	// PartitionTable is "gpt" (the default) or "dos".
+	//
+	// Not a style preference. A bootloader that cannot read the table cannot
+	// find anything on the disk, and the failure is total: U-Boot 2013.01 on
+	// the AS5610 has no GPT support compiled in at all -- its binary contains
+	// no EFI or GUID partition strings, only "## Unknown partition table" --
+	// so a GPT install there produces a switch that boots nothing. Stated by
+	// the board because it is a property of that board's firmware.
+	PartitionTable string `yaml:"partition_table"`
+
+	// FITMiB is a raw partition holding the FIT image U-Boot loads, for
+	// boards whose firmware reads a partition rather than a filesystem.
+	//
+	// Zero means the board does not need one. Where it is set, the installer
+	// writes the FIT to that partition verbatim and points the firmware's own
+	// boot command at it -- which is the mechanism this board's vendor OS
+	// already uses, and therefore the one mechanism known to work here.
+	FITMiB int `yaml:"fit_mib"`
 
 	// KernelParams are appended to the kernel command line by the board's
 	// installer. Board data because they describe this box's memory map.
@@ -203,6 +231,14 @@ func (b *Board) ConsolePort() (dev string, baud int) {
 
 // Layout returns the flash layout in MiB, with defaults for anything the board
 // does not state.
+// PartTable is the partition table type this board's firmware can read.
+func (b *Board) PartTable() string {
+	if b.PartitionTable == "" {
+		return "gpt"
+	}
+	return b.PartitionTable
+}
+
 func (b *Board) Layout() (boot, slot, data int) {
 	boot, slot, data = b.BootMiB, b.SlotMiB, b.DataMiB
 	if boot == 0 {
