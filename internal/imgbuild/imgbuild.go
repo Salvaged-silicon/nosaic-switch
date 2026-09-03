@@ -222,6 +222,25 @@ func selectPackages(o Options) ([]pkgRef, error) {
 		}
 	}
 
+	// The on-box CLI, where Go cannot build one.
+	//
+	// Every board should run the Go CLI and most do. On an architecture the gc
+	// toolchain has no target for -- 32-bit big-endian PowerPC, on this fleet
+	// -- there is otherwise no `nosaic` at all, and an operator loses every
+	// command rather than one driver. nosaic-cli is the same commands in C for
+	// the part that has to run on a switch.
+	//
+	// Keyed off the architecture rather than the board, because the reason is
+	// the toolchain and not the hardware.
+	if o.Arch.GoArch == "" {
+		if _, ok := byName["nosaic-cli"]; ok {
+			wanted = append(wanted, "nosaic-cli")
+		} else {
+			fmt.Fprintf(o.Log, "  WARNING: %s has no Go target and nosaic-cli "+
+				"is not built, so this image has no CLI at all.\n", o.Arch.ID)
+		}
+	}
+
 	order, err := depsolve.Resolve(available, wanted)
 	if err != nil {
 		return nil, err
@@ -421,10 +440,14 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 	}
 
 	// The CLI, which the cooling loop and the operator both need.
-	haveCLI, err := installCLI(o.Root, rootfs, o.Arch.GoArch, o.Log)
+	haveGoCLI, err := installCLI(o.Root, rootfs, o.Arch.GoArch, o.Log)
 	if err != nil {
 		return err
 	}
+	// The C CLI provides `platform status` and `platform thermal` and refuses
+	// the rest by name, so it is a CLI for the cooling loop's purposes and not
+	// for anything that needs the Go one.
+	haveCLI := haveGoCLI || packageInstalled(packages, "nosaic-cli")
 
 	// The board's own configuration files.
 	//
@@ -777,7 +800,12 @@ poweroff -f
 	// reset by the board, and which board is a different question from which
 	// silicon. A board whose chip needs no releasing simply has no HAL driver
 	// and gets no service.
-	if haveCLI && o.Board.PlatformHAL.Driver != "" && datapathInstalled(o, packages) {
+	// The Go CLI specifically: the C one refuses release-asic by name, and a
+	// generated service that runs a refusal exits non-zero and takes the
+	// service database down with it. Refusing is right when an operator types
+	// it and wrong when a unit file does, so the unit is not written at all
+	// where the command cannot work.
+	if haveGoCLI && o.Board.PlatformHAL.Driver != "" && datapathInstalled(o, packages) {
 		services = append(services, svcgen.Service{
 			Name:    "asic-release",
 			Exec:    "/usr/bin/nosaic platform release-asic",
@@ -809,7 +837,10 @@ poweroff -f
 			return err
 		}
 		after := []string{}
-		if haveCLI && o.Board.PlatformHAL.Driver != "" {
+		// Matching the gate on the service itself: depending on a service
+		// that was never written is a dangling edge, and s6-rc refuses the
+		// whole database rather than one service.
+		if haveGoCLI && o.Board.PlatformHAL.Driver != "" {
 			after = append(after, "asic-release")
 		}
 		services = append(services, svcgen.Service{
@@ -831,7 +862,7 @@ poweroff -f
 	// Separate from asic-release because it is a different question -- one
 	// concerns the switch chip, the other the optics in front of it -- and a
 	// board might well want one without the other.
-	if haveCLI && o.Board.PlatformHAL.Driver != "" {
+	if haveGoCLI && o.Board.PlatformHAL.Driver != "" {
 		services = append(services, svcgen.Service{
 			Name:    "transceivers",
 			Exec:    "/usr/bin/nosaic platform tx all on",
@@ -848,7 +879,7 @@ poweroff -f
 	// period when being able to test the datapath matters most.
 	//
 	// Both are never emitted: a board with a HAL driver uses it.
-	if o.Board.PlatformHAL.Driver == "" && o.Board.FrontPanelInit != "" {
+	if !(haveGoCLI && o.Board.PlatformHAL.Driver != "") && o.Board.FrontPanelInit != "" {
 		src := filepath.Join(filepath.Dir(o.Board.Path), o.Board.FrontPanelInit)
 		b, err := os.ReadFile(src)
 		if err != nil {
@@ -865,27 +896,6 @@ poweroff -f
 		fmt.Fprintf(o.Log, "    front-panel init from %s\n", o.Board.FrontPanelInit)
 	}
 
-	// Cooling, on a board that cannot run the HAL.
-	//
-	// Emitted only when there is no HAL-driven thermal service above, so the
-	// two can never both be commanding the fans.
-	if o.Board.Cooling != "" && !(haveCLI && o.Board.PlatformHAL.Driver != "") {
-		src := filepath.Join(filepath.Dir(o.Board.Path), o.Board.Cooling)
-		b, err := os.ReadFile(src)
-		if err != nil {
-			return fmt.Errorf("cooling: %w", err)
-		}
-		if err := writeFile(rootfs, "/etc/nosaic/platform.sh", string(b), 0o755); err != nil {
-			return err
-		}
-		services = append(services, svcgen.Service{
-			Name:    "cooling",
-			Exec:    "/etc/nosaic/platform.sh cool",
-			Restart: "always",
-		})
-		fmt.Fprintf(o.Log, "    cooling from %s\n", o.Board.Cooling)
-	}
-
 	// The datapath.
 	//
 	// Named `nosd` rather than nosd-td2p: the unit, the CLI and the docs only
@@ -897,7 +907,10 @@ poweroff -f
 	// and the daemon would find nothing to open.
 	if datapathInstalled(o, packages) {
 		after := []string{"network"}
-		if haveCLI && o.Board.PlatformHAL.Driver != "" {
+		// Matching the gate on the service itself: depending on a service
+		// that was never written is a dangling edge, and s6-rc refuses the
+		// whole database rather than one service.
+		if haveGoCLI && o.Board.PlatformHAL.Driver != "" {
 			after = append(after, "asic-release")
 		}
 		if o.Board.PlatformHAL.ASICPCI != "" {
@@ -905,7 +918,7 @@ poweroff -f
 		}
 		// The optics before the datapath: nosd reads link state as it brings
 		// ports up, and every port reads down until the transmitters are on.
-		if o.Board.PlatformHAL.Driver == "" && o.Board.FrontPanelInit != "" {
+		if !(haveGoCLI && o.Board.PlatformHAL.Driver != "") && o.Board.FrontPanelInit != "" {
 			after = append(after, "transceivers")
 		}
 		services = append(services, svcgen.Service{
@@ -1076,6 +1089,20 @@ func copyBoardConfig(dir, rootfs string) (int, error) {
 // spends the rest of its life restarting a binary that was never installed,
 // with the failure going to a log nobody reads. The virtual platform shipped
 // exactly that, and its boot test passed every time.
+// packageInstalled reports whether a named package made it into the image.
+//
+// Matched by the "name-version" prefix the package list uses, the same way
+// datapathInstalled does, so a package that failed to build is absent here
+// rather than assumed present.
+func packageInstalled(packages []string, want string) bool {
+	for _, p := range packages {
+		if strings.HasPrefix(p, want+"-") {
+			return true
+		}
+	}
+	return false
+}
+
 func datapathInstalled(o Options, packages []string) bool {
 	want := o.Board.DatapathPackage()
 	if want == "" {

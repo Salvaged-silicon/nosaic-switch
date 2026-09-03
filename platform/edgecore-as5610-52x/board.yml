@@ -55,11 +55,6 @@ device_tree: dts/as5610-52x.dts
 # cages power up with TX_DISABLE asserted and the retimers unprogrammed.
 front_panel_init: scripts/sfp-init.sh
 
-# The fans, for the same reason. Without this the board runs at the duty it
-# powered up at -- 31 of 31, permanently -- which is safe and about three times
-# what it needs.
-cooling: scripts/platform.sh
-
 # How long the network service waits for interfaces named in network.conf.
 # The swp ports come from the datapath daemon, and there is no nosd-tdp yet, so
 # they cannot appear at all -- the default 600 would be ten minutes of waiting
@@ -87,17 +82,28 @@ notes: >
   backend must install into a partition. Until it does, use the TFTP netboot
   path, which writes nothing.
 
-# No platform_hal stanza, and it is not an oversight.
+# The board controller: a CPLD on the P2020's local bus at chip select 1, which
+# the device tree maps to 0xea000000. It carries the fan duty, power supply
+# status and the two chassis LEDs, and no PCI addresses -- unlike the Arista
+# boards, this one is not on PCI at all.
 #
-# The HAL and everything that drives it live in the nosaic CLI, which is Go, and
-# the Go toolchain has ppc64 and ppc64le and has never had 32-bit big-endian
-# PowerPC. No Go binary runs on this board, so a HAL driver for it could be
-# written and could never be executed. Declaring one would also switch off the
-# front_panel_init fallback below, which does work.
+# Driven by the C CLI, because the Go one cannot be built for this architecture.
+# It probes the controller rather than trusting this name, so the name is here
+# to say the board has a HAL at all.
+platform_hal:
+  driver: as5610-cpld
+
+# The cooling curve. EdgeNOS's controller for this board idles at 40 C and is
+# stepping hard by 50, so the band is placed around that.
 #
-# The board controller is still reachable -- it is a handful of byte registers
-# on the local bus at 0xea000000 -- so what would have been a HAL driver is a
-# shell script instead. See scripts/cooling.sh.
+# It matters more here than it looks: the board powers up with the fan duty at
+# 31 of 31 and stays there, because nothing had ever commanded it otherwise.
+# That is safe -- well under limits of 90-127 C -- and it is full speed on a
+# switch that needs about a third of it.
+thermal:
+  min_c: 40
+  max_c: 60
+  slew_down_percent: 5
 
 console: ttyS0
 console_baud: 115200

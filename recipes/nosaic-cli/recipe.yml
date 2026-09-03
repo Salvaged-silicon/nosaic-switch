@@ -1,0 +1,29 @@
+# nosaic-cli — the on-box CLI, in C, for architectures without a Go target.
+#
+# The Go CLI is the one every board should run and most do. The gc toolchain has
+# ppc64 and ppc64le and has never had 32-bit big-endian PowerPC, so on a board
+# like the AS5610-52X there is no `nosaic` at all unless something provides one,
+# and an operator loses every command rather than one driver.
+#
+# Deliberately only the part that has to run on a switch. Building images and
+# packages happens on the build host, which is x86_64 by design, so none of that
+# needs a second implementation.
+name: nosaic-cli
+version: "0.1.0"
+summary: on-box nosaic CLI for architectures the Go toolchain cannot target
+
+license: Apache-2.0
+redistributable: true
+
+source:
+  local: cli
+
+depends: [glibc]
+
+build:
+  system: make
+  targets: [clean, nosaic, strip]
+  stage:
+    - src: nosaic
+      dst: /usr/bin/nosaic
+      mode: "0755"

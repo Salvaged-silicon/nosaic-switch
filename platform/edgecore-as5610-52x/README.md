@@ -150,26 +150,35 @@ reaches the CPU.
 
 ## Environmentals
 
-`/etc/nosaic/platform.sh status` reads the board controller and the sensors:
+`nosaic platform status` -- the same command as on any other board:
 
-    cpld       version 1.0
-    fans       duty 10/31 (32%)  status 0x10
+    board      AS5610-52X, cpld 1.0
+    fans       32% (floor 32%)
     psu1       fitted, ok (reg 0x02)
     psu2       fitted, no-power (reg 0x00)
-    leds       sys 0x6F  locator 0x01
-    temp       temp2    38C (crit 110C)
+    leds       sys 0x6f  locator 0x01
+    temp       temp2    34C (crit 110C)
 
-The same script runs the fans as a supervised service (`platform.sh cool`).
+`nosaic platform thermal` runs the cooling loop as a supervised service. The
+board powers up with its fan duty at 31 of 31 and stays there; this walks it to
+the floor and holds, and leaves the fans at full on the way out, because nothing
+regulates the box after the loop stops.
+
+**This CLI is C, not Go.** The gc toolchain has ppc64 and ppc64le and has never
+had 32-bit big-endian PowerPC, so the Go CLI cannot be built for this board at
+all -- see cli/. It provides `platform status` and `platform thermal` and
+refuses the rest of the Go CLI's surface by name, so an operator can tell "this
+board cannot" from "this build has not".
 
 **The PSU decode is not what the register map suggests.** PSU1's status is in
 0x02 and PSU2's in 0x01 -- two registers, not two fields of one -- and presence
 is *active low*: bit 0 clear means fitted. Read the obvious way it reports no
 power supply on a running switch, which is how EdgeNOS's own kernel driver has
-it; its Python layer overrides that with this map and notes it came from
-Cumulus. "fitted, no-power" is the normal state for a second supply with nothing
-plugged into it.
+it; its Python layer overrides that and notes the map came from Cumulus.
+"fitted, no-power" is the normal state for a second supply with nothing plugged
+into it.
 
 LEDs are reported raw and not settable. The two registers are known; what their
-bits mean is not, and writing a guess to a chassis LED is not worth it.
+bits mean is not.
 
 ## What is left before this replaces EdgeNOS
