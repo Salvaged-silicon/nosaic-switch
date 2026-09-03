@@ -1480,6 +1480,28 @@ int nosaic_l3_add_intf(int unit, const char *ifname, int port, int vlan,
 			fprintf(stderr, "l3: L3EgressMode: %d\n", rv);
 			return -1;
 		}
+
+		/*
+		 * Tell the multipath hash what to look at.
+		 *
+		 * An ECMP group with no hash inputs selects the same member for
+		 * every packet, so the group exists, the route points at it, and
+		 * one link carries everything. Measured on this board before this
+		 * call: 100 transit packets across 20 destination addresses, 100
+		 * of them out swp1 and none out swp2.
+		 *
+		 * Destination IP and L4 ports, which is enough to spread flows
+		 * that differ in either. Source IP is deliberately not included
+		 * here: it is already part of the chip's default field set on
+		 * this family, and adding it to this control is not what the
+		 * missing input was.
+		 */
+		rv = bcm_switch_control_set(unit, bcmSwitchHashControl,
+					    BCM_HASH_CONTROL_MULTIPATH_DIP |
+					    BCM_HASH_CONTROL_MULTIPATH_L4PORTS);
+		if (rv != BCM_E_NONE)
+			fprintf(stderr, "l3: multipath hash not set (%d); ECMP "
+				"groups will send everything down one member\n", rv);
 	}
 
 	ifp = &ifs[nif];
