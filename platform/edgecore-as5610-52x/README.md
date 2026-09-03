@@ -182,3 +182,20 @@ LEDs are reported raw and not settable. The two registers are known; what their
 bits mean is not.
 
 ## What is left before this replaces EdgeNOS
+
+Measured against `edgenos/platform/accton-as5610-52x`.
+
+**Working, on hardware.** Chip init through the SDK; all 52 ports with per-port
+service VLANs; CPU punt on taps; hardware L3 with routes in DEFIP; ECMP across
+swp1 and swp2 with traffic on both; OSPFv2 with four adjacencies and OSPFv3 with
+one; forwarding enabled; cooling and environmentals through `nosaic platform`;
+an unattended boot to all of it, and 1.7 ms punt latency to a hardware
+responder.
+
+**Small gaps.** LED writes: both registers are known and their bits are not.
+Per-tray fan status: the register is read and reported raw, because EdgeNOS does
+not decode it either and there is no known-good map to copy.
+
+**ACLs are not a parity item.** EdgeNOS never got them working -- its own notes
+record the IFP-arming wall as open -- so this is new work for both trees, and
+`edgenos/docs/full-sdk-port-5610.md` is where to start.
