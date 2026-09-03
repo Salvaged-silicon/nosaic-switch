@@ -411,6 +411,53 @@ Worth stating because the mux tree looks like it should own them. It does not.
 So the LED work on this board is datapath work plus two CPLD registers, and
 none of it goes through I2C.
 
+## The 40G cages need three things, and two of them are not the ASIC
+
+The QSFP ports were down for a long time with no error anywhere, and the panel
+is what surfaced it: the 10G lamps lit and the 40G ones did not, which is the
+LEDs correctly reporting a real fault rather than an LED bug.
+
+**RESET_L, MODSEL_L and LPMODE are on two PCA9538s at `0x70` and `0x71`**, on
+the bus behind mux `0x76` channel 2 -- not on the `0x23` expander that carries
+the other QSFP control lines. They power up **configured as inputs**
+(`config = 0xff`), so nothing drives them: every module stays in reset,
+unselected, and its EEPROM never answers at `0x50`.
+
+| | pins | drive | meaning |
+|---|---|---|---|
+| `0x71` | 0-3 | **high** | RESET_L deasserted — module out of reset |
+| `0x71` | 4-7 | **low** | MODSEL_L asserted — module selected |
+| `0x70` | 0-3 | **low** | LPMODE — high power, which 40G requires |
+
+Measured on this board: driving them took the modules answering at `0x50` from
+none to three, and swp49/51/52 from down to up. The three that answer are on
+buses labelled `qsfp_rx_eq_0`, `_2` and `_3`; `qsfp_rx_eq_1` stays silent
+because that cage is empty, which matches `network.conf` listing swp49, swp51
+and swp52 and not swp50.
+
+Find them by **address and driver**, never by bus number or address alone:
+`0x70`-`0x77` is also the PCA954x mux range, so an address scan finds muxes. A
+device bound to `pca953x` at that address is the expander.
+
+The board also has no `i2c-mux-idle-disconnect` in its device tree, which
+EdgeNOS records as required before driving `0x71`'s upper pins -- without it
+that write corrupted the SFP i2c path there. No corruption has been seen here,
+and the SFP buses still answer, but the difference is unexplained rather than
+understood.
+
+### The retimers want the reset last, not first
+
+`init_retimer` wrote the CDR reset before the configuration, which resets the
+CDR against the settings it is about to replace. It now configures first and
+resets last, with the 20 ms settling gap EdgeNOS uses between assert (`0x0A` =
+`0x1C`) and release (`0x10`).
+
+The four QSFP retimers and `sfp_rx_eq_10` also get a **long-trace profile** --
+EdgeNOS's `set_eq2` -- which adds DEM pre-emphasis (`0x15` = `0x17`) for the
+longer board traces. Which retimer is which comes from the device-tree label
+the kernel exposes at `of_node/label`, because a bus number depends on how the
+mux tree enumerated this boot and a label does not.
+
 ## Front-panel port LEDs (working)
 
 `datapath/tdp/led.c`, verified on the running unit 2026-09-03.
