@@ -224,44 +224,79 @@ func TestSingleQuotesInExecAreRefused(t *testing.T) {
 	}
 }
 
-// A verbose service keeps its output out of the console and says so there.
+// A verbose longrun logs through s6-log, with a size cap, and says so.
 //
-// Both halves matter and they pull against each other. The redirect exists
-// because a datapath daemon carrying a vendor SDK writes tens of thousands of
-// initialisation lines, which on a 9600 baud console is ten minutes of nothing
-// usable. The breadcrumb exists because without it that service is
-// indistinguishable on the console from one that never started -- which is the
-// wrong conclusion to reach while looking at a board that will not come up.
-func TestVerboseRedirectsAndLeavesABreadcrumb(t *testing.T) {
+// Three things matter and they pull against each other. The output must not go
+// to the console, because a datapath daemon carrying a vendor SDK writes enough
+// to make a 9600 baud console useless. It must be bounded, because a plain file
+// grows until the filesystem is gone -- on a board that RAM-boots that is RAM,
+// and one of these daemons wrote 2 GB into a 1.9 GB tmpfs. And the daemon must
+// keep its own process, because a shell pipeline between s6 and the daemon eats
+// the stop signal, and stopping one of these cleanly is what keeps the chip out
+// of a state only a board reset clears.
+//
+// s6-rc's producer/consumer pair is what satisfies all three, so this pins that
+// shape rather than the commands.
+func TestVerboseLongrunLogsThroughS6Log(t *testing.T) {
 	svc := Service{
 		Name:    "nosd",
 		Exec:    "/usr/sbin/nosd",
 		Restart: "always",
 		Verbose: true,
 	}
-	run := gen(t, s6{}, svc)["/etc/s6-rc/source/nosd/run"]
+	files := gen(t, s6{}, svc)
 
-	if !strings.Contains(run, "exec >/var/log/nosd.log 2>&1") {
-		t.Errorf("verbose service does not redirect to its log:\n%s", run)
+	run := files["/etc/s6-rc/source/nosd/run"]
+	if strings.Contains(run, "exec >/var/log") {
+		t.Errorf("verbose longrun still redirects to a file, so the cap cannot apply:\n%s", run)
 	}
 	if !strings.Contains(run, "/dev/console") {
-		t.Errorf("verbose service leaves nothing on the console:\n%s", run)
-	}
-	if !strings.Contains(run, "/var/log/nosd.log' >/dev/console") {
-		t.Errorf("the console line does not name the log:\n%s", run)
-	}
-	// Order is the whole trick: the breadcrumb has to be written before the
-	// redirect it is describing is installed, or it lands in the log file it
-	// is meant to point at.
-	if strings.Index(run, "/dev/console") > strings.Index(run, "exec >/var/log") {
-		t.Errorf("breadcrumb comes after the redirect, so it goes into the log:\n%s", run)
+		t.Errorf("nothing on the console says where the output went:\n%s", run)
 	}
 
-	// A quiet service keeps the old behaviour: nothing redirected, nothing
-	// announced.
+	// The pipe, both halves. Either one alone is a service that never starts.
+	if got := files["/etc/s6-rc/source/nosd/producer-for"]; got != "nosd-log\n" {
+		t.Errorf("producer-for = %q", got)
+	}
+	if got := files["/etc/s6-rc/source/nosd-log/consumer-for"]; got != "nosd\n" {
+		t.Errorf("consumer-for = %q", got)
+	}
+	if got := files["/etc/s6-rc/source/nosd-log/type"]; got != "longrun\n" {
+		t.Errorf("logger type = %q; a oneshot logger would exit immediately", got)
+	}
+
+	// The cap is the whole point of the exercise.
+	lg := files["/etc/s6-rc/source/nosd-log/run"]
+	if !strings.Contains(lg, "s6-log") {
+		t.Errorf("logger does not run s6-log:\n%s", lg)
+	}
+	if !strings.Contains(lg, "s1000000") || !strings.Contains(lg, "n3") {
+		t.Errorf("logger has no size or rotation cap, so it can still fill the filesystem:\n%s", lg)
+	}
+
+	// A quiet service gets none of this: no logger, no redirect.
 	svc.Verbose = false
-	quiet := gen(t, s6{}, svc)["/etc/s6-rc/source/nosd/run"]
-	if strings.Contains(quiet, "/var/log/nosd.log") {
-		t.Errorf("non-verbose service should not redirect:\n%s", quiet)
+	quiet := gen(t, s6{}, svc)
+	if _, ok := quiet["/etc/s6-rc/source/nosd-log/run"]; ok {
+		t.Error("non-verbose service got a logger it did not ask for")
+	}
+	if strings.Contains(quiet["/etc/s6-rc/source/nosd/run"], "/var/log") {
+		t.Error("non-verbose service redirects somewhere")
+	}
+}
+
+// A verbose oneshot has no logger to pipe into -- s6-rc only wires producers to
+// consumers for longruns -- so it keeps redirecting to a file, and that file is
+// still worth naming on the console.
+func TestVerboseOneshotStillRedirects(t *testing.T) {
+	svc := Service{
+		Name:    "network-config",
+		Exec:    "/etc/nosaic/apply-network.sh",
+		Restart: "never",
+		Verbose: true,
+	}
+	up := gen(t, s6{}, svc)["/etc/s6-rc/source/network-config/up"]
+	if !strings.Contains(up, "/var/log/network-config.log") {
+		t.Errorf("verbose oneshot does not capture its output:\n%s", up)
 	}
 }
