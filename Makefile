@@ -230,3 +230,15 @@ clean-toolchains:
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
         pkg packages kernel-boot image image-boot image-ab vm docs dataplane-test \
         clean clean-toolchains
+
+## datasheets: fetch the vendor datasheets into refs/ (not committed; see docs/datasheets.md)
+datasheets:
+	@mkdir -p refs
+	@set -e; while read -r url name; do \
+	  case "$$url" in \#*|"") continue;; esac; \
+	  printf '  %-44s ' "$$name"; \
+	  if curl -sSL -A "Mozilla/5.0" --max-time 180 -o "refs/$$name" "$$url"; then \
+	    printf '%s  sha256=%s\n' "$$(stat -c %s refs/$$name)" "$$(sha256sum refs/$$name | cut -d' ' -f1)"; \
+	  else printf 'FAILED\n'; fi; \
+	done < docs/datasheets.urls
+	@echo "  in refs/ -- not committed, see docs/datasheets.md"

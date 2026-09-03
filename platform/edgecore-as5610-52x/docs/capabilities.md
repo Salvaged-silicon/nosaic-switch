@@ -46,18 +46,28 @@ on Trident+ the tables are what they are.
 
 ## Features
 
-Nothing in this column is implemented, because there is no datapath.
+"hardware" is what the silicon can do; "NOSaic" is what is implemented and
+observed working on this board. They are different columns on purpose -- the
+gap between them is the work, and collapsing it is how a capability model
+starts lying.
 
-| feature | hardware | note |
-|---|---|---|
-| L2/L3 wire speed | yes | the baseline this port is aiming at |
-| Cut-through | 860 ns | |
-| Jumbo frames | 9216 | |
-| ECMP | yes | Trident+ supports it; the width is not stated in the datasheet |
-| ACLs / field processor | yes | **see the blocker below** |
-| Per-port LEDs | link, speed, activity | driven by **microcontroller firmware**, not board registers |
-| System LEDs | PSU1, PSU2, diagnostic, fans, locator | |
-| VXLAN | **no** | Trident+ predates it; the 7050SX2 has it and this board does not |
+| feature | hardware | NOSaic | note |
+|---|---|---|---|
+| L2 forwarding | yes | **yes** | measured: flooding between front-panel ports |
+| L3 forwarding | yes | **yes** | routes in DEFIP, transit forwarded in hardware |
+| Cut-through | 860 ns | — | not measured here |
+| Jumbo frames | 9216 | **no** | taps come up at 1500; nothing plumbs an MTU |
+| ECMP | yes | **yes** | 150 transit packets split 80/70 across a pair |
+| ACLs / field processor | yes | **no** | **see the blocker below** |
+| VLANs (user-facing) | 4K | **no** | per-port service VLANs only; no VLAN model |
+| Link aggregation | yes | **no** | no LACP, no static bonds |
+| Storm control / policers | yes | **no** | nothing rate-limits flooding |
+| Per-port LEDs | link, speed, activity | **no** | driven by **microcontroller firmware**, never loaded |
+| System LEDs | PSU1, PSU2, diagnostic, fans, locator | read-only | the two registers are known; their bits are not |
+| Fans | 3+1, one PWM, 5-bit | **yes** | tracks the hottest sensor, idles at 10/31 |
+| Temperatures | max6697, 7 sensors | **yes** | `nosaic platform status` |
+| Power supplies | 2, hot-swap | **read** | presence and power-good, active low |
+| VXLAN | **no** | — | Trident+ predates it; the 7050SX2 has it and this board does not |
 
 That last row is the clearest statement of what a generation buys. VXLAN
 routing and bridging are on the Trident2+ and absent here, which is why the

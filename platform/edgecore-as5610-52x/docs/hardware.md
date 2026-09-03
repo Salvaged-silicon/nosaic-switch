@@ -1,8 +1,18 @@
 # Edgecore AS5610-52X — hardware reference
 
-Everything here was read off a running unit. Nothing is inferred from a
-datasheet, and nothing has been produced by NOSaic, which has never run on
-this board.
+Everything here was read off a running unit, and that is the point: what the
+silicon does and what the brochure says diverge, and only one of them is true
+at three in the morning. The fan duty register is five bits wide and no
+datasheet mentions it; the power supply status bits are documented nowhere and
+were worked out against a running box.
+
+The vendor datasheet is still worth having for what a running unit will not tell
+you -- ratings, airflow, power draw, which optics the cages are specified for.
+`make datasheets` fetches it; see `docs/datasheets.md` for why it is not
+committed.
+
+NOSaic now runs on this board: it boots unattended, forwards in hardware, holds
+four OSPF adjacencies and controls its own fans.
 
 ## At a glance
 
@@ -20,9 +30,18 @@ Note the PCI domain: `0001:01:00.0`, not `0000:`. A P2020 has more than one
 PCIe controller and the ASIC is not on domain zero — anything that hardcodes
 `0000:` will not find this chip.
 
-`cma=32M` on the command line is worth carrying forward. The Trident+ needs a
-contiguous DMA region the same way the Trident2+ does; on the Arista that is a
-`memmap=` reservation, and here it is CMA.
+`cma=32M` is on the command line and NOSaic does not use it. The DMA pool is a
+device-tree `reserved-memory` node instead:
+
+```
+/proc/device-tree/reserved-memory/nosaic-dma@28000000    64 MiB, no-map
+```
+
+`no-map` is what makes it usable from userspace: the kernel never maps it, so
+`CONFIG_STRICT_DEVMEM` does not stand between the BDE and the pool it hands to
+the chip. The `cma=32M` is inherited from the netboot script's bootargs and is
+vestigial -- harmless, and not where the descriptors live. Anything that goes
+looking for the DMA region on the command line will find the wrong answer.
 
 ## Ports
 

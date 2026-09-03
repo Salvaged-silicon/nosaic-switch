@@ -8,6 +8,24 @@ Status of the board as a whole is in [the README](../README.md); what is proven
 and how it was proven is in
 [architecture.md](architecture.md#8-what-is-proven-and-what-is-not).
 
+## Fixed on 2026-09-03
+
+- **The SDK log was filling the box.** `nosd-td2p` passed every SDK message to
+  its log at 176 KB/s, and this board RAM-boots, so the log had taken all 1.9 GB
+  of `/mnt/data`: writes to `/etc` returned I/O errors and punt latency was
+  718 ms. The severity filter `nosd-tdp` already had now applies here too --
+  measured after: 0 bytes of growth in 30 seconds, filesystem at 0%, and 1.9 ms
+  from the AS5610 where it had been 21.9 ms.
+- **Periodic work ran on the packet thread.** `nosaic_tap_pump` calls its tick on
+  every poll wakeup rather than on a timer. The guards here kept the *rate*
+  right; they did not move it off the thread that moves packets, so every FIB
+  mirror stopped forwarding for as long as it took. Now on its own thread.
+- **`board.yml` declared the wrong profile.** It said `full` (systemd) while
+  every working image on it was `minimal` (s6). Installing the declared default
+  produced a box that reached "Started ospf6d" and never came up, and cost an
+  OSPF adjacency. Corrected -- and worth remembering that the build was perfectly
+  happy, so the failure landed on hardware.
+
 ## Required — the switch does not come up working without these
 
 ### The control plane's ceiling is unmeasured
@@ -160,11 +178,18 @@ written, this file is correct for exactly one switch.
 board. Either boot it or change the declaration; a board description that
 disagrees with reality is worse than either.
 
-### ECMP
+### ~~ECMP~~ — fixed in the shared datapath, untested here
 
-`l3sync` takes a single next hop per prefix. The lab's two uplinks have
-different costs so FRR picks one and this has never mattered, but equal costs
-would silently use half the capacity.
+`l3sync` read routes from `/proc/net/route`, which lists one gateway per prefix,
+so a multipath route was programmed as a single path and reported success. It
+now reads them over netlink and builds ECMP groups, and the multipath hash is
+configured -- without that the group exists and sends everything down one
+member anyway.
+
+Proven on the AS5610: 150 transit packets across 30 destinations, 80 and 70
+across the pair. **Not exercised here**, because this box's two uplinks have
+different costs, so nothing offers it an equal-cost route to try. Give it one
+before trusting it.
 
 ### The watchdog is not armed
 
@@ -187,6 +212,45 @@ by trying again. It should back off and say so once.
 Macros 42 and 45 use `xgxs_tx_lane_map_core` rather than a per-macro exception.
 Two derived exceptions were tried and refuted. Neither cage is cabled, so this
 is unobserved rather than known-good.
+
+## Features — what this board could do and does not yet
+
+Shared with the AS5610 where marked *(shared)*: both run `datapath/common`, so
+one fix lands on both. The AS5610's list is
+[here](../../edgecore-as5610-52x/docs/todo.md#features--what-this-board-could-do-and-does-not-yet).
+
+### Forwarding
+
+- **ACLs and CoPP.** *(shared)* This board's punt path is built on
+  field-processor rules, so it has FP working where the AS5610 does not -- which
+  makes it the right box to build the ACL model on, and the AS5610 the one that
+  proves it portable.
+- **VLANs as a user-facing feature.** *(shared)* No way to say "these ports are
+  VLAN 100, tagged on the uplink". The datapath has the calls.
+- **Link aggregation.** *(shared)* No LACP, no static bonds, on a box with six
+  40G uplinks where it matters more than on the AS5610.
+- **Storm control and policers.** *(shared)* Nothing rate-limits flooding.
+- **VXLAN**, which the silicon and the SDK both already have — see its own
+  section below.
+
+### Control plane
+
+- **BGP** and **BFD.** *(shared)* FRR carries both; neither has run here.
+
+### The box itself
+
+- **The platform HAL is SCD-shaped** — see its own section. This board *can*
+  run the Go CLI, unlike the AS5610, so it is where the HAL stays honest.
+- **The watchdog is not armed** — its own section.
+- **Two QSFP macros are left at the global lane map** — its own section.
+
+### Operating it
+
+- **A/B slots, trial boot and rollback** — its own section, and this is the
+  board with the flash to do it on.
+- **Counters an operator can see.** *(shared)* Same gap as the AS5610: the
+  daemon logs a table once a minute and there is no way to ask a running one
+  anything.
 
 ### VXLAN, which the silicon and the SDK both already have
 

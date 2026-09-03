@@ -1,11 +1,39 @@
 # Edgecore AS5610-52X — what is left
 
-Everything. Nothing NOSaic has built runs on this board, and this page is the
-order to attack it in rather than a list of defects.
+NOSaic runs this board. As of 2026-09-03 it boots unattended to a switch that
+forwards in hardware, holds four OSPFv2 adjacencies and one OSPFv3, load-balances
+across an ECMP pair, controls its own fans and reports its own environmentals.
 
-Status of the board is in [the README](../README.md); what is known about the
-hardware is in [hardware.md](hardware.md), and almost all of it was read off a
-unit running EdgeNOS rather than produced here.
+What follows is what is *not* done, in the order worth attacking it. The
+finished work is kept as struck-through headings rather than deleted, because
+the reasoning under them is usually why the next thing works.
+
+Status is in [the README](../README.md); the hardware is in
+[hardware.md](hardware.md), read off a running unit. The 7050SX2's equivalent is
+[its own todo](../../arista-7050sx2-72q/docs/todo.md), and the two share a
+datapath -- `datapath/common` -- so a fix in one often lands in both.
+
+## Done, 2026-09-02 to 09-03
+
+Kept short; each has a commit with the reasoning.
+
+- **Bus mastering on the PCIe bridge.** Every DMA the chip issued was discarded
+  one hop upstream, at a root port whose Bus Master Enable nobody had set. Three
+  unrelated-looking failures, one cause. Everything below waited on it.
+- **The front panel.** SFP TX_DISABLE, the QSFP control expander that goes the
+  other way, and the DS100DF410 retimers whose CDR reset is not optional.
+- **Per-port service VLANs and STG forwarding.** Cumulus's layout, and the
+  spanning-tree group nobody sets: a port forwarding in the default group is
+  still blocking in its VLAN's own, and Trident+ fires no counter when it drops
+  for that reason.
+- **CPU punt, taps, hardware L3, ECMP.** `l3sync` reads routes over netlink,
+  because `/proc/net/route` cannot express multipath; the ECMP hash has to be
+  told what to look at or the group sends everything down one member.
+- **The CLI, in C.** Go has no 32-bit big-endian PowerPC target, so this board
+  had no `nosaic` at all. `cli/` provides `platform status` and
+  `platform thermal` and refuses the rest by name.
+- **Cooling.** The board powers up at 31/31 forever; it now tracks temperature
+  and idles at the floor.
 
 ## Required — nothing works without these
 
@@ -176,7 +204,11 @@ a container overlay filesystem can fail trying to write `security.selinux` and
 exit non-zero. Their fix was `-no-xattrs` on both mksquashfs and unsquashfs.
 NOSaic's builds have not hit it.
 
-### OSPF has no interfaces to run on
+### ~~OSPF has no interfaces to run on~~ — done, 2026-09-02
+
+Four adjacencies, on taps created by nosd-tdp. What follows is what it looked
+like before the datapath existed.
+
 
 Verified over ssh on the running board:
 
@@ -192,7 +224,11 @@ datapath daemon that does not exist. This is the same blocker as `nosd-tdp`,
 recorded separately because it is what "NOSaic replaces EdgeNOS here" actually
 waits on -- the control plane is done.
 
-### nosd-tdp — the datapath, and it is not blocked on the unknowns it looked blocked on
+### ~~nosd-tdp — the datapath~~ — done, 2026-09-02
+
+It forwards, punts, routes in hardware and load-balances. The scoping below is
+kept because it is what made the estimate right.
+
 
 This is the one remaining thing between "NOSaic boots here" and "NOSaic
 replaces EdgeNOS here". Nothing forwards, no front-panel port exists, and OSPF
@@ -737,7 +773,13 @@ this reason: `INCLUDE_RCPU` shifts `soc_cm_device_vectors_t` by a pointer and
 `BCM_ALL_CHIPS` changes every memory ID, and neither mismatch produces a
 compile error, a link error, or a log line.
 
-### Decide how the SFP status expanders are reached — not whether
+### ~~Decide how the SFP status expanders are reached~~ — raw I2C, done
+
+`scripts/sfp-init.sh` drives them over `/dev/i2c-N`, the option this section
+called proven. Buses are discovered rather than hard-coded, because the
+numbering is a property of the kernel's enumeration order and has already
+changed once between versions on this board.
+
 
 The four expanders carrying **MOD_ABS, TX_FAULT, RX_LOS and TX_DISABLE for
 ports 1-48** are declared in `dts/as5610-52x.dts` only as comments, so they
@@ -755,7 +797,12 @@ If declaring them: ONLP calls them PCA9506, a 40-pin part, which fits
 Worth confirming the marking on the board first. `nxp,pca9505`/`pca9506` needs
 `CONFIG_GPIO_PCA953X`, which this kernel now has.
 
-### The platform HAL — now specified, and two vendor bugs not to inherit
+### ~~The platform HAL~~ — answered differently: there cannot be one here
+
+The HAL lives in the Go CLI and Go has no target for this architecture, so the
+CPLD is driven from `cli/` in C instead. The two vendor bugs below were both
+real and both avoided.
+
 
 Everything it needs to talk to is written down in
 [hardware.md](hardware.md#sensors-fans-and-psus), read off the running unit
@@ -785,7 +832,12 @@ EdgeNOS does, or mapped directly the way the 7050SX2's SCD is. There is no
 `platform_hal` stanza in `board.yml` yet, which is why the thermal service is
 not generated for this board at all.
 
-### The board's own hardware is undescribed
+### ~~The board's own hardware is undescribed~~ — described and driven
+
+[hardware.md](hardware.md) covers it and `cli/` drives it. The retimer warning
+below was exactly right: unprogrammed, the links come up and pass nothing.
+LED *firmware* is still not loaded -- see the feature list.
+
 
 There is no platform HAL for it. From EdgeNOS's manifest it needs at least a
 CPLD driver, a **DS100DF410 40G retimer** with an init step, sensors and SFP
@@ -811,6 +863,68 @@ does not transfer.
 `board_eeprom` is also where this board's identity and MACs live. A board that
 cannot read its own MAC comes up with a random one that changes every boot,
 which is worth solving before the first install.
+
+## Features — what this board could do and does not yet
+
+Ordered by what a switch is expected to do, not by effort. Anything shared with
+the 7050SX2 lives in `datapath/common` and lands on both boards at once; those
+are marked *(shared)*.
+
+### Forwarding
+
+- **ACLs.** *(shared)* The one item EdgeNOS never finished either: an entry
+  installs into the IFP TCAM, reads back correctly and never matches a packet.
+  See "the field processor does not evaluate live traffic" above -- it is a real
+  blocker with a recommended next step, not an unknown.
+- **VLANs as a user-facing feature.** Ports sit in per-port service VLANs and
+  `--bridge` throws every port into one. Neither is a VLAN *model*: there is no
+  way to say "these six ports are VLAN 100, tagged on the uplink". This is the
+  first thing an operator will ask for and the datapath already has the calls.
+- **Link aggregation.** *(shared)* No LACP, no static bonds. The chip does
+  trunking and the SDK exposes it; nothing above knows the concept.
+- **Storm control, and any policer at all.** Nothing rate-limits broadcast,
+  multicast or unknown-unicast, so one loop on a neighbour is this box's
+  problem too.
+- **MTU.** Taps come up at 1500 and the board's `network.conf` asks for 1600;
+  the chip is good for 9216. Nothing plumbs a requested MTU to the port.
+
+### Control plane
+
+- **BGP.** FRR is built with it; nothing configures it and it has never run
+  here. OSPF works, so the plumbing underneath is proven.
+- **BFD.** Fast failure detection matters much more on a box whose punt path is
+  milliseconds; worth doing after ACLs, since CoPP protects it.
+- **CoPP.** *(shared)* Nothing protects the CPU from the punt path. A broadcast
+  storm arriving on a front-panel port is currently the control plane's problem.
+  Blocked behind ACLs, which is most of why ACLs are first.
+
+### The box itself
+
+- **LED firmware.** The panel is dark. This board loads microcontroller firmware
+  (`led0.hex`, `led1.hex` in EdgeNOS's manifest), which NOSaic has never done on
+  any board. The two CPLD LED registers are known; what their bits mean is not.
+- **Per-tray fan status.** `0x03` is read and reported raw. EdgeNOS does not
+  decode it either, so there is no known-good map to copy -- it needs working
+  out against a box with a tray pulled.
+- **Writing LEDs.** Deliberately not implemented rather than guessed.
+- **`board_eeprom`.** The board's identity and MAC addresses live in an MTD
+  partition nothing reads. A board that cannot read its own MAC gets a random
+  one that changes every boot -- fine for a RAM boot, not fine installed.
+
+### Operating it
+
+- **Install to flash.** Everything so far is a TFTP RAM boot that writes
+  nothing. The ONIE backend does not handle U-Boot platforms yet (above), and
+  the A/B slot layout has never been exercised here.
+- **`nosaic` beyond `platform`.** The C CLI covers `platform status` and
+  `platform thermal`. `show`, `interface` and `route` are mostly a client over
+  nosd's socket and would work the same way; they are simply not written.
+- **Counters an operator can see.** The chip counts; `--stats` re-initialises
+  the chip to read them, so it cannot be used on a running switch. The daemon
+  prints a table to its log once a minute, which is not the same thing.
+- **Anything that queries a running nosd.** There is no southbound socket yet,
+  which is the `switch-api` gap: every diagnostic here either reads a log or
+  restarts the datapath.
 
 ## Known blocker inherited from EdgeNOS
 
@@ -842,4 +956,12 @@ the missing arming.
   do not finish polled.
 - **The PCI domain is `0001:`, not `0000:`.** Anything that hardcodes domain
   zero will not find this chip.
-- **DMA comes from `cma=32M`**, not a `memmap=` reservation.
+- **DMA is a `reserved-memory` node, not `cma=32M`.** The command line still
+  says `cma=32M` and NOSaic does not use it; the pool is `nosaic-dma@28000000`,
+  64 MiB, `no-map`. `no-map` is the load-bearing part: the kernel never maps it,
+  so `CONFIG_STRICT_DEVMEM` does not stand between the BDE and the pool.
+- **Interrupts are still polled**, and `polled_irq_delay` cannot go below 20 ms
+  without the SDK's `sal_usleep` busy-waiting a whole core --
+  `datapath/tdp/sdk.c` wraps it so it can. 2 ms costs 1% of a core and gives
+  1.7 ms punt latency. Real interrupts would remove the tradeoff and need a
+  kernel path to userspace; `uio_pci_generic` is in-tree.
