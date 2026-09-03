@@ -24,7 +24,19 @@ console_baud: 9600
 
 # systemd, because this box has flash to spare and no reason to run the tier
 # built for boards that do not.
-profile: full
+# minimal, which is what this board actually runs and boots.
+#
+# This said `full` while every working image installed on it was minimal, and
+# the two are not interchangeable: full is systemd and minimal is s6. Building
+# the declared default and installing it produced a box that reached "Started
+# ospf6d" and then never came up -- no management, no datapath, no console
+# prompt -- and took an OSPF adjacency down with it. Recovered by catching Aboot
+# and booting the previous SWI explicitly.
+#
+# Board data that describes something other than the board is worse than absent:
+# it is the input to the image someone installs, and the failure lands on
+# hardware rather than in the build.
+profile: minimal
 kernel: ""
 
 # Flash layout. This board has around 2.1 GB free and the vendor's own OS
