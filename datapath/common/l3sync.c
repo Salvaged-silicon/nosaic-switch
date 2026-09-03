@@ -93,6 +93,7 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <net/if.h>
+#include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <linux/netlink.h>
@@ -694,103 +695,303 @@ static void rt_sweep(void)
 	}
 }
 
-static void poll_routes(void)
-{
-	char line[512], iface[64], dst[32], gw[32], mask[32];
-	FILE *f = fopen("/proc/net/route", "r");
-	int flags, added = 0;
+/*
+ * The kernel's IPv4 routes, over netlink, because /proc/net/route cannot
+ * express a multipath one.
+ *
+ * /proc lists a single gateway per prefix. A route with two equal-cost next
+ * hops appears there as a route with one, so reading it programs half of an
+ * ECMP route into the chip and reports success -- the traffic still flows, down
+ * one link, and nothing says the other is unused. That is why this is netlink:
+ * RTA_MULTIPATH is the only place the second next hop exists.
+ *
+ * Each route is handed to the callback with its gateways in an array. A route
+ * with one gateway is the ordinary case and arrives with n == 1, so there is
+ * one path through this rather than a special case for ECMP.
+ */
+#define MAX_PATHS 8
 
-	if (f == NULL)
+struct rt_paths {
+	uint32_t gw[MAX_PATHS];
+	int      ifindex[MAX_PATHS];
+	int      n;
+};
+
+static void rt_walk(void (*fn)(uint32_t dst, int plen, const struct rt_paths *p,
+			       void *arg), void *arg)
+{
+	struct {
+		struct nlmsghdr n;
+		struct rtmsg    r;
+	} req;
+	uint8_t buf[32768];
+	int s, len;
+
+	s = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	if (s < 0)
 		return;
-	if (fgets(line, sizeof(line), f) == NULL) {   /* header */
-		fclose(f);
+
+	memset(&req, 0, sizeof(req));
+	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
+	req.n.nlmsg_type = RTM_GETROUTE;
+	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+	req.n.nlmsg_seq = 1;
+	req.r.rtm_family = AF_INET;
+
+	if (send(s, &req, req.n.nlmsg_len, 0) < 0) {
+		close(s);
 		return;
 	}
-	while (fgets(line, sizeof(line), f) != NULL) {
-		bcm_l3_route_t r;
-		struct l3if *ifp;
-		bcm_if_t eg;
-		uint32_t d, m, g;
-		int rv, idx, moved = 0;
 
-		if (sscanf(line, "%63s %31s %31s %x %*d %*d %*d %31s",
-			   iface, dst, gw, &flags, mask) != 5)
+	while ((len = recv(s, buf, sizeof(buf), 0)) > 0) {
+		struct nlmsghdr *n = (struct nlmsghdr *)buf;
+		int done = 0;
+
+		for (; NLMSG_OK(n, (unsigned)len); n = NLMSG_NEXT(n, len)) {
+			struct rtmsg *rm;
+			struct rtattr *rta;
+			struct rt_paths paths;
+			uint32_t dst = 0;
+			int rlen, oif = 0;
+
+			if (n->nlmsg_type == NLMSG_DONE) {
+				done = 1;
+				break;
+			}
+			if (n->nlmsg_type != RTM_NEWROUTE)
+				continue;
+			rm = (struct rtmsg *)NLMSG_DATA(n);
+			if (rm->rtm_family != AF_INET)
+				continue;
+			/* Only the main table's unicast routes. Local, broadcast
+			 * and the rest describe this box rather than where to
+			 * send traffic. */
+			if (rm->rtm_table != RT_TABLE_MAIN ||
+			    rm->rtm_type != RTN_UNICAST)
+				continue;
+
+			memset(&paths, 0, sizeof(paths));
+			rta = (struct rtattr *)((char *)rm + NLMSG_ALIGN(sizeof(*rm)));
+			rlen = (int)n->nlmsg_len - (int)NLMSG_LENGTH(sizeof(*rm));
+			for (; RTA_OK(rta, rlen); rta = RTA_NEXT(rta, rlen)) {
+				if (rta->rta_type == RTA_DST &&
+				    RTA_PAYLOAD(rta) == 4)
+					memcpy(&dst, RTA_DATA(rta), 4);
+				else if (rta->rta_type == RTA_OIF &&
+					 RTA_PAYLOAD(rta) == 4)
+					memcpy(&oif, RTA_DATA(rta), 4);
+				else if (rta->rta_type == RTA_GATEWAY &&
+					 RTA_PAYLOAD(rta) == 4 &&
+					 paths.n < MAX_PATHS)
+					memcpy(&paths.gw[paths.n++], RTA_DATA(rta), 4);
+				else if (rta->rta_type == RTA_MULTIPATH) {
+					/* A packed list of rtnexthop, each with
+					 * its own attributes. This is the whole
+					 * reason for reading routes this way. */
+					struct rtnexthop *rtnh = RTA_DATA(rta);
+					int nlen = (int)RTA_PAYLOAD(rta);
+
+					paths.n = 0;
+					while (nlen >= (int)sizeof(*rtnh) &&
+					       rtnh->rtnh_len <= nlen &&
+					       paths.n < MAX_PATHS) {
+						struct rtattr *nra =
+							(struct rtattr *)((char *)rtnh +
+							sizeof(*rtnh));
+						int nrl = rtnh->rtnh_len -
+							  (int)sizeof(*rtnh);
+
+						paths.ifindex[paths.n] = rtnh->rtnh_ifindex;
+						for (; RTA_OK(nra, nrl);
+						     nra = RTA_NEXT(nra, nrl)) {
+							if (nra->rta_type == RTA_GATEWAY &&
+							    RTA_PAYLOAD(nra) == 4)
+								memcpy(&paths.gw[paths.n],
+								       RTA_DATA(nra), 4);
+						}
+						paths.n++;
+						nlen -= NLMSG_ALIGN(rtnh->rtnh_len);
+						rtnh = (struct rtnexthop *)((char *)rtnh +
+							NLMSG_ALIGN(rtnh->rtnh_len));
+					}
+				}
+			}
+
+			/* A single-gateway route carries its interface in
+			 * RTA_OIF rather than per-hop. */
+			if (paths.n == 1 && paths.ifindex[0] == 0)
+				paths.ifindex[0] = oif;
+
+			if (paths.n > 0 && dst != 0)
+				fn(ntohl(dst), rm->rtm_dst_len, &paths, arg);
+		}
+		if (done)
+			break;
+	}
+	close(s);
+}
+
+/*
+ * ECMP groups, one per distinct set of next hops.
+ *
+ * The chip does not take a list of next hops on a route; it takes one egress
+ * object, and for multipath that object is a group built from the members. The
+ * groups are cached because two routes learned over the same pair of uplinks
+ * share one, and because creating a group per route would exhaust the table on
+ * a box with a few hundred routes and two paths each.
+ */
+#define MAX_ECMP 64
+
+static struct {
+	bcm_if_t member[MAX_PATHS];
+	int      n;
+	bcm_if_t group;
+	int      used;
+} ecmp[MAX_ECMP];
+static int necmp;
+
+static int ecmp_find(const bcm_if_t *member, int n, bcm_if_t *out)
+{
+	bcm_l3_egress_ecmp_t g;
+	bcm_if_t members[MAX_PATHS];
+	int i, j, rv;
+
+	for (i = 0; i < necmp; i++) {
+		if (ecmp[i].n != n)
 			continue;
-		ifp = if_by_name(iface);
+		for (j = 0; j < n && ecmp[i].member[j] == member[j]; j++)
+			;
+		if (j == n) {
+			ecmp[i].used = 1;
+			*out = ecmp[i].group;
+			return BCM_E_NONE;
+		}
+	}
+	if (necmp >= MAX_ECMP)
+		return BCM_E_RESOURCE;
+
+	for (i = 0; i < n; i++)
+		members[i] = member[i];
+
+	bcm_l3_egress_ecmp_t_init(&g);
+	g.max_paths = n;
+	rv = bcm_l3_egress_ecmp_create(l3_unit, &g, n, members);
+	if (rv != BCM_E_NONE)
+		return rv;
+
+	for (i = 0; i < n; i++)
+		ecmp[necmp].member[i] = member[i];
+	ecmp[necmp].n = n;
+	ecmp[necmp].group = g.ecmp_intf;
+	ecmp[necmp].used = 1;
+	necmp++;
+
+	printf("l3: ecmp group of %d -> egress %d\n", n, g.ecmp_intf);
+	fflush(stdout);
+	*out = g.ecmp_intf;
+	return BCM_E_NONE;
+}
+
+struct route_ctx {
+	int added;
+};
+
+/*
+ * One route from the kernel, with however many next hops it has.
+ *
+ * A single-path route resolves to one egress object and is programmed with it.
+ * A multipath route resolves each hop, then programs the group. Both go through
+ * the same path so ECMP is not a separate mechanism that can rot while the
+ * ordinary case keeps working.
+ */
+static void route_one(uint32_t dst, int plen, const struct rt_paths *p, void *arg)
+{
+	struct route_ctx *ctx = arg;
+	bcm_if_t member[MAX_PATHS], eg;
+	bcm_l3_route_t r;
+	struct l3if *ifp;
+	uint32_t mask;
+	int i, n = 0, rv, idx, moved = 0;
+
+	mask = plen == 0 ? 0 : (uint32_t)(0xffffffffu << (32 - plen));
+
+	for (i = 0; i < p->n; i++) {
+		char name[IF_NAMESIZE];
+
+		if (p->gw[i] == 0)
+			continue;
+		if (if_indextoname((unsigned)p->ifindex[i], name) == NULL)
+			continue;
+		ifp = if_by_name(name);
 		if (ifp == NULL)
 			continue;
-		if (!(flags & 0x1))     /* RTF_UP */
+		if (nexthop(ifp, (int)(ifp - ifs), ntohl(p->gw[i]), &eg) != BCM_E_NONE)
 			continue;
-		if (!(flags & 0x2))     /* RTF_GATEWAY; the rest are host entries */
-			continue;
-
-		d = be_hex_to_host(dst);
-		m = be_hex_to_host(mask);
-		g = be_hex_to_host(gw);
-
-		rv = nexthop(ifp, (int)(ifp - ifs), g, &eg);
-		if (rv != BCM_E_NONE) {
-			/* Say why, once. An unresolved route is the difference
-			 * between a switch that routes in hardware and one that
-			 * punts every transit packet to the CPU, and the count
-			 * alone does not distinguish "the neighbour is not in
-			 * ARP yet", which fixes itself, from "the egress object
-			 * could not be built", which does not. */
-			static int said;
-
-			if (!said) {
-				said = 1;
-				fprintf(stderr, "l3: %u.%u.%u.%u/%08x via "
-					"%u.%u.%u.%u dev %s unresolved: %d (%s)\n",
-					d >> 24, (d >> 16) & 0xff, (d >> 8) & 0xff,
-					d & 0xff, m,
-					g >> 24, (g >> 16) & 0xff, (g >> 8) & 0xff,
-					g & 0xff, iface, rv, bcm_errmsg(rv));
-				fflush(stderr);
-			}
-			st_unresolved++;
-			continue;
-		}
-
-		idx = rt_find(d, m);
-		if (idx >= 0) {
-			rt[idx].seen = 1;
-			if (rt[idx].eg == eg)
-				continue;       /* unchanged */
-			moved = 1;              /* same prefix, different next hop */
-		}
-
-		bcm_l3_route_t_init(&r);
-		r.l3a_subnet = d;
-		r.l3a_ip_mask = m;
-		r.l3a_intf = eg;
-		if (moved)
-			r.l3a_flags |= BCM_L3_REPLACE;
-
-		rv = bcm_l3_route_add(l3_unit, &r);
-		if (rv != BCM_E_NONE) {
-			st_failed++;
-			continue;
-		}
-		if (moved) {
-			rt[idx].eg = eg;
-			st_moved++;
-		} else if (nrt < MAX_RT) {
-			rt[nrt].dst = d;
-			rt[nrt].mask = m;
-			rt[nrt].eg = eg;
-			rt[nrt].seen = 1;
-			nrt++;
-			st_added++;
-			added++;
-		}
+		member[n++] = eg;
 	}
-	fclose(f);
+	if (n == 0) {
+		st_unresolved++;
+		return;
+	}
+
+	if (n == 1) {
+		eg = member[0];
+	} else if (ecmp_find(member, n, &eg) != BCM_E_NONE) {
+		st_failed++;
+		return;
+	}
+
+	idx = rt_find(dst, mask);
+	if (idx >= 0) {
+		rt[idx].seen = 1;
+		if (rt[idx].eg == eg)
+			return;             /* unchanged */
+		moved = 1;
+	}
+
+	bcm_l3_route_t_init(&r);
+	r.l3a_subnet = dst;
+	r.l3a_ip_mask = mask;
+	r.l3a_intf = eg;
+	if (n > 1)
+		r.l3a_flags |= BCM_L3_MULTIPATH;
+	if (moved)
+		r.l3a_flags |= BCM_L3_REPLACE;
+
+	rv = bcm_l3_route_add(l3_unit, &r);
+	if (rv != BCM_E_NONE) {
+		st_failed++;
+		return;
+	}
+	if (moved) {
+		rt[idx].eg = eg;
+		st_moved++;
+	} else if (nrt < MAX_RT) {
+		rt[nrt].dst = dst;
+		rt[nrt].mask = mask;
+		rt[nrt].eg = eg;
+		rt[nrt].seen = 1;
+		nrt++;
+		st_added++;
+		ctx->added++;
+	}
+}
+
+static void poll_routes(void)
+{
+	struct route_ctx ctx = { 0 };
+	int i;
+
+	for (i = 0; i < necmp; i++)
+		ecmp[i].used = 0;
+
+	rt_walk(route_one, &ctx);
 	rt_sweep();
-	if (added) {
+
+	if (ctx.added) {
 		printf("l3: +%d routes into DEFIP (total %lu, moved %lu, failed %lu, "
 		       "unresolved %lu)\n",
-		       added, st_added, st_moved, st_failed, st_unresolved);
+		       ctx.added, st_added, st_moved, st_failed, st_unresolved);
 		fflush(stdout);
 	}
 }
