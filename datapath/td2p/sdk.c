@@ -332,11 +332,32 @@ static int nosaic_bsl_out(bsl_meta_t *meta, const char *fmt, va_list args)
 	return vfprintf(stderr, fmt, args);
 }
 
-/* Let everything through. This is bring-up: the messages that matter are the
- * ones nobody predicted needing. */
+/*
+ * Warnings and worse by default; everything with NOSAIC_SDK_VERBOSE set.
+ *
+ * This let everything through, and on a box that stays up it is not a logging
+ * preference, it is a leak. Measured on the 7050SX2: 176 KB/s, continuously,
+ * into /var/log/nosd.log. That board RAM-boots -- /mnt/data is a tmpfs -- so
+ * the log had eaten all 1.9 GB of it and the root overlay was at 100% full,
+ * which is where writes to /etc start returning I/O errors and everything else
+ * starts behaving strangely. 15 GB a day refills it in about three hours.
+ *
+ * nosd-tdp has had this filter since its own log reached 2.8 million lines in a
+ * single run; it was never brought back here. Same hook, same environment
+ * variable, so a board being brought up loses nothing: NOSAIC_SDK_VERBOSE=1
+ * restores every message exactly.
+ *
+ * bslSeverityWarn is 3, and lower numbers are more severe.
+ */
 static int nosaic_bsl_check(bsl_packed_meta_t meta)
 {
-	return 1;
+	static int verbose = -1;
+
+	if (verbose < 0)
+		verbose = getenv("NOSAIC_SDK_VERBOSE") != NULL;
+	if (verbose)
+		return 1;
+	return BSL_SEVERITY_GET(meta) <= bslSeverityWarn;
 }
 
 static void nosaic_bsl_start(void)
