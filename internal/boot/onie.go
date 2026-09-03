@@ -1,6 +1,7 @@
 package boot
 
 import (
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
@@ -57,6 +58,7 @@ echo "NOSaic %s for %s (%s)"
 # every $ for the same reason; quoting once, here, is harder to get wrong than
 # escaping at every use.
 FIT_NAME='%s'
+FIT_OFFSET=%d
 NOS_BOOTCMD='%s'
 
 # Where to write. ONIE tells us which device it booted from; falling back to
@@ -83,7 +85,16 @@ SKIP=$(awk '/^__NOSAIC_PAYLOAD__$/ { print NR + 1; exit 0; }' "$0")
 # Write the whole disk image, partition table and all. NOSaic's layout is not
 # a variation on ONIE's -- it has its own boot, A/B and data partitions -- so
 # installing means replacing the layout, not fitting inside one.
-tail -n +$SKIP "$0" | tar -xO disk.img | dd of="$DISK" bs=1M conv=fsync
+#
+# Compressed, and decompressed straight into dd rather than onto disk first.
+#
+# ONIE downloads this whole file into a tmpfs before running it -- /tmp on this
+# board is 1012 MiB of RAM -- so the installer's size is bounded by memory, not
+# by flash. An uncompressed 1.3 GiB image dies about two thirds of the way in
+# with "wget: short write", which reads like a network fault and is not one. The
+# image is mostly zeros, so gzip takes it to well under a tenth of that, and
+# streaming through gunzip means the box never needs room for both.
+tail -n +$SKIP "$0" | tar -xO disk.img.gz | gunzip -c | dd of="$DISK" bs=1M conv=fsync
 
 sync
 
@@ -94,24 +105,35 @@ sync
 # address and a partition number, reads that many bytes, and boots what it
 # finds. So the image goes in whole, at the start of partition 1.
 if [ -n "$FIT_NAME" ]; then
-    case "$DISK" in
-        *mmcblk*|*nvme*) P1="${DISK}p1" ;;
-        *)               P1="${DISK}1"  ;;
-    esac
-    # sync and wait, rather than partprobe.
+    # WRITTEN AT AN ABSOLUTE OFFSET, NOT TO /dev/sdX1.
     #
-    # ONIE's busybox has no partprobe and no parted -- this board's ONIE is
-    # BusyBox 1.25.1 -- so the kernel is given a moment to notice the table
-    # that was just written instead of being told to re-read it.
+    # Straight after dd'ing a partition table the kernel is still describing
+    # the layout that was there before, and ONIE's busybox has no partprobe.
+    # The partition node therefore still exists and still points at the
+    # PREVIOUS owner's offset -- so a dd to /dev/sda1 writes to the old first
+    # partition's start, which lands somewhere in the middle of the new one.
+    # It is the worst shape of bug: every command succeeds, the installer
+    # reports success, and the firmware then reads zeros where the boot image
+    # should be. Seen on the AS5610, where EdgeNOS's p1 began at sector 8192
+    # and ours begins at 2048.
+    #
+    # The offset comes from the table this image was built with, so it does not
+    # depend on the kernel having noticed anything.
     sync
+    blockdev --rereadpt "$DISK" 2>/dev/null || true
     sleep 2
-    if [ ! -b "$P1" ]; then
-        echo "error: $P1 does not exist after writing the partition table" >&2
+    echo "writing the boot image at offset $FIT_OFFSET"
+    tail -n +$SKIP "$0" | tar -xO "$FIT_NAME" \
+        | dd of="$DISK" bs=512 seek=$((FIT_OFFSET / 512)) conv=fsync,notrunc
+    sync
+    # Read it back from the same absolute offset. A FIT begins d0 0d fe ed, and
+    # if that is not there the switch will fall through to ONIE on next boot
+    # with nothing to say why.
+    if ! dd if="$DISK" bs=1 skip=$FIT_OFFSET count=4 2>/dev/null | od -x | head -1 | grep -qi "d00d"; then
+        echo "error: the boot image is not at offset $FIT_OFFSET after writing it" >&2
         exit 1
     fi
-    echo "writing the boot image to $P1"
-    tail -n +$SKIP "$0" | tar -xO "$FIT_NAME" | dd of="$P1" bs=1M conv=fsync
-    sync
+    echo "boot image verified at $FIT_OFFSET"
 fi
 
 # Tell the firmware where the NOS is now.
@@ -194,7 +216,7 @@ func (o onieSFX) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 		return "", fmt.Errorf("a single quote in the boot image name or boot command would break the installer's quoting")
 	}
 	head := fmt.Sprintf(installer, img.Version, img.Board, img.Arch,
-		fitName, img.NOSBootCmd)
+		fitName, img.FITOffset, img.NOSBootCmd)
 	if !strings.HasSuffix(head, "\n") {
 		head += "\n"
 	}
@@ -202,10 +224,17 @@ func (o onieSFX) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 		return "", err
 	}
 
-	// The payload is an uncompressed tar so the installer can stream one
-	// member out of it with the tools ONIE has, without needing space for a
-	// decompressed copy on a switch that may have very little.
-	args := []string{"-cf", "-", "-C", filepath.Dir(img.Disk), filepath.Base(img.Disk)}
+	// The disk image is gzipped; the tar around it is not.
+	//
+	// The tar stays uncompressed so the installer can stream one member out of
+	// it with the tools ONIE has. The disk image inside is compressed because
+	// ONIE downloads this entire file into a tmpfs before running it, so its
+	// size is bounded by the switch's RAM -- and the image is mostly zeros.
+	gz, err := gzipFile(img.Disk, filepath.Join(outDir, "disk.img.gz"))
+	if err != nil {
+		return "", err
+	}
+	args := []string{"-cf", "-", "-C", filepath.Dir(gz), filepath.Base(gz)}
 	if img.FIT != "" {
 		// A second member rather than a second file: the installer is one
 		// artifact an operator copies to a switch, and a boot image that
@@ -222,4 +251,37 @@ func (o onieSFX) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// gzipFile compresses src to dst and returns dst.
+//
+// Done here rather than by shelling out to gzip so the build does not depend on
+// which gzip is installed: the switch needs busybox gunzip to read it, and
+// every gzip writes something busybox can read, but only this way is the
+// compression level ours to choose.
+func gzipFile(src, dst string) (string, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return "", err
+	}
+	defer out.Close()
+
+	// Best compression: this runs once at build time and the result is copied
+	// into a switch's memory, where every megabyte is one it might not have.
+	zw, err := gzip.NewWriterLevel(out, gzip.BestCompression)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(zw, in); err != nil {
+		return "", err
+	}
+	if err := zw.Close(); err != nil {
+		return "", err
+	}
+	return dst, out.Sync()
 }

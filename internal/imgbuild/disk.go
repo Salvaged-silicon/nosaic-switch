@@ -47,17 +47,17 @@ import (
 
 // BuildDisk assembles a partitioned disk image containing the composed image
 // in slot A and an empty, initialised data partition.
-func BuildDisk(o Options, squashfs string) (string, error) {
+func BuildDisk(o Options, squashfs string) (string, int64, error) {
 	bootMiB, slotMiB, dataMiB := o.Board.Layout()
 	out := filepath.Join(o.OutDir, "disk.img")
 	fmt.Fprintf(o.Log, "==> assembling the disk image\n")
 
 	sq, err := os.Stat(squashfs)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if sq.Size() > int64(slotMiB)*1024*1024 {
-		return "", fmt.Errorf("the image is %.1f MiB but a slot is %d MiB — "+
+		return "", 0, fmt.Errorf("the image is %.1f MiB but a slot is %d MiB — "+
 			"raise slot_mib in %s or shrink the profile",
 			float64(sq.Size())/(1<<20), slotMiB, o.Board.ID)
 	}
@@ -73,7 +73,7 @@ func BuildDisk(o Options, squashfs string) (string, error) {
 	}
 	total := int64(firstMiB+2*slotMiB+dataMiB+gptOverheadMiB) * 1024 * 1024
 	if err := truncate(out, total); err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	// GPT, with named partitions. The names are how the initramfs finds the
@@ -125,15 +125,15 @@ size=%dMiB, type=83
 	cmd := exec.Command("sfdisk", "--quiet", out)
 	cmd.Stdin = stringsReader(script)
 	if b, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("partitioning: %v\n%s", err, b)
+		return "", 0, fmt.Errorf("partitioning: %v\n%s", err, b)
 	}
 
 	parts, err := partitions(out)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if len(parts) != 4 {
-		return "", fmt.Errorf("expected 4 partitions, got %d", len(parts))
+		return "", 0, fmt.Errorf("expected 4 partitions, got %d", len(parts))
 	}
 
 	// Left as raw space where it holds the FIT: the installer writes the
@@ -143,10 +143,10 @@ size=%dMiB, type=83
 	if !(o.Board.PartTable() == "dos" && o.Board.FITMiB > 0) {
 		boot, err := buildBootPartition(o, parts[0].Size*512)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		if err := ddInto(boot, out, parts[0].Start*512, parts[0].Size*512, "boot"); err != nil {
-			return "", err
+			return "", 0, err
 		}
 	}
 
@@ -154,7 +154,7 @@ size=%dMiB, type=83
 	// installed switch has nothing to roll back to, and pretending otherwise
 	// by duplicating the image would make the first upgrade untestable.
 	if err := ddInto(squashfs, out, parts[1].Start*512, parts[1].Size*512, "slot a"); err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	// Built to the partition that actually exists, rather than to the size it
@@ -162,15 +162,15 @@ size=%dMiB, type=83
 	// nominal size, and a filesystem sized by assumption overruns the disk.
 	data, err := buildDataPartition(o, parts[3].Size*512)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if err := ddInto(data, out, parts[3].Start*512, parts[3].Size*512, "data"); err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	fmt.Fprintf(o.Log, "    slot a: %.1f MiB image in a %d MiB slot, slot b: empty, data: %d MiB\n",
 		float64(sq.Size())/(1<<20), parts[1].Size*512/(1<<20), parts[3].Size*512/(1<<20))
-	return out, nil
+	return out, parts[0].Start * 512, nil
 }
 
 // buildDataPartition makes an ext4 filesystem pre-populated with the directory

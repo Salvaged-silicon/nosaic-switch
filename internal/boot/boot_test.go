@@ -80,10 +80,14 @@ func TestONIEInstallerExtractsItsOwnPayload(t *testing.T) {
 	}
 
 	// Exactly what the installer does to itself, run here instead of on a
-	// switch: find the marker, skip past it, and read the disk image out.
+	// switch: find the marker, skip past it, and stream the disk image out
+	// through gunzip. The decompression is part of what is being checked --
+	// the image is carried compressed because ONIE stages the whole installer
+	// in RAM, and a payload the switch cannot decompress is no better than one
+	// that will not fit.
 	script := `set -e
 SKIP=$(awk '/^__NOSAIC_PAYLOAD__$/ { print NR + 1; exit 0; }' "$1")
-tail -n +$SKIP "$1" | tar -xO disk.img`
+tail -n +$SKIP "$1" | tar -xO disk.img.gz | gunzip -c`
 	cmd := exec.Command("sh", "-c", script, "sh", out)
 	got, err := cmd.Output()
 	if err != nil {

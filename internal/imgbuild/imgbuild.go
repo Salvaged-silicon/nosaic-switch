@@ -53,6 +53,15 @@ type Result struct {
 	Kernel    string
 	Disk      string
 	Packages  []string
+
+	// FITOffset is where the first partition begins, in bytes.
+	//
+	// The installer needs it because it cannot trust /dev/sda1 straight after
+	// writing a partition table: the kernel is still describing the layout
+	// that was there before, so the node points at the previous owner's
+	// offset. Writing at an absolute offset does not depend on the kernel
+	// having noticed anything.
+	FITOffset int64
 }
 
 // Build assembles the image.
@@ -145,7 +154,7 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 
-	disk, err := BuildDisk(o, sqsh)
+	disk, fitOff, err := BuildDisk(o, sqsh)
 	if err != nil {
 		return nil, err
 	}
@@ -155,7 +164,8 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 
-	return &Result{Squashfs: sqsh, Initramfs: initramfs, Kernel: outKernel, Disk: disk, Packages: names}, nil
+	return &Result{Squashfs: sqsh, Initramfs: initramfs, Kernel: outKernel, Disk: disk,
+		FITOffset: fitOff, Packages: names}, nil
 }
 
 type pkgRef struct {

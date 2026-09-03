@@ -432,7 +432,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 	artifact, err := backend.Wrap(boot.Image{
 		Kernel: res.Kernel, Initramfs: res.Initramfs,
 		Squashfs: res.Squashfs, Disk: res.Disk,
-		FIT: netboot, NOSBootCmd: b.UBootNOSBootCmd,
+		FIT: netboot, FITOffset: res.FITOffset, NOSBootCmd: b.UBootNOSBootCmd,
 		Board: b.ID, Arch: a.ID, Version: version.Version,
 		DTB:       dtb,
 		UBootArch: b.UBootArch, UBootLoad: b.UBootLoad, UBootEntry: b.UBootEntry,

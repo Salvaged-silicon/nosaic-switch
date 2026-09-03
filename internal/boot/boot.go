@@ -37,6 +37,9 @@ type Image struct {
 	// kernel for itself.
 	FIT string
 
+	// FITOffset is the byte offset on the disk where FIT is written.
+	FITOffset int64
+
 	// NOSBootCmd is the firmware boot command the installer should leave
 	// behind, for firmware that has to be told where the NOS is. Empty means
 	// the installer changes nothing about how the box boots.
