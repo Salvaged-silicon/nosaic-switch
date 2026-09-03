@@ -34,6 +34,13 @@ Kept short; each has a commit with the reasoning.
   `platform thermal` and refuses the rest by name.
 - **Cooling.** The board powers up at 31/31 forever; it now tracks temperature
   and idles at the floor.
+- **The front-panel port LEDs.** Both LED processors come out of reset halted;
+  `datapath/tdp/led.c` loads a passthrough microcode and drives the chain from
+  link state, showing the same dark / green / amber the 7050SX2 does. The trap
+  worth remembering is that the chain RAM **cannot be read back** while the
+  processor is running -- diffing against a read made the panel appear to flap
+  on three ports while the SDK reported no link change at all. See
+  `docs/hardware.md`.
 
 ## Required — nothing works without these
 
@@ -900,12 +907,19 @@ are marked *(shared)*.
 
 ### The box itself
 
-- **LED firmware.** The panel is dark. This board loads microcontroller firmware
-  (`led0.hex`, `led1.hex` in EdgeNOS's manifest), which NOSaic has never done on
-  any board. The two CPLD LED registers are known; what their bits mean is not.
+- **~~Port LEDs~~** — done, see *Done, 2026-09-02 to 09-03*.
+- **The status lamps need one pass at the panel.** PS1, PS2, Diag, Fan and Loc
+  exist and the installation guide says what each colour means, but **which bit
+  of `0x13`/`0x15` drives which lamp is recorded nowhere** -- Cumulus, ONL and
+  Accton all expose the registers raw and decode neither, and both registers
+  accept all eight bits, so the read-back trick that mapped the 7050SX2's LEDs
+  answers nothing. `nosaic platform ledwalk [seconds]` lights one bit at a time
+  and restores the registers afterwards; one pass in front of the switch
+  produces the map, and then this board can render health the way the 7050SX2
+  already does.
 - **Per-tray fan status.** `0x03` is read and reported raw. EdgeNOS does not
   decode it either, so there is no known-good map to copy -- it needs working
-  out against a box with a tray pulled.
+  out against a box with a tray pulled. The same pass could settle this.
 - **Writing LEDs.** Deliberately not implemented rather than guessed.
 - **`board_eeprom`.** The board's identity and MAC addresses live in an MTD
   partition nothing reads. A board that cannot read its own MAC gets a random
@@ -925,6 +939,16 @@ are marked *(shared)*.
 - **Anything that queries a running nosd.** There is no southbound socket yet,
   which is the `switch-api` gap: every diagnostic here either reads a log or
   restarts the datapath.
+- **Restarting `nosd` takes the switch off the network, silently.** The taps are
+  created by the daemon, so restarting it destroys and recreates them -- without
+  addresses and at the default MTU. `apply-network.sh` ran once at boot and
+  nothing re-runs it, so the box comes back with every front-panel address gone
+  and MTU 1500 against a fabric at 1600. OSPFv2 loses every adjacency and
+  OSPFv3 hangs in ExStart, which is the MTU mismatch showing. The s6 dependency
+  is declared but s6 does not restart dependents when a dependency restarts.
+  Recovering by hand is `sh /etc/nosaic/apply-network.sh` then restarting
+  `ospfd`/`ospf6d`; the fix is for the network service to be a consumer that
+  re-runs, or for nosd to persist the taps.
 
 ## Known blocker inherited from EdgeNOS
 

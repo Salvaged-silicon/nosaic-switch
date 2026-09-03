@@ -142,6 +142,12 @@ type SCD struct {
 	asic  string
 	close func() error
 
+	// lamps is the board's chassis-lamp map, loaded once on first use from a
+	// generated file. Cached including the failure: a board without the map
+	// should say so quickly every time rather than stat a missing file on
+	// every pass of the thermal loop.
+	lamps *lampMap
+
 	// Trace is optional; nil means say nothing.
 	Trace Trace
 }

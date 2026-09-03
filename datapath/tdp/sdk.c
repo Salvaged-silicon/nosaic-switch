@@ -20,6 +20,7 @@
  */
 #include "bde.h"
 #include "sdk.h"
+#include "led.h"
 #include "mmio.h"
 #include "props.h"
 
@@ -975,6 +976,12 @@ int nosaic_tdp_sdk_run(int unit)
 
 	printf("taps         %d port(s) on the Linux stack\n", nosaic_tap_count());
 	fflush(stdout);
+
+	/* The panel, before the pump takes the thread for good. Failure is
+	 * reported by led_start itself and is not fatal: a dark panel is a
+	 * cosmetic fault, and refusing to forward over one would be worse than
+	 * the problem. */
+	nosaic_led_start(unit, sal_dev);
 
 	/* The FIB mirror and the counter dump run on their own thread; this one
 	 * does nothing but move packets. A NULL tick makes the pump block in

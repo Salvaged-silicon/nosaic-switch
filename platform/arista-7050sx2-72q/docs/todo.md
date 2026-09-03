@@ -20,6 +20,26 @@ and how it was proven is in
   every poll wakeup rather than on a timer. The guards here kept the *rate*
   right; they did not move it off the thread that moves packets, so every FIB
   mirror stopped forwarding for as long as it took. Now on its own thread.
+- **The chassis status lamps were lying.** Four healthy fans and two fitted
+  supplies, and the panel showed fan, PSU1 and PSU2 all **red** -- the state the
+  CPLD powered up in, which nothing had ever corrected. `internal/platformhal/scd/statusled.go`
+  now renders them from the thermal loop's own measurements, so there is no
+  second notion of health that could drift from what the cooling acts on. The
+  blue beacon is deliberately excluded: it shares a lamp with the status light
+  and wins, and a health loop must not switch it off under an operator who lit
+  it to find the box. `nosaic platform beacon on|off` sets it, `platform status`
+  reports every lamp, and stopping the loop turns status **amber** rather than
+  leaving a stale green claim. Verified on the running unit: red -> green,
+  amber when the loop stops, green again when it comes back.
+
+  The register offsets are **not in the tree**. They are vendor
+  board-description data -- unlike the SCD offsets and the fan registers, these
+  five are in nothing the vendor publishes -- so `tools/mkstatusleds.sh` ships
+  and its output does not, the same arrangement as `mkportmap.sh` and
+  `mkpolarity.sh`. Generate `config/statusleds.conf` once against your own
+  switch. Without it the lamps report as unconfigured and are never written,
+  which is the right failure: a panel driven from a guessed map is a switch
+  telling an operator something false about its own health.
 - **`board.yml` declared the wrong profile.** It said `full` (systemd) while
   every working image on it was `minimal` (s6). Installing the declared default
   produced a box that reached "Started ospf6d" and never came up, and cost an
@@ -241,6 +261,11 @@ one fix lands on both. The AS5610's list is
 
 - **The platform HAL is SCD-shaped** — see its own section. This board *can*
   run the Go CLI, unlike the AS5610, so it is where the HAL stays honest.
+- **~~Chassis status lamps~~** — done, see *Fixed on 2026-09-03*.
+- **Port LED blink is unused.** *(shared)* Bit 24 flashes and nothing drives it.
+  The obvious meaning is traffic, which costs a per-port counter sweep every
+  interval — the same shape as the collection that exhausted the DMA pool here.
+  Worth doing only alongside a counter cache something else already maintains.
 - **The watchdog is not armed** — its own section.
 - **Two QSFP macros are left at the global lane map** — its own section.
 

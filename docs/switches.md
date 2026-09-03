@@ -33,7 +33,7 @@ swapped on the PCB. That output is yours rather than ours, so it is **not in
 this repository**. The generators are, and they are read-only against the
 switch:
 
-- **arista-7050sx2-72q** — [tools/](../platform/arista-7050sx2-72q/tools/): `mkpolarity.sh`, `mkportmap.sh`
+- **arista-7050sx2-72q** — [tools/](../platform/arista-7050sx2-72q/tools/): `mkpolarity.sh`, `mkportmap.sh`, `mkstatusleds.sh`
   Run them once against a switch running the vendor's OS, drop the output
   in [config/](../platform/arista-7050sx2-72q/config/), and it ships in every image you build for that
   board. Full instructions are in that board's README.

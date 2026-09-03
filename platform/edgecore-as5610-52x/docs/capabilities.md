@@ -62,8 +62,8 @@ starts lying.
 | VLANs (user-facing) | 4K | **no** | per-port service VLANs only; no VLAN model |
 | Link aggregation | yes | **no** | no LACP, no static bonds |
 | Storm control / policers | yes | **no** | nothing rate-limits flooding |
-| Per-port LEDs | link, speed, activity | **no** | driven by **microcontroller firmware**, never loaded |
-| System LEDs | PSU1, PSU2, diagnostic, fans, locator | read-only | the two registers are known; their bits are not |
+| Per-port LEDs | link, speed, activity | **yes** | passthrough microcode in the chip's LED processors: dark / green / amber, blinking on traffic. Speed is not shown — this board's chain has two bits per port and both are spent on colour |
+| System LEDs | PSU1, PSU2, diagnostic, fans, locator | read-only | the two registers are known, their bits are not; `platform ledwalk` exists to map them |
 | Fans | 3+1, one PWM, 5-bit | **yes** | tracks the hottest sensor, idles at 10/31 |
 | Temperatures | max6697, 7 sensors | **yes** | `nosaic platform status` |
 | Power supplies | 2, hot-swap | **read** | presence and power-good, active low |

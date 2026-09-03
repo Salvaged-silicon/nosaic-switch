@@ -71,6 +71,20 @@ type Sensors interface {
 	Temperatures() (map[string]int, error)
 }
 
+// Lamps is a board that has chassis health lamps.
+//
+// Optional, and asked for by type assertion rather than added to Cooling: a
+// board with fans and no status lamps is an ordinary switch, not a board with
+// an unimplementable interface. The lamps are driven from here because this is
+// the loop already reading the fans and the sensors every cycle -- rendering
+// health from numbers measured for another purpose is what stops the panel and
+// the cooling from ever disagreeing about how the box is doing.
+type Lamps interface {
+	HealthLamps(fans []platformhal.Fan, hottestC, maxC int, fanErr error) error
+	// LampsUnmanaged marks the panel as no longer being rendered.
+	LampsUnmanaged() error
+}
+
 // Hottest returns the highest sensor reading in whole degrees, or -1 if
 // nothing could be read.
 func Hottest(s Sensors) (int, map[string]int) {
@@ -104,6 +118,12 @@ func Run(ctx context.Context, c platformhal.Cooling, s Sensors, curve Curve, onc
 	}
 
 	defer func() {
+		// Nothing renders health once this returns, so a green status lamp
+		// would be a stale claim rather than a reading. Amber says "not being
+		// managed", which is what is true.
+		if l, ok := c.(Lamps); ok {
+			_ = l.LampsUnmanaged()
+		}
 		fmt.Fprintf(log, "thermal: stopping, setting fans to 100%%\n")
 		if refused, err := c.SetFanPercent(100); err != nil {
 			fmt.Fprintf(log, "thermal: COULD NOT RESTORE FULL COOLING "+
@@ -140,6 +160,17 @@ func Run(ctx context.Context, c platformhal.Cooling, s Sensors, curve Curve, onc
 			fmt.Fprintf(log, "thermal: NO SENSOR READABLE -> %d%%%s\n", cur, note)
 		} else {
 			fmt.Fprintf(log, "thermal: hottest %d°C %v -> %d%%%s\n", hot, temps, cur, note)
+		}
+
+		// The panel, from the same measurements. A lamp that cannot be written
+		// is worth one log line and nothing more: cooling is the job here, and
+		// a switch that stops cooling itself because an LED refused a write
+		// would be a far worse bug than a dark lamp.
+		if l, ok := c.(Lamps); ok {
+			fans, fanErr := c.Fans()
+			if err := l.HealthLamps(fans, hot, curve.MaxC, fanErr); err != nil {
+				fmt.Fprintf(log, "thermal: chassis lamps: %v\n", err)
+			}
 		}
 
 		if once {

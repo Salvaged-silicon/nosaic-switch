@@ -50,6 +50,8 @@ Ordered by how much they matter to a switch being a switch.
 | **sFlow** | yes | none | |
 | **LANZ** | microburst detection | none | Arista software, not a chip feature |
 | **VLANs** | 4096 | one per port | the tap bridge's design, and correct for a router |
+| **Port LEDs** | green, amber, blink | **green / amber** | on the SCD; blink deliberately unused — it would mean traffic, and traffic means a per-port counter sweep every interval |
+| **Chassis lamps** | status, PSU1, PSU2, fan, blue beacon | **yes** | on the StandbyCpld behind the SCD's SMBus; driven from the thermal loop's own measurements |
 
 ## What this list is not
 

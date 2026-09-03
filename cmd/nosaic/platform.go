@@ -25,6 +25,7 @@ const platformUsage = `usage: nosaic platform <command>
   thermal [--once] [--interval N]
                        run the cooling loop: fans track the hottest sensor,
                        fail to full cooling, and are left at full on exit
+  beacon [on|off]      the blue locator, for finding this box in a rack
   schan selftest       prove S-Channel reaches the chip (read-only)
   schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed
@@ -76,6 +77,8 @@ func platformCmd(args []string) error {
 		return thermalCmd(hal, b, rest[1:])
 	case "watchdog":
 		return watchdogCmd(hal, rest[1:])
+	case "beacon":
+		return beaconCmd(hal, rest[1:])
 	}
 	return fmt.Errorf("unknown platform command %q", rest[0])
 }
@@ -210,6 +213,23 @@ func platformStatus(hal platformhal.HAL, b *board.Board) error {
 				state = "present"
 			}
 			fmt.Fprintf(w, "psu %s\t%s\n", n, state)
+		}
+	}
+
+	if l, ok := hal.(interface {
+		LampSummary() (map[string]string, error)
+	}); ok {
+		lamps, err := l.LampSummary()
+		if err != nil && len(lamps) == 0 {
+			fmt.Fprintf(w, "chassis lamps\t— %v\n", err)
+		}
+		names := make([]string, 0, len(lamps))
+		for n := range lamps {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Fprintf(w, "lamp %s\t%s\n", n, lamps[n])
 		}
 	}
 	return w.Flush()
@@ -529,4 +549,35 @@ func setCageTX(hal platformhal.HAL, args []string) error {
 		return fmt.Errorf("%d cage(s) would not change", failed)
 	}
 	return nil
+}
+
+// beaconCmd lights or clears the blue locator.
+//
+// Separate from everything the thermal loop drives, and deliberately so: this
+// is the one lamp an operator sets by hand, to find a box in an aisle. Nothing
+// that renders health is allowed to touch it, or it would go out while
+// somebody was walking towards the rack looking for it.
+func beaconCmd(hal platformhal.HAL, args []string) error {
+	b, ok := hal.(interface {
+		SetBeacon(bool) error
+		BeaconOn() (bool, error)
+	})
+	if !ok {
+		return fmt.Errorf("this board has no locator beacon")
+	}
+	if len(args) == 0 {
+		on, err := b.BeaconOn()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("beacon %s\n", map[bool]string{true: "on", false: "off"}[on])
+		return nil
+	}
+	switch args[0] {
+	case "on":
+		return b.SetBeacon(true)
+	case "off":
+		return b.SetBeacon(false)
+	}
+	return fmt.Errorf("usage: nosaic platform beacon [on|off]")
 }

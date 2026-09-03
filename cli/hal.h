@@ -63,6 +63,15 @@ struct nosaic_hal {
 	int (*fan_floor)(void);
 
 	int (*leds)(char *buf, size_t len);
+
+	/* Light the status-LED register bits one at a time, announcing each, so
+	 * that somebody standing in front of the panel can write down which bit
+	 * drives which lamp. The map for this board does not exist in any vendor
+	 * source, in ONL, or in Cumulus -- every one of them exposes the register
+	 * raw and decodes nothing -- and it cannot be derived from a switch you
+	 * are not looking at. This is how the 7050SX2's map was made, and it took
+	 * one pass. Restores the registers before it returns, including on ^C. */
+	int (*led_walk)(int hold_seconds);
 };
 
 const struct nosaic_hal *nosaic_hal_find(void);

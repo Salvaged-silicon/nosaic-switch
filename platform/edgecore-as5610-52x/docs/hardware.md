@@ -152,8 +152,9 @@ not just the 40G ones.
 
 The LEDs are the opposite of the 7050SX2's arrangement. There the chip's LED
 microprocessors are disabled and the board controller drives the panel through
-memory-mapped registers; here there is microcontroller firmware to load, which
-is the mechanism NOSaic has not implemented on any board.
+memory-mapped registers; here they are the mechanism, and there is microcode to
+load before anything lights. NOSaic does that now -- see
+[Front-panel port LEDs](#front-panel-port-leds-working) below.
 
 ## Sensors, fans and PSUs
 
@@ -174,8 +175,8 @@ on I2C. Fans, PSUs, the front LEDs, reset and the watchdog are all behind it.
 | `0x0d` | fan PWM |
 | `0x10` | reset |
 | `0x11` | interrupt status |
-| `0x13` | `led_sys` |
-| `0x15` | `led_loc` |
+| `0x13` | `led_sys` — PS1, PS2, Diag, Fan (bit map unknown) |
+| `0x15` | `led_loc` — Locator (bit map unknown) |
 
 A live dump, for shape:
 
@@ -183,6 +184,36 @@ A live dump, for shape:
 00: 10 00 02 10 00 07 ea ea 0f 07 aa fa fa 14 00 fa
 10: ff ff 00 6f ff 01 ea ea ea ea ea ea 08 ea ea ea
 ```
+
+### ⚠ Status LEDs: the registers are known, the bits are not
+
+The panel carries five system lamps. What they mean is in the board's own
+installation guide (Table 12):
+
+| lamp | green | amber | off |
+|---|---|---|---|
+| PS1, PS2 | supply operating normally | — | not installed |
+| Diag | self-test passed | a fault was detected | — |
+| Fan | fans normal | a fan failure | — |
+| Loc | — | flashing: identify this unit | — |
+
+**Which bit drives which lamp is not recorded anywhere.** Cumulus's CPLD driver,
+ONL's platform library and Accton's own header all expose `0x13` and `0x15` raw
+and decode neither; nothing in any of them ever writes a policy to them. Both
+registers take all eight bits and read them back, so the read-back trick that
+mapped the 7050SX2's port LEDs -- write `0xff`, see which bits exist -- answers
+nothing here. Every bit exists.
+
+The only remaining instrument is somebody looking at the panel, which is exactly
+how the 7050SX2's map was made. `nosaic platform ledwalk [seconds]` is that
+instrument: it lights one bit at a time, says what it just lit, holds it long
+enough to write down, and restores both registers on the way out including on
+^C. One pass produces the map. Until then `nosaic platform status` reports the
+two registers as hex and does not offer to write them, because a status lamp
+that is wrong is worse than one that is dark.
+
+On the running unit they read `sys 0x6f`, `loc 0x01`, which is the power-on
+state -- nothing in NOSaic has ever written them.
 
 ### PSUs: active-low, and PSU1 is in the higher register
 
@@ -374,15 +405,106 @@ information is reachable now.
 Worth stating because the mux tree looks like it should own them. It does not.
 
 - **Front-panel port LEDs** come from the BCM56846's two LED microprocessors
-  (LEDUP0, LEDUP1) running microcode, driven by the datapath daemon. EdgeNOS
-  loads a passthrough microcode and writes link state itself, having found the
-  fully-autonomous path lit the wrong ports: the chip-side link bits its
-  hardware scan reads are seeded stale at init, and making it correct needs a
-  board `PORT_ORDER_REMAP` only obtainable from a live Cumulus capture.
+  (LEDUP0, LEDUP1) running microcode, driven by the datapath daemon.
 - **System and locator LEDs** are CPLD registers `0x13` and `0x15`.
 
 So the LED work on this board is datapath work plus two CPLD registers, and
 none of it goes through I2C.
+
+## Front-panel port LEDs (working)
+
+`datapath/tdp/led.c`, verified on the running unit 2026-09-03.
+
+The chip comes out of reset with **both LED processors halted** (`CTRL` bit 0
+clear, reading `0xb2`/`0xf2`) and their program RAM holding whatever it powered
+up with. Nothing lights the panel unless the daemon does.
+
+| | `CTRL` | data RAM | program RAM |
+|---|---|---|---|
+| LEDUP0 | `0x1000` | `0x1400` | `0x1800` |
+| LEDUP1 | `0x2000` | `0x2400` | `0x2800` |
+
+Both RAMs are byte-wide, one byte per 32-bit word, so an index steps by four.
+Everything is far below the 256 KB BAR0 and is reached through the ordinary
+mapping -- no window register is involved. That is worth stating because the
+kernel BDE this was first written against routed offsets at or above `0x1000`
+through a PAXB sub-window, and there is no equivalent here.
+
+**Software-driven, not autonomous.** The chip can scan its own MAC status into
+the LED chain, and EdgeNOS tried that first: it lit more ports than had carrier,
+in the wrong places, because the link bits the scan reads are seeded stale at
+init. Making that path correct needs a board `PORT_ORDER_REMAP` obtainable only
+from a live capture of the vendor OS. So a 52-byte passthrough microcode shifts
+64 chain bits straight out of data RAM `0xA0..0xA7`, and the daemon writes those
+bits from link state it asks the SDK for. Slower to react by up to a second,
+and impossible to fool with a remap nobody has.
+
+Each panel port owns two adjacent chain bits, amber then green. The port ->
+(processor, bit) map is neither monotonic nor the SDK's numbering -- port 1 is on
+LEDUP1 at bit 34 while port 9 is on LEDUP0 at bit 2 -- because it follows how
+the board wires the serial chain through the cages. It is in `led.c`, from
+Cumulus's `accton.py` by way of EdgeNOS, and was confirmed on this board by
+lighting one bit at a time and reading back which port lit.
+
+Colours match what the 7050SX2 shows, so a panel reads the same on either
+switch: **dark** no link, **green** link and forwarding, **amber** link but not
+forwarding. Getting amber right needs care here -- `bcm_port_stp_get` answers
+for the *default* spanning-tree group, and every front-panel port on this board
+lives in a per-port service VLAN with an STG of its own, so the forwarding state
+comes from `bcm_vlan_stg_get` then `bcm_stg_stp_get`.
+
+### Blink means traffic, and the two rates are not the same number
+
+A solid lamp cannot tell a port carrying line rate from one carrying nothing,
+and that difference is usually the thing being diagnosed. EdgeNOS blinked on
+this board; anyone who has used it will expect the same.
+
+Knowing whether traffic moved means reading the chip's own per-port counters.
+The tap counters this daemon already keeps will not do: hardware-forwarded
+frames never reach the CPU, so a port at line rate would look idle -- worse than
+not blinking at all.
+
+So rendering and sampling run at different rates. The panel is redrawn at 10 Hz,
+which is fast enough for a blink to read as activity rather than as a slow
+flash; the counters are sampled once a second, and only for ports that have
+link, which on any real switch is a small fraction of the panel.
+
+**Use `bcm_stat_sync_multi_get`, not `bcm_stat_get`.** The latter returns the
+SDK's accumulated value, refreshed on the SDK's schedule rather than ours, so a
+sample can land between refreshes and report a busy port as idle. Measured: a
+continuous 20 pps ping read "no activity" in the middle of the stream. The sync
+variant forces the update and the multi form does it once for all four counters
+instead of four times. Four counters rather than one because unicast alone
+misses a port whose only traffic is broadcast or multicast -- a link that has
+just come up and is doing nothing but ARP and hellos, which is exactly when
+somebody is staring at the panel asking whether the cable works.
+
+A short hold keeps the lamp blinking for a couple of samples after the last
+frame. Without it, bursty traffic -- which is most traffic -- gives a lamp that
+stutters once a second, and that reads as a fault rather than as use. Verified:
+thirty seconds of continuous traffic produced no activity transition at all, and
+the blink stopped when the traffic did.
+
+### ⚠ Do not read the chain RAM back
+
+The LED processor reads data RAM `0xA0..0xA7` continuously, and **a host read of
+those bytes while it is running does not reliably return what was last
+written**.
+
+This cost real time. The first version diffed the chain against a read-back
+before writing -- correct on the 7050SX2, where the lamps are plain registers
+other software can scribble on -- and the panel appeared to flap once a second
+on ports 1, 2 and 4 while 6, 7 and 8 sat steady. The instrumented build settled
+it: the SDK reported **no link change at all**, and the chip was holding `0x18`
+in a byte the daemon had written `0x02` to and had not touched since. `0x18` is
+not a value the writer can even produce -- it has both of one port's bits set.
+The diff was reacting to something nothing had written.
+
+Reads of `CTRL` are fine, and are still used to notice a halted processor: it is
+an ordinary register rather than RAM the microcode is walking, and it reads
+`0xb3`/`0xf3` identically across as many samples as anyone cares to take. The
+chain is simply written in full every pass. Sixteen writes a second is not a
+cost worth measuring against getting the panel wrong.
 
 ### Temperatures
 

@@ -32,6 +32,8 @@ static const char usage[] =
 "usage: nosaic platform <command>\n"
 "\n"
 "  status               what the board reports about itself\n"
+"  ledwalk [seconds]    light the status-LED bits one at a time so the panel\n"
+"                       can be mapped; restores the registers when done\n"
 "  thermal [--once] [--interval N]\n"
 "                       run the cooling loop: fans track the hottest sensor,\n"
 "                       fail to full cooling, and are left at full on exit\n"
@@ -254,6 +256,13 @@ int main(int argc, char **argv)
 
 	if (strcmp(argv[2], "status") == 0)
 		return cmd_status();
+	if (strcmp(argv[2], "ledwalk") == 0) {
+		int hold = argc > 3 ? atoi(argv[3]) : 3;
+
+		if (hal->led_walk == NULL)
+			return unsupported("this board has no status-LED walk");
+		return hal->led_walk(hold) == 0 ? 0 : 1;
+	}
 	if (strcmp(argv[2], "thermal") == 0)
 		return cmd_thermal(argc - 3, argv + 3);
 

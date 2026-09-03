@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define CPLD_BASE 0xea000000UL
 
@@ -259,6 +260,107 @@ static int as5610_leds(char *buf, size_t len)
 	return 0;
 }
 
+
+/*
+ * The status lamps: PS1, PS2, Diag, Fan and Loc, per the board's installation
+ * guide -- green for healthy, amber for a fault, and the locator flashes amber
+ * when somebody has asked the switch to identify itself.
+ *
+ * WHICH BIT DRIVES WHICH LAMP IS NOT KNOWN, and it is not knowable from here.
+ * Both registers take all eight bits and read them back, so the read-back trick
+ * that mapped the 7050SX2's port LEDs -- write 0xffffffff, see which bits
+ * exist -- answers nothing on this part: every bit exists. Cumulus's CPLD
+ * driver, ONL's platform library and Accton's own header all expose these two
+ * registers raw and decode neither. The only remaining instrument is a person
+ * looking at the panel.
+ *
+ * So this is that instrument. It lights one bit at a time, says what it just
+ * lit, and holds it long enough to be written down. One pass produces the map,
+ * and the map turns as5610_leds() from a hex dump into a health lamp.
+ */
+static unsigned char walk_saved_sys, walk_saved_loc;
+static int walk_saving;
+
+static void walk_restore(void)
+{
+	if (!walk_saving)
+		return;
+	walk_saving = 0;
+	reg_write(REG_LED_SYS, walk_saved_sys);
+	reg_write(REG_LED_LOC, walk_saved_loc);
+}
+
+static void walk_signal(int sig)
+{
+	walk_restore();
+	_exit(128 + sig);
+}
+
+static int as5610_led_walk(int hold)
+{
+	static const struct { unsigned reg; const char *name; } regs[] = {
+		{ REG_LED_SYS, "0x13 sys (PS1, PS2, Diag, Fan)" },
+		{ REG_LED_LOC, "0x15 loc (Locator)" },
+	};
+	int s = reg_read(REG_LED_SYS), l = reg_read(REG_LED_LOC);
+	unsigned r;
+	int bit;
+
+	if (s < 0 || l < 0) {
+		fprintf(stderr, "nosaic: cannot read the LED registers\n");
+		return -1;
+	}
+	if (hold <= 0)
+		hold = 3;
+
+	/* Saved before the first write and restored however this ends. Leaving a
+	 * panel mid-walk would be worse than not running it: the next person to
+	 * look at this switch would read a diagnostic pattern as a fault. */
+	walk_saved_sys = (unsigned char)s;
+	walk_saved_loc = (unsigned char)l;
+	walk_saving = 1;
+	atexit(walk_restore);
+	signal(SIGINT, walk_signal);
+	signal(SIGTERM, walk_signal);
+
+	printf("Walking the AS5610 status-LED bits. Watch the panel and note what\n"
+	       "each step lights. Saved: sys=%#04x loc=%#04x -- restored at the end.\n"
+	       "Lamps are PS1, PS2, Diag, Fan (all on 0x13) and Loc (on 0x15).\n\n",
+	       s, l);
+
+	for (r = 0; r < sizeof(regs) / sizeof(regs[0]); r++) {
+		printf("-- register %s\n", regs[r].name);
+
+		printf("   all bits clear (0x00)\n");
+		fflush(stdout);
+		reg_write(regs[r].reg, 0x00);
+		sleep((unsigned)hold);
+
+		for (bit = 0; bit < 8; bit++) {
+			printf("   bit %d only (%#04x)\n", bit, 1u << bit);
+			fflush(stdout);
+			reg_write(regs[r].reg, (unsigned char)(1u << bit));
+			sleep((unsigned)hold);
+		}
+
+		printf("   all bits set (0xff)\n");
+		fflush(stdout);
+		reg_write(regs[r].reg, 0xff);
+		sleep((unsigned)hold);
+
+		/* This register back to where it was before moving to the next, so
+		 * only one register is ever disturbed at a time and there is no
+		 * ambiguity about which one lit something. */
+		reg_write(regs[r].reg, r == 0 ? walk_saved_sys : walk_saved_loc);
+	}
+
+	walk_restore();
+	printf("\nRestored. Put what you saw in platform/edgecore-as5610-52x/docs/hardware.md\n"
+	       "and this board can render health on its status lamps the way the\n"
+	       "7050SX2 already does.\n");
+	return 0;
+}
+
 const struct nosaic_hal nosaic_hal_as5610 = {
 	.name      = "as5610-cpld",
 	.probe     = as5610_probe,
@@ -269,6 +371,7 @@ const struct nosaic_hal nosaic_hal_as5610 = {
 	.fan_set   = as5610_fan_set,
 	.fan_floor = as5610_fan_floor,
 	.leds      = as5610_leds,
+	.led_walk  = as5610_led_walk,
 };
 
 static const struct nosaic_hal *all[] = { &nosaic_hal_as5610, NULL };
