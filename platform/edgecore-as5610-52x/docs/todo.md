@@ -945,6 +945,44 @@ are marked *(shared)*.
   partition nothing reads. A board that cannot read its own MAC gets a random
   one that changes every boot -- fine for a RAM boot, not fine installed.
 
+### The 40G ports link but do not punt
+
+Fixed and unfixed in the same session. The cages now come out of reset and all
+three 40G ports carry link -- swp49 to the Nexus, swp51 to the 7050SX2, swp52 to
+the 7050TX-64 -- and the panel lights them. **They form no OSPF adjacency**,
+while every 10G port does.
+
+What is established:
+
+- The ports receive on the wire. `in-nuc` climbs steadily on all three, with no
+  discards and no errors, so hellos from the far end reach the MAC.
+- We transmit on them: `out-nuc` climbs, and the far end agrees the link is up
+  (7050SX2 `et54 link=1`).
+- **Nothing is punted to Linux from them.** `rx_packets` on the swp49/51/52 taps
+  stays at exactly 0 while swp8's climbs.
+- Their VLAN state reads back identical in shape to a working port:
+  `vid 3349 members 0 49 untagged 49 cpu-member=1`.
+
+Two explanations were tried on the hardware and **both were wrong**, which is
+worth recording so nobody spends the time again. The punt header's `src_port`
+was assumed to carry the physical rather than the logical port on a 40G port;
+matching the SDK's logical-to-physical value (swp51 -> 61) changed nothing, and
+translating the incoming number back through `port_p2l_mapping` changed nothing
+either. Both were reverted rather than left in as speculative matching that
+could mis-deliver a frame.
+
+The `punted frame(s) matched no tap` counter is a **red herring** here. Its
+frames come from `src_port 17`, which `p2l` resolves to logical 22 -- a port
+with no tap. Every front-panel port gets a service VLAN with the CPU in it, so
+untapped ports punt their broadcast traffic and it is correctly discarded. That
+counter climbing says nothing about the 40G ports.
+
+So the question is narrower than it looked: why does a port whose VLAN contains
+the CPU, and which is demonstrably receiving, punt nothing? The next thing to
+look at is whether the 40G port is in the VLAN's ingress bitmap in hardware
+rather than in the SDK's view of it, and whether Trident+ needs anything
+per-port for a multi-lane port to punt at all.
+
 ### Operating it
 
 - **Install to flash.** Everything so far is a TFTP RAM boot that writes

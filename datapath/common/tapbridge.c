@@ -72,6 +72,7 @@
 #include <unistd.h>
 
 #include <sal/types.h>
+#include <soc/drv.h>
 #include <bcm/error.h>
 #include <bcm/pkt.h>
 #include <bcm/rx.h>
@@ -95,6 +96,13 @@ struct tap {
 	char          name[IFNAMSIZ];
 	int           fd;
 	bcm_port_t    port;
+	/*
+	 * The physical port the chip reports when it punts a frame from this
+	 * one. On a 10G port it is the logical port; on a 40G port it is not,
+	 * and matching only the logical number silently drops everything the
+	 * far end sends -- see tap_rx.
+	 */
+	bcm_port_t    phys;
 	int           vlan;
 	int           mtu;
 	unsigned char mac[6];
@@ -126,6 +134,24 @@ static bcm_pkt_t *tx_pkt;   /* allocated once; see the header comment */
 /* Punted frames whose source port matches no tap. See tap_rx. */
 static unsigned long rx_unmatched;
 static int           rx_unmatched_logged;
+
+/*
+ * The logical port a punted frame came from, given whatever the punt header
+ * carried.
+ *
+ * Out-of-range and unmapped values come back unchanged rather than as an error:
+ * the caller compares the result, and a number that maps to nothing simply
+ * matches nothing.
+ */
+static bcm_port_t punt_logical(bcm_port_t src)
+{
+	int l;
+
+	if (src < 0 || src >= SOC_MAX_NUM_PORTS)
+		return src;
+	l = SOC_INFO(tap_unit).port_p2l_mapping[src];
+	return l >= 0 ? (bcm_port_t)l : src;
+}
 
 static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 {
@@ -178,8 +204,9 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 	rx_unmatched++;
 	if (rx_unmatched_logged < 8) {
 		rx_unmatched_logged++;
-		printf("tap: punted frame from src_port %d matches no tap "
-		       "(taps are on ports", pkt->src_port);
+		printf("tap: punted frame from src_port %d (p2l %d) matches no "
+		       "tap (taps are on ports", pkt->src_port,
+		       punt_logical(pkt->src_port));
 		for (i = 0; i < ntaps; i++)
 			printf(" %d", taps[i].port);
 		printf(")\n");
@@ -289,6 +316,16 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 	snprintf(t->name, sizeof(t->name), "%s", name);
 	t->fd = fd;
 	t->port = port;
+	/*
+	 * Asked for, not assumed. The SDK keeps the logical-to-physical map the
+	 * chip's punt header is written against; on a 10G port the two numbers
+	 * are the same and this costs nothing, and on a 40G port it is the
+	 * difference between receiving and not.
+	 */
+	t->phys = SOC_INFO(tap_unit).port_l2p_mapping[port];
+	if (t->phys != port)
+		printf("tap: %s is logical port %d, physical port %d\n",
+		       name, port, t->phys);
 	return 0;
 }
 
