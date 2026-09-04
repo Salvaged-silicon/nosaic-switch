@@ -183,8 +183,43 @@ retimers() {
 	log "$n retimers programmed"
 }
 
+# Wait for the QSFP modules before programming the retimers.
+#
+# A module may take up to two seconds after RESET_L is deasserted before it
+# answers, and it is not driving the lanes until it does -- so a retimer
+# programmed before then locks its CDR against silence. That is not a
+# hypothesis: with no wait here, swp49 and swp52 came up and swp51 did not, and
+# re-running this script by hand afterwards brought swp51 straight up. The
+# difference between the three is trace and fibre length, so the marginal one is
+# the one that loses the race.
+#
+# Polls rather than sleeping a fixed time: a module that answers early costs
+# nothing, and one that never answers is a cage with nothing in it, which must
+# not add a delay to every boot.
+qsfp_settle() {
+	n=0
+	while [ $n -lt 20 ]; do
+		found=0
+		for d in /sys/bus/i2c/devices/*-0027; do
+			[ -e "$d" ] || continue
+			case "$(cat "$d/of_node/label" 2>/dev/null)" in
+				qsfp_rx_eq_*) ;;
+				*) continue ;;
+			esac
+			bus=${d##*/}; bus=${bus%%-*}
+			i2cget -f -y "$bus" 0x50 0x00 >/dev/null 2>&1 && found=$((found + 1))
+		done
+		[ "$found" -gt 0 ] && { log "$found QSFP module(s) ready after ${n}00ms"; return 0; }
+		n=$((n + 1))
+		usleep 100000 2>/dev/null || sleep 1
+	done
+	log "no QSFP module answered; cages may be empty"
+	return 0
+}
+
 sfp_tx_enable
 qsfp_control
 qsfp_power
+qsfp_settle
 retimers
 log "front panel initialised"
