@@ -36,7 +36,7 @@ A board is described by three orthogonal axes plus a profile:
 |------|-----------------|
 | **arch** | The CPU — toolchain, ABI, kernel architecture |
 | **asic** | The switch silicon — which `nosd` provider is installed |
-| **boot** | The bootloader — installer envelope and A/B slot control |
+| **boot** | The bootloader — the installer envelope only; slots are the initramfs's job |
 | **profile** | `full` / `slim` / `minimal` — package set and init system |
 
 Board directories are the source of truth. The catalog is derived by scanning them, so
