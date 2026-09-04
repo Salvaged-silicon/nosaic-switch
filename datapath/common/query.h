@@ -17,4 +17,10 @@
  */
 int nosaic_query_start(int unit, const char *path);
 
+/* What this provider calls itself in `show caps`. Set per datapath so an
+ * operator can tell which silicon answered without knowing the board. */
+#ifndef NOSAIC_QUERY_DRIVER
+#define NOSAIC_QUERY_DRIVER "bcm"
+#endif
+
 #endif

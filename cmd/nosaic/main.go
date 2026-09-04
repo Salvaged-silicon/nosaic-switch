@@ -166,6 +166,16 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "verify":
+		// The same verb as the C CLI, so an operator moving between a
+		// PowerPC switch and an x86 one types the same thing. What it can
+		// answer here is smaller for now -- it reports the datapath's view
+		// and says so -- but the name means one thing everywhere.
+		if err := verifyCmd(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "show", "interface", "route":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
@@ -937,4 +947,24 @@ func configCmd(args []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown config command %q", sub)
+}
+
+// verifyCmd compares what the datapath holds with what Linux believes.
+//
+// The full comparison lives in the C CLI today, which is the one that runs on
+// the board where it was needed. This exists so the verb means the same thing
+// on both, and so the gap is stated rather than discovered: a command that is
+// missing on one switch and present on another is the divergence the single
+// CLI exists to prevent.
+func verifyCmd(args []string) error {
+	what := ""
+	if len(args) > 0 {
+		what = args[0]
+	}
+	switch what {
+	case "ports", "routes":
+		return fmt.Errorf("`verify %s` is implemented in the C CLI and not yet "+
+			"here; `nosaic show %s` reports the datapath's own view", what, what)
+	}
+	return fmt.Errorf("usage: nosaic verify <ports|routes>")
 }

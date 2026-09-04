@@ -297,6 +297,36 @@ disk-installed image rather than a RAM-boot SWI, which flash has room for at
 about 1.1 GB free. Configuration is no longer the reason to do it, but upgrades
 still are.
 
+### ~~The NOSaic CLI has never been run against silicon~~ — M6's gate is met
+
+`nosaic show ports` and `nosaic show caps` now run against Trident2+ and return
+the chip's own answers -- `driver td2p`, and et1/et2 at 10000 with et53/et54 at
+40000, read back from the hardware rather than from configuration. The same
+commands, unmodified, that the CI datapath test runs against veth.
+
+That is the M6 gate, and it was the part of it still open: the board booted,
+the HAL reported real sensors and traffic forwarded months ago, but the daemon
+did not serve the socket, so the claim that the abstraction survives contact
+with real silicon had never actually been tested. The comment at the top of
+`datapath/td2p/main.c` still said the daemon "does not yet attach the device or
+serve the socket. Nothing here has run on hardware" while the board was running
+it -- which is the kind of stale comment nobody re-checks, because a note saying
+something does not work yet is not something anyone doubts.
+
+Two things came out of doing it. The protocol documented itself as "one request
+and one response per connection" and the CLI does not work that way -- it dials
+once and sends every call down the same socket -- so a server that answers one
+and closes gets the first call right and breaks the second with a write error
+that reads as a network fault. The comment is corrected and the server
+multiplexes.
+
+And `show ports` briefly meant two different things on the two boards. It is a
+contract command, so it means the ports as the datapath reports them, on every
+switch; the Linux-against-the-chip comparison is a different question and now
+has its own verb, `verify`. A command that means one thing here and another
+there would be found by an operator moving between two switches, which is the
+worst possible place to find it.
+
 ### Operating it
 
 - **A/B slots, trial boot and rollback** — its own section, and this is the

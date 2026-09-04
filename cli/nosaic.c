@@ -40,9 +40,9 @@ static const char usage[] =
 "  config unset <name>     remove it; the image's default applies again\n"
 "  config files            which files are layered, in order\n"
 "\n"
-"  show ports              what Linux believes and what the chip actually\n"
+"  verify ports            what Linux believes and what the chip actually\n"
 "                          holds, side by side, and where they differ\n"
-"  show routes             the kernel's routing table against the chip's\n"
+"  verify routes           the kernel's routing table against the chip's\n"
 "                          forwarding table\n"
 "\n"
 "usage: nosaic platform <command>\n"
@@ -347,12 +347,31 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[1], "config") == 0)
 		return cmd_config(argc, argv);
-	if (strcmp(argv[1], "show") == 0) {
+	/*
+	 * `verify`, not `show`.
+	 *
+	 * `show ports` is a contract command and means the same thing on every
+	 * switch: the ports, as the datapath reports them. Having it mean
+	 * "compare Linux against the chip" on one board and something else on
+	 * another is exactly the divergence the single CLI exists to prevent --
+	 * and it would be found by an operator moving between two switches, which
+	 * is the worst place to find it.
+	 *
+	 * The comparison is a different question, so it gets a different verb.
+	 */
+	if (strcmp(argv[1], "verify") == 0) {
 		if (argc > 2 && strcmp(argv[2], "ports") == 0)
 			return nosaic_asic_ports();
 		if (argc > 2 && strcmp(argv[2], "routes") == 0)
 			return nosaic_asic_routes();
-		fprintf(stderr, "usage: nosaic show <ports|routes>\n");
+		fprintf(stderr, "usage: nosaic verify <ports|routes>\n");
+		return 2;
+	}
+	if (strcmp(argv[1], "show") == 0) {
+		fprintf(stderr,
+			"nosaic: `show` needs the datapath client, which this build "
+			"does not carry.\nTry `nosaic verify ports` -- what Linux "
+			"believes against what the chip holds.\n");
 		return 2;
 	}
 	if (strcmp(argv[1], "platform") != 0) {

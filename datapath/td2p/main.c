@@ -8,8 +8,13 @@
  * Unix socket as every other provider, so the CLI, the config model and the
  * HAL above it do not know which chip is answering.
  *
- * STATE: bring-up. This links the SDK and reports what it found; it does not
- * yet attach the device or serve the socket. Nothing here has run on hardware.
+ * STATE: running on hardware. It attaches the chip, brings the ports up,
+ * bridges them to Linux, mirrors the routing table and serves the socket.
+ *
+ * The line above used to say it did none of that and had never run on a
+ * switch, which stayed there long after it stopped being true -- and was
+ * believed, because a comment saying "this does not work yet" is not something
+ * anyone re-checks.
  */
 #include <time.h>
 #include <stdio.h>
@@ -23,6 +28,7 @@
 #include "sdk.h"
 #include "l3sync.h"
 #include "led.h"
+#include "query.h"
 #include "tapbridge.h"
 
 /* Runs once a second from the pump, whether or not there is traffic. */
@@ -475,6 +481,17 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 		/* The front panel. Not fatal if it fails: a switch with a dark
 		 * panel still forwards, and a board with no SCD has no panel. */
 		nosaic_led_start(unit);
+
+		/*
+		 * The socket, so the CLI can ask this chip what it holds.
+		 *
+		 * Same server and same protocol as nosd-tdp: the whole point of
+		 * the contract is that `nosaic show ports` does not know which
+		 * silicon is answering. Serving it here is what lets the CLI test
+		 * run against this board unmodified, which is the gate this board
+		 * was chosen to prove.
+		 */
+		nosaic_query_start(unit, NOSAIC_QUERY_SOCKET);
 
 		printf("nosd: the datapath is up on unit %d\n", unit);
 		fflush(stdout);

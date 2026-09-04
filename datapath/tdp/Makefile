@@ -34,7 +34,7 @@ ifeq ($(wildcard $(SDK_DEFINES_FILE)),)
 $(error $(SDK_DEFINES_FILE) is missing. It is produced by the openbcm package; build that first. Guessing these defines is not a workable fallback -- a wrong set compiles, links, runs and corrupts every struct the SDK shares with us.)
 endif
 CFLAGS  += $(shell cat $(SDK_DEFINES_FILE))
-CFLAGS  += -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
+CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"tdp\" -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
 # Intercept the SAL's sleep. The SDK busy-waits for anything under 20 ms, which

@@ -58,13 +58,13 @@ build that first. Guessing these defines is not a workable fallback -- a wrong \
 set compiles, links, runs and corrupts every struct the SDK shares with us.)
 endif
 CFLAGS  += $(shell cat $(SDK_DEFINES_FILE))
-CFLAGS  += -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
+CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"td2p\" -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
 # The SDK is a set of static archives with circular references between them,
 # so they go inside --start-group; listing them once in dependency order is a
 # problem nobody has solved and does not need solving.
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
-OBJS    += sdk.o ../common/tapbridge.o ../common/l3sync.o led.o
+OBJS    += sdk.o ../common/tapbridge.o ../common/l3sync.o ../common/query.o led.o
 endif
 
 nosd-td2p: $(OBJS)

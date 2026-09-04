@@ -17,10 +17,10 @@
  * This serves the chip's own answers on a socket, read-only, so the CLI can
  * put them beside what Linux believes and say where the two differ.
  *
- * The protocol is the one internal/nosd/proto defines: one newline-delimited
- * JSON request, one newline-delimited JSON response, one exchange per
- * connection. Deliberately dull -- it has to be debuggable with the tools in a
- * minimal image, and `nc -U /run/nosd.sock` has to work.
+ * The protocol is the one internal/nosd/proto defines: newline-delimited JSON,
+ * one response per request, as many requests per connection as the client
+ * cares to send. Deliberately dull -- it has to be debuggable with the tools in
+ * a minimal image, and `nc -U /run/nosd.sock` has to work.
  */
 #include <errno.h>
 #include <pthread.h>
@@ -170,6 +170,100 @@ static void handle(FILE *out, const char *req)
 		fprintf(out, "]}\n");
 		return;
 	}
+	/*
+	 * The contract's own operations, so the CLI runs against this chip
+	 * unmodified.
+	 *
+	 * asic.ports below reports what the chip holds and is a diagnostic; these
+	 * are switchapi, and the point of them is that `nosaic show ports` cannot
+	 * tell which silicon answered. That is the claim the whole abstraction
+	 * rests on, and it is only worth anything if the same command works here
+	 * and on the virtual platform without editing it.
+	 */
+	if (strstr(req, "\"capabilities\"") != NULL) {
+		bcm_l3_info_t info;
+		int maxv4 = 0;
+
+		bcm_l3_info_t_init(&info);
+		if (bcm_l3_info(query_unit, &info) == BCM_E_NONE)
+			maxv4 = info.l3info_max_route;
+
+		fprintf(out,
+			"{\"ok\":true,\"result\":{\"Contract\":\"1\","
+			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
+			"\"MaxVLANs\":4094,\"L2Learning\":true,\"L3\":true,"
+			"\"MaxV4\":%d}}\n",
+			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4);
+		return;
+	}
+
+	if (strstr(req, "\"ports\"") != NULL &&
+	    strstr(req, "\"asic.ports\"") == NULL) {
+		int i;
+
+		fprintf(out, "{\"ok\":true,\"result\":[");
+		for (i = 0; i < nosaic_tap_count(); i++) {
+			const char *name = NULL;
+			unsigned char mac[6];
+			int port = 0, vlan = 0, mtu = 0;
+
+			if (nosaic_tap_info(i, &name, &port, &vlan, &mtu, mac) != 0)
+				continue;
+			fprintf(out, "%s{\"Name\":\"%s\",\"Index\":%d}",
+				i ? "," : "", name, port);
+		}
+		fprintf(out, "]}\n");
+		return;
+	}
+
+	if (strstr(req, "\"port.status\"") != NULL) {
+		const char *p = strstr(req, "\"name\":\"");
+		char want[32];
+		int i;
+
+		want[0] = '\0';
+		if (p != NULL) {
+			const char *e;
+
+			p += strlen("\"name\":\"");
+			e = strchr(p, '"');
+			if (e != NULL && (size_t)(e - p) < sizeof(want)) {
+				memcpy(want, p, (size_t)(e - p));
+				want[e - p] = '\0';
+			}
+		}
+		for (i = 0; i < nosaic_tap_count(); i++) {
+			const char *name = NULL;
+			unsigned char mac[6];
+			int port = 0, vlan = 0, mtu = 0;
+			int link = 0, ena = 0, speed = 0, fmax = 0;
+
+			if (nosaic_tap_info(i, &name, &port, &vlan, &mtu, mac) != 0)
+				continue;
+			if (strcmp(name, want) != 0)
+				continue;
+
+			if (bcm_port_link_status_get(query_unit, port, &link) != BCM_E_NONE)
+				link = 0;
+			if (bcm_port_enable_get(query_unit, port, &ena) != BCM_E_NONE)
+				ena = 0;
+			if (bcm_port_speed_get(query_unit, port, &speed) != BCM_E_NONE)
+				speed = 0;
+			if (bcm_port_frame_max_get(query_unit, port, &fmax) != BCM_E_NONE)
+				fmax = 0;
+
+			fprintf(out,
+				"{\"ok\":true,\"result\":{\"Name\":\"%s\","
+				"\"AdminUp\":%s,\"OperUp\":%s,\"SpeedMbps\":%d,"
+				"\"FullDuplex\":true,\"MTU\":%d}}\n",
+				name, ena ? "true" : "false", link ? "true" : "false",
+				speed, mtu ? mtu : fmax);
+			return;
+		}
+		fprintf(out, "{\"ok\":false,\"error\":\"no such port\"}\n");
+		return;
+	}
+
 	if (strstr(req, "\"l3.routes\"") != NULL) {
 		struct route_dump d;
 		int rv;
@@ -201,8 +295,8 @@ static void handle(FILE *out, const char *req)
 		return;
 	}
 	fprintf(out,
-		"{\"ok\":false,\"error\":\"this datapath serves asic.ports and "
-		"l3.routes\"}\n");
+		"{\"ok\":false,\"error\":\"unsupported operation\","
+		"\"unsupported\":true}\n");
 }
 
 static void *serve(void *arg)
@@ -224,9 +318,21 @@ static void *serve(void *arg)
 			close(c);
 			continue;
 		}
-		if (fgets(line, sizeof(line), f) != NULL)
+		/*
+		 * MANY requests per connection, until the client hangs up.
+		 *
+		 * The protocol was described as one exchange per connection, and
+		 * the CLI does not work that way: it dials once and issues every
+		 * call down the same socket -- `show ports` asks for the port list
+		 * and then a status per port. A server that answers once and
+		 * closes gets the first call right and breaks the second with
+		 * "write: broken pipe", which reads as a network fault rather than
+		 * as a protocol disagreement.
+		 */
+		while (fgets(line, sizeof(line), f) != NULL) {
 			handle(f, line);
-		fflush(f);
+			fflush(f);
+		}
 		fclose(f);
 	}
 	close(fd);

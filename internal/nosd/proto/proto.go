@@ -1,7 +1,11 @@
 // Package proto is the wire protocol between the nosaic CLI and nosd.
 //
-// One request and one response per connection, newline-delimited JSON over a
-// Unix socket. Deliberately dull: this runs on switches with slow CPUs and
+// Newline-delimited JSON over a Unix socket: one response per request, and as
+// many requests per connection as the client sends. The CLI dials once and
+// issues every call down the same socket, so a server that answers one and
+// closes breaks the second call with a write error that looks like a network
+// fault. This said "one request and one response per connection", which is what
+// a second implementation of it then got wrong. Deliberately dull: this runs on switches with slow CPUs and
 // small memories, it has to be debuggable with the tools present in a minimal
 // image, and a protocol you can read with cat is worth more here than one that
 // is fast.
