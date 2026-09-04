@@ -134,10 +134,50 @@ fi
 # stateless rather than sitting in an initramfs shell in a rack somewhere.
 # The slot pointer, on its own journal-less filesystem. Read before anything
 # else, because it decides what gets mounted.
+# Some boards have no partition of ours to use, and cannot be given one. The
+# bootloader owns the only filesystem on the disk -- Aboot's FAT on an Arista,
+# fully allocated, where making room would mean cutting into the vendor image
+# that is the box's way back. There the slots and the persistent partition are
+# files on that filesystem, loop-mounted.
+#
+# This is the vendor's own boot path on such a board rather than a workaround
+# for it: EOS loop-mounts its root filesystem out of a file on this same FAT,
+# and has since 2017. Where we differ is deliberate -- EOS keeps its writable
+# layer in tmpfs, and ours has to be an ext4 image, because a per-slot overlay
+# that does not survive a reboot makes a rollback meaningless.
+FLASH=""
+mount_flash() {
+    [ -n "$FLASH" ] && return 0
+    # Already mounted, by an earlier call in a subshell.
+    #
+    # slotdev() is invoked as "$(slotdev ...)", so a mount it makes persists in
+    # the namespace while the FLASH it assigned is discarded with the subshell.
+    # Without this check the second call -- which is the rollback path -- tried
+    # to mount an already-mounted device, failed, and reported no slot file on
+    # a board whose slot file was sitting right there.
+    if grep -q " /mnt/flash " /proc/mounts 2>/dev/null; then
+        FLASH=/mnt/flash
+        return 0
+    fi
+    for _d in /dev/mmcblk0p1 /dev/sda1 /dev/vda1; do
+        [ -b "$_d" ] || continue
+        mkdir -p /mnt/flash
+        mount -t vfat "$_d" /mnt/flash 2>/dev/null || continue
+        FLASH=/mnt/flash
+        return 0
+    done
+    return 1
+}
+
 PERSIST=no
 DATA="$(findfs LABEL=nosaic-data 2>/dev/null || echo /dev/vda4)"
 if mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
     echo "NOSAIC-INITRAMFS data partition mounted ($DATA)"
+    mkdir -p /mnt/data/config /mnt/data/secrets
+    PERSIST=yes
+elif mount_flash && [ -f "$FLASH/nosaic-data.img" ] \
+     && mount -o loop "$FLASH/nosaic-data.img" /mnt/data 2>/dev/null; then
+    echo "NOSAIC-INITRAMFS data image mounted ($FLASH/nosaic-data.img)"
     mkdir -p /mnt/data/config /mnt/data/secrets
     PERSIST=yes
 else
@@ -194,15 +234,52 @@ slotdev() {
         *) echo ""; return ;;
     esac
     findfs "LABEL=$want" 2>/dev/null && return
-    local n=""
+
+    # A slot file on the bootloader's own filesystem, for boards where the
+    # bootloader owns the whole disk and there is no room for a partition of
+    # ours. Returned as a path rather than a device; mount_image() loop-mounts
+    # whichever kind it is handed, so the A/B logic above never learns which
+    # sort of board it is running on.
+    #
+    # This is tried BEFORE the numeric guess below, and the order is the whole
+    # point. On an Arista, /dev/mmcblk0p2 exists and is the vendor's 1 MB
+    # diagnostics partition -- so the guess succeeded, returned a device that
+    # was never ours, and the boot failed one step later trying to mount it as
+    # squashfs. A guess that lands on a real device belonging to someone else
+    # is worse than one that finds nothing.
+    if mount_flash && [ -f "$FLASH/$want.sqsh" ]; then
+        echo "$FLASH/$want.sqsh"
+        return
+    fi
+
+    # The numeric guess, for one of our disks whose labels are unreadable.
+    # A device carrying a squashfs is taken in preference to one that merely
+    # exists -- but if none of them do, the first that exists is still
+    # returned. That fallback is deliberate: a trial slot holding a corrupt
+    # image has to reach the mount and fail there, because that is what
+    # triggers the rollback. Returning nothing instead would turn a
+    # recoverable bad upgrade into a board that will not boot.
+    local n="" first=""
     case "$1" in a) n=2 ;; b) n=3 ;; esac
     for d in /dev/vda /dev/sda /dev/mmcblk0p; do
-        case "$d" in
-            /dev/mmcblk0p) [ -b "$d$n" ] && { echo "$d$n"; return; } ;;
-            *)             [ -b "$d$n" ] && { echo "$d$n"; return; } ;;
-        esac
+        [ -b "$d$n" ] || continue
+        [ -n "$first" ] || first="$d$n"
+        if [ "$(dd if="$d$n" bs=4 count=1 2>/dev/null)" = "hsqs" ]; then
+            echo "$d$n"
+            return
+        fi
     done
-    echo ""
+    echo "$first"
+}
+
+# A slot is a partition on most boards and a file on the rest. The only
+# difference is the loop device, so it is confined to here.
+mount_image() {
+    if [ -b "$1" ]; then
+        mount -t squashfs -o ro "$1" /mnt/image 2>/dev/null
+    else
+        mount -t squashfs -o ro,loop "$1" /mnt/image 2>/dev/null
+    fi
 }
 
 ACTIVE="$(cat $B/active 2>/dev/null || echo a)"
@@ -234,10 +311,20 @@ fi
 SLOTDEV="$(slotdev "$SLOT")"
 blog "NOSAIC-BOOT want slot $SLOT, active=$ACTIVE trial=${TRIAL:-none} tries=$TRIES"
 blog "NOSAIC-BOOT slotdev=${SLOTDEV:-NONE} sda2=$([ -b /dev/sda2 ] && echo y || echo n) sda3=$([ -b /dev/sda3 ] && echo y || echo n)"
+if [ -z "$SLOTDEV" ] && [ "$SLOT" != "$ACTIVE" ]; then
+    # The trial slot cannot be found at all -- no partition, no slot file.
+    # That is the same verdict as a trial that will not mount, and it gets the
+    # same treatment, because the active slot is still there and still known
+    # good. Failing the boot here would turn a bad upgrade into a dark switch.
+    blog "NOSAIC-BOOT-ROLLBACK slot $SLOT could not be found; returning to $ACTIVE"
+    rm -f $B/trial $B/tries
+    SLOT="$ACTIVE"
+    SLOTDEV="$(slotdev "$SLOT")"
+fi
 [ -n "$SLOTDEV" ] || fail "unknown slot '$SLOT'"
 echo "NOSAIC-INITRAMFS slot $SLOT ($SLOTDEV)"
 
-if ! mount -t squashfs -o ro "$SLOTDEV" /mnt/image 2>/dev/null; then
+if ! mount_image "$SLOTDEV"; then
     # A trial slot that will not even mount is definitively bad. There is
     # nothing to learn from retrying it, so roll back at once rather than
     # spending the trial budget discovering the same thing three times.
@@ -246,7 +333,7 @@ if ! mount -t squashfs -o ro "$SLOTDEV" /mnt/image 2>/dev/null; then
         rm -f $B/trial $B/tries
         SLOT="$ACTIVE"
         SLOTDEV="$(slotdev "$SLOT")"
-        mount -t squashfs -o ro "$SLOTDEV" /mnt/image || fail "slot $ACTIVE is unmountable too; there is nothing left to boot"
+        mount_image "$SLOTDEV" || fail "slot $ACTIVE is unmountable too; there is nothing left to boot"
     else
         fail "slot $SLOT does not contain a mountable image"
     fi
