@@ -21,6 +21,7 @@
 #include "bde.h"
 #include "sdk.h"
 #include "led.h"
+#include "query.h"
 #include "mmio.h"
 #include "props.h"
 
@@ -976,6 +977,14 @@ int nosaic_tdp_sdk_run(int unit)
 
 	printf("taps         %d port(s) on the Linux stack\n", nosaic_tap_count());
 	fflush(stdout);
+
+	/*
+	 * The diagnostic socket, before the pump takes the thread for good.
+	 *
+	 * Not fatal if it fails: a switch that forwards without a way to ask it
+	 * questions is better than one that refuses to start without one.
+	 */
+	nosaic_query_start(unit, NOSAIC_QUERY_SOCKET);
 
 	/* The panel, before the pump takes the thread for good. Failure is
 	 * reported by led_start itself and is not fatal: a dark panel is a

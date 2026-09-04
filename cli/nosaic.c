@@ -21,6 +21,7 @@
 
 #include "hal.h"
 #include "config.h"
+#include "asic.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -38,6 +39,9 @@ static const char usage[] =
 "  config set <name> <val> write it into this switch's own configuration\n"
 "  config unset <name>     remove it; the image's default applies again\n"
 "  config files            which files are layered, in order\n"
+"\n"
+"  show ports              what Linux believes and what the chip actually\n"
+"                          holds, side by side, and where they differ\n"
 "\n"
 "usage: nosaic platform <command>\n"
 "\n"
@@ -341,6 +345,12 @@ int main(int argc, char **argv)
 	}
 	if (strcmp(argv[1], "config") == 0)
 		return cmd_config(argc, argv);
+	if (strcmp(argv[1], "show") == 0) {
+		if (argc > 2 && strcmp(argv[2], "ports") == 0)
+			return nosaic_asic_ports();
+		fprintf(stderr, "usage: nosaic show ports\n");
+		return 2;
+	}
 	if (strcmp(argv[1], "platform") != 0) {
 		fprintf(stderr, "nosaic: this build provides `platform` only; "
 			"the rest of the CLI runs on the build host\n");
