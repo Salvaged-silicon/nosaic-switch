@@ -13,7 +13,7 @@ leaves something bootable.
 | **M5** | The boot axis | **Done.** Four backends (virt, onie-sfx, aboot, uboot) emit installable artifacts. Two are now confirmed on hardware rather than by extraction: Aboot boots the 7050SX2 from its own flash, and the ONIE installer put NOSaic on the AS5610's disk |
 | **M6** | First real board | **Done.** The 7050SX2 boots from its own from-source base, reports real sensors and forwards traffic, and `nosaic show ports` answers from Trident2+ silicon through the same contract the virtual platform implements — the speeds come back from the chip |
 | **M7** | Routing and upgrades | **Upgrades done, BGP not started.** On the 7050SX2 a healthy image installed into the inactive slot confirms itself and commits, and one built with an empty port map — it boots, answers ssh and does not forward — burns three attempts and rolls back unattended. OSPFv2 and OSPFv3 hold adjacencies on both boards; no `bgpd` is packaged yet |
-| **M8** | Older architectures | **Started.** The PowerPC toolchain is done and the AS5610-52X is ported and installed on its own disk — 10 ports up, 52 routes, 7 OSPFv2 and 3 OSPFv3 adjacencies. armhf and the `onl-swi` backend are not started |
+| **M8** | Older architectures | **Started.** The PowerPC toolchain is done and the AS5610-52X is ported, installed on its own disk and back from a cold power cut in ~90 s — 10 ports up, 52 routes, 7 OSPFv2 and 3 OSPFv3 adjacencies, and an A/B upgrade the switch committed itself. armhf and the `onl-swi` backend are not started |
 
 ## Spikes
 

@@ -65,7 +65,17 @@ net_wait_secs: 60
 profile: minimal
 kernel: ""
 
-status: bringup
+# Cleared bringup on 2026-09-04: installed on its own disk, and back from a cold
+# power cut at the PDU in about ninety seconds with the ext4 journal replaying
+# clean, 10 of 10 ports up, 52 routes and ten OSPF adjacencies -- the same state
+# it went down in. An A/B upgrade also ran here and the switch committed it
+# itself.
+#
+# experimental rather than production, and nothing in this project is called
+# production until it has run somewhere that matters for longer than a lab
+# afternoon. Still open here: ECMP, and the datapath cannot be restarted without
+# taking the front panel down with it.
+status: experimental
 
 notes: >
   Big-endian PowerPC, which is the first board in the fleet that is not

@@ -25,7 +25,7 @@ hand-maintained list of hardware on the front page is the first thing to go stal
 | Switch | Silicon | Arch | Boots via | Status |
 |---|---|---|---|---|
 | [arista 7050sx2-72q](platform/arista-7050sx2-72q/) | td2p | x86_64 | aboot | experimental |
-| [edgecore as5610-52x](platform/edgecore-as5610-52x/) | tdp | powerpc | onie-sfx | bringup |
+| [edgecore as5610-52x](platform/edgecore-as5610-52x/) | tdp | powerpc | onie-sfx | experimental |
 | [nosaic virt](platform/virt-x86_64/) | virt | x86_64 | virt | bringup |
 
 Status is what has been demonstrated on that board, not what is intended:
@@ -109,7 +109,9 @@ Everything else outstanding is in each board's own list:
 
 The **[Edgecore AS5610-52X](platform/edgecore-as5610-52x/)** is installed on its
 own disk and forwarding: **10 ports up, 52 routes, 7 OSPFv2 and 3 OSPFv3
-adjacencies**, booted from its own flash with the vendor OS gone. It matters
+adjacencies**, booted from its own flash with the vendor OS gone. It comes back
+from a cold power cut in about ninety seconds in exactly that state, and an
+upgrade installed into its inactive slot was committed by the switch itself. It matters
 less for what it does than for what it proves — it changes three axes at once,
 **PowerPC e500v2**, **Trident+ (BCM56846)** and **ONIE**, so every claim above
 about architecture-neutrality stopped being a design commitment the day it

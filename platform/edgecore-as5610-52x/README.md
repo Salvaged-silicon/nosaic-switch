@@ -37,7 +37,7 @@ See [install.md](docs/install.md) for how to install it and
 | Boot | U-Boot + ONIE, on NOR flash |
 | Console | ttyS0 @ **115200** |
 | Device tree | `powerpc-accton-as5610-52x-r0` — Accton is the ODM, Edgecore the brand |
-| Status | **bringup** — boots to userspace over the network; no install yet |
+| Status | **experimental** — installed on its own disk, forwards and routes, survives a cold power cut |
 
 - **[Hardware reference](docs/hardware.md)** — what has been read off a running unit
 - **[Build](docs/build.md)** — what exists and what is missing
