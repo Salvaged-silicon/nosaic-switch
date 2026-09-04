@@ -96,3 +96,21 @@ func funcBody(t *testing.T, name string) string {
 	}
 	return initScript[start : start+end]
 }
+
+// Confirming a trial must not run inside the s6 bundle change.
+//
+// trial-confirm is a oneshot, and "s6-rc -u change default" waits for every
+// oneshot with a 120-second budget. Confirmation waits up to five minutes for
+// a datapath, so run inline a trial whose datapath never comes up would hold
+// the bundle past its deadline; the init script reads that as the service
+// database failing and drops to a rescue shell. A switch that was merely
+// declining an upgrade would look catastrophically broken.
+func TestTrialConfirmationDetachesFromTheBoot(t *testing.T) {
+	if !strings.Contains(confirmScript, "setsid") {
+		t.Error("the trial confirmation no longer detaches; a slow decline will " +
+			"hold the s6 bundle past its deadline and drop the board to a rescue shell")
+	}
+	if !strings.Contains(confirmScript, "nosaic upgrade confirm") {
+		t.Error("the trial confirmation script no longer runs the confirm command")
+	}
+}

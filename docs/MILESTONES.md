@@ -195,6 +195,18 @@ must answer, know about ports, and if anything is configured up, something must
 actually be up. `nosaic upgrade commit` is the explicit form for an operator
 who has decided already.
 
+It also detaches, which is a requirement rather than tidiness. The service is
+an s6 oneshot and `s6-rc -u change default` waits for every oneshot with a
+120-second budget, while confirmation legitimately takes longer: it allows five
+minutes for a datapath, because a daemon carrying a vendor SDK needs about
+eighty seconds to bring up a Trident2+ and a check that races it would roll back
+a good image. Run inline, a trial whose datapath never comes up would hold the
+bundle past its deadline, the init script would read that as the service
+database failing, and a switch that was merely *declining an upgrade* would drop
+to a rescue shell and look far worse than it is. Nothing downstream depends on
+the answer — the rollback is driven by the initramfs counter, not by this
+process finishing — so the boot does not wait for it.
+
 That service is deliberately **not** ordered after `nosd`. s6 will not start a
 service whose dependency never comes up, and a datapath that never comes up is
 the exact failure this exists to report -- ordering it after `nosd` made the

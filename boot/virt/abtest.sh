@@ -45,6 +45,16 @@ boot() {
 
 status() { go run ./cmd/nosaic upgrade status "$DIR/disk.img"; }
 
+# Build the image this test is about to make claims on.
+#
+# The disk was previously whatever a earlier run left behind, and step 1
+# asserts it boots slot a -- so the suite passed only while nobody had run it
+# twice. The second run started from the slot the first one committed and
+# failed its own baseline. A test that depends on leftover state is not
+# testing what it says it is.
+echo "=== 0. build the image under test ==="
+go run ./cmd/nosaic build "$BOARD" >/dev/null
+
 echo "=== 1. baseline: the freshly built disk boots slot a ==="
 boot
 grep -aq 'NOSAIC-BOOT-SLOT a' "$LOG" || die "expected to boot slot a"

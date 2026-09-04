@@ -116,7 +116,21 @@ echo "NOSAIC-S6 compile rc=$?"
         # Same reason, and it needs its own: s6-rc spawns s6-svlisten, which
         # subscribes the same way and failed identically until given a deadline
         # that fits.
-        s6-rc -t 120000 -u change default
+        # The deadline has to exceed the longest a service legitimately spends
+        # waiting on hardware, and it did not.
+        #
+        # network-config waits for the front-panel ports to appear -- up to
+        # NOSAIC_NET_WAIT, 600 s by default -- and on an image that does not
+        # forward they never do. At 120 s the bundle change gave up, this
+        # script read that as the service database failing, and a switch that
+        # was merely not forwarding announced NOSAIC-S6-FAIL and dropped an
+        # unauthenticated root shell on its console. Observed on a 7050SX2
+        # given an image with an empty port map: the box looked catastrophic
+        # and was in fact one rollback away from fine.
+        #
+        # The rescue path is for a database that cannot come up, not for a
+        # service that is patiently waiting for silicon.
+        s6-rc -t 660000 -u change default
         rc=$?
         echo "NOSAIC-S6 change rc=$rc"
         [ $rc -eq 0 ] || rescue=1
