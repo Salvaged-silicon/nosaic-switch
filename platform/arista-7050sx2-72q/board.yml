@@ -5,12 +5,15 @@
 # file-backed A/B slots, forwards in hardware, holds four OSPF adjacencies and
 # reads real sensors -- all from the installed image rather than a hot patch.
 #
-# experimental rather than production because A/B is only half proven here.
-# Slot A boots from a file and the initramfs rolls back correctly when a slot
-# is missing or corrupt, but nothing has been installed into slot B and no
-# trial has ever been committed on this board: internal/upgrade still reads a
-# partition table and cannot write a slot file. See docs/architecture.md for
-# what is proven and what is not.
+# A full A/B upgrade has now run on this board: an image installed into slot B,
+# booted on trial as attempt 1 of 3, was committed, and the next boot came up
+# on B as the committed slot with no trial pending.
+#
+# experimental rather than production because the one case that matters most is
+# still unproven HERE: an image that boots but does not forward must roll back
+# unattended. That is M7's gate. It passes in QEMU and the initramfs handles a
+# missing or corrupt slot correctly on this board, but a bad-but-booting image
+# has never been tried on this hardware. See docs/architecture.md.
 
 id: arista-7050sx2-72q
 vendor: arista

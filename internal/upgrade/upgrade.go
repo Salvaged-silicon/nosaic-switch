@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -38,8 +39,22 @@ type State struct {
 }
 
 // Disk is a NOSaic disk, addressed offline by file or online by device.
+//
+// Path names a block device or a disk image when the slots are partitions,
+// and a directory when they are files on the bootloader's own filesystem.
+// See filebacked.go for why that second layout exists.
 type Disk struct {
 	Path string
+
+	// Data is the mounted persistent filesystem, where boot state and the
+	// per-slot overlays live. Empty means /mnt/data, which is correct on a
+	// running switch and wrong on a build host -- so the overlay is only
+	// cleared when this is known to belong to this disk.
+	Data string
+
+	// Log receives progress. Nil is silent, which is what the offline
+	// callers want.
+	Log io.Writer
 }
 
 type partition struct {
@@ -98,6 +113,18 @@ func Install(d Disk, slot, image string) error {
 	if err != nil {
 		return err
 	}
+
+	// Slots as files, for a board whose bootloader owns the whole disk.
+	if d.fileBacked() {
+		if err := d.writeSlotFile(slot, image); err != nil {
+			return err
+		}
+		if err := d.clearSlotOverlay(slot); err != nil {
+			return err
+		}
+		return d.writeState(map[string]string{"trial": slot, "tries": "0"})
+	}
+
 	parts, err := d.partitions()
 	if err != nil {
 		return err
@@ -136,12 +163,48 @@ func Install(d Disk, slot, image string) error {
 		return err
 	}
 
+	if err := d.clearSlotOverlay(slot); err != nil {
+		return err
+	}
+
 	// Marked as a trial, never as active. Nothing becomes the committed choice
 	// until it has booted and said it is healthy.
 	if err := d.writeState(map[string]string{"trial": slot, "tries": "0"}); err != nil {
 		return err
 	}
 	return nil
+}
+
+// Commit makes the slot on trial the committed one.
+//
+// A trial that is never committed rolls back, which is the safe default and
+// the whole point. But the only thing that committed one was the boot
+// self-test, and that runs solely when nosaic.selftest is on the kernel
+// command line -- a QEMU harness flag that no real switch sets. So on hardware
+// a good upgrade rolled back exactly like a bad one, three boots later, with
+// nothing saying why.
+//
+// This is the explicit form, for an operator or a fleet tool that has decided
+// the new image is good. The self-test remains the automatic form.
+func Commit(d Disk) (string, error) {
+	st, err := Status(d)
+	if err != nil {
+		return "", err
+	}
+	if st.Trial == "" {
+		return "", fmt.Errorf("no trial is in progress: slot %s is already the committed one", st.Active)
+	}
+	slot := st.Trial
+	// active first, then clear the trial. In the other order a power cut
+	// between the two writes leaves neither a trial nor the new active slot,
+	// and the switch quietly boots the old one.
+	if err := d.writeState(map[string]string{"active": slot}); err != nil {
+		return "", err
+	}
+	if err := d.writeState(map[string]string{"trial": "", "tries": ""}); err != nil {
+		return "", err
+	}
+	return slot, nil
 }
 
 // Status reads the boot pointer.
@@ -247,6 +310,9 @@ func debugfsRun(fsPath string, write bool, request string) (string, error) {
 }
 
 func (d Disk) readState() (map[string]string, error) {
+	if d.fileBacked() {
+		return readStateDir(filepath.Join(d.dataDir(), "boot"))
+	}
 	out := map[string]string{}
 	err := d.withData(false, func(fs string) error {
 		for _, name := range []string{"active", "trial", "tries"} {
@@ -274,6 +340,9 @@ func (d Disk) readState() (map[string]string, error) {
 }
 
 func (d Disk) writeState(files map[string]string) error {
+	if d.fileBacked() {
+		return writeStateDir(filepath.Join(d.dataDir(), "boot"), files)
+	}
 	return d.withData(true, func(fs string) error {
 		for name, content := range files {
 			tmp, err := os.CreateTemp("", "nosaic-state-")
@@ -291,6 +360,12 @@ func (d Disk) writeState(files map[string]string) error {
 			// file, it fails, and a state file that silently keeps its old
 			// value is how a committed upgrade appears not to have happened.
 			_, _ = debugfsRun(fs, true, fmt.Sprintf("rm /boot/%s", name))
+			if content == "" {
+				// An empty value means "clear this", not "write nothing".
+				// Leaving a zero-length trial behind is a trial that never
+				// expires, which is the opposite of committing it.
+				continue
+			}
 			if _, err := debugfsRun(fs, true, fmt.Sprintf("write %s boot/%s", tmp.Name(), name)); err != nil {
 				return err
 			}

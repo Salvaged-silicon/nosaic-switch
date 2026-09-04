@@ -493,7 +493,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 
 func upgradeCmd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: nosaic upgrade <status|install> <disk> ...")
+		return fmt.Errorf("usage: nosaic upgrade <status|install|commit> <disk> ...")
 	}
 	switch args[0] {
 	case "status":
@@ -527,11 +527,27 @@ func upgradeCmd(args []string) error {
 		if *slot == "" {
 			return fmt.Errorf("--slot is required")
 		}
-		if err := upgrade.Install(upgrade.Disk{Path: disk}, *slot, image); err != nil {
+		if err := upgrade.Install(upgrade.Disk{Path: disk, Log: os.Stdout}, *slot, image); err != nil {
 			return err
 		}
 		fmt.Printf("installed %s into slot %s, marked for trial\n", filepath.Base(image), *slot)
-		fmt.Println("it becomes active only after it boots and confirms itself healthy")
+		fmt.Println("it becomes active only after it boots and is committed")
+		return nil
+
+	case "commit":
+		// The explicit half of "confirms itself healthy". The boot self-test
+		// commits automatically, but only under the QEMU harness -- it is
+		// gated on nosaic.selftest in the kernel command line, which no real
+		// switch sets. Without this a good upgrade on hardware rolls back
+		// exactly like a bad one.
+		if len(args) != 2 {
+			return fmt.Errorf("usage: nosaic upgrade commit <disk>")
+		}
+		slot, err := upgrade.Commit(upgrade.Disk{Path: args[1], Log: os.Stdout})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("committed slot %s: it is now the slot this switch boots\n", slot)
 		return nil
 	}
 	return fmt.Errorf("unknown upgrade subcommand %q", args[0])

@@ -648,11 +648,22 @@ done
 # Deliberately gated on the health checks rather than on merely having reached
 # userspace. An image that boots and does not work is exactly the case rollback
 # exists for, and committing on "init ran" would defeat it.
-if [ -f /mnt/boot/boot/trial ]; then
+#
+# Where the pointer lives is not fixed. A board with a boot partition keeps it
+# there; one whose bootloader owns the whole disk has no boot partition, and
+# the initramfs puts the pointer on the data filesystem instead -- the same
+# choice it makes, resolved the same way. This was hard-coded to /mnt/boot and
+# would have committed nothing on such a board: the trial would simply roll
+# back three boots later with nothing saying why.
+B=""
+[ -d /mnt/boot/boot ] && B=/mnt/boot/boot
+[ -z "$B" ] && [ -d /mnt/data/boot ] && B=/mnt/data/boot
+if [ -n "$B" ] && [ -f "$B/trial" ]; then
     if [ "$fail" = 0 ]; then
-        mv /mnt/boot/boot/trial /mnt/boot/boot/active
-        rm -f /mnt/boot/boot/tries
-        say "COMMIT the trial slot is now active"
+        mv "$B/trial" "$B/active"
+        rm -f "$B/tries"
+        sync
+        say "COMMIT the trial slot is now active ($B)"
     else
         say "NOCOMMIT health checks failed; this trial will roll back"
     fi
