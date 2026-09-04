@@ -5,10 +5,12 @@
 A network operating system for **end-of-service-life switches and routers** — hardware
 the vendor has abandoned, given a modern, open, maintained OS.
 
-> **Status: early. No board is supported yet.**
-> This README advertises only what is merged, working and finished. "Supported" means a
-> board somebody else can install and run — see [Where it has got to](#where-it-has-got-to)
-> for what actually runs today, which is more than that table shows.
+> **Status: early, and two switches run it from their own flash.**
+> Nothing here is called production, and nothing will be until it has run somewhere
+> that matters for longer than a lab afternoon. Each board states what has actually
+> been demonstrated on it rather than what is intended — see
+> [the table below](#the-switches), and
+> [Where it has got to](#where-it-has-got-to) for the measurements behind it.
 > [docs/DESIGN.md](docs/DESIGN.md) is where it is going and
 > [docs/MILESTONES.md](docs/MILESTONES.md) is what lands when.
 
@@ -103,22 +105,25 @@ Everything else outstanding is in each board's own list:
 **[virt-x86_64](platform/virt-x86_64/docs/todo.md)** ·
 **[AS5610-52X](platform/edgecore-as5610-52x/docs/todo.md)**.
 
-## The next board
+## The second architecture
 
-The **[Edgecore AS5610-52X](platform/edgecore-as5610-52x/)** is declared and
-nothing runs on it. It earns a mention here because of what it tests rather than
-what it does: it is the first board that is not x86_64, and it changes three axes
-at once — **PowerPC e500v2**, **Trident+ (BCM56846)**, **ONIE on NOR flash**.
-Every claim above about architecture-neutrality has so far been a design
-commitment rather than a demonstrated fact, because both existing boards are
-x86_64.
+The **[Edgecore AS5610-52X](platform/edgecore-as5610-52x/)** is installed on its
+own disk and forwarding: **10 ports up, 52 routes, 7 OSPFv2 and 3 OSPFv3
+adjacencies**, booted from its own flash with the vendor OS gone. It matters
+less for what it does than for what it proves — it changes three axes at once,
+**PowerPC e500v2**, **Trident+ (BCM56846)** and **ONIE**, so every claim above
+about architecture-neutrality stopped being a design commitment the day it
+booted.
 
-Two of the three axes already exist in the tree: `arch/powerpc` is fully
-specified — soft-float, big-endian, with an instruction audit that fails any
-build containing an opcode an e500v2 cannot execute — and the `onie` and `uboot`
-boot backends are written. The ASIC does not: there is no `nosd-tdp`, though
-OpenBCM 6.5.24 already carries the chip, so it is a new package rather than a
-new SDK.
+It also found the one place the claim was not true. The Go toolchain has ppc64
+and ppc64le and has never had 32-bit big-endian PowerPC, so this board cannot
+run the Go CLI and ships a C one instead — which for a while meant it was
+missing `show ports`, `show caps` and `upgrade` entirely. Both now implement the
+same commands against the same northbound contract, and the two are checked by
+running them side by side on a board that can host either: `show caps` and
+`show ports` come back byte-for-byte identical from two independent
+implementations. An architecture the compiler cannot reach is not a reason for a
+switch to be operated differently.
 
 Starting a board is one command and no change to anything central:
 

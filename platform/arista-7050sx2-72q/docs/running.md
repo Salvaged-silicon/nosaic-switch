@@ -1,12 +1,15 @@
 # Running NOSaic on the 7050SX2-72Q without installing it
 
-This is how every result on this board has been produced: the image is fetched
-by Aboot over HTTP and run from RAM, and **flash is never written**. The switch
-reverts to whatever `boot-config` already said on the next power cycle, so a
-broken image costs a reboot rather than a recovery session.
+This is the development loop: the image is fetched by Aboot over HTTP and run
+from RAM, and **flash is never written**. The switch reverts to whatever
+`boot-config` already said on the next power cycle, so a broken image costs a
+reboot rather than a recovery session.
 
-Use this for development. [install.md](install.md) is the flash route, which is
-not yet proven here.
+It is not how the board normally runs. NOSaic is **installed on this switch's
+own flash**, in A/B slots, and survives a cold power cut —
+[install.md](install.md) is that route and it is proven here. Use the page you
+are reading when you are changing the image every few minutes and do not want
+to write flash each time.
 
 ---
 
@@ -129,8 +132,11 @@ you own. Keeping them out of the repository is about provenance — the numbers
 were read off a machine running the vendor's OS — not about them being specific
 to one box.
 
-If you would rather not rebuild, `/mnt/data/config` is still searched, and on a
-RAM boot that is a tmpfs you must repopulate after every boot.
+If you would rather not rebuild, `/mnt/data/config` is still searched. On the
+net-boot path described here that is a tmpfs and you must repopulate it after
+every boot; on an installed switch it is the ext4 data image and survives both
+a reboot and an upgrade, which is the whole point of keeping configuration out
+of the slot.
 
 **Chip initialisation takes around six minutes** at this log verbosity. Wait
 for it before concluding anything:

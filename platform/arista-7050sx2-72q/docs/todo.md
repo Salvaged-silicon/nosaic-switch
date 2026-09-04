@@ -290,12 +290,14 @@ The flash partition is mounted read-write for exactly as long as one file takes
 to write, and only ever written inside its own subdirectory -- the boot images
 live on that partition too.
 
-**What this does not give the board.** There is still no data partition and so
-no A/B slots, no per-slot overlay, and no trial-boot or rollback. The AS5610 has
-all of that from its four-partition layout. Giving this board the same means a
-disk-installed image rather than a RAM-boot SWI, which flash has room for at
-about 1.1 GB free. Configuration is no longer the reason to do it, but upgrades
-still are.
+**This board now has the rest of it too.** The slots and the data partition are
+files on the bootloader's own filesystem, loop-mounted -- there was never room
+for partitions, and Aboot resolving `flash:` by controller means adding them
+could have hijacked its own boot device. So the board has A/B slots, a
+persistent per-slot overlay, trial boots and rollback, and configuration lives
+in the ext4 data image rather than being written through to flash a file at a
+time. The write-through path above is kept because it is what makes a net-booted
+board's configuration durable, and net-boot is still the development loop.
 
 ### ~~The NOSaic CLI has never been run against silicon~~ — M6's gate is met
 

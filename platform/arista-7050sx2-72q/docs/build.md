@@ -19,7 +19,11 @@ That produces, in `out/images/arista-7050sx2-72q/`:
   disk.img                                   for the flash install route
 ```
 
-Drop `ARGS=--ram-boot` for an image intended for flash. Use `PROFILE=minimal`
+Drop `ARGS=--ram-boot` for an image intended for flash — which is how this board
+normally runs, and what [install.md](install.md) describes. Without it the root
+filesystem is a separate `rootfs.sqsh` installed into a slot and the SWI carries
+only the kernel and initramfs, which is why the SWI is ~15 MB rather than ~81 MB
+and why the board gets that RAM back. Use `PROFILE=minimal`
 for now: `board.yml` says `full`, but only `minimal` has ever been booted on
 this board.
 

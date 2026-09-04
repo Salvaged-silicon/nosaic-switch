@@ -144,27 +144,36 @@ recoverable.
 4. Partition table destroyed → net-boot NOSaic, `dd` the device image back
 5. eMMC entirely dead → Aboot still boots; net-boot indefinitely
 
-## What this does not give you
+## What you get, and what you do not
 
-- **No A/B slots, no rollback.** One image, booted directly. The slot machinery
-  exists and is CI-tested on the virtual platform; it is not what this installs.
-- **No persistent state.** This installs a RAM-boot image, so the root overlay
-  is a tmpfs: the port map, polarity and any addressing are lost on every boot
-  and must be pushed again. See [running.md](running.md#4-site-configuration).
-- **The vendor OS is still there**, and that is deliberate for now. It is the
-  recovery path, and the eMMC has room for both.
+This installs A/B slots with a persistent overlay, and the layout is the one
+this page predicted before it existed: **the eMMC keeps its single partition and
+NOSaic's state lives in files on it, mounted by loop.**
 
-Making the state persistent is **not** a matter of partitioning the eMMC, which
-was the obvious plan until Aboot was asked how it resolves `flash:`. It matches
-on the *controller*, so every partition on the eMMC competes for `/mnt/flash`
-and the first one presented wins — add NOSaic's partitions and Aboot may boot
-with `flash:` pointing at an ext4 slot and no image in sight. The full rule, and
-the options that do work, are in
+- `nosaic-slot-a.sqsh` and `nosaic-slot-b.sqsh` — the two root filesystems
+- `nosaic-data.img` — an ext4 image holding configuration, the boot pointer and
+  each slot's writable layer
+- a ~15 MB SWI carrying only the kernel and initramfs
+
+Two independent reasons that layout is right here, and the second is the one
+that would have bitten. The eMMC is fully allocated — `p1` runs to the
+second-to-last sector — so there is nowhere to put a partition without cutting
+into the vendor images. And **Aboot resolves `flash:` by matching on the
+controller**, so every partition on the eMMC competes for `/mnt/flash` and the
+first presented wins: adding NOSaic's partitions could leave Aboot booting with
+`flash:` pointing at an ext4 slot and no image in sight. The full rule is in
 [hardware.md](hardware.md#how-aboot-resolves-flash).
 
-The one this board should take is to keep the eMMC single-partition and put
-NOSaic's state in files on it, mounted by loop. No repartitioning, no collision,
-and Aboot's view of the device does not change at all.
+What you still do not get:
+
+- **The kernel and initramfs are outside A/B.** A slot holds a root filesystem;
+  the SWI is written in place and cannot be rolled back. An upgrade that changes
+  both is only half atomic.
+- **`upgrade install` runs from the build host**, not from the switch. On the
+  board a slot is a file the running system may be reading, and the installer
+  refuses to write one that is currently loop-mounted.
+- **The vendor OS is still there**, and that is deliberate. It is the recovery
+  path, and the eMMC has room for both.
 
 ## Aboot has no network of its own
 

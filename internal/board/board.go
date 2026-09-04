@@ -18,9 +18,15 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
 )
 
-// Status is how far a port has got. Only "production" boards are advertised
-// in the README — the project claims support for what works, not what is
-// being attempted.
+// Status is how far a port has got, and it is stated rather than filtered on.
+//
+// The README lists every board with its status beside it. Hiding the ones that
+// are not finished sounds honest and is not: somebody with an AS5610 in a rack
+// wants to know it boots, forwards and is short of a few things, and a table
+// that omits it tells them the project has never heard of their switch.
+//
+// Nothing is described as "production" until it has run somewhere that matters
+// for longer than a lab afternoon.
 var validStatus = []string{"planned", "bringup", "experimental", "production"}
 
 // validProfile matches the tiers in base/. See docs/DESIGN.md.

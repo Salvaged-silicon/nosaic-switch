@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
@@ -24,6 +25,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/identity"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
 	"github.com/salvaged-silicon/nosaic-switch/internal/profile"
+	"github.com/salvaged-silicon/nosaic-switch/internal/recipe"
 	"github.com/salvaged-silicon/nosaic-switch/internal/svcgen"
 )
 
@@ -87,6 +89,7 @@ func Build(o Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	warnStalePackages(o, selected)
 
 	var names []string
 	var kernel string
@@ -1219,3 +1222,79 @@ const confirmScript = `#!/bin/sh
 setsid /usr/bin/nosaic upgrade confirm </dev/null >/dev/console 2>&1 &
 exit 0
 `
+
+// warnStalePackages says when a package built from this repository is older
+// than the source it was built from.
+//
+// `make image` composes whatever is already in out/packages, which is right --
+// building an image should not rebuild the world. But three of the recipes
+// build from directories inside this repository, and for those "already built"
+// and "current" are different things. Editing cli/ or datapath/ and running
+// `make image` silently ships the previous binary, and the image looks correct
+// in every way except behaviour.
+//
+// It has cost real time: a CLI shipped without the commands just added to it,
+// and a datapath shipped without the contract ops the CLI had started calling,
+// each diagnosed on hardware as a missing feature rather than a stale build.
+//
+// A warning rather than an error: there are legitimate reasons to build an
+// image against a package you have not rebuilt, and refusing would make this
+// worse than the problem.
+func warnStalePackages(o Options, refs []pkgRef) {
+	// This is advisory. A panic in a warning must not be what stops an image
+	// from being built, which is exactly what it did the first time -- but it
+	// must not be silent either, or the check quietly stops checking and the
+	// staleness it exists to catch comes back unannounced.
+	defer func() {
+		if p := recover(); p != nil && o.Log != nil {
+			fmt.Fprintf(o.Log, "    (could not check packages against their "+
+				"source: %v)\n", p)
+		}
+	}()
+	if o.Log == nil {
+		return
+	}
+	for _, r := range refs {
+		// A package can be present without a recipe of that name -- a virtual
+		// provide resolves to a differently-named recipe -- so a miss here is
+		// ordinary and not worth reporting.
+		rec, err := recipe.Load(filepath.Join(o.Root, "recipes", r.Name, "recipe.yml"))
+		if err != nil || rec == nil || rec.Source == nil || rec.Source.Local == "" {
+			continue
+		}
+		pkg, err := os.Stat(filepath.Join(o.PackageDir, r.file))
+		if err != nil {
+			continue
+		}
+		newest, name := newestFile(filepath.Join(o.Root, rec.Source.Local))
+		if newest.IsZero() || !newest.After(pkg.ModTime()) {
+			continue
+		}
+		fmt.Fprintf(o.Log,
+			"    WARNING %s is older than its source: %s changed %s after the "+
+				"package was built.\n            This image will ship the previous "+
+				"binary. Run: make pkg PKG=%s ARCH=%s\n",
+			r.file, name, newest.Sub(pkg.ModTime()).Round(time.Second), r.Name, o.Arch.ID)
+	}
+}
+
+// newestFile is the most recently modified file under dir, and its path.
+func newestFile(dir string) (time.Time, string) {
+	var newest time.Time
+	var which string
+
+	_ = filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() {
+			return nil
+		}
+		// Build output in the source directory is not a source change.
+		if strings.HasSuffix(p, ".o") || filepath.Base(p) == "nosaic" {
+			return nil
+		}
+		if fi.ModTime().After(newest) {
+			newest, which = fi.ModTime(), p
+		}
+		return nil
+	})
+	return newest, which
+}

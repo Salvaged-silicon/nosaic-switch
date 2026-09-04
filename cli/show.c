@@ -63,7 +63,7 @@ static void emit(const struct table *t)
 	}
 }
 
-static void unreachable(void)
+static void no_datapath(void)
 {
 	fprintf(stderr,
 		"nosaic: cannot reach the datapath on %s.\n"
@@ -88,7 +88,7 @@ int nosaic_show_caps(void)
 	int r = 0;
 
 	if (resp == NULL) {
-		unreachable();
+		no_datapath();
 		return 1;
 	}
 	if (refused(resp)) {
@@ -129,11 +129,11 @@ int nosaic_show_ports(void)
 	int n = 0, i, r = 1;
 
 	if (fd < 0) {
-		unreachable();
+		no_datapath();
 		return 1;
 	}
 	if ((resp = nosaic_query_ask(fd, "{\"op\":\"ports\"}")) == NULL) {
-		unreachable();
+		no_datapath();
 		nosaic_query_close(fd);
 		return 1;
 	}
@@ -164,7 +164,7 @@ int nosaic_show_ports(void)
 		snprintf(req, sizeof(req),
 			 "{\"op\":\"port.status\",\"name\":\"%s\"}", names[i]);
 		if ((resp = nosaic_query_ask(fd, req)) == NULL) {
-			unreachable();
+			no_datapath();
 			nosaic_query_close(fd);
 			return 1;
 		}
@@ -195,7 +195,7 @@ int nosaic_show_routes(void)
 	int r = 1;
 
 	if (resp == NULL) {
-		unreachable();
+		no_datapath();
 		return 1;
 	}
 	if (refused(resp)) {

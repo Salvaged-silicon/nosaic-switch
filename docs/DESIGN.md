@@ -157,6 +157,9 @@ keeps two of them, so an upgrade is always reversible.
   p3  slot B                 image.sqsh
   p4  data                   persistent, shared across both slots
 
+  (a board whose bootloader owns the whole disk keeps the same four things as
+   files on the bootloader's filesystem, loop-mounted, with identical semantics)
+
   /             overlayfs
      lower  =  active slot's squashfs         read-only
      upper  =  /mnt/data/slot-<a|b>/upper     per-slot writable layer
@@ -179,8 +182,25 @@ falls back. "Healthy" means the switch is doing its job — ports linked, datapa
 programmed, adjacencies established — not merely that init came up. A switch that boots
 but does not forward must fail its trial.
 
-Slot control differs per bootloader (GRUB counters, U-Boot `bootcount`, Aboot
-`boot-config`), which is why it lives behind the boot backend interface.
+**Slot control does not live behind the boot backend, and the expectation that it would
+was wrong.** The plan assumed each bootloader would need its own implementation — GRUB
+counters, U-Boot `bootcount`, Aboot `boot-config`. In practice the initramfs reads the
+pointer and chooses, so the bootloader never learns that slots exist and the same trial,
+counter and rollback code runs on every board. Aboot's backend contains no slot logic at
+all.
+
+**Where the slots live does vary, and that is confined to two lookups.** Most boards give
+them partitions. A board whose bootloader owns the whole disk keeps them as files on the
+bootloader's own filesystem, loop-mounted — the Arista 7050SX2's eMMC is fully allocated
+to Aboot's FAT, and Aboot resolves `flash:` by matching on the controller, so adding
+partitions could leave it booting from the wrong one. Everything above the lookup is
+identical.
+
+**The kernel and initramfs are outside A/B.** A slot holds a root filesystem; the kernel
+and initramfs live where the bootloader can reach them without understanding our layout,
+there is one of them rather than two, and a change to either is written in place and
+cannot be rolled back. An upgrade spanning both is only half atomic, and anything a trial
+depends on must live in the slot.
 
 On the smallest boards two slots may not fit. There, `nosaic upgrade` degrades to a
 non-atomic path and says so, rather than pretending.

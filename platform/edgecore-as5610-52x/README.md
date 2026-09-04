@@ -2,20 +2,31 @@
 
 NOSaic's third board, and the first that is not x86_64.
 
-**It boots to a login.** On 2026-09-02 the board ran a NOSaic image over TFTP
-from the U-Boot prompt, nothing written to its disk: our own PowerPC toolchain,
-our kernel, our device tree, squashfs mounted, overlay assembled, every service
-started and a login on the console.
+**It is installed and it forwards.** NOSaic is on this board's own disk, put
+there by its ONIE installer, and it is what the switch boots — the vendor OS is
+no longer on it. Our own PowerPC toolchain, our kernel, our device tree, a
+squashfs under an overlay, and A/B slots with the boot pointer on a journal-less
+boot partition.
+
+It came up on 2026-09-02 over TFTP with nothing written to the disk, and was
+installed to flash on 2026-09-03. Measured on the running switch rather than
+recalled:
 
 ```
-Linux 6.12.105 ppc
-s6rc-oneshot-runner dropbear getty-console ospf6d ospfd zebra
-frr-dirs frr-siteconf network nosd
+10 front-panel ports up          52 routes in the kernel
+7 OSPFv2 and 3 OSPFv3 adjacencies, with two vendors' routers
+booted from slot a, on disk, with no hot-patches
 ```
 
-Nothing is installed on it: the image runs from RAM and the switch returns to
-its previous OS on a power cycle. See [install.md](docs/install.md) for how to
-repeat it and [todo.md](docs/todo.md) for what is left.
+This is the first board that is not x86_64, and it is the one that tests the
+architecture seam rather than the datapath: **PowerPC e500v2**, big-endian,
+soft-float. The Go toolchain has never targeted 32-bit big-endian PowerPC, so
+this board runs the C CLI from `cli/` instead of the Go one — the same commands
+against the same contract, which is checked by diffing the two implementations'
+output on a board that can run both.
+
+See [install.md](docs/install.md) for how to install it and
+[todo.md](docs/todo.md) for what is left.
 
 | | |
 |---|---|
