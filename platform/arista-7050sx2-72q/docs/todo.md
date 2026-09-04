@@ -269,21 +269,33 @@ one fix lands on both. The AS5610's list is
 - **The watchdog is not armed** — its own section.
 - **Two QSFP macros are left at the global lane map** — its own section.
 
-### Configuration does not persist here, because this board RAM-boots
+### ~~Configuration does not persist here~~ — it does, via the bootloader's flash
 
-`nosaic config set` works and writes `/mnt/data/config/local.conf` exactly as it
-does on the AS5610 -- but `/mnt/data` is a **tmpfs** on this board, so every
-setting is gone at the next reboot. The AS5610 has the same CLI over an ext4
-`/dev/sda4` and keeps its configuration.
+`/mnt/data` is a **tmpfs** on this board, because the SWI is a RAM-boot image:
+the root filesystem travels inside the initramfs and no partition is mounted for
+data. A setting written there is correct until the next reboot and then gone,
+which is the worst kind of wrong for configuration.
 
-The SWI installed on flash is a RAM-boot image: the root filesystem travels
-inside the initramfs and no partition is mounted for data. Fixing this means
-building this board a disk-installed image with the same four-partition layout
-the AS5610 uses -- flash has about 1.1 GB free, which is ample -- and is the
-same work as A/B here, since both need real partitions.
+It persists anyway, because the bootloader's own filesystem does. The initramfs
+already copied `nosaic/config/` off that partition into `/mnt/data/config` at
+boot -- that half was built with the board -- and `nosaic config set` now writes
+back through to it: flash for durability, and the tmpfs as well so `config show`
+reflects the change immediately rather than only after a reboot. `unset` writes
+through the same way.
 
-Until then this board is configured by rebuilding its image, and `config set`
-should be treated as a way to try something rather than to keep it.
+Verified on the hardware: a setting written, found in
+`flash:/nosaic/config/local.conf`, and **still present after a reboot**.
+
+The flash partition is mounted read-write for exactly as long as one file takes
+to write, and only ever written inside its own subdirectory -- the boot images
+live on that partition too.
+
+**What this does not give the board.** There is still no data partition and so
+no A/B slots, no per-slot overlay, and no trial-boot or rollback. The AS5610 has
+all of that from its four-partition layout. Giving this board the same means a
+disk-installed image rather than a RAM-boot SWI, which flash has room for at
+about 1.1 GB free. Configuration is no longer the reason to do it, but upgrades
+still are.
 
 ### Operating it
 

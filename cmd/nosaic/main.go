@@ -880,8 +880,17 @@ func configCmd(args []string) error {
 	case "files":
 		fmt.Printf("%-24s the image's defaults, replaced by every upgrade\n", config.ImageDir)
 		fmt.Printf("%-24s this switch's own, and it wins\n", config.SiteDir)
-		fmt.Printf("\n`config set` writes %s only.\n",
-			filepath.Join(config.SiteDir, config.SiteFile))
+		if config.RAMBooted() {
+			fmt.Printf("\nThis board has NO DATA PARTITION -- %s is a tmpfs.\n",
+				config.SiteDir)
+			fmt.Printf("`config set` writes nosaic/config/%s in the bootloader's "+
+				"flash, which survives a reboot and an image replacement, and "+
+				"the initramfs copies it back into %s at boot.\n",
+				config.SiteFile, config.SiteDir)
+		} else {
+			fmt.Printf("\n`config set` writes %s only.\n",
+				filepath.Join(config.SiteDir, config.SiteFile))
+		}
 		return nil
 
 	case "get":
@@ -902,8 +911,18 @@ func configCmd(args []string) error {
 		if err := config.Set(args[1], &args[2]); err != nil {
 			return err
 		}
-		fmt.Printf("%s=%s written to %s\n", args[1], args[2],
-			filepath.Join(config.SiteDir, config.SiteFile))
+		if config.RAMBooted() {
+			// Saying /mnt/data here would be true and useless: it is a
+			// tmpfs on this board, and what makes the setting survive is
+			// the copy in the bootloader's flash.
+			fmt.Printf("%s=%s written to the bootloader's flash "+
+				"(nosaic/config/%s)\n", args[1], args[2], config.SiteFile)
+			fmt.Println("This board has no data partition, so that is where its " +
+				"configuration lives; the initramfs restores it at boot.")
+		} else {
+			fmt.Printf("%s=%s written to %s\n", args[1], args[2],
+				filepath.Join(config.SiteDir, config.SiteFile))
+		}
 		fmt.Println("It takes effect when the thing that reads it restarts.")
 		return nil
 

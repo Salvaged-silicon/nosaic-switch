@@ -24,6 +24,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -38,7 +39,33 @@ const (
 	// because a switch's own settings are few and having them in one place
 	// makes "what is different about this box" a single cat.
 	SiteFile = "local.conf"
+
+	// ramBootMarker is written by the initramfs when there is no persistent
+	// slot, so the running system knows its /mnt/data is a tmpfs.
+	ramBootMarker = "/etc/nosaic/ramboot"
+
+	// flashConfigDir is where a RAM-booted board keeps its configuration:
+	// inside the bootloader's own flash filesystem, which survives a reboot
+	// and an image replacement because that is where the images live too.
+	flashConfigDir = "nosaic/config"
 )
+
+// flashCandidates are the partitions a bootloader's filesystem might be on.
+// The initramfs probes the same list when it copies configuration in at boot;
+// this is the other half of that, and the two have to agree.
+var flashCandidates = []string{
+	"/dev/mmcblk0p1", "/dev/sda1", "/dev/vda1", "/dev/mmcblk0p2",
+}
+
+// RAMBooted reports whether this switch has no persistent data partition.
+//
+// On such a board /mnt/data is a tmpfs: settings written there are correct
+// until the next reboot and then gone, which is the worst kind of wrong for
+// configuration. Set writes through to flash instead.
+func RAMBooted() bool {
+	_, err := os.Stat(ramBootMarker)
+	return err == nil
+}
 
 // Setting is one effective value and where it came from.
 type Setting struct {
@@ -156,7 +183,67 @@ rather than half of the new one.
 
 A nil value removes the setting, and the image's default applies again.
 */
-func Set(name string, value *string) error { return SetIn(SiteDir, name, value) }
+func Set(name string, value *string) error {
+	if !RAMBooted() {
+		return SetIn(SiteDir, name, value)
+	}
+
+	// A RAM boot keeps its configuration in the bootloader's flash, and the
+	// initramfs copies it into /mnt/data/config at the next boot. Write both:
+	// flash so it survives, and the tmpfs so `config show` reflects it now
+	// rather than only after a reboot.
+	dir, unmount, err := mountFlashConfig()
+	if err != nil {
+		return fmt.Errorf("this board has no persistent data partition and its "+
+			"flash could not be reached, so the setting would be lost at the "+
+			"next reboot: %w", err)
+	}
+	defer unmount()
+
+	if err := SetIn(dir, name, value); err != nil {
+		return err
+	}
+	// Best effort: failing to mirror into the tmpfs costs a stale `config
+	// show` until the next boot, not the setting itself.
+	_ = SetIn(SiteDir, name, value)
+	return nil
+}
+
+// mountFlashConfig mounts the bootloader's filesystem read-write and returns
+// the configuration directory inside it.
+//
+// Read-write on a partition that also holds the boot images, so it is mounted
+// for as long as one file takes to write and no longer, and only ever written
+// inside its own subdirectory.
+func mountFlashConfig() (string, func(), error) {
+	mnt, err := os.MkdirTemp("", "nosaic-flash")
+	if err != nil {
+		return "", nil, err
+	}
+	for _, dev := range flashCandidates {
+		if _, err := os.Stat(dev); err != nil {
+			continue
+		}
+		cmd := exec.Command("mount", "-t", "vfat", dev, mnt)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			_ = out
+			continue
+		}
+		dir := filepath.Join(mnt, flashConfigDir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			_ = exec.Command("umount", mnt).Run()
+			continue
+		}
+		return dir, func() {
+			_ = exec.Command("sync").Run()
+			_ = exec.Command("umount", mnt).Run()
+			_ = os.Remove(mnt)
+		}, nil
+	}
+	os.Remove(mnt)
+	return "", nil, fmt.Errorf("no bootloader filesystem found on %s",
+		strings.Join(flashCandidates, ", "))
+}
 
 // SetIn is Set with the directory named, for tests.
 func SetIn(dir, name string, value *string) error {
