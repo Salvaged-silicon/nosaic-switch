@@ -20,7 +20,20 @@ ARG APT_FORCE_IPV4=false
 # rootless user namespace. Rootless Docker is a legitimate way to build this,
 # so disable the sandbox rather than requiring a rootful daemon. Safe here: the
 # container is single-purpose and already root.
+#
+# Retries because the mirrors are somebody else's network. CI failed once on
+#
+#     Err:3 http://security.ubuntu.com/ubuntu noble-security InRelease
+#       Connection failed [IP: 104.20.28.246 80]
+#
+# which is not a fact about this repository: one unreachable mirror threw away
+# an eight-minute job, and the next run on the same commit range passed. Three
+# attempts costs nothing when the mirror is up and turns the common case of a
+# transient failure into a slow success rather than a red build somebody has to
+# read the log of to dismiss.
 RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/00-nosaic-sandbox \
+ && printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' \
+      > /etc/apt/apt.conf.d/00-nosaic-retries \
  && if [ "$APT_FORCE_IPV4" = "true" ]; then \
       echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99-nosaic-ipv4; \
     fi
