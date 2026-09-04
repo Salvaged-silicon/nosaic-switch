@@ -989,6 +989,32 @@ answered the question, and reading the SDK's internal structures from code
 compiled separately risks a layout mismatch this project has already been bitten
 by once.
 
+### swp51 is an unstable link, and it is not the software
+
+swp49 (Nexus) and swp52 (7050TX-64) come up on every boot and hold OSPF.
+**swp51, to the 7050SX2's et54, comes up on some boots and not others** -- three
+consecutive re-runs of the front-panel init gave up, up, down -- and the far end
+drops with it. Both ends run the same code as the links that are solid, and the
+7050SX2's other QSFP is solid too, so what is different is that fibre or those
+optics.
+
+Worth checking at the rack before any more time goes into the software: swap the
+optic at one end, then the fibre.
+
+### ⚠ Writing an image to a slot does not clear that slot's overlay
+
+This cost a wrong conclusion and is worth knowing before the next upgrade.
+Slot A's writable layer still held a hot-patched `front-panel-init.sh` and
+`tdp-probe` from earlier debugging. Writing a fresh image to `/dev/sda2` left
+them there, and overlayfs put them **over** the new image -- so a boot that was
+meant to test the image ran the old files, and appeared to prove a fix that does
+not reproduce.
+
+`nosaic upgrade` has to clear `/mnt/data/slot-<x>/upper` when it writes a slot,
+or every hot-patch ever applied to a slot silently outlives the image it was
+patching. Checking for it is one line:
+`find /mnt/data/slot-a/upper -type f`.
+
 ### Operating it
 
 - **Install to flash.** Everything so far is a TFTP RAM boot that writes
