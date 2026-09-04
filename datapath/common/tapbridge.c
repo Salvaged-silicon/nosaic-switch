@@ -81,6 +81,7 @@
 #include <bcm/vlan.h>
 #include <bcm/l2.h>
 #include <bcm/stat.h>
+#include <bcm/stg.h>
 
 #include "tapbridge.h"
 
@@ -202,15 +203,32 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 	 * -- is the difference between a diagnosis and a guess.
 	 */
 	rx_unmatched++;
-	if (rx_unmatched_logged < 8) {
-		rx_unmatched_logged++;
-		printf("tap: punted frame from src_port %d (p2l %d) matches no "
-		       "tap (taps are on ports", pkt->src_port,
-		       punt_logical(pkt->src_port));
-		for (i = 0; i < ntaps; i++)
-			printf(" %d", taps[i].port);
-		printf(")\n");
-		fflush(stdout);
+
+	/*
+	 * One line per DISTINCT source port, not per frame.
+	 *
+	 * Logging the first N frames instead is what made this misleading: the
+	 * first eight all came from one busy untapped port, the cap was reached,
+	 * and every other source stayed invisible. What the question actually
+	 * needs is the SET of ports punting frames nobody claims.
+	 */
+	{
+		static bcm_port_t seen[32];
+		static int nseen;
+		int j, known = 0;
+
+		for (j = 0; j < nseen; j++)
+			if (seen[j] == pkt->src_port) { known = 1; break; }
+		if (!known && nseen < (int)(sizeof(seen) / sizeof(seen[0]))) {
+			seen[nseen++] = pkt->src_port;
+			printf("tap: punted frame from src_port %d (p2l %d) "
+			       "matches no tap (taps are on ports",
+			       pkt->src_port, punt_logical(pkt->src_port));
+			for (i = 0; i < ntaps; i++)
+				printf(" %d", taps[i].port);
+			printf(")\n");
+			fflush(stdout);
+		}
 	}
 	return BCM_RX_NOT_HANDLED;
 }
@@ -428,8 +446,27 @@ static int tap_vlan_setup(int unit, struct tap *t, int vid)
 		if (rv != BCM_E_NONE)
 			fprintf(stderr, "tap: bcm_port_stp_set %s: %d (%s)\n",
 				t->name, rv, bcm_errmsg(rv));
-		printf("tap: %s port %d in vlan %d, untagged (was stp=%d enable=%d)\n",
-		       t->name, t->port, vid, stp, ena);
+		/*
+		 * And the state that actually decides whether this port
+		 * forwards: the one in ITS VLAN's spanning-tree group.
+		 *
+		 * bcm_port_stp_set above writes the DEFAULT group. A per-port
+		 * service VLAN is not in the default group, so a port can read
+		 * FORWARD there and be BLOCKING where it counts. Trident+ fires
+		 * no drop counter for that, and the frames are still counted by
+		 * the MAC on the way in -- so the port shows traffic arriving,
+		 * no discards, and punts nothing.
+		 */
+		{
+			bcm_stg_t stg = -1;
+			int vstp = -1;
+
+			if (bcm_vlan_stg_get(unit, (bcm_vlan_t)vid, &stg) == BCM_E_NONE)
+				bcm_stg_stp_get(unit, stg, t->port, &vstp);
+			printf("tap: %s port %d in vlan %d, untagged "
+			       "(was stp=%d enable=%d; vlan stg=%d stp=%d)\n",
+			       t->name, t->port, vid, stp, ena, stg, vstp);
+		}
 	}
 	return 0;
 }
