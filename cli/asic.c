@@ -279,6 +279,13 @@ struct rt {
 	int  in_linux;
 	int  in_asic;
 	int  ecmp;
+	/*
+	 * A route with no gateway is directly attached, and the chip covers those
+	 * with host entries rather than with a forwarding-table entry. Reporting
+	 * them as missing would be true and wrong: it buries the routes that are
+	 * missing and should not be, which is the only reason to run this.
+	 */
+	int  connected;
 };
 
 static struct rt routes[MAX_ROUTES];
@@ -334,7 +341,10 @@ static void read_linux_routes(void)
 		int bits = 0;
 		struct rt *r;
 
-		if (sscanf(line, "%31s %15s %*s %*s %*s %*s %*s %15s", iface, dest, mask) != 3)
+		char gw[16];
+
+		if (sscanf(line, "%31s %15s %15s %*s %*s %*s %*s %15s",
+			   iface, dest, gw, mask) != 4)
 			continue;
 		d = proc_hex_to_host(dest);
 		m = proc_hex_to_host(mask);
@@ -345,6 +355,8 @@ static void read_linux_routes(void)
 		if ((r = rt_find(prefix)) == NULL)
 			continue;
 		r->in_linux = 1;
+		if (proc_hex_to_host(gw) == 0)
+			r->connected = 1;
 		if (r->via[0] == '\0')
 			snprintf(r->via, sizeof(r->via), "%s", iface);
 	}
@@ -355,7 +367,7 @@ int nosaic_asic_routes(void)
 {
 	char *resp = ask(NOSAIC_QUERY_SOCKET, "l3.routes");
 	const char *p;
-	int i, missing = 0, only_asic = 0, partial;
+	int i, missing = 0, only_asic = 0, connected = 0, partial;
 
 	if (resp == NULL) {
 		fprintf(stderr, "nosaic: cannot reach the datapath on %s\n",
@@ -398,7 +410,10 @@ int nosaic_asic_routes(void)
 		 * mirror not having caught up yet, which is worth showing and is
 		 * not a fault by itself.
 		 */
-		if (r->in_linux && !r->in_asic) {
+		if (r->in_linux && !r->in_asic && r->connected) {
+			verdict = "directly attached - covered by host entries";
+			connected++;
+		} else if (r->in_linux && !r->in_asic) {
 			verdict = "NOT IN HARDWARE - forwarded by the CPU, if at all";
 			missing++;
 		} else if (!r->in_linux && r->in_asic) {
@@ -407,7 +422,8 @@ int nosaic_asic_routes(void)
 		}
 		printf("%-22s %-18s %-14s %s\n", r->prefix,
 		       r->in_linux ? r->via : "-",
-		       r->in_asic ? (r->ecmp ? "present ecmp" : "present") : "MISSING",
+		       r->in_asic ? (r->ecmp ? "present ecmp" : "present")
+				  : (r->connected ? "-" : "MISSING"),
 		       verdict);
 	}
 
@@ -415,7 +431,11 @@ int nosaic_asic_routes(void)
 	       "\"asic\" is read back from the chip's own forwarding table.\n",
 	       nroutes);
 	if (missing > 0)
-		printf("%d route(s) the kernel has and the chip does not.\n", missing);
+		printf("%d route(s) the kernel has and the chip does not, and should.\n",
+		       missing);
+	if (connected > 0)
+		printf("%d directly attached prefix(es), which the chip covers with "
+		       "host entries rather than routes.\n", connected);
 	if (only_asic > 0)
 		printf("%d route(s) the chip has and the kernel does not.\n", only_asic);
 	if (partial)

@@ -152,6 +152,18 @@ static struct { int ifx; uint8_t ip[16]; } self6[MAX_HOST];
 static int nself6;
 
 static unsigned long st_added, st_moved, st_gone, st_failed, st_unresolved, st_host;
+
+/*
+ * Why a route did not reach the chip, counted per reason.
+ *
+ * "unresolved" on its own says a route was skipped and not which of four
+ * different things went wrong -- no gateway, an interface the kernel would not
+ * name, an interface with no router interface of ours, or a next hop that would
+ * not resolve. Those need four different fixes, and the counter that lumped
+ * them together is why the answer was not obvious from the log.
+ */
+static unsigned long why_nogw, why_noifname, why_notours, why_nonh;
+static int why_notours_said, why_nonh_said, eg_gport_said;
 static unsigned long st6_added, st6_moved, st6_gone, st6_failed, st6_unresolved, st6_host;
 
 static bcm_field_group_t fp_grp = -1;
@@ -292,6 +304,36 @@ static int nexthop(struct l3if *ifp, int ifx, uint32_t gw, bcm_if_t *eg)
 	egr.module = 0;
 
 	rv = bcm_l3_egress_create(l3_unit, 0, &egr, eg);
+	if (rv == BCM_E_PORT) {
+		/*
+		 * Retry with the port encoded as a gport.
+		 *
+		 * A plain logical port number is accepted here for the 10G ports
+		 * on this board and refused for the 40G ones -- the same port
+		 * number that bcm_port_link_status_get, bcm_vlan_port_add and
+		 * bcm_port_stp_set all take without complaint. So the egress path
+		 * resolves a port differently from the port API, and the answer is
+		 * to say explicitly which port this is rather than to let it be
+		 * inferred.
+		 *
+		 * Tried second rather than first because the plain form is what
+		 * works today for most of the panel, and a change that fixes three
+		 * ports by altering the other forty-nine is not a fix.
+		 */
+		bcm_gport_t gp;
+
+		if (BCM_E_NONE == bcm_port_gport_get(l3_unit, ifp->port, &gp)) {
+			egr.port = gp;
+			rv = bcm_l3_egress_create(l3_unit, 0, &egr, eg);
+			if (rv == BCM_E_NONE && eg_gport_said < 4) {
+				eg_gport_said++;
+				printf("l3: %s needed a gport for its next hop "
+				       "(port %d -> gport %#x)\n",
+				       ifp->ifname, ifp->port, (unsigned)gp);
+				fflush(stdout);
+			}
+		}
+	}
 	if (rv != BCM_E_NONE)
 		return rv;
 
@@ -918,15 +960,37 @@ static void route_one(uint32_t dst, int plen, const struct rt_paths *p, void *ar
 	for (i = 0; i < p->n; i++) {
 		char name[IF_NAMESIZE];
 
-		if (p->gw[i] == 0)
+		if (p->gw[i] == 0) {
+			why_nogw++;
 			continue;
-		if (if_indextoname((unsigned)p->ifindex[i], name) == NULL)
+		}
+		if (if_indextoname((unsigned)p->ifindex[i], name) == NULL) {
+			why_noifname++;
 			continue;
+		}
 		ifp = if_by_name(name);
-		if (ifp == NULL)
+		if (ifp == NULL) {
+			why_notours++;
+			if (why_notours_said < 4) {
+				why_notours_said++;
+				printf("l3: route via %s has no router interface here\n", name);
+			}
 			continue;
-		if (nexthop(ifp, (int)(ifp - ifs), ntohl(p->gw[i]), &eg) != BCM_E_NONE)
+		}
+		if ((rv = nexthop(ifp, (int)(ifp - ifs), ntohl(p->gw[i]), &eg)) != BCM_E_NONE) {
+			why_nonh++;
+			if (why_nonh_said < 4) {
+				uint32_t g = ntohl(p->gw[i]);
+
+				why_nonh_said++;
+				printf("l3: no next hop for %u.%u.%u.%u dev %s: %s "
+				       "(port %d, intf %d, vlan %d)\n",
+				       (g >> 24) & 0xff, (g >> 16) & 0xff,
+				       (g >> 8) & 0xff, g & 0xff, name, bcm_errmsg(rv),
+				       ifp->port, (int)ifp->intf, (int)ifp->vlan);
+			}
 			continue;
+		}
 		member[n++] = eg;
 	}
 	if (n == 0) {
@@ -1586,6 +1650,10 @@ void nosaic_l3_stats(void)
 	printf("l3: v4 %lu routes / %d next hops (moved %lu, gone %lu, failed %lu, "
 	       "unresolved %lu), %lu hosts\n",
 	       st_added, nnh, st_moved, st_gone, st_failed, st_unresolved, st_host);
+	if (why_nogw || why_noifname || why_notours || why_nonh)
+		printf("l3: skipped: %lu no gateway, %lu unnamed interface, "
+		       "%lu not a router interface, %lu next hop unresolved\n",
+		       why_nogw, why_noifname, why_notours, why_nonh);
 	printf("l3: v6 %lu routes / %d next hops (moved %lu, gone %lu, failed %lu, "
 	       "unresolved %lu), %lu hosts\n",
 	       st6_added, nnh6, st6_moved, st6_gone, st6_failed, st6_unresolved,
