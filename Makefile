@@ -75,8 +75,21 @@ help:
 	@echo "  CPUS=$(CPUS)  MEMORY=$(MEMORY)  JOBS=$(JOBS)   (host: $(NPROC) cores, $(MEM_TOTAL)m)"
 
 ## builder: build the pinned build container
+# How the container is built. Overridable so CI can add a shared layer cache
+# without this target having to know anything about CI.
+#
+# The default is a plain build, which is right locally: the image is built once
+# and reused, and a developer does not want their laptop talking to a cache
+# service. In CI the same target runs three times in three jobs, and every one
+# of those was a fresh apt-get from Ubuntu's mirrors -- eight minutes each, and
+# each one a chance to fail on a network that has already failed once
+# ("Failed to fetch ... Connection failed", a whole run lost to it). With a
+# layer cache the apt step is fetched once and reused, so the common case does
+# not touch the network at all.
+BUILDER_BUILD ?= docker build
+
 builder:
-	docker build $(if $(DOCKER_NETWORK),--network=$(DOCKER_NETWORK),) \
+	$(BUILDER_BUILD) $(if $(DOCKER_NETWORK),--network=$(DOCKER_NETWORK),) \
 	  --build-arg APT_FORCE_IPV4=$(if $(APT_FORCE_IPV4),$(APT_FORCE_IPV4),false) \
 	  --build-arg UBUNTU_REF=$(UBUNTU_REF) \
 	  --build-arg GO_VERSION=$(GO_VERSION) \
