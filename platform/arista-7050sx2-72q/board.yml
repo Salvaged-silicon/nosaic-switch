@@ -1,9 +1,16 @@
 # Arista DCS-7050SX2-72Q-R — Trident2+ (BCM56860).
 #
-# NOSaic's first real board. It boots from its own base, forwards in hardware
-# and holds OSPF adjacencies; status stays bringup rather than production
-# because nothing has yet been installed to its flash and survived a power
-# cycle. See docs/architecture.md for what is proven and what is not.
+# NOSaic's first real board. As of 2026-09-04 it is installed to its own flash
+# and has survived a cold power cycle: it boots standalone from Aboot into
+# file-backed A/B slots, forwards in hardware, holds four OSPF adjacencies and
+# reads real sensors -- all from the installed image rather than a hot patch.
+#
+# experimental rather than production because A/B is only half proven here.
+# Slot A boots from a file and the initramfs rolls back correctly when a slot
+# is missing or corrupt, but nothing has been installed into slot B and no
+# trial has ever been committed on this board: internal/upgrade still reads a
+# partition table and cannot write a slot file. See docs/architecture.md for
+# what is proven and what is not.
 
 id: arista-7050sx2-72q
 vendor: arista
@@ -44,6 +51,10 @@ kernel: ""
 # virtual machine -- 96 MiB slots -- are far too small to be meaningful here.
 # A datapath daemon linked against the Broadcom SDK is 151 MB stripped on its
 # own.
+# boot_mib and slot_mib are unused here and kept for the partitioned layout the
+# other boards use: this eMMC is fully allocated to Aboot's FAT, so the slots
+# are files on it and a slot costs exactly its squashfs. data_mib is the size
+# of the ext4 image that FAT carries.
 boot_mib: 64
 slot_mib: 768
 data_mib: 512
@@ -101,7 +112,7 @@ thermal:
   slew_down_percent: 5
   interval_seconds: 10
 
-status: bringup
+status: experimental
 
 notes: >
   Aboot boots unsigned SWIs here: boot0 is a shell script we control, no
