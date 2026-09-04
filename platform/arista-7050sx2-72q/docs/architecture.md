@@ -490,9 +490,8 @@ Proven on the switch:
 
 Not proven:
 
-- **A/B slots, trial boot and rollback.** The board boots from flash, but as a
-  single image Aboot loads directly. The slot machinery is CI-tested on the
-  virtual platform and unexercised here.
+- **ECMP.** `l3sync` takes one next hop per prefix, so the multipath half of
+  the contract is unexercised on this silicon.
 - **The ceiling of the control plane.** 500/s at zero loss is measured; where
   it actually stops is not. Section 6 has the numbers.
 - **Where site configuration lives.** Addresses and OSPF now come back after a

@@ -309,9 +309,12 @@ image for it on the build host. See `~/backups/as5610-edgenos-20260903/`.
   not the FIT. §2.
 - **The installer does not check the platform string.** It installs onto
   whatever it is run on. `onie-sysinfo -p` is the value to compare.
-- **No trial boot on install.** The first install goes straight to slot A and
-  commits; the trial-and-rollback path exists in the initramfs but nothing has
-  exercised it on this board.
+- **No trial boot on the *first* install.** A fresh install goes straight to
+  slot A and commits, because there is no known-good slot to fall back to yet.
+  Every later upgrade is a trial: on 2026-09-04 an image installed into the
+  inactive slot booted as a trial and **committed itself** here, judged by the
+  switch rather than by anyone watching. `nosaic upgrade status` shows the
+  pointer and `nosaic upgrade confirm` is the explicit form.
 - **`onie_boot_reason=rescue` is not useful remotely** — no networking. Use
   `install`.
 

@@ -17,14 +17,20 @@ this board is for and it is currently doing it.
 
 ## Nice to have
 
-### The CLI test is not yet the thing M6 measures
+### ~~The CLI test is not yet the thing M6 measures~~ — it is now
 
 The design says the M3 CLI test must pass **unmodified** against real silicon,
-and that this is what proves the abstraction. Here it passes against veth. It
-has never been run on a switch, so the half of the claim that matters is
-untested — see
-[the 7050SX2's list](../../arista-7050sx2-72q/docs/todo.md#the-nosaic-cli-has-never-been-run-against-silicon).
-The work is on that board, but the test lives here.
+and that this is what proves the abstraction. It does: `nosaic show ports` and
+`show caps` answer from a Trident2+ and from a Trident+ through the same
+contract this board defined, with the speeds coming back from the chip rather
+than from configuration.
+
+It went further than the design asked. The AS5610 is 32-bit big-endian PowerPC,
+which the Go toolchain has never targeted, so that switch runs a **second,
+independent CLI written in C** — and the two were diffed against each other on a
+board that can host either. `show caps` and `show ports` come back byte-for-byte
+identical. The contract defined here against veth is now the thing two
+implementations and two silicon families agree on.
 
 ### The virtual datapath has no capability model to disagree with
 

@@ -84,6 +84,10 @@ make toolchain ARCH=x86_64                                    # ~1.5 h, once
 make image BOARD=arista-7050sx2-72q PROFILE=minimal ARGS=--ram-boot
 ```
 
+`--ram-boot` is for this walkthrough, which net-boots and writes nothing. Drop
+it for an image to install — see [install.md](install.md), which is how the
+board normally runs.
+
 Use `minimal` for now: `board.yml` says `full`, but only `minimal` has been
 booted on this board.
 
@@ -312,10 +316,8 @@ Aboot is never modified, so the console always reaches a prompt.
 
 ## What you will not have
 
-- **A/B slots or rollback.** One image, booted directly.
-- **The `nosaic` CLI driving the datapath.** It exists and works against the
-  virtual platform; on silicon this board is configured through `network.conf`,
-  `frr.conf` and `vtysh`.
+- **A measured ceiling on ECMP.** `l3sync` takes one next hop per prefix, so
+  multipath is unexercised on this silicon.
 - **A measured ceiling on the control plane.** Packets destined for the switch
   go through the CPU, and that path is good for at least 500/s at zero loss.
   Where it actually stops has not been measured.
