@@ -20,6 +20,9 @@
 #include "query.h"
 #include "upgrade.h"
 
+/* How long a trial waits for its datapath. See healthy(). */
+#define NOSAIC_CONFIRM_WAIT_SECS 900
+
 /* Where the pointer lives, resolved the way the initramfs resolves it: a board
  * with a boot partition keeps it there, and one whose bootloader owns the whole
  * disk has none, so it goes on the data filesystem instead. */
@@ -140,15 +143,31 @@ static int commit(const char *dir, char *slot, size_t len)
  */
 static int healthy(char *why, size_t len)
 {
-	int fd = nosaic_query_open(NOSAIC_QUERY_SOCKET);
 	char names[512][40];
 	char *resp;
 	const char *p;
-	int n = 0, i, admin = 0, oper = 0;
+	int fd = -1, waited, n = 0, i, admin = 0, oper = 0;
 
+	/* Wait for the datapath rather than asking once.
+	 *
+	 * A daemon carrying a vendor SDK does not serve anything for minutes after
+	 * the boot that started it -- about eighty seconds on a Trident2+ and
+	 * several times that on this board at its usual log verbosity. Asking once
+	 * and giving up declines a perfectly good image, which is what happened:
+	 * the switch rolled back an image whose datapath came up a minute after it
+	 * had been written off.
+	 *
+	 * The cost of waiting too long is a slow decline. The cost of waiting too
+	 * little is an upgrade that can never succeed on this board at all.
+	 */
+	for (waited = 0; waited < NOSAIC_CONFIRM_WAIT_SECS; waited += 2) {
+		if ((fd = nosaic_query_open(NOSAIC_QUERY_SOCKET)) >= 0)
+			break;
+		sleep(2);
+	}
 	if (fd < 0) {
-		snprintf(why, len, "the datapath never came up: nothing is listening on %s",
-			 NOSAIC_QUERY_SOCKET);
+		snprintf(why, len, "the datapath never came up: nothing was listening on "
+			 "%s after %d seconds", NOSAIC_QUERY_SOCKET, NOSAIC_CONFIRM_WAIT_SECS);
 		return 0;
 	}
 	if ((resp = nosaic_query_ask(fd, "{\"op\":\"ports\"}")) == NULL) {

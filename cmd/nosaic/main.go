@@ -496,12 +496,17 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 // confirmWait is how long a trial boot waits for its datapath before giving up
 // on it.
 //
-// Generous on purpose. A datapath daemon carrying a vendor SDK takes about 80
-// seconds to initialise the chip on the 7050SX2, well after ssh answers, and a
-// health check that races it would roll back a perfectly good image. The cost
-// of waiting too long is one slow boot; the cost of waiting too little is an
-// upgrade that can never succeed.
-const confirmWait = 5 * time.Minute
+// Generous on purpose, and five minutes was not generous enough.
+//
+// A datapath daemon carrying a vendor SDK takes about 80 seconds to initialise
+// a Trident2+, well after ssh answers -- but several times that on the AS5610
+// at its usual log verbosity, and a five-minute limit declined a healthy image
+// there whose datapath came up a minute later. A health check that races chip
+// initialisation rolls back perfectly good images.
+//
+// The cost of waiting too long is one slow decline. The cost of waiting too
+// little is an upgrade that can never succeed on that board at all.
+const confirmWait = 15 * time.Minute
 
 // dialDatapath waits for nosd to start serving.
 func dialDatapath(within time.Duration) (*nosdclient.Client, error) {
