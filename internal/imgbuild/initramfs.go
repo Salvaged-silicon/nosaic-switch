@@ -145,6 +145,19 @@ else
     mount -t tmpfs tmpfs /mnt/data || fail "cannot mount a fallback writable layer"
 fi
 
+# A record of what this boot decided, where it can be read afterwards.
+#
+# Everything below prints to the console, and a switch in a rack does not have
+# one attached. A trial boot that rolls back leaves no other trace: the slot
+# files are cleaned up as part of rolling back, so by the time anyone looks, the
+# evidence of why is gone. Appending to the data partition costs nothing and is
+# the difference between "the trial failed" and knowing which step failed.
+blog() {
+    echo "$@"
+    [ "$PERSIST" = yes ] && printf '%s %s\n' "$(cat /proc/uptime 2>/dev/null | cut -d. -f1)s" "$*" \
+        >> /mnt/data/boot/log 2>/dev/null || true
+}
+
 mkdir -p /mnt/boot
 BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null || echo /dev/vda1)"
 if mount -t ext2 "$BOOTDEV" /mnt/boot 2>/dev/null; then
@@ -219,6 +232,8 @@ if [ -n "$TRIAL" ]; then
 fi
 
 SLOTDEV="$(slotdev "$SLOT")"
+blog "NOSAIC-BOOT want slot $SLOT, active=$ACTIVE trial=${TRIAL:-none} tries=$TRIES"
+blog "NOSAIC-BOOT slotdev=${SLOTDEV:-NONE} sda2=$([ -b /dev/sda2 ] && echo y || echo n) sda3=$([ -b /dev/sda3 ] && echo y || echo n)"
 [ -n "$SLOTDEV" ] || fail "unknown slot '$SLOT'"
 echo "NOSAIC-INITRAMFS slot $SLOT ($SLOTDEV)"
 
@@ -227,7 +242,7 @@ if ! mount -t squashfs -o ro "$SLOTDEV" /mnt/image 2>/dev/null; then
     # nothing to learn from retrying it, so roll back at once rather than
     # spending the trial budget discovering the same thing three times.
     if [ "$SLOT" != "$ACTIVE" ]; then
-        echo "NOSAIC-BOOT-ROLLBACK slot $SLOT does not contain a mountable image; returning to $ACTIVE"
+        blog "NOSAIC-BOOT-ROLLBACK $SLOTDEV would not mount as squashfs; returning to $ACTIVE"
         rm -f $B/trial $B/tries
         SLOT="$ACTIVE"
         SLOTDEV="$(slotdev "$SLOT")"
