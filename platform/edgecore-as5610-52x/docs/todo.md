@@ -945,58 +945,49 @@ are marked *(shared)*.
   partition nothing reads. A board that cannot read its own MAC gets a random
   one that changes every boot -- fine for a RAM boot, not fine installed.
 
-### The 40G ports link but punt nothing to the CPU
+### ~~The 40G ports link but punt nothing to the CPU~~ — fixed, 2026-09-04
 
-The cages come out of reset now and all three 40G ports carry link -- swp49 to
-the Nexus, swp51 to the 7050SX2, swp52 to the 7050TX-64 -- and the panel lights
-them. **None forms an OSPF adjacency**, while every 10G port does.
+All three 40G ports now hold full OSPF adjacencies -- swp49 to the Nexus, swp51
+to the 7050SX2, swp52 to the 7050TX-64 -- and traffic crosses them at about
+2 ms. Seven adjacencies where there were four, and the unmatched-punt counter
+sits at zero.
 
-The measurement that defines the fault, taken 65 seconds apart on a working 10G
-port and a broken 40G one:
+**The chip does not put the logical port in the punt header on these ports.**
+Frames from logical 49, 51 and 52 arrive with `src_port` 17, 19 and 20. The tap
+bridge matched on `src_port` alone, so it dropped every frame those ports
+received: the far end saw link, received our hellos and replied, and nothing
+ever reached ospfd here.
 
-| port | ingress over 65 s | frames reaching Linux |
-|---|---|---|
-| swp8, 10G | `in-nuc` 6 -> 12 (**+6**) | **17** |
-| swp51, 40G | `in-nuc` 7 -> 13 (**+6**) | **0** |
+What made this hard to see is that the numbers look plausible. `port_p2l_mapping`
+resolves 17, 19 and 20 to logical 22, 24 and 23 -- real front-panel ports, which
+is exactly why "frames from a port with no tap, correctly discarded" was a
+convincing story. **Ports 22, 23 and 24 are DOWN**, and a port with no link
+cannot send anything. That is what broke it open.
 
-The same hellos arrive at both MACs at the same rate. One port's reach the CPU
-and the other's do not.
+Proven rather than inferred: stopping OSPF on the 7050SX2 for 70 seconds left
+`src_port` 19 at exactly 112 frames while 17 and 20 kept climbing. 19 is swp51.
+The remaining two follow from the offset being consistent -- 49-17, 51-19 and
+52-20 are all 32 -- which only holds for one of the two possible assignments.
 
-Direction is established, not assumed: pinging across the link from the
-7050SX2, its `et54` tap receives exactly the four ARP requests the AS5610 sent,
-so the AS5610 transmits and the far end receives, punts and replies. The
-AS5610 never sees the reply, and its own ARP entry for the far end goes FAILED.
+**The fix does not use a port number at all.** Every front-panel port sits alone
+in its own service VLAN, so the 802.1Q tag on a punted frame names its ingress
+port exactly, and it is data off the wire rather than a number the SDK derived.
+A tap now claims a frame whose tag matches its VLAN, or whose `src_port` matches
+-- the second still covers the 10G ports and anything untagged.
 
-Everything above the MAC reads correct, and every one of these was checked
-against a working port rather than assumed:
+Four earlier explanations were tried on the hardware and all four were wrong,
+and they are worth naming because each looked right: that the punt header
+carries the SDK's *physical* port (`port_l2p_mapping` says swp51 is 61 -- it is
+not 19); that translating back through `port_p2l_mapping` would recover it; that
+the ports were blocking in their service VLAN's STG, which is a real trap on this
+board and reads `stp=4` here; and that the unmatched counter was these frames
+being dropped, which it was -- but under port numbers that made it look like
+something else entirely.
 
-- enabled, linked, `in-err` and `in-disc` both zero
-- in its service VLAN with the CPU a member: `vid 3351 members 0 51 untagged 51`
-- **forwarding in that VLAN's own spanning-tree group**, `stg=1 stp=4`, which is
-  the same pair a working 10G port reads
-- not arriving under some other port number: the punted frames nobody claims
-  come from exactly three distinct sources, logical 22, 23 and 24, and none of
-  them is 49, 51 or 52
-
-**Four explanations were tried on the hardware and all four were wrong**, which
-is the useful part of this entry. That the punt header carries a physical rather
-than a logical port on a 40G port (matching the SDK's l2p value, swp51 -> 61,
-changed nothing). That the incoming number needed translating back through
-`port_p2l_mapping` (nothing). That the ports were blocking in their service
-VLAN's STG, which is a real trap on this board and is not this (`stp=4`). And
-that the `matched no tap` counter was the 40G frames being dropped -- it is a
-red herring, its frames come from untapped ports, and it was only convincing
-because the log capped at the first eight frames and they all came from one busy
-port.
-
-So the question is now narrow: a port that is enabled, linked, forwarding, and a
-member of a VLAN the CPU is also in, receives frames at its MAC and floods none
-of them to the CPU. The next place to look is the hardware tables rather than
-the SDK's view of them -- the VLAN's port bitmap and the flood/CPU membership as
-the chip holds them -- and whether a Trident+ 40G port needs anything per-port
-before it will punt at all. `--stats` cannot be used for that on a running
-switch because it re-initialises the chip, which is the same `switch-api` gap
-listed below.
+`SOC_INFO` was removed from the tap bridge along the way. None of its maps
+answered the question, and reading the SDK's internal structures from code
+compiled separately risks a layout mismatch this project has already been bitten
+by once.
 
 ### Operating it
 

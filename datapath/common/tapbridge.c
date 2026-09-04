@@ -72,7 +72,6 @@
 #include <unistd.h>
 
 #include <sal/types.h>
-#include <soc/drv.h>
 #include <bcm/error.h>
 #include <bcm/pkt.h>
 #include <bcm/rx.h>
@@ -97,13 +96,6 @@ struct tap {
 	char          name[IFNAMSIZ];
 	int           fd;
 	bcm_port_t    port;
-	/*
-	 * The physical port the chip reports when it punts a frame from this
-	 * one. On a 10G port it is the logical port; on a 40G port it is not,
-	 * and matching only the logical number silently drops everything the
-	 * far end sends -- see tap_rx.
-	 */
-	bcm_port_t    phys;
 	int           vlan;
 	int           mtu;
 	unsigned char mac[6];
@@ -137,33 +129,58 @@ static unsigned long rx_unmatched;
 static int           rx_unmatched_logged;
 
 /*
- * The logical port a punted frame came from, given whatever the punt header
- * carried.
+ * Punted frames nobody claimed, counted per source.
  *
- * Out-of-range and unmapped values come back unchanged rather than as an error:
- * the caller compares the result, and a number that maps to nothing simply
- * matches nothing.
+ * A count rather than a first-sighting, because the useful question is which
+ * source is busy: driving traffic into one port and seeing which counter moves
+ * is what turns an unexplained port number into a mapping.
  */
-static bcm_port_t punt_logical(bcm_port_t src)
-{
-	int l;
-
-	if (src < 0 || src >= SOC_MAX_NUM_PORTS)
-		return src;
-	l = SOC_INFO(tap_unit).port_p2l_mapping[src];
-	return l >= 0 ? (bcm_port_t)l : src;
-}
+static struct { bcm_port_t src; unsigned long n; } unclaimed[32];
+static int nunclaimed;
 
 static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 {
-	int i;
+	int i, vid;
+
+	/*
+	 * The VLAN the frame arrived in, from the frame itself.
+	 *
+	 * Every front-panel port sits alone in its own service VLAN, so the tag
+	 * on a punted frame names the port it came from exactly, and it is data
+	 * off the wire rather than a number the SDK derived.
+	 */
+	vid = 0;
+	if (pkt->pkt_data[0].len > 16) {
+		const unsigned char *p = pkt->pkt_data[0].data;
+
+		if (p[12] == 0x81 && p[13] == 0x00)
+			vid = ((p[14] << 8) | p[15]) & 0xfff;
+	}
 
 	for (i = 0; i < ntaps; i++) {
 		unsigned char  flat[TAP_MTU];
 		unsigned char *d;
 		int            len;
 
-		if (taps[i].port != pkt->src_port)
+		/*
+		 * Either identifies the tap, and the VLAN is the one that works
+		 * on every port.
+		 *
+		 * src_port is what the chip put in the punt header, and on this
+		 * board's 40G ports it is neither the logical port nor anything
+		 * the SDK's own maps translate to it: frames from logical 49, 51
+		 * and 52 arrive as 17, 19 and 20, while port_p2l_mapping resolves
+		 * those to 22, 24 and 23 -- three ports that are DOWN and cannot
+		 * have sent anything. Proven by driving traffic into one port and
+		 * watching which source went silent.
+		 *
+		 * Matching src_port alone therefore dropped every frame those
+		 * ports received. The far end saw link, received our hellos and
+		 * replied; nothing ever reached ospfd here, and no adjacency
+		 * formed on a link whose counters showed clean traffic arriving.
+		 */
+		if (taps[i].port != pkt->src_port &&
+		    !(vid != 0 && taps[i].vlan == vid))
 			continue;
 
 		len = pkt->tot_len ? (int)pkt->tot_len : (int)pkt->pkt_data[0].len;
@@ -213,22 +230,25 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 	 * needs is the SET of ports punting frames nobody claims.
 	 */
 	{
-		static bcm_port_t seen[32];
-		static int nseen;
-		int j, known = 0;
+		int j;
 
-		for (j = 0; j < nseen; j++)
-			if (seen[j] == pkt->src_port) { known = 1; break; }
-		if (!known && nseen < (int)(sizeof(seen) / sizeof(seen[0]))) {
-			seen[nseen++] = pkt->src_port;
-			printf("tap: punted frame from src_port %d (p2l %d) "
+		for (j = 0; j < nunclaimed; j++)
+			if (unclaimed[j].src == pkt->src_port) break;
+		if (j == nunclaimed &&
+		    nunclaimed < (int)(sizeof(unclaimed) / sizeof(unclaimed[0]))) {
+			unclaimed[nunclaimed].src = pkt->src_port;
+			unclaimed[nunclaimed].n = 0;
+			nunclaimed++;
+			printf("tap: punted frame from src_port %d vlan %d "
 			       "matches no tap (taps are on ports",
-			       pkt->src_port, punt_logical(pkt->src_port));
+			       pkt->src_port, vid);
 			for (i = 0; i < ntaps; i++)
 				printf(" %d", taps[i].port);
 			printf(")\n");
 			fflush(stdout);
 		}
+		if (j < nunclaimed)
+			unclaimed[j].n++;
 	}
 	return BCM_RX_NOT_HANDLED;
 }
@@ -334,16 +354,6 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 	snprintf(t->name, sizeof(t->name), "%s", name);
 	t->fd = fd;
 	t->port = port;
-	/*
-	 * Asked for, not assumed. The SDK keeps the logical-to-physical map the
-	 * chip's punt header is written against; on a 10G port the two numbers
-	 * are the same and this costs nothing, and on a 40G port it is the
-	 * difference between receiving and not.
-	 */
-	t->phys = SOC_INFO(tap_unit).port_l2p_mapping[port];
-	if (t->phys != port)
-		printf("tap: %s is logical port %d, physical port %d\n",
-		       name, port, t->phys);
 	return 0;
 }
 
@@ -661,6 +671,9 @@ void nosaic_tap_stats(void)
 	}
 
 	printf("tap: %lu punted frame(s) matched no tap\n", rx_unmatched);
+	for (i = 0; i < nunclaimed; i++)
+		printf("tap:   src_port %d: %lu frame(s)\n",
+		       unclaimed[i].src, unclaimed[i].n);
 
 	/*
 	 * What the chip says the VLAN contains, rather than what we asked it to
