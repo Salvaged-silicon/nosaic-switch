@@ -1,9 +1,10 @@
 # Installing NOSaic on the 7050SX2-72Q
 
-The switch boots NOSaic from its own flash. What is **not** here yet is the A/B
-slot layout — this installs one image that Aboot boots, with no second slot, no
-trial boot and no rollback, and no persistent state. See
-[What this does not give you](#what-this-does-not-give-you).
+The switch boots NOSaic from its own flash, with **A/B slots, a persistent
+overlay, trial boots and rollback**. A new image goes into the slot that is not
+running; it either confirms itself healthy and commits, or burns three attempts
+and the switch returns to the slot it was on. See
+[What you get, and what you do not](#what-you-get-and-what-you-do-not).
 
 For development, [running.md](running.md) boots over HTTP and writes nothing at
 all. That is still the faster loop.

@@ -41,8 +41,13 @@ Copy `platform/TEMPLATE/` to `platform/<your-board>/` and fill it in. The direct
 must match the `id` in `board.yml`. Nothing central needs editing — the catalog is derived
 by scanning `platform/`.
 
-A board only enters the README's supported table once it boots, forwards traffic, and
-passes CI. Ports in progress live at `status: bringup`.
+Every board appears in the README's table with its status beside it, generated from the
+board directories by `make docs` — `make check` fails if it has drifted. Hiding ports in
+progress sounds honest and is not: somebody with that switch in a rack wants to know it
+boots and is short of a few things, and a table that omits it says the project has never
+heard of their hardware. Set `status:` to what has actually been demonstrated
+(`planned` → `bringup` → `experimental` → `production`) and nothing is called `production`
+until it has run somewhere that matters for longer than a lab afternoon.
 
 ## Reverse engineering
 

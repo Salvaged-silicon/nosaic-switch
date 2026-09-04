@@ -146,6 +146,19 @@ Four things keep this from decaying:
   Otherwise the first chip ported defines the contract by accident, and every chip after it
   contorts to fit a model chosen for unrelated reasons.
 
+**The CLI is not always the same program, and that is the part that nearly broke this.**
+The Go toolchain has ppc64 and ppc64le and has never had 32-bit big-endian PowerPC, so a
+board on that architecture cannot run the Go CLI and runs a C one instead. For a while
+that CLI implemented `config`, `verify` and `platform` and nothing else, so the switch
+genuinely did not answer the same commands as its neighbour in the same rack — the claim
+above was false on the one board that tested it.
+
+Two implementations are acceptable; two vocabularies are not. Both now ask the same ops on
+the same socket and print the same columns, and the two are checked against each other by
+running them side by side on a board that can host either: `show caps` and `show ports`
+come back byte-for-byte identical. An architecture the compiler cannot reach is not a
+reason for a switch to be operated differently.
+
 ## Image layout and upgrades
 
 The build emits an immutable image. The switch mounts it read-only under an overlay and

@@ -125,6 +125,21 @@ make pkg PKG=nosd-td2p ARCH=x86_64      # rebuild the package first
 make image BOARD=arista-7050sx2-72q     # then compose
 ```
 
+**If you changed `cli/` or `datapath/`, rebuild that package first.** `make image`
+composes whatever is already in `out/packages`; three recipes build from directories
+inside this repository, and for those "already built" and "current" are different things.
+The image build now says so:
+
+```
+WARNING nosd-td2p_0.1.0_x86_64.nos is older than its source:
+        datapath/common/query.c changed 3h44m37s after the package was built.
+        Run: make pkg PKG=nosd-td2p ARCH=x86_64
+```
+
+It is a warning rather than an error, so read it. Ignoring it ships the previous binary,
+and the image looks correct in every way except behaviour — which has been diagnosed on
+hardware as a missing feature more than once.
+
 This is worth knowing because of how it fails. An image carrying stale code does not
 look broken — it boots, it runs, and it quietly disagrees with your source tree. It
 invalidated several conclusions during the 7050SX2 bring-up, including a fix that was

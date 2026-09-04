@@ -11,7 +11,7 @@ NOSaic's first real board, and the one M6 is written against.
 | Management | BCM57762 (`14e4:1682`), `tg3` |
 | Bootloader | Aboot, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots from its own flash, forwards and routes; no A/B slots or persistence yet |
+| Status | **experimental** — installed on its own flash with A/B slots, survives a cold power cut, forwards and routes |
 
 - **[Walkthrough](docs/walkthrough.md)** — **start here** if you have one of these:
   backup, port map, build, install, forward
@@ -69,8 +69,16 @@ The board runs as a router. On the switch, verified rather than assumed:
   (s6) has been booted.
 - **ECMP.** `l3sync` takes one next hop per prefix.
 
-Status stays `bringup` until it boots from its own flash and survives a power
-cycle without help.
+It cleared `bringup` on 2026-09-04: installed to its own flash, back in 68
+seconds from a cold power cut at the PDU, with the ext4 journal replaying clean
+and four OSPF adjacencies re-formed. A healthy image installed into the inactive
+slot confirms itself and commits; one that boots and does not forward burns its
+three attempts and rolls back, unattended.
+
+It stays `experimental` rather than being called production for the reasons
+listed above — ECMP, `prefdl`, `fanread` — and because nothing here is called
+production until it has run somewhere that matters for longer than a lab
+afternoon.
 
 ## Getting the port map and polarity from EOS
 

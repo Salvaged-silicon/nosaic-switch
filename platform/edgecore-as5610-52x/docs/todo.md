@@ -1017,18 +1017,19 @@ patching. Checking for it is one line:
 
 ### Operating it
 
-- **Install to flash.** Everything so far is a TFTP RAM boot that writes
-  nothing. The ONIE backend does not handle U-Boot platforms yet (above), and
-  the A/B slot layout has never been exercised here.
-- **`nosaic` beyond `platform`.** The C CLI covers `platform status` and
-  `platform thermal`. `show`, `interface` and `route` are mostly a client over
-  nosd's socket and would work the same way; they are simply not written.
+- ~~**Install to flash.**~~ Done: NOSaic is on this board's disk, put there by
+  the ONIE installer, and the vendor OS is gone. The four-partition layout gives
+  it A/B slots with the boot pointer on the data partition.
+- ~~**`nosaic` beyond `platform`.**~~ Done: the C CLI now carries `show
+  ports|routes|caps`, `verify ports|routes`, `config` and `upgrade
+  status|commit|confirm`. `show caps` and `show ports` were checked against the
+  Go CLI on a board that can run both and come back byte-for-byte identical.
+  Still missing here: `interface` and `route`, which write rather than read.
 - **Counters an operator can see.** The chip counts; `--stats` re-initialises
   the chip to read them, so it cannot be used on a running switch. The daemon
   prints a table to its log once a minute, which is not the same thing.
-- **Anything that queries a running nosd.** There is no southbound socket yet,
-  which is the `switch-api` gap: every diagnostic here either reads a log or
-  restarts the datapath.
+- ~~**Anything that queries a running nosd.**~~ Done: the daemon serves the
+  contract on a socket, and both CLIs read it.
 - **Restarting `nosd` takes the switch off the network, silently.** The taps are
   created by the daemon, so restarting it destroys and recreates them -- without
   addresses and at the default MTU. `apply-network.sh` ran once at boot and

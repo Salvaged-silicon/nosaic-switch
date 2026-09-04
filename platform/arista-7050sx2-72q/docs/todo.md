@@ -169,22 +169,6 @@ What is left:
 
 ## Nice to have — the switch works without these
 
-### A/B slots, trial boot and rollback
-
-What is installed is one image Aboot boots directly. The slot machinery exists
-and is CI-tested on the virtual platform; on this board it is unexercised. It
-wants the same file-on-the-flash-partition layout the item above does, so the
-two are one piece of work rather than two.
-
-### The NOSaic CLI has never been run against silicon
-
-`nosaic show ports | routes | caps`, `interface` and `route` exist and run
-against the virtual datapath in CI. This board was configured with `ip` and
-`vtysh`. Until the same commands work unmodified on both, "the same commands on
-every switch" is a design commitment rather than a result — and that is
-[M6's gate](../../../docs/MILESTONES.md), so it is the most valuable item here
-after persistence.
-
 ### The MAC address is hard-coded
 
 `config/network.conf` states `mac 44:4c:a8:eb:93:f6` because the board keeps it
@@ -331,8 +315,9 @@ worst possible place to find it.
 
 ### Operating it
 
-- **A/B slots, trial boot and rollback** — its own section, and this is the
-  board with the flash to do it on.
+- ~~**A/B slots, trial boot and rollback**~~ — done, and proven on this board
+  in both directions: a healthy image commits itself, and one that boots and
+  does not forward rolls back unattended after three attempts.
 - **Counters an operator can see.** *(shared)* Same gap as the AS5610: the
   daemon logs a table once a minute and there is no way to ask a running one
   anything.

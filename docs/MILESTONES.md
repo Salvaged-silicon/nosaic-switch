@@ -10,10 +10,10 @@ leaves something bootable.
 | **M2** | Recipe engine and `.nos` packages | **Done.** zlib builds from source for x86_64 and powerpc; two clean builds are byte-identical; dependencies resolve in topological order; ELF objects are verified against the target |
 | **M3** | One kernel | **Done.** 6.12 LTS boots under QEMU on x86_64 *and* aarch64, running an init built by its own toolchain that verifies the configured filesystems are present |
 | **M4** | Base system, and a VM that boots | **Done.** Boots, persists, upgrades atomically with rollback, and the CLI drives a real veth datapath through the contract. All three profiles build and boot in CI: minimal on busybox+s6, slim and full on systemd |
-| **M5** | The boot axis | **Mostly done.** Four backends (virt, onie-sfx, aboot, uboot) emit installable artifacts, tested by running the installer's own extraction and by reading the FIT back. Aboot needs confirming on hardware |
-| **M6** | First real board | Boots from its own from-source base on real hardware, reports real sensors, forwards traffic — and the M3 CLI test passes unmodified |
-| **M7** | Routing and upgrades | BGP establishes; an upgrade that boots but fails to forward rolls back unattended |
-| **M8** | Older architectures | PowerPC and armhf toolchains, the `onl-swi` backend, and ports for older boards |
+| **M5** | The boot axis | **Done.** Four backends (virt, onie-sfx, aboot, uboot) emit installable artifacts. Two are now confirmed on hardware rather than by extraction: Aboot boots the 7050SX2 from its own flash, and the ONIE installer put NOSaic on the AS5610's disk |
+| **M6** | First real board | **Done.** The 7050SX2 boots from its own from-source base, reports real sensors and forwards traffic, and `nosaic show ports` answers from Trident2+ silicon through the same contract the virtual platform implements — the speeds come back from the chip |
+| **M7** | Routing and upgrades | **Upgrades done, BGP not started.** On the 7050SX2 a healthy image installed into the inactive slot confirms itself and commits, and one built with an empty port map — it boots, answers ssh and does not forward — burns three attempts and rolls back unattended. OSPFv2 and OSPFv3 hold adjacencies on both boards; no `bgpd` is packaged yet |
+| **M8** | Older architectures | **Started.** The PowerPC toolchain is done and the AS5610-52X is ported and installed on its own disk — 10 ports up, 52 routes, 7 OSPFv2 and 3 OSPFv3 adjacencies. armhf and the `onl-swi` backend are not started |
 
 ## Spikes
 
