@@ -20,6 +20,7 @@
  */
 
 #include "hal.h"
+#include "config.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -29,6 +30,15 @@
 #include <unistd.h>
 
 static const char usage[] =
+"usage: nosaic <command>\n"
+"\n"
+"  config show [pattern]   every setting, and whether it came from the image\n"
+"                          or from this switch\n"
+"  config get <name>       one setting's effective value\n"
+"  config set <name> <val> write it into this switch's own configuration\n"
+"  config unset <name>     remove it; the image's default applies again\n"
+"  config files            which files are layered, in order\n"
+"\n"
 "usage: nosaic platform <command>\n"
 "\n"
 "  status               what the board reports about itself\n"
@@ -227,6 +237,98 @@ static int unsupported(const char *what)
 	return 1;
 }
 
+
+/* ------------------------------------------------------------------ config */
+
+/*
+ * The configuration, and where each setting came from.
+ *
+ * Saying which file won is the point. A switch behaving unlike its neighbour
+ * is nearly always one overridden setting, and "which of these two layers is
+ * this coming from" is the question that answers it -- without it an operator
+ * has to know the layering rules and read both directories by hand.
+ */
+static int cmd_config(int argc, char **argv)
+{
+	char err[256];
+	int i, n = 0;
+
+	nosaic_config_load();
+
+	if (argc < 3 || strcmp(argv[2], "show") == 0) {
+		const char *pat = argc > 3 ? argv[3] : NULL;
+
+		for (i = 0; i < nosaic_config_count(); i++) {
+			const char *name = nosaic_config_name(i);
+
+			if (pat != NULL && strstr(name, pat) == NULL)
+				continue;
+			printf("%-34s %-24s %s\n", name, nosaic_config_value(i),
+			       nosaic_config_is_site(i) ? "switch" : "image");
+			n++;
+		}
+		if (n == 0)
+			printf("no settings%s\n", pat ? " match" : "");
+		else
+			printf("\n%d setting(s). "
+			       "\"switch\" comes from %s and survives an upgrade; "
+			       "\"image\" is the default this image shipped.\n",
+			       n, NOSAIC_CONFIG_SITE_DIR);
+		return 0;
+	}
+	if (strcmp(argv[2], "files") == 0) {
+		printf("%s        the image's defaults, replaced by every upgrade\n",
+		       NOSAIC_CONFIG_IMAGE_DIR);
+		printf("%s   this switch's own, and it wins\n", NOSAIC_CONFIG_SITE_DIR);
+		printf("\n`config set` writes %s/%s only.\n",
+		       NOSAIC_CONFIG_SITE_DIR, NOSAIC_CONFIG_SITE_FILE);
+		return 0;
+	}
+	if (strcmp(argv[2], "get") == 0) {
+		const char *v;
+
+		if (argc < 4) {
+			fprintf(stderr, "usage: nosaic config get <name>\n");
+			return 2;
+		}
+		v = nosaic_config_get(argv[3]);
+		if (v == NULL) {
+			fprintf(stderr, "nosaic: %s is not set\n", argv[3]);
+			return 1;
+		}
+		printf("%s\n", v);
+		return 0;
+	}
+	if (strcmp(argv[2], "set") == 0) {
+		if (argc < 5) {
+			fprintf(stderr, "usage: nosaic config set <name> <value>\n");
+			return 2;
+		}
+		if (nosaic_config_set(argv[3], argv[4], err, sizeof(err)) != 0) {
+			fprintf(stderr, "nosaic: %s\n", err);
+			return 1;
+		}
+		printf("%s=%s written to %s/%s\n", argv[3], argv[4],
+		       NOSAIC_CONFIG_SITE_DIR, NOSAIC_CONFIG_SITE_FILE);
+		printf("It takes effect when the thing that reads it restarts.\n");
+		return 0;
+	}
+	if (strcmp(argv[2], "unset") == 0) {
+		if (argc < 4) {
+			fprintf(stderr, "usage: nosaic config unset <name>\n");
+			return 2;
+		}
+		if (nosaic_config_set(argv[3], NULL, err, sizeof(err)) != 0) {
+			fprintf(stderr, "nosaic: %s\n", err);
+			return 1;
+		}
+		printf("%s removed; the image's default applies again\n", argv[3]);
+		return 0;
+	}
+	fprintf(stderr, "nosaic: unknown config command %s\n", argv[2]);
+	return 2;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc < 2 || strcmp(argv[1], "--help") == 0) {
@@ -237,6 +339,8 @@ int main(int argc, char **argv)
 		printf("nosaic (C, for architectures without a Go target)\n");
 		return 0;
 	}
+	if (strcmp(argv[1], "config") == 0)
+		return cmd_config(argc, argv);
 	if (strcmp(argv[1], "platform") != 0) {
 		fprintf(stderr, "nosaic: this build provides `platform` only; "
 			"the rest of the CLI runs on the build host\n");

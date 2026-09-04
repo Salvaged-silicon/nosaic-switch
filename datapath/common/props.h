@@ -10,6 +10,15 @@
 #ifndef NOSAIC_PROPS_H
 #define NOSAIC_PROPS_H
 
+/*
+ * Where a switch's own configuration lives, as opposed to the image's.
+ *
+ * On the shared data partition, so it survives both an upgrade and a rollback:
+ * config that lived in a slot would be lost by the first and reverted by the
+ * second, which is the whole reason the partition is shared.
+ */
+#define NOSAIC_CONFIG_DIR "/mnt/data/config"
+
 /* Load key=value properties. Returns how many were read, or -1. */
 int nosaic_props_load(const char *path);
 

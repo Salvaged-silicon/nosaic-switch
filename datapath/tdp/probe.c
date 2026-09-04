@@ -152,18 +152,35 @@ int main(int argc, char **argv)
 			bdf = argv[i];
 	}
 
-	/* Every *.conf in /etc/nosaic, in name order: asic.conf carries the SDK
-	 * properties for this board model and portmap.conf which lane reaches
-	 * which cage. Reported rather than required, so a register probe still
-	 * works on a box with no configuration installed. */
+	/*
+	 * Configuration, in two layers: the image's defaults and then this
+	 * switch's own.
+	 *
+	 * /etc/nosaic is what the image shipped -- asic.conf carries the SDK
+	 * properties for this board model, portmap.conf which lane reaches which
+	 * cage. /mnt/data/config is on the shared data partition, belongs to THIS
+	 * box, and is loaded second so it wins: nosaic_props_get walks backwards
+	 * and takes the last definition.
+	 *
+	 * That ordering is the whole point. The image is replaceable and the
+	 * configuration is not -- a setting made on a switch has to survive an
+	 * upgrade AND a rollback, which it cannot do if it lives in the slot.
+	 *
+	 * Both are reported rather than required, so a register probe still works
+	 * on a box with no configuration installed at all.
+	 */
 	{
-		int n = nosaic_props_load_dir("/etc/nosaic");
+		int base = nosaic_props_load_dir("/etc/nosaic");
+		int site = nosaic_props_load_dir(NOSAIC_CONFIG_DIR);
 
-		if (n > 0)
-			printf("config       %d properties from /etc/nosaic\n", n);
+		if (base > 0)
+			printf("config       %d propertie(s) from /etc/nosaic\n", base);
 		else
 			printf("config       none in /etc/nosaic -- an attach will not "
 			       "get past the port map\n");
+		if (site > 0)
+			printf("config       %d overriding propertie(s) from %s\n",
+			       site, NOSAIC_CONFIG_DIR);
 	}
 
 	if (nosaic_tdp_bde_open(&b, bdf) != 0)

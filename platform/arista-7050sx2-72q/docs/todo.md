@@ -269,6 +269,22 @@ one fix lands on both. The AS5610's list is
 - **The watchdog is not armed** — its own section.
 - **Two QSFP macros are left at the global lane map** — its own section.
 
+### Configuration does not persist here, because this board RAM-boots
+
+`nosaic config set` works and writes `/mnt/data/config/local.conf` exactly as it
+does on the AS5610 -- but `/mnt/data` is a **tmpfs** on this board, so every
+setting is gone at the next reboot. The AS5610 has the same CLI over an ext4
+`/dev/sda4` and keeps its configuration.
+
+The SWI installed on flash is a RAM-boot image: the root filesystem travels
+inside the initramfs and no partition is mounted for data. Fixing this means
+building this board a disk-installed image with the same four-partition layout
+the AS5610 uses -- flash has about 1.1 GB free, which is ample -- and is the
+same work as A/B here, since both need real partitions.
+
+Until then this board is configured by rebuilding its image, and `config set`
+should be treated as a way to try something rather than to keep it.
+
 ### Operating it
 
 - **A/B slots, trial boot and rollback** — its own section, and this is the

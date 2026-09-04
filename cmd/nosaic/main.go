@@ -22,6 +22,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
 	"github.com/salvaged-silicon/nosaic-switch/internal/check"
+	"github.com/salvaged-silicon/nosaic-switch/internal/config"
 	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
 	"github.com/salvaged-silicon/nosaic-switch/internal/docsgen"
 	"github.com/salvaged-silicon/nosaic-switch/internal/imgbuild"
@@ -167,6 +168,12 @@ func main() {
 
 	case "show", "interface", "route":
 		if err := switchCmd(args); err != nil {
+			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "config":
+		if err := configCmd(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
 		}
@@ -815,4 +822,100 @@ func compileDeviceTree(root string, b *board.Board, outDir string) (string, erro
 func consoleArg(b *board.Board) string {
 	dev, baud := b.ConsolePort()
 	return fmt.Sprintf("%s,%d", dev, baud)
+}
+
+/*
+configCmd reads and edits the switch's configuration files.
+
+It never talks to the datapath. That is deliberate and it is the whole point of
+the split: configuration is a document describing what this switch should be,
+and something else renders it into running state. A CLI that both edited the
+document and poked the chip would let the two disagree, which is exactly the
+class of fault the "is it in the ASIC" view exists to catch.
+
+Saying which layer each setting came from is the other half. A switch behaving
+unlike its neighbour is nearly always one overridden setting, and without the
+source an operator has to know the layering rules and read both directories by
+hand.
+*/
+func configCmd(args []string) error {
+	c, err := config.Load()
+	if err != nil {
+		return err
+	}
+	sub := "show"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+
+	switch sub {
+	case "show":
+		pat := ""
+		if len(args) > 1 {
+			pat = args[1]
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		n := 0
+		for _, s := range c.Settings() {
+			if pat != "" && !strings.Contains(s.Name, pat) {
+				continue
+			}
+			src := "image"
+			if s.Site {
+				src = "switch"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\n", s.Name, s.Value, src)
+			n++
+		}
+		w.Flush()
+		if n == 0 {
+			fmt.Println("no settings" + map[bool]string{true: " match", false: ""}[pat != ""])
+			return nil
+		}
+		fmt.Printf("\n%d setting(s). \"switch\" comes from %s and survives an "+
+			"upgrade; \"image\" is the default this image shipped.\n",
+			n, config.SiteDir)
+		return nil
+
+	case "files":
+		fmt.Printf("%-24s the image's defaults, replaced by every upgrade\n", config.ImageDir)
+		fmt.Printf("%-24s this switch's own, and it wins\n", config.SiteDir)
+		fmt.Printf("\n`config set` writes %s only.\n",
+			filepath.Join(config.SiteDir, config.SiteFile))
+		return nil
+
+	case "get":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: nosaic config get <name>")
+		}
+		v, ok := c.Get(args[1])
+		if !ok {
+			return fmt.Errorf("%s is not set", args[1])
+		}
+		fmt.Println(v)
+		return nil
+
+	case "set":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: nosaic config set <name> <value>")
+		}
+		if err := config.Set(args[1], &args[2]); err != nil {
+			return err
+		}
+		fmt.Printf("%s=%s written to %s\n", args[1], args[2],
+			filepath.Join(config.SiteDir, config.SiteFile))
+		fmt.Println("It takes effect when the thing that reads it restarts.")
+		return nil
+
+	case "unset":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: nosaic config unset <name>")
+		}
+		if err := config.Set(args[1], nil); err != nil {
+			return err
+		}
+		fmt.Printf("%s removed; the image's default applies again\n", args[1])
+		return nil
+	}
+	return fmt.Errorf("unknown config command %q", sub)
 }

@@ -15,7 +15,7 @@ CFLAGS += -Wall -Wextra -Wno-unused-parameter
 CFLAGS += -D_FILE_OFFSET_BITS=64
 LDFLAGS ?=
 
-OBJS = nosaic.o hal_as5610.o
+OBJS = nosaic.o hal_as5610.o config.o
 
 all: nosaic
 
