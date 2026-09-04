@@ -268,3 +268,160 @@ int nosaic_asic_ports(void)
 		printf("%d disagree in a way that stops traffic.\n", bad);
 	return bad > 0 ? 1 : 0;
 }
+
+/* ------------------------------------------------------------------ routes */
+
+#define MAX_ROUTES 512
+
+struct rt {
+	char prefix[24];
+	char via[32];     /* the Linux interface, or empty */
+	int  in_linux;
+	int  in_asic;
+	int  ecmp;
+};
+
+static struct rt routes[MAX_ROUTES];
+static int nroutes;
+
+static struct rt *rt_find(const char *prefix)
+{
+	int i;
+
+	for (i = 0; i < nroutes; i++)
+		if (strcmp(routes[i].prefix, prefix) == 0)
+			return &routes[i];
+	if (nroutes >= MAX_ROUTES)
+		return NULL;
+	memset(&routes[nroutes], 0, sizeof(routes[nroutes]));
+	snprintf(routes[nroutes].prefix, sizeof(routes[nroutes].prefix), "%s", prefix);
+	return &routes[nroutes++];
+}
+
+/*
+ * /proc/net/route stores addresses as the in-memory 32-bit word printed as
+ * hex, so what the digits mean depends on the host's byte order. Reading them
+ * the same way everywhere gives correct routes on x86 and reversed ones on a
+ * PowerPC switch -- which is a bug this tree has already had once, in the
+ * datapath's own route mirror.
+ */
+static unsigned proc_hex_to_host(const char *h)
+{
+	unsigned v = (unsigned)strtoul(h, NULL, 16);
+
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	return v;
+#else
+	return ((v & 0xff) << 24) | ((v & 0xff00) << 8) |
+	       ((v >> 8) & 0xff00) | ((v >> 24) & 0xff);
+#endif
+}
+
+static void read_linux_routes(void)
+{
+	char line[512];
+	FILE *f = fopen("/proc/net/route", "r");
+
+	if (f == NULL)
+		return;
+	if (fgets(line, sizeof(line), f) == NULL) {   /* header */
+		fclose(f);
+		return;
+	}
+	while (fgets(line, sizeof(line), f) != NULL) {
+		char iface[32], dest[16], mask[16], prefix[24];
+		unsigned d, m;
+		int bits = 0;
+		struct rt *r;
+
+		if (sscanf(line, "%31s %15s %*s %*s %*s %*s %*s %15s", iface, dest, mask) != 3)
+			continue;
+		d = proc_hex_to_host(dest);
+		m = proc_hex_to_host(mask);
+		while (m & 0x80000000u) { bits++; m <<= 1; }
+		snprintf(prefix, sizeof(prefix), "%u.%u.%u.%u/%d",
+			 (d >> 24) & 0xff, (d >> 16) & 0xff, (d >> 8) & 0xff, d & 0xff, bits);
+
+		if ((r = rt_find(prefix)) == NULL)
+			continue;
+		r->in_linux = 1;
+		if (r->via[0] == '\0')
+			snprintf(r->via, sizeof(r->via), "%s", iface);
+	}
+	fclose(f);
+}
+
+int nosaic_asic_routes(void)
+{
+	char *resp = ask(NOSAIC_QUERY_SOCKET, "l3.routes");
+	const char *p;
+	int i, missing = 0, only_asic = 0, partial;
+
+	if (resp == NULL) {
+		fprintf(stderr, "nosaic: cannot reach the datapath on %s\n",
+			NOSAIC_QUERY_SOCKET);
+		return 1;
+	}
+	if (strstr(resp, "\"ok\":true") == NULL) {
+		fprintf(stderr, "nosaic: the datapath refused: %s", resp);
+		free(resp);
+		return 1;
+	}
+	partial = strstr(resp, "\"partial\":true") != NULL;
+
+	read_linux_routes();
+
+	p = strstr(resp, "\"result\":[");
+	p = p != NULL ? strchr(p, '[') : NULL;
+	for (p = p != NULL ? strchr(p, '{') : NULL; p != NULL; p = strchr(p + 1, '{')) {
+		char prefix[24];
+		struct rt *r;
+
+		jstr(p, "prefix", prefix, sizeof(prefix));
+		if (prefix[0] == '\0')
+			continue;
+		if ((r = rt_find(prefix)) == NULL)
+			continue;
+		r->in_asic = 1;
+		r->ecmp = jint(p, "ecmp", 0);
+	}
+	free(resp);
+
+	printf("%-22s %-18s %-14s %s\n", "prefix", "linux", "asic", "");
+	for (i = 0; i < nroutes; i++) {
+		struct rt *r = &routes[i];
+		const char *verdict = "";
+
+		/*
+		 * Only the first case stops traffic. A route the chip has and
+		 * Linux does not is usually the kernel having moved on and the
+		 * mirror not having caught up yet, which is worth showing and is
+		 * not a fault by itself.
+		 */
+		if (r->in_linux && !r->in_asic) {
+			verdict = "NOT IN HARDWARE - forwarded by the CPU, if at all";
+			missing++;
+		} else if (!r->in_linux && r->in_asic) {
+			verdict = "in the chip only - stale, or not yet withdrawn";
+			only_asic++;
+		}
+		printf("%-22s %-18s %-14s %s\n", r->prefix,
+		       r->in_linux ? r->via : "-",
+		       r->in_asic ? (r->ecmp ? "present ecmp" : "present") : "MISSING",
+		       verdict);
+	}
+
+	printf("\n%d prefix(es). \"linux\" is the kernel's routing table; "
+	       "\"asic\" is read back from the chip's own forwarding table.\n",
+	       nroutes);
+	if (missing > 0)
+		printf("%d route(s) the kernel has and the chip does not.\n", missing);
+	if (only_asic > 0)
+		printf("%d route(s) the chip has and the kernel does not.\n", only_asic);
+	if (partial)
+		printf("The chip's table was only partly readable, so absences here "
+		       "are not conclusive.\n");
+	printf("IPv6 and per-nexthop detail are not compared: /proc/net/route "
+	       "carries neither.\n");
+	return missing > 0 ? 1 : 0;
+}

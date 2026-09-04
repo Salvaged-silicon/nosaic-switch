@@ -10,4 +10,9 @@
  * Returns non-zero if any port disagrees in a way that stops traffic. */
 int nosaic_asic_ports(void);
 
+/* Print the kernel's routing table against the chip's forwarding table, and
+ * say which entries only one of them has. Returns non-zero if the kernel has a
+ * route the chip does not. */
+int nosaic_asic_routes(void);
+
 #endif

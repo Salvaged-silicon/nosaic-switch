@@ -42,6 +42,8 @@ static const char usage[] =
 "\n"
 "  show ports              what Linux believes and what the chip actually\n"
 "                          holds, side by side, and where they differ\n"
+"  show routes             the kernel's routing table against the chip's\n"
+"                          forwarding table\n"
 "\n"
 "usage: nosaic platform <command>\n"
 "\n"
@@ -348,7 +350,9 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "show") == 0) {
 		if (argc > 2 && strcmp(argv[2], "ports") == 0)
 			return nosaic_asic_ports();
-		fprintf(stderr, "usage: nosaic show ports\n");
+		if (argc > 2 && strcmp(argv[2], "routes") == 0)
+			return nosaic_asic_routes();
+		fprintf(stderr, "usage: nosaic show <ports|routes>\n");
 		return 2;
 	}
 	if (strcmp(argv[1], "platform") != 0) {

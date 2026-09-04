@@ -36,6 +36,7 @@
 #include <bcm/port.h>
 #include <bcm/stg.h>
 #include <bcm/vlan.h>
+#include <bcm/l3.h>
 #include <bcm/types.h>
 
 #include "tapbridge.h"
@@ -109,6 +110,47 @@ static void port_json(FILE *out, int i)
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+/*
+ * The chip's forwarding table, as the chip holds it.
+ *
+ * Traversed rather than remembered. The daemon knows what it asked the chip to
+ * install and that is exactly the thing not worth reporting: a route that was
+ * accepted and then evicted, or displaced by a longer prefix, looks identical
+ * from the caller's side. Reading DEFIP back is the only answer that can
+ * disagree with the daemon, and disagreeing is the point.
+ */
+struct route_dump {
+	FILE *out;
+	int   n;
+};
+
+static int route_cb(int unit, int index, bcm_l3_route_t *r, void *ud)
+{
+	struct route_dump *d = ud;
+	unsigned s, m;
+	int bits = 0;
+
+	(void)unit;
+	/* IPv6 entries share the table and have no l3a_subnet; skipping them is
+	 * honest rather than reporting a v4 prefix made of the wrong bytes. */
+	if (r->l3a_flags & BCM_L3_IP6)
+		return BCM_E_NONE;
+
+	s = (unsigned)r->l3a_subnet;
+	m = (unsigned)r->l3a_ip_mask;
+	while (m & 0x80000000u) { bits++; m <<= 1; }
+
+	fprintf(d->out,
+		"%s{\"prefix\":\"%u.%u.%u.%u/%d\",\"intf\":%d,\"index\":%d,"
+		"\"ecmp\":%d}",
+		d->n ? "," : "",
+		(s >> 24) & 0xff, (s >> 16) & 0xff, (s >> 8) & 0xff, s & 0xff, bits,
+		(int)r->l3a_intf, index,
+		(r->l3a_flags & BCM_L3_MULTIPATH) ? 1 : 0);
+	d->n++;
+	return BCM_E_NONE;
+}
+
 static void handle(FILE *out, const char *req)
 {
 	int i;
@@ -128,8 +170,39 @@ static void handle(FILE *out, const char *req)
 		fprintf(out, "]}\n");
 		return;
 	}
+	if (strstr(req, "\"l3.routes\"") != NULL) {
+		struct route_dump d;
+		int rv;
+
+		bcm_l3_info_t info;
+		int last = 0;
+
+		/*
+		 * The range is index 0 to the table's last entry, and it has to be
+		 * asked for. Passing 0 as the end traverses nothing and returns
+		 * BCM_E_NONE, so the caller sees an empty forwarding table and
+		 * concludes the chip has no routes -- which is indistinguishable
+		 * from the fault this command exists to find.
+		 */
+		bcm_l3_info_t_init(&info);
+		if (bcm_l3_info(query_unit, &info) == BCM_E_NONE)
+			last = info.l3info_max_route;
+
+		d.out = out;
+		d.n = 0;
+		fprintf(out, "{\"ok\":true,\"result\":[");
+		rv = last > 0
+			? bcm_l3_route_traverse(query_unit, 0, 0, (uint32)last, route_cb, &d)
+			: BCM_E_UNAVAIL;
+		fprintf(out, "]");
+		if (rv != BCM_E_NONE)
+			fprintf(out, ",\"partial\":true");
+		fprintf(out, "}\n");
+		return;
+	}
 	fprintf(out,
-		"{\"ok\":false,\"error\":\"this datapath serves asic.ports only\"}\n");
+		"{\"ok\":false,\"error\":\"this datapath serves asic.ports and "
+		"l3.routes\"}\n");
 }
 
 static void *serve(void *arg)
