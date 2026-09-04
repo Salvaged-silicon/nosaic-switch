@@ -22,6 +22,8 @@
 #include "hal.h"
 #include "config.h"
 #include "asic.h"
+#include "show.h"
+#include "upgrade.h"
 
 #include <errno.h>
 #include <signal.h>
@@ -40,10 +42,18 @@ static const char usage[] =
 "  config unset <name>     remove it; the image's default applies again\n"
 "  config files            which files are layered, in order\n"
 "\n"
+"  show ports              the ports, as the datapath reports them\n"
+"  show routes             the chip's forwarding table\n"
+"  show caps               what this switch's silicon can do\n"
+"\n"
 "  verify ports            what Linux believes and what the chip actually\n"
 "                          holds, side by side, and where they differ\n"
 "  verify routes           the kernel's routing table against the chip's\n"
 "                          forwarding table\n"
+"\n"
+"  upgrade status          which slot is committed, and any trial in progress\n"
+"  upgrade commit          keep the slot on trial\n"
+"  upgrade confirm         check this image and commit it if it works\n"
 "\n"
 "usage: nosaic platform <command>\n"
 "\n"
@@ -368,15 +378,20 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	if (strcmp(argv[1], "show") == 0) {
-		fprintf(stderr,
-			"nosaic: `show` needs the datapath client, which this build "
-			"does not carry.\nTry `nosaic verify ports` -- what Linux "
-			"believes against what the chip holds.\n");
+		if (argc > 2 && strcmp(argv[2], "caps") == 0)
+			return nosaic_show_caps();
+		if (argc > 2 && strcmp(argv[2], "ports") == 0)
+			return nosaic_show_ports();
+		if (argc > 2 && strcmp(argv[2], "routes") == 0)
+			return nosaic_show_routes();
+		fprintf(stderr, "usage: nosaic show <ports|routes|caps>\n");
 		return 2;
 	}
+	if (strcmp(argv[1], "upgrade") == 0)
+		return nosaic_upgrade(argc, argv);
 	if (strcmp(argv[1], "platform") != 0) {
-		fprintf(stderr, "nosaic: this build provides `platform` only; "
-			"the rest of the CLI runs on the build host\n");
+		fprintf(stderr, "nosaic: unknown command \"%s\"\n\n", argv[1]);
+		fputs(usage, stderr);
 		return 2;
 	}
 	if (argc < 3) {

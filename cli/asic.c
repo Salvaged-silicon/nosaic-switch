@@ -34,6 +34,7 @@
 #include <unistd.h>
 
 #include "asic.h"
+#include "query.h"
 
 /* ------------------------------------------------------- what Linux believes */
 
@@ -92,70 +93,6 @@ static void linux_state(const char *name, struct linux_state *ls)
 
 /* ---------------------------------------------------- what the chip answers */
 
-/* One flat JSON record's integer field. Enough for a response whose shape we
- * define, and far less code than a parser. */
-static int jint(const char *rec, const char *key, int missing)
-{
-	char pat[64];
-	const char *p;
-
-	snprintf(pat, sizeof(pat), "\"%s\":", key);
-	if ((p = strstr(rec, pat)) == NULL)
-		return missing;
-	return atoi(p + strlen(pat));
-}
-
-static void jstr(const char *rec, const char *key, char *out, size_t len)
-{
-	char pat[64];
-	const char *p, *e;
-
-	*out = '\0';
-	snprintf(pat, sizeof(pat), "\"%s\":\"", key);
-	if ((p = strstr(rec, pat)) == NULL)
-		return;
-	p += strlen(pat);
-	if ((e = strchr(p, '"')) == NULL)
-		return;
-	if ((size_t)(e - p) >= len)
-		return;
-	memcpy(out, p, (size_t)(e - p));
-	out[e - p] = '\0';
-}
-
-static char *ask(const char *path, const char *op)
-{
-	struct sockaddr_un a;
-	char *buf;
-	size_t cap = 65536, n = 0;
-	int fd;
-	ssize_t r;
-
-	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) < 0)
-		return NULL;
-	memset(&a, 0, sizeof(a));
-	a.sun_family = AF_UNIX;
-	snprintf(a.sun_path, sizeof(a.sun_path), "%s", path);
-	if (connect(fd, (struct sockaddr *)&a, sizeof(a)) != 0) {
-		close(fd);
-		return NULL;
-	}
-	dprintf(fd, "{\"op\":\"%s\"}\n", op);
-
-	if ((buf = malloc(cap)) == NULL) {
-		close(fd);
-		return NULL;
-	}
-	while ((r = read(fd, buf + n, cap - n - 1)) > 0) {
-		n += (size_t)r;
-		if (n + 1 >= cap)
-			break;
-	}
-	buf[n] = '\0';
-	close(fd);
-	return buf;
-}
-
 /* --------------------------------------------------------------- the report */
 
 static const char *stp_name(int v)
@@ -172,7 +109,7 @@ static const char *stp_name(int v)
 
 int nosaic_asic_ports(void)
 {
-	char *resp = ask(NOSAIC_QUERY_SOCKET, "asic.ports");
+	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"asic.ports\"}");
 	const char *p;
 	int n = 0, bad = 0;
 
@@ -207,17 +144,17 @@ int nosaic_asic_ports(void)
 		struct linux_state ls;
 		int link, ena, pvid, want, stp, cpu, fmax;
 
-		jstr(p, "name", name, sizeof(name));
+		nosaic_jstr(p, "name", name, sizeof(name));
 		if (name[0] == '\0')
 			continue;
-		jstr(p, "mac", mac, sizeof(mac));
-		link = jint(p, "link", -1);
-		ena  = jint(p, "enabled", -1);
-		pvid = jint(p, "pvid", 0);
-		want = jint(p, "want_vlan", 0);
-		stp  = jint(p, "stp", -1);
-		cpu  = jint(p, "cpu_member", -1);
-		fmax = jint(p, "frame_max", -1);
+		nosaic_jstr(p, "mac", mac, sizeof(mac));
+		link = nosaic_jint(p, "link", -1);
+		ena  = nosaic_jint(p, "enabled", -1);
+		pvid = nosaic_jint(p, "pvid", 0);
+		want = nosaic_jint(p, "want_vlan", 0);
+		stp  = nosaic_jint(p, "stp", -1);
+		cpu  = nosaic_jint(p, "cpu_member", -1);
+		fmax = nosaic_jint(p, "frame_max", -1);
 
 		linux_state(name, &ls);
 		n++;
@@ -365,7 +302,7 @@ static void read_linux_routes(void)
 
 int nosaic_asic_routes(void)
 {
-	char *resp = ask(NOSAIC_QUERY_SOCKET, "l3.routes");
+	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"l3.routes\"}");
 	const char *p;
 	int i, missing = 0, only_asic = 0, connected = 0, partial;
 
@@ -389,13 +326,13 @@ int nosaic_asic_routes(void)
 		char prefix[24];
 		struct rt *r;
 
-		jstr(p, "prefix", prefix, sizeof(prefix));
+		nosaic_jstr(p, "prefix", prefix, sizeof(prefix));
 		if (prefix[0] == '\0')
 			continue;
 		if ((r = rt_find(prefix)) == NULL)
 			continue;
 		r->in_asic = 1;
-		r->ecmp = jint(p, "ecmp", 0);
+		r->ecmp = nosaic_jint(p, "ecmp", 0);
 	}
 	free(resp);
 

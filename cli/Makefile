@@ -15,7 +15,7 @@ CFLAGS += -Wall -Wextra -Wno-unused-parameter
 CFLAGS += -D_FILE_OFFSET_BITS=64
 LDFLAGS ?=
 
-OBJS = nosaic.o hal_as5610.o config.o asic.o
+OBJS = nosaic.o hal_as5610.o config.o asic.o query.o show.o upgrade.o
 
 all: nosaic
 
@@ -25,7 +25,11 @@ nosaic: $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-nosaic.o:      nosaic.c hal.h
+nosaic.o:      nosaic.c hal.h show.h upgrade.h
+query.o:       query.c query.h
+show.o:        show.c show.h query.h
+upgrade.o:     upgrade.c upgrade.h query.h
+asic.o:        asic.c asic.h query.h
 hal_as5610.o:  hal_as5610.c hal.h
 
 strip: nosaic

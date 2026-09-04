@@ -172,7 +172,8 @@ func checkBoardDocs(res *Result, root string, boards []*board.Board) {
 		return
 	}
 	if stale {
-		res.errf("%s is out of date — run: make docs", docsgen.Path)
+		res.errf("%s or the switches table in %s is out of date — run: make docs",
+			docsgen.Path, docsgen.READMEPath)
 	}
 }
 
