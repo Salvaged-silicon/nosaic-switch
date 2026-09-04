@@ -5,15 +5,22 @@
 # file-backed A/B slots, forwards in hardware, holds four OSPF adjacencies and
 # reads real sensors -- all from the installed image rather than a hot patch.
 #
-# A full A/B upgrade has now run on this board: an image installed into slot B,
-# booted on trial as attempt 1 of 3, was committed, and the next boot came up
-# on B as the committed slot with no trial pending.
+# A/B works here in both directions, proven on the board rather than in QEMU.
+# A healthy image installed into the inactive slot booted on trial, judged
+# itself healthy and committed with nobody watching. An image built with an
+# empty port map -- one that boots, answers ssh and does not forward -- was
+# then installed, burned all three attempts and rolled back to the known-good
+# slot on its own. That is M7's gate.
 #
-# experimental rather than production because the one case that matters most is
-# still unproven HERE: an image that boots but does not forward must roll back
-# unattended. That is M7's gate. It passes in QEMU and the initramfs handles a
-# missing or corrupt slot correctly on this board, but a bad-but-booting image
-# has never been tried on this hardware. See docs/architecture.md.
+# experimental rather than production because of what that second run also
+# showed. The rollback was driven by the attempt counter alone: trial-confirm
+# was ordered after nosd, s6 will not start a service whose dependency never
+# comes up, and a datapath that never comes up is exactly the case it exists to
+# report -- so the box rolled back correctly and said nothing about why. The
+# ordering is fixed; the explicit decline has not yet been seen on hardware.
+#
+# Still open besides that: ECMP is untested, the prefdl SEEPROM is not read so
+# the MAC comes from configuration, and fanread returns garbage.
 
 id: arista-7050sx2-72q
 vendor: arista

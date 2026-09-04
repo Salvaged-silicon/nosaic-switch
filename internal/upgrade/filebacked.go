@@ -24,13 +24,51 @@ import (
 // "$FLASH/nosaic-slot-a.sqsh", so these two must not drift apart.
 func slotFileName(slot string) string { return "nosaic-slot-" + slot + ".sqsh" }
 
-// fileBacked reports whether this disk keeps its slots as files.
+// fileBacked reports whether state and slots are plain files on a mounted
+// filesystem rather than offsets in a partition table.
 //
 // A directory means the slots are files inside it; anything else is a block
 // device or a disk image with a partition table.
 func (d Disk) fileBacked() bool {
+	if d.Files {
+		return true
+	}
 	fi, err := os.Stat(d.Path)
 	return err == nil && fi.IsDir()
+}
+
+// StateDir is where the running system keeps its boot pointer.
+//
+// Resolved the way the initramfs resolves it: a board with a boot partition
+// keeps the pointer there, and one whose bootloader owns the whole disk has no
+// boot partition, so it goes on the data filesystem instead. Returns "" if
+// neither is mounted.
+func StateDir() string {
+	for _, dir := range []string{"/mnt/boot/boot", "/mnt/data/boot"} {
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
+// Local is the running switch's own boot pointer, for the commands that only
+// read or set it.
+//
+// Deliberately not addressed through the bootloader's filesystem. Confirming a
+// trial never writes a slot, so requiring the flash to be mounted would make
+// the confirmation depend on something it does not use -- which is exactly
+// what happened: the trial-confirm service was handed /mnt/flash, that path
+// did not exist in the running root, and a healthy image quietly failed to
+// commit.
+func Local() (Disk, error) {
+	dir := StateDir()
+	if dir == "" {
+		return Disk{}, fmt.Errorf("this system has no mounted boot state: " +
+			"neither /mnt/boot/boot nor /mnt/data/boot is there")
+	}
+	parent := filepath.Dir(dir)
+	return Disk{Path: parent, Data: parent, Files: true}, nil
 }
 
 // dataDir is the mounted persistent filesystem: boot state and the per-slot

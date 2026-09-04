@@ -354,9 +354,14 @@ echo "NOSAIC-INITRAMFS overlay assembled (persistent=$PERSIST)"
 
 # Carry the data partition and the pseudo-filesystems into the real root, so
 # the running system does not have to re-mount what is already mounted.
-mkdir -p /mnt/root/mnt/data /mnt/root/mnt/boot
+mkdir -p /mnt/root/mnt/data /mnt/root/mnt/boot /mnt/root/mnt/flash
 mount --move /mnt/data /mnt/root/mnt/data 2>/dev/null
 mount --move /mnt/boot /mnt/root/mnt/boot 2>/dev/null
+# The bootloader's filesystem, on a board whose slots are files on it. Carried
+# so the running system can address its own slots: without it every install
+# starts by hand-mounting the flash, which is precisely the step that gets
+# forgotten. Absent on a partitioned board, where this does nothing.
+mount --move /mnt/flash /mnt/root/mnt/flash 2>/dev/null
 mount --move /dev /mnt/root/dev 2>/dev/null
 
 echo "NOSAIC-INITRAMFS handing over to /sbin/init"

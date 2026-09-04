@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 	"unsafe"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/arch"
@@ -25,6 +26,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/config"
 	"github.com/salvaged-silicon/nosaic-switch/internal/depsolve"
 	"github.com/salvaged-silicon/nosaic-switch/internal/docsgen"
+	"github.com/salvaged-silicon/nosaic-switch/internal/health"
 	"github.com/salvaged-silicon/nosaic-switch/internal/imgbuild"
 	nosdclient "github.com/salvaged-silicon/nosaic-switch/internal/nosd/client"
 	"github.com/salvaged-silicon/nosaic-switch/internal/nospkg"
@@ -491,9 +493,35 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 	return nil
 }
 
+// confirmWait is how long a trial boot waits for its datapath before giving up
+// on it.
+//
+// Generous on purpose. A datapath daemon carrying a vendor SDK takes about 80
+// seconds to initialise the chip on the 7050SX2, well after ssh answers, and a
+// health check that races it would roll back a perfectly good image. The cost
+// of waiting too long is one slow boot; the cost of waiting too little is an
+// upgrade that can never succeed.
+const confirmWait = 5 * time.Minute
+
+// dialDatapath waits for nosd to start serving.
+func dialDatapath(within time.Duration) (*nosdclient.Client, error) {
+	deadline := time.Now().Add(within)
+	var err error
+	for {
+		var c *nosdclient.Client
+		if c, err = nosdclient.Dial(os.Getenv("NOSD_SOCKET")); err == nil {
+			return c, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("after %s: %w", within, err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 func upgradeCmd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: nosaic upgrade <status|install|commit> <disk> ...")
+		return fmt.Errorf("usage: nosaic upgrade <status|install|commit> <disk> | confirm")
 	}
 	switch args[0] {
 	case "status":
@@ -548,6 +576,52 @@ func upgradeCmd(args []string) error {
 			return err
 		}
 		fmt.Printf("committed slot %s: it is now the slot this switch boots\n", slot)
+		return nil
+
+	case "confirm":
+		// The automatic half, run at boot. Declining is a normal outcome and
+		// not an error: the rollback is driven by the initramfs counter, not
+		// by this exit status, and failing here would only stop the rest of
+		// the boot on a switch that is already in trouble.
+		// No disk argument: confirming only reads and sets the boot pointer,
+		// which is on a filesystem this system already has mounted.
+		var d upgrade.Disk
+		if len(args) == 2 {
+			d = upgrade.Disk{Path: args[1], Log: os.Stdout}
+		} else {
+			var err error
+			if d, err = upgrade.Local(); err != nil {
+				return err
+			}
+			d.Log = os.Stdout
+		}
+		st, err := upgrade.Status(d)
+		if err != nil {
+			return err
+		}
+		if st.Trial == "" {
+			return nil // the ordinary boot: nothing on trial, nothing to say
+		}
+		fmt.Printf("NOSAIC-TRIAL slot %s is on trial (attempt %d); checking whether it works\n",
+			st.Trial, st.Tries)
+
+		c, err := dialDatapath(confirmWait)
+		if err != nil {
+			fmt.Printf("NOSAIC-TRIAL DECLINED slot %s: the datapath never came up: %v\n", st.Trial, err)
+			return nil
+		}
+		defer c.Close()
+		if _, err := health.Check(c, os.Stdout); err != nil {
+			fmt.Printf("NOSAIC-TRIAL DECLINED slot %s: %v\n", st.Trial, err)
+			fmt.Println("NOSAIC-TRIAL it rolls back once the attempts are used up")
+			return nil
+		}
+		slot, err := upgrade.Commit(d)
+		if err != nil {
+			fmt.Printf("NOSAIC-TRIAL slot %s is healthy but could not be committed: %v\n", st.Trial, err)
+			return nil
+		}
+		fmt.Printf("NOSAIC-TRIAL COMMIT slot %s is healthy and is now the slot this switch boots\n", slot)
 		return nil
 	}
 	return fmt.Errorf("unknown upgrade subcommand %q", args[0])

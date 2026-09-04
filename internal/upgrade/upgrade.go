@@ -52,6 +52,11 @@ type Disk struct {
 	// cleared when this is known to belong to this disk.
 	Data string
 
+	// Files says the slots and state are plain files on a mounted filesystem.
+	// Normally inferred from Path being a directory; set explicitly when the
+	// layout is known but the bootloader's filesystem is not mounted.
+	Files bool
+
 	// Log receives progress. Nil is silent, which is what the offline
 	// callers want.
 	Log io.Writer

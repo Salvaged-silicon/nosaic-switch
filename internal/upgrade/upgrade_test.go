@@ -258,3 +258,38 @@ func TestTheRefusedSlotFollowsTheCommit(t *testing.T) {
 		t.Errorf("slot a is inactive after the commit and should be installable: %v", err)
 	}
 }
+
+// Confirming a trial only reads and sets the boot pointer, so it must not
+// depend on the bootloader's filesystem being mounted. It did, and a healthy
+// image on the 7050SX2 quietly failed to commit: the service was handed
+// /mnt/flash, which the running root did not have.
+func TestLocalDoesNotNeedTheBootloadersFilesystem(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "data", "boot")
+	if err := os.MkdirAll(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "active"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Local() resolves the real system's paths, so exercise the same shape it
+	// builds rather than the paths themselves.
+	d := Disk{Path: filepath.Dir(state), Data: filepath.Dir(state), Files: true}
+	st, err := Status(d)
+	if err != nil {
+		t.Fatalf("status without any bootloader filesystem: %v", err)
+	}
+	if st.Active != "b" {
+		t.Errorf("active reads %q, want b", st.Active)
+	}
+}
+
+// Files makes a path that is not a directory still count as file-backed, which
+// is what lets the running system address state it has mounted without the
+// slots being reachable.
+func TestFilesForcesTheFileBackedLayout(t *testing.T) {
+	d := Disk{Path: filepath.Join(t.TempDir(), "not-a-directory"), Files: true}
+	if !d.fileBacked() {
+		t.Error("Files was set and the layout was still treated as partitioned")
+	}
+}

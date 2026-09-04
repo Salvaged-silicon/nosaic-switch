@@ -158,6 +158,48 @@ not mount rolls back immediately — there is nothing to learn from retrying
 garbage three times. A trial slot that mounts but never confirms burns a retry
 budget first, because "booted but unhealthy" may be transient.
 
+### What A/B does not cover: the kernel and the initramfs
+
+A slot holds a root filesystem and nothing else. The kernel and the initramfs
+live where the bootloader can reach them without understanding our layout -- in
+the SWI on an Arista, in a raw FIT partition on the AS5610 -- and there is one
+of them, not two.
+
+So installing a slot does not change the kernel or the initramfs, and a change
+to either is **outside the rollback mechanism**: it is written in place, and a
+bad one is recovered by catching the bootloader, not by a trial expiring. This
+is not an oversight but it is a real limit, and it cost a boot to learn: a
+change to the initramfs was built, the slot was installed and trialled, and the
+new behaviour was simply absent because the SWI had never been pushed.
+
+Two consequences worth stating. An upgrade that spans both -- a new kernel and
+a new root filesystem -- is only half atomic. And anything the confirmation
+depends on must live in the slot, not the initramfs, or a rollback cannot
+restore it.
+
+### Confirming a trial on real hardware
+
+The commit above is `NOSAIC-SELFTEST COMMIT`, and for a long time that was the
+only thing that ever committed one. It could not run on a switch: `selftest.sh`
+begins `grep -q nosaic.selftest /proc/cmdline || exit 0`, and that flag is set
+by this harness and by nothing else. So on hardware a *good* upgrade rolled
+back exactly like a bad one, three boots later, with nothing saying why. The
+mechanism looked complete and was inert everywhere it mattered.
+
+Hardware now runs a `trial-confirm` service on every boot. With no trial
+pending it reads the pointer and exits. With one, it waits for the datapath --
+generously, because a daemon carrying a vendor SDK takes about 80 seconds to
+initialise a Trident2+ and a check that races it would roll back a perfectly
+good image -- and then asks whether this image actually works: the datapath
+must answer, know about ports, and if anything is configured up, something must
+actually be up. `nosaic upgrade commit` is the explicit form for an operator
+who has decided already.
+
+That service is deliberately **not** ordered after `nosd`. s6 will not start a
+service whose dependency never comes up, and a datapath that never comes up is
+the exact failure this exists to report -- ordering it after `nosd` made the
+most important case the silent one. It waits for the datapath itself instead.
+
 The slot pointer lives on the boot partition, which is deliberately ext2 with
 no journal. That is not a detail: it was first put on the ext4 data partition,
 where `debugfs` wrote it, `upgrade status` read it back correctly, and the

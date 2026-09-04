@@ -784,6 +784,35 @@ poweroff -f
 		})
 	}
 
+	// Confirming a trial boot, which is what makes a bad upgrade roll back
+	// without anyone watching.
+	//
+	// Runs on every boot and does nothing on almost all of them: with no trial
+	// pending it reads the boot state and exits. When there is one, it waits
+	// for the datapath and asks whether this image actually works, because an
+	// image that reaches userspace and does not forward is the exact case
+	// rollback exists for.
+	//
+	// Deliberately NOT after nosd, even though the question it answers is
+	// about the datapath.
+	//
+	// s6 will not start a service whose dependency never comes up, and a
+	// datapath that never comes up is the exact failure this is here to
+	// report. Ordering it after nosd made the most important case the silent
+	// one: on a board given an image with an empty port map, nosd restarted
+	// forever, trial-confirm never ran, and the only evidence of why was a
+	// counter reaching three boots later. It waits for the datapath itself
+	// instead, and says so when it never arrives.
+	//
+	// Restart never: declining is a normal outcome, and retrying would only
+	// re-ask a question already answered.
+	services = append(services, svcgen.Service{
+		Name:    "trial-confirm",
+		Exec:    "/usr/bin/nosaic upgrade confirm",
+		After:   []string{"network-config"},
+		Restart: "never",
+	})
+
 	// The console a login is offered on. Getting this wrong does not fail: the
 	// getty starts, reconfigures the port, and every byte after it is noise at
 	// the speed anyone is actually watching. On this fleet's Aristas that made
