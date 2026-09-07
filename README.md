@@ -282,5 +282,5 @@ fine; only the software dies. NOSaic is what it takes to keep that hardware usef
 and the write-ups exist so the next person spends their time somewhere new rather than
 rediscovering the same registers.
 
-If it saved you time, you can [buy me a coffee](https://buymeacoffee.com/Wrightca1).
+If you find this useful, you can [buy me a coffee](https://buymeacoffee.com/Wrightca1).
 The hardware is second-hand and the lab electricity is not.
