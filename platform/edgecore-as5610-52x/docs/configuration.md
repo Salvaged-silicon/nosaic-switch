@@ -94,11 +94,12 @@ scp config/frr.conf           <switch>:/mnt/data/config/frr.conf
 
 ## What is not reproducible yet
 
-**None of the swp ports exist.** They are created by the datapath daemon, and
-`nosd-tdp` does not exist — so on this board today `network.conf` configures
-`end0` and `lo` and reports the rest absent. `net_wait_secs` in `board.yml` is
-short for exactly that reason and should go back to the default once there is a
-datapath to wait for.
+**The swp ports are created by the datapath daemon**, so they appear once
+`nosd-tdp` has brought the chip up rather than at the moment `network.conf` is
+read. `net_wait_secs` in `board.yml` is how long the network configuration waits
+for them; it is deliberately shorter than the default here, and the value is
+proven rather than assumed — the front-panel addresses and the OSPF adjacencies
+that depend on them come back after a cold power cut.
 
-Until then NOSaic on this board is a control plane with no forwarding: it
-boots, routes on its management port, and cannot replace what EdgeNOS is doing.
+NOSaic forwards on this board: ten ports up, routes mirrored into the chip, and
+OSPFv2 and OSPFv3 adjacencies with two vendors' routers.

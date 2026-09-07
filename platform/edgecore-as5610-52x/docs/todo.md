@@ -30,8 +30,10 @@ Kept short; each has a commit with the reasoning.
   because `/proc/net/route` cannot express multipath; the ECMP hash has to be
   told what to look at or the group sends everything down one member.
 - **The CLI, in C.** Go has no 32-bit big-endian PowerPC target, so this board
-  had no `nosaic` at all. `cli/` provides `platform status` and
-  `platform thermal` and refuses the rest by name.
+  cannot run the Go CLI at all. `cli/` implements the same commands against the
+  same contract — `show ports|routes|caps`, `verify`, `config` and `upgrade` —
+  and `show caps`/`show ports` were diffed against the Go CLI on a board that
+  can host either and come back byte-for-byte identical.
 - **Cooling.** The board powers up at 31/31 forever; it now tracks temperature
   and idles at the floor.
 - **The front-panel port LEDs.** Both LED processors come out of reset halted;
@@ -135,10 +137,10 @@ because both would have produced a kernel that builds and does not boot:
 
 ### ~~The ONIE backend does not handle U-Boot platforms~~ — built, 2026-09-03
 
-The installer now produces something this board can boot. It is **not yet
-proven on the hardware**: it has been run end to end against a file, where it
-wrote the disk, placed the FIT and set the firmware variable correctly, but no
-switch has been installed with it.
+The installer now produces something this board can boot, and it has been used:
+NOSaic is on this switch's own disk, put there by the ONIE installer, and the
+vendor OS is gone. It boots from slot A, forwards, and comes back from a cold
+power cut.
 
 **The GPT question is settled, by evidence rather than inference.** The note
 below reasoned that a boot command reading `${usbdev}:5` -- a *logical*

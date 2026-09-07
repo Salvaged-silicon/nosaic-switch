@@ -40,9 +40,9 @@ need a frozen compiler.
 
 ## The datapath is the second
 
-There is no `nosd-tdp`. The good news is that it is a new package rather than
-a new SDK: OpenBCM 6.5.24 — the same recipe the 7050SX2 already uses — carries
-this chip.
+`nosd-tdp` is built, packaged and driving the chip. It needed a new package
+rather than a new SDK: OpenBCM 6.5.24 — the same recipe the 7050SX2 already uses
+— carries this chip.
 
 ```
 include/soc/devids.h:842   BCM56846_DEVICE_ID  0xb846

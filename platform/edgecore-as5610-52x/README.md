@@ -71,12 +71,13 @@ Two of the three already exist in the tree:
   reports `0 forbidden` — nothing in the output uses an opcode an e500v2
   cannot execute. This class of hardware does **not** need a pinned older
   compiler, and M8's scope is unchanged.
-- **There is no Trident+ datapath.** `nosd-tdp` does not exist. The chip is a
-  BCM56846, one generation before the 7050SX2's Trident2+, and `nosd-td2p` is
-  the closest relative — the first real test of whether the per-ASIC split was
-  drawn in the right place.
-- **Nothing has been installed on it.** The unit in the lab runs EdgeNOS, and
-  every fact in these pages was read off it rather than produced by NOSaic.
+- **The Trident+ datapath exists and drives the chip.** `nosd-tdp` is built from
+  the same OpenBCM 6.5.24 recipe the 7050SX2 uses, and the per-ASIC split held:
+  the two daemons share `datapath/common` — the tap bridge, the route sync and
+  the query server — and differ only where the silicon does. It serves the same
+  northbound contract, so `nosaic show ports` means the same thing on both.
+- **NOSaic is installed on it and EdgeNOS is gone.** Every fact on these pages is
+  now read off NOSaic running on the box rather than off the OS it replaced.
 
 ## Stopping nosd
 
