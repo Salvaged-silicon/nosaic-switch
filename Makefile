@@ -172,7 +172,7 @@ RECIPES := $(notdir $(patsubst %/,%,$(dir $(wildcard recipes/*/recipe.yml))))
 pkg: $(BUILDER_DEP)
 	@test -n "$(PKG)"  || { echo "usage: make pkg PKG=<one of: $(RECIPES)> ARCH=<arch>"; exit 2; }
 	@test -n "$(ARCH)" || { echo "usage: make pkg PKG=$(PKG) ARCH=<one of: $(ARCHES)>"; exit 2; }
-	@$(RUN) go run ./cmd/nosaic pkg build $(PKG) --arch $(ARCH) --jobs $(JOBS)
+	@$(RUN) go run -ldflags "$(LDFLAGS)" ./cmd/nosaic pkg build $(PKG) --arch $(ARCH) --jobs $(JOBS)
 
 ## packages: build recipes in dependency order (PROFILE=minimal to narrow)
 # Order comes from the resolver, not from the directory listing. Alphabetical
@@ -181,7 +181,7 @@ pkg: $(BUILDER_DEP)
 packages: $(BUILDER_DEP)
 	@test -n "$(ARCH)" || { echo "usage: make packages ARCH=<one of: $(ARCHES)>"; exit 2; }
 	@for p in $$($(RUN_CAPTURE) go run ./cmd/nosaic pkg order $(if $(PROFILE),--profile $(PROFILE),)); do \
-	   $(RUN) go run ./cmd/nosaic pkg build $$p --arch $(ARCH) --jobs $(JOBS) || exit 1; \
+	   $(RUN) go run -ldflags "$(LDFLAGS)" ./cmd/nosaic pkg build $$p --arch $(ARCH) --jobs $(JOBS) || exit 1; \
 	 done
 
 ## kernel-boot: boot a built kernel under QEMU and run its own userspace
@@ -195,7 +195,7 @@ kernel-boot: $(BUILDER_DEP)
 # built without RAM boot and failed at the initramfs with "unknown slot".
 image: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image BOARD=<board>"; exit 2; }
-	@$(RUN) go run ./cmd/nosaic build $(BOARD) $(if $(PROFILE),--profile $(PROFILE),) $(ARGS)
+	@$(RUN) go run -ldflags "$(LDFLAGS)" ./cmd/nosaic build $(BOARD) $(if $(PROFILE),--profile $(PROFILE),) $(ARGS)
 
 ## dataplane-test: drive the veth datapath with real interfaces
 # Needs NET_ADMIN and SYS_ADMIN: it creates interfaces, in a private network
