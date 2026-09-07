@@ -46,13 +46,15 @@ The board runs as a router. On the switch, verified rather than assumed:
 - `reboot` works;
 - **it boots from its own flash, unattended** — Aboot reads `boot-config`,
   finds the SWI and boots it with no console intervention and no network, and
-  comes up with its datapath running and its ports present.
+  comes up with its datapath running and its ports present;
+- **A/B upgrades, both directions.** The slots are files on Aboot's own
+  filesystem, loop-mounted. A healthy image installed into the inactive slot
+  boots on trial, judges itself against its own datapath and commits; one built
+  with an empty port map — it boots, answers ssh and does not forward — burns
+  all three attempts and the switch returns to the slot it was on, unattended.
 
-## What does not
+## Worth knowing
 
-- **A/B slots and rollback.** What is installed is one image Aboot boots
-  directly. The slot machinery is CI-tested on the virtual platform and
-  unexercised here.
 - **The control plane is no longer the bottleneck it was.** Frames destined
   for this switch are punted through the CPU; that path carried about twenty
   packets a second and now carries **500/s at zero loss**, with a bulk
@@ -65,9 +67,16 @@ The board runs as a router. On the switch, verified rather than assumed:
   blank password before it looks at a key, and the login account has one so the
   console can reach it without a password. Root's is locked, so keys are the
   only way in and a password can never work.
+
+## What does not
+
 - **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
   (s6) has been booted.
 - **ECMP.** `l3sync` takes one next hop per prefix.
+- **The `prefdl` SEEPROM is not read**, so the management MAC comes from
+  `config/network.conf` and that file is correct for exactly one switch.
+- **`fanread` returns garbage.** Temperatures, PSU presence and fan control all
+  read correctly; that one call does not.
 
 It cleared `bringup` on 2026-09-04: installed to its own flash, back in 68
 seconds from a cold power cut at the PDU, with the ext4 journal replaying clean
