@@ -1,8 +1,10 @@
 # What this switch can do, and what NOSaic does with it
 
-The hardware figures are Edgecore's, from the AS5610-52X ONIE datasheet. The
-NOSaic column is short: nothing runs on this board yet, so this page is a
-statement of what is on the table rather than a gap analysis.
+The hardware figures are Edgecore's, from the AS5610-52X ONIE datasheet. NOSaic
+runs on this board and forwards through it — installed on its own disk, 10 ports
+up, OSPFv2 and OSPFv3 adjacencies with two vendors' routers — so the NOSaic
+column below is a gap analysis rather than a wish list: what the silicon offers,
+against what is actually driven today.
 
 It is worth reading beside the 7050SX2's
 [capabilities](../../arista-7050sx2-72q/docs/capabilities.md), because the

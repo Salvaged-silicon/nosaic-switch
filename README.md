@@ -5,13 +5,17 @@
 A network operating system for **end-of-service-life switches and routers** — hardware
 the vendor has abandoned, given a modern, open, maintained OS.
 
-> **Status: early, and two switches run it from their own flash.**
-> Nothing here is called production, and nothing will be until it has run somewhere
-> that matters for longer than a lab afternoon. Each board states what has actually
-> been demonstrated on it rather than what is intended — see
-> [the table below](#the-switches), and
-> [Where it has got to](#where-it-has-got-to) for the measurements behind it.
-> [docs/DESIGN.md](docs/DESIGN.md) is where it is going and
+> **Two switches run NOSaic from their own flash and forward packets in hardware.**
+> An Arista 7050SX2-72Q and an Edgecore AS5610-52X — different CPU architectures,
+> different Broadcom generations, the same operating system and the same commands.
+> Both hold OSPFv2 and OSPFv3 adjacencies, take A/B upgrades that the switch itself
+> commits or rolls back, and come back from a cold power cut on their own.
+>
+> Nothing is called *production*, and nothing will be until it has run somewhere that
+> matters for longer than a lab afternoon. Each board states what has been demonstrated
+> on it rather than what is intended — see [the switches](#the-switches) and
+> [where it has got to](#where-it-has-got-to) for the measurements behind that.
+> [docs/DESIGN.md](docs/DESIGN.md) is where it is going;
 > [docs/MILESTONES.md](docs/MILESTONES.md) is what lands when.
 
 ## The switches
