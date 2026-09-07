@@ -268,3 +268,19 @@ mixed-license, not pure OSI — NOSaic itself is Apache 2.0.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Adding a board is one self-contained directory
 under `platform/`; there is no central file to edit.
+
+The most useful contribution is a board nobody here owns. NOSaic exists for hardware
+its vendor has walked away from, and there is a lot of it — the bring-up notes in each
+board directory are written so somebody with a different switch can follow them.
+
+## Who is doing this, and why
+
+Built by **Christopher Wright** — [LinkedIn](https://www.linkedin.com/in/christopher-wright-498b3859).
+
+A switch does not stop forwarding when its vendor stops supporting it. The silicon is
+fine; only the software dies. NOSaic is what it takes to keep that hardware useful,
+and the write-ups exist so the next person spends their time somewhere new rather than
+rediscovering the same registers.
+
+If it saved you time, you can [buy me a coffee](https://buymeacoffee.com/Wrightca1).
+The hardware is second-hand and the lab electricity is not.
