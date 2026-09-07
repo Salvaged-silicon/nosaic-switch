@@ -32,12 +32,19 @@ board that can host either. `show caps` and `show ports` come back byte-for-byte
 identical. The contract defined here against veth is now the thing two
 implementations and two silicon families agree on.
 
-### The virtual datapath has no capability model to disagree with
+### The capability model is exercised on one axis, not many
 
-Every real ASIC will differ from this one, and the point of the capability model
-is that the CLI reports an unsupported operation rather than quietly doing less.
-With one implementation that always says yes, nothing exercises the reporting
-path. A deliberately restricted second virtual profile would.
+The point of the capability model is that the CLI reports an unsupported
+operation rather than quietly doing less, and this board does exercise that:
+it has no VLAN support, says so, and `dataplane-test.sh` requires the refusal —
+`vlans: reported as unsupported, as this datapath actually is`.
+
+What it cannot exercise is *disagreement between two implementations*. It says
+no to one thing and yes to the rest, so a capability that some silicon has and
+other silicon lacks — ECMP width, ACL slices, IPv6 route capacity — has nothing
+here to differ from. A deliberately restricted second virtual profile would give
+the model two datapaths to be different about, which is the case real boards
+present.
 
 ### Profiles are built but only compared by booting
 
