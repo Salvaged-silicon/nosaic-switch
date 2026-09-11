@@ -1,0 +1,79 @@
+# nosd-td2 — the Trident2 datapath daemon.
+#
+# One of several providers of the virtual name `nosd`. The board's ASIC decides
+# which provider its image gets, so nothing central maps boards to daemons: it
+# falls out of the silicon. `conflicts: [nosd]` is what stops two datapath
+# daemons co-installing and fighting over one chip.
+#
+# Derived from nosd-td2p rather than written fresh: same CMICm generation, same
+# architecture, same userspace BDE over an mmap of BAR0. The silicon differences
+# that matter are the PCI device (0xb855 rather than 0xb860) and its revision
+# (0x03 rather than 0x02) -- both read off the board, because the SDK matches on
+# them and a wrong pair fails to attach a chip that is sitting there working.
+#
+# STATE: bring-up. This has never run on hardware. The 7050TX-64's 48 front
+# panel ports are 10GBASE-T behind external BCM84848 PHYs whose firmware loads
+# over the board controller's MDIO bus, and nothing here drives that yet -- so
+# even once this attaches, the copper ports will not link. The four QSFP+ cages
+# are direct serdes and are the ports to expect first.
+name: nosd-td2
+version: "0.1.0"
+summary: Trident2 (BCM56855) datapath daemon
+
+license: Apache-2.0
+redistributable: true
+
+provides: [nosd]
+conflicts: [nosd]
+
+# Built from this repository rather than fetched, so there is no source: stanza.
+# The BDE is ours; the SDK it will drive is the openbcm package, staged rather
+# than shipped.
+# The whole datapath tree, not just this ASIC's directory: datapath/common
+# carries the MMIO ordering that differs per host architecture, and a second
+# ASIC needs the same header rather than a copy of it. build.subdir selects
+# which one is built.
+source:
+  local: datapath
+
+depends: [glibc]
+
+# The SDK is linked against and never shipped: 874 MB of static archives and
+# headers that belong in a build tree and not on a switch. Declared as a build
+# dependency so it is staged for the compiler and stays out of the image.
+build_depends: [openbcm]
+
+build:
+  system: make
+  subdir: td2
+  # clean first: the source is this repository, so a local build leaves
+  # object files in the tree that get copied in. make then finds them
+  # newer than their sources and links the wrong architecture -- caught
+  # by the arch check, but only after a full build.
+  targets: [clean, nosd-td2, strip]
+  env:
+    # Where the staged SDK is. Its headers land under include/openbcm and its
+    # archives under lib/openbcm, so this points at the parent of both and the
+    # makefile appends.
+    #
+    # ⚠ Not optional, despite what the makefile's own comment says. Both this
+    # datapath and td2p include ../common/l3sync.h from main.c unconditionally,
+    # and that pulls in <bcm/types.h>. Building without SDK_DIR fails at the
+    # first object for either ASIC. The comment describing an SDK-free build is
+    # stale rather than aspirational -- it describes a state the tree has moved
+    # past.
+    SDK_DIR: "${STAGING}/usr"
+  # No install target in the makefile: it is three files, and stating where
+  # the binary lands here keeps that decision in the recipe where a reader
+  # looks for it.
+  # Relative to the source root, which is the whole datapath tree -- so the
+  # binary is under the subdir the build ran in.
+  stage:
+    - src: td2/nosd-td2
+      dst: /usr/sbin/nosd-td2
+
+  # The virtual name everything above the datapath uses. A symlink rather than
+  # a second copy: the binary carries the SDK and is well over 100 MB.
+  links:
+    - target: nosd-td2
+      path: /usr/sbin/nosd
