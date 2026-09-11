@@ -169,6 +169,12 @@ What is left:
 
 ## Nice to have — the switch works without these
 
+- **et1 and et2 are configured against nothing.** Both are admin up with
+  addresses and no link, and neither far end (`10.101.101.41`, `.58`) answers.
+  They are left as they are deliberately, but a switch carrying addresses for
+  links that do not exist is a switch whose configuration lies about the
+  topology.
+
 ### The MAC address is hard-coded
 
 `config/network.conf` states `mac 44:4c:a8:eb:93:f6` because the board keeps it
@@ -298,6 +304,25 @@ is unobserved rather than known-good.
   first place. So the path is a stated constant and a test checks that it
   still resolves to a real package declaring `var Version` and `var Commit`,
   rather than trusting the string.
+
+- **Ethernet52 is configured and waits on its far end.** Cabling after the
+  move is Et52 -> 7050TX-64 port 49, Et53 -> 7050TX-64 port 50, Et54 ->
+  AS5610 port 51. Et52 was not configured at all; it now is:
+  `tap_et52=61:1052:1600` and `10.101.101.81/29`, the next free /29 after
+  et53's, this end taking the lower address the way et53 and et54 do.
+
+  **The cage number is not the logical port.** Ethernet52 is logical port 61
+  (physical 81) -- the cages are not in physical order, and `portmap_53` is
+  Ethernet50. `tap_et*` takes the logical port, so reading the front-panel
+  number off the name and using it would have configured Ethernet49's lanes.
+
+  It came up admin up at 40000 with the address on, and **oper down**. Our end
+  is not the problem: cage 52 reads `0x00` at the SCD, the same as the two
+  cages that work, so it is out of low power and reset with a module in it,
+  and both its lane map (`0x2031`/`0x1302`) and its polarity are real derived
+  values rather than the global default. The far end is where it stops --
+  the 7050TX-64 has link on port 50 and nothing on port 49, which is the
+  shape of a port that was cabled after that box booted.
 
 ## Features — what this board could do and does not yet
 
