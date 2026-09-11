@@ -74,12 +74,27 @@ platform_hal:
   pci: "0000:02:00.0"
   asic_pci: "0000:01:00.0"
 
-# ⚠ thermal is deliberately absent, pending the decision recorded in README.md.
-# This board's cooling curve was extracted from /etc/fdl on the switch, which is
-# Arista Confidential, so the numbers are not ours to publish even though Arista
-# publish the same class of data for other boards. EdgeNOS reads them at runtime
-# from a file the operator generates on their own switch, and that split should
-# survive into NOSaic rather than being flattened into values committed here.
+# The cooling curve. At or below 25 °C the fans sit at the controller's floor;
+# at or above 40 °C they are flat out.
+#
+# Established on this board by EdgeNOS, whose controller works in five discrete
+# steps (45, 60, 75, 90, 100 percent) with thresholds at 25, 31.66, 36.66 and
+# 40 °C. NOSaic's model is a band rather than a step table, so what carries over
+# is the two ends of it -- the floor below which nothing is gained by spinning
+# up, and the ceiling above which there is nothing left to give.
+#
+# A narrower band than the SX2's 35-65, and deliberately: 48 copper PHYs
+# dissipate considerably more than 48 SFP+ cages, and the vendor's own policy
+# for this board starts ramping ten degrees earlier.
+#
+# Falling duty is limited because reacting instantly downward makes the fans
+# oscillate around a threshold; rising is immediate because the opposite
+# asymmetry is a thermal risk.
+thermal:
+  min_c: 25
+  max_c: 40
+  slew_down_percent: 5
+  interval_seconds: 10
 
 notes: >
   Aboot boots unsigned SWIs here: boot0 is a shell script we control and no
