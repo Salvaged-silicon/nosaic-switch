@@ -49,4 +49,11 @@ local.mk
 datapath/*/*.o
 datapath/*/nosd-*
 datapath/*/tdp-probe
+
+# The C CLI, for the same reason: it builds in its own directory and the
+# package builder copies the tree. This was missing while the datapath's
+# equivalent was not, so an in-tree `make` in cli/ left artifacts staged for
+# commit.
+cli/*.o
+cli/nosaic
 refs/
