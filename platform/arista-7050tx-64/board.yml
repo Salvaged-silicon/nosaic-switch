@@ -1,0 +1,117 @@
+# Arista DCS-7050TX-64 — Trident2 (BCM56855), 48x 10GBASE-T + 4x QSFP+.
+#
+# STATE: bringup. Nothing in NOSaic has booted on this board yet. Everything
+# recorded here was read off the running switch under EdgeNOS, the predecessor
+# project, which does boot it and forwards in hardware.
+#
+# What makes this board different from arista-7050sx2-72q, and why it was
+# deferred behind it: the 48 front-panel ports are 10GBASE-T copper behind
+# external BCM84848 PHYs that need firmware loaded over MDIO before a port will
+# link. The SX2's SFP+/QSFP+ cages are direct serdes and need none of that. The
+# PHY layer is the work here; almost everything else has a sibling to copy.
+
+id: arista-7050tx-64
+vendor: arista
+model: 7050tx-64
+
+arch: x86_64
+asic: td2
+boot: aboot
+
+# Not yet read off this board. prefdl lives under EOS, so capture it before the
+# vendor OS is displaced. Left blank rather than copying the SX2's 1: Aboot
+# refuses a board whose epoch is higher than the image claims, and guessing it
+# turns a working image into one that will not load.
+# aboot_max_hwepoch: ""
+
+profile: minimal
+kernel: ""
+
+status: bringup
+
+# Read off the running switch, not guessed: a wrong baud rate
+# makes a working board look hung.
+console: "ttyS0"
+console_baud: 9600
+
+# Flash layout. Provisional -- carried from the SX2 and NOT yet sized against
+# this board. /mnt/flash is 3.4 GB with ~1.3 GB free, and it holds two EOS SWIs
+# (4.14 at 364 MB and 4.20 at 629 MB) which are this box's way back. Confirm
+# before the first install; boot_mib and slot_mib are unused if the slots end up
+# as files on Aboot's FAT the way the SX2's are.
+boot_mib: 64
+slot_mib: 768
+data_mib: 512
+
+# Read off the running switch, not assumed.
+#
+# memmap reserves the DMA pool the userspace BDE claims. 0xd0000000 rather than
+# 0x100000000 because this board has 3839 MB and 4 GB is past the end of memory.
+#
+# ⚠ NOTE THE ABSENCE OF iomem=relaxed. The SX2 needs it, because without it
+# /dev/mem cannot map that region and the mapping fails silently. EdgeNOS does
+# not pass it here and its BDE still works -- it reaches BAR0 through
+# /sys/bus/pci/.../resource0 rather than /dev/mem. Whether NOSaic's BDE needs it
+# on this board depends on which path its dmapool takes, so decide that from the
+# code rather than by copying either line.
+kernel_params: "console=ttyS0,9600n8 panic=10 reboot=p memmap=64M$0xd0000000"
+
+# Arista's SCD, an FPGA on the PCI bus, owns the board's own hardware -- reset
+# lines, watchdog, sensors, LEDs, and the MDIO bus the copper PHYs hang off. It
+# holds the Trident2 in reset from power-on, which is why the ASIC's address is
+# stated here: until the SCD is told to let go, 01:00.0 is not on the bus to be
+# discovered.
+#
+# Both addresses read from the running board: 01:00.0 is 14e4:b855 (BCM56855)
+# and 02:00.0 is 3475:0001 (Arista SCD).
+platform_hal:
+  driver: scd
+  pci: "0000:02:00.0"
+  asic_pci: "0000:01:00.0"
+
+# ⚠ thermal is deliberately absent, pending the decision recorded in README.md.
+# This board's cooling curve was extracted from /etc/fdl on the switch, which is
+# Arista Confidential, so the numbers are not ours to publish even though Arista
+# publish the same class of data for other boards. EdgeNOS reads them at runtime
+# from a file the operator generates on their own switch, and that split should
+# survive into NOSaic rather than being flattened into values committed here.
+
+notes: >
+  Aboot boots unsigned SWIs here: boot0 is a shell script we control and no
+  signing is enforced. Console is ttyS0 at 9600. The CPU is an AMD GX-420CA with
+  3839 MB of RAM.
+
+  The management port is driven by tg3 and comes up as the unprogrammed
+  Broadcom default 00:10:18:00:00:00 across a kexec, so the real MAC is read in
+  Aboot and passed on the kernel command line. The SX2 has the same problem and
+  solves it from a configuration file instead.
+
+  The front panel is 48 ports of 10GBASE-T plus four QSFP+ cages. Front-panel
+  EtN is SDK port N and diag name xeN-1, so Et48 is SDK port 48 and xe47. The
+  QSFP cages break that pattern: they are SDK ports 49, 53, 57 and 61, each the
+  first lane of a group of four, and their Linux taps are xe48, xe52, xe56 and
+  xe60. Code that assumes one rule for both mis-maps the QSFP capacity, and it
+  presents as a dead port rather than as a wrong index.
+
+  Each QSFP cage's transceiver EEPROM is on its own i2c bus off the SCD -- buses
+  9, 10, 11 and 12 for front-panel 49, 50, 51 and 52, at address 0x50. Measured
+  by reading the identifier byte on each bus.
+
+  ⚠ Every unconnected copper port reports "Link Up with Speed 0M". A link with
+  no speed is not a link, and code that believes it will configure all 48 ports
+  as though they were cabled.
+
+  ⚠ The MAC interface must follow the negotiated speed -- SGMII at or below
+  2.5G, XFI at 10G. A 10GBASE-T port left at its XFI default while the copper
+  side negotiates 1G gives a PHY with a real link on both sides that bridges
+  nothing, in both directions, with zero errors on either end.
+
+  ⚠ MDIO is a shared bus and the datapath depends on it. Reading
+  bcm_port_speed_get across all 48 PHYs on a two-second timer starved it and
+  killed copper RECEIVE on every port, while the direct-serdes 40G ports kept
+  working. Cache link state from linkscan and bound any sweep.
+
+  The PHY firmware handshake fails noisily on some cold starts -- 40 warnings on
+  one boot here, and no copper port linked -- and restarting the datapath agent
+  cleared it with zero warnings on the rerun. It is a transient of the firmware
+  download, not a configuration fault.

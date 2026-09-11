@@ -29,6 +29,7 @@ hand-maintained list of hardware on the front page is the first thing to go stal
 | Switch | Silicon | Arch | Boots via | Status |
 |---|---|---|---|---|
 | [arista 7050sx2-72q](platform/arista-7050sx2-72q/) | td2p | x86_64 | aboot | experimental |
+| [arista 7050tx-64](platform/arista-7050tx-64/) | td2 | x86_64 | aboot | bringup |
 | [edgecore as5610-52x](platform/edgecore-as5610-52x/) | tdp | powerpc | onie-sfx | experimental |
 | [nosaic virt](platform/virt-x86_64/) | virt | x86_64 | virt | bringup |
 
