@@ -13,6 +13,7 @@ import (
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/scd"
+	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/sff"
 )
 
 const platformUsage = `usage: nosaic platform <command>
@@ -70,7 +71,7 @@ func platformCmd(args []string) error {
 	case "schan":
 		return schanCmd(b, rest[1:])
 	case "transceivers", "xcvr":
-		return showTransceivers(hal)
+		return showTransceivers(hal, rest[1:])
 	case "tx":
 		return setCageTX(hal, rest[1:])
 	case "thermal":
@@ -426,7 +427,18 @@ func countInteresting(ws []uint32) int {
 // ASIC dark and owes nothing to the port map -- which is what makes it useful
 // for establishing one. A cage with a module in it is a cage that should have
 // link once the right logical port is pointed at it.
-func showTransceivers(hal platformhal.HAL) error {
+func showTransceivers(hal platformhal.HAL, args []string) error {
+	// A cage number asks the module itself rather than the board about it.
+	if len(args) > 0 {
+		cage, err := strconv.Atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("expected a cage number, got %q", args[0])
+		}
+		if len(args) > 1 && args[1] == "raw" {
+			return dumpModule(hal, cage)
+		}
+		return showModule(hal, cage)
+	}
 	t, ok := hal.(interface{ Transceivers() ([]scd.Cage, error) })
 	if !ok {
 		return fmt.Errorf("%w: this board cannot report its cages", platformhal.ErrUnsupported)
@@ -580,4 +592,94 @@ func beaconCmd(hal platformhal.HAL, args []string) error {
 		return b.SetBeacon(false)
 	}
 	return fmt.Errorf("usage: nosaic platform beacon [on|off]")
+}
+
+// showModule reads one transceiver's own diagnostics: what it is, and how much
+// light is going each way.
+//
+// Separate from the cage table above because they answer different questions
+// from different places. The table is the SCD's view -- is a module seated,
+// is its laser gated -- and is readable with the module dark and the ASIC
+// down. This asks the module, over its own i2c bus, and needs it powered and
+// answering.
+func showModule(hal platformhal.HAL, cage int) error {
+	o, ok := hal.(platformhal.Optics)
+	if !ok {
+		return fmt.Errorf("%w: this board cannot read its transceivers' diagnostics",
+			platformhal.ErrUnsupported)
+	}
+	m, err := platformhal.ReadModule(o, cage, true)
+	if err != nil {
+		return err
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "cage\t%d\n", cage)
+	fmt.Fprintf(w, "type\t%s (identifier %#02x)\n", m.Kind, m.Identifier)
+	if m.Vendor != "" || m.PartNumber != "" {
+		fmt.Fprintf(w, "vendor\t%s %s\n", m.Vendor, m.PartNumber)
+	}
+	if m.SerialNumber != "" {
+		fmt.Fprintf(w, "serial\t%s\n", m.SerialNumber)
+	}
+	if m.TempOK {
+		fmt.Fprintf(w, "temperature\t%.1f C\n", float64(m.TempMilliC)/1000)
+	}
+	if m.VccOK {
+		fmt.Fprintf(w, "supply\t%.2f V\n", float64(m.VccMV)/1000)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if len(m.Lanes) == 0 {
+		fmt.Println("\nthis module reports no diagnostics")
+		return nil
+	}
+
+	fmt.Println()
+	lw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(lw, "lane\trx\ttx\tbias")
+	for _, l := range m.Lanes {
+		tx := "not measured"
+		if l.TXPowerOK {
+			tx = sff.FormatDBm(l.TXPowerUW)
+		}
+		fmt.Fprintf(lw, "%d\t%s\t%s\t%.1f mA\n",
+			l.Index, sff.FormatDBm(l.RXPowerUW), tx, float64(l.TXBiasUA)/1000)
+	}
+	return lw.Flush()
+}
+
+// dumpModule prints a module's raw memory, which is what you want the moment a
+// decode disagrees with reality. Decoded zeroes and an unreachable bus look
+// identical through any amount of formatting.
+func dumpModule(hal platformhal.HAL, cage int) error {
+	o, ok := hal.(platformhal.Optics)
+	if !ok {
+		return fmt.Errorf("%w: this board cannot read its transceivers' diagnostics",
+			platformhal.ErrUnsupported)
+	}
+	for _, r := range []struct {
+		what       string
+		addr, page int
+		off, n     int
+	}{
+		{"0x50 lower (diagnostics)", 0x50, -1, 0, 128},
+		{"0x50 upper page 00h (identity)", 0x50, 0, 128, 128},
+	} {
+		b, err := o.ReadModuleBytes(cage, r.addr, r.page, r.off, r.n)
+		if err != nil {
+			fmt.Printf("%s: %v\n", r.what, err)
+			continue
+		}
+		fmt.Printf("%s:\n", r.what)
+		for i := 0; i < len(b); i += 16 {
+			fmt.Printf("  %3d:", r.off+i)
+			for j := i; j < i+16 && j < len(b); j++ {
+				fmt.Printf(" %02x", b[j])
+			}
+			fmt.Println()
+		}
+	}
+	return nil
 }

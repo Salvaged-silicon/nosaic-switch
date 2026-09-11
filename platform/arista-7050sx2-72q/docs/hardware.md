@@ -755,6 +755,103 @@ Two lessons, both cheap to apply next time:
 - prefer a measurement that **cannot be faked by the thing you are testing**.
   L2 learning is a side effect of reception; a counter is a report about it.
 
+## Reading transceiver diagnostics
+
+```
+nosaic platform transceivers            # which cages are populated
+nosaic platform transceivers 49         # decoded diagnostics for cage 49
+nosaic platform transceivers 49 raw     # raw module memory, for when a
+                                        # decode disagrees with reality
+```
+
+`xcvr` is accepted as a shorter spelling of `transceivers`.
+
+Example output:
+
+```
+cage         49
+type         QSFP (identifier 0x0d)
+temperature  34.2 C
+supply       3.28 V
+
+lane  rx          tx          bias
+1     -2.18 dBm   -1.90 dBm   6.4 mA
+```
+
+### ⚠ The optics currently in this board report nothing
+
+Measured 2026-09-11: the three cabled cages hold **40GBASE-SRBD** BiDi modules,
+and every diagnostic byte in them reads zero. That is the module, not the
+software -- EOS 4.18.3.1F on the same switch reports `N/A` for temperature,
+voltage, bias, Tx and Rx power on all three:
+
+```
+Port      Temp  Voltage  Bias  Tx Power  Rx Power
+Et52/1    N/A   N/A      N/A   N/A       N/A
+Et53/1    N/A   N/A      N/A   N/A       N/A
+Et54/1    N/A   N/A      N/A   N/A       N/A
+```
+
+Their identity pages read perfectly through the same path
+(`CISCO-AVAGO AFBR-79EBPZ-CS2`, serial `AVF2146U12F`), so the bus, the cage map
+and the page select are all proven. Put a DOM-capable optic in a cage to see
+numbers. Do not read an all-zero result here as a broken reader.
+
+It is worth knowing *before* reaching for this to debug a dark link, which is
+what it was built for and could not answer.
+
+### How it is read
+
+**1. cage -> bus** — `internal/platformhal/scd/optics.go`
+
+```
+cages  1..48  SFP+   SMBus accel 2..7, eight buses each, in port order
+cages 49..54  QSFP+  SMBus accel 8, buses 0..5
+```
+
+From Arista's FDL board description, checked against all 72 entries of
+`artifacts/fdl-20260813/portmap.json` in the EdgeNOS project that derived it --
+zero mismatches, and its `xcvrOffset` values agree with the SCD transceiver
+register base this board already used. A blind SMBus scan had independently
+found an EEPROM pair at accel 2 bus 0, which the rule gives as cage 1.
+
+**2. module -> bytes** — i2c address `0x50`
+
+SFF-8636 diagnostics are in the **lower** half of page 00h, always mapped, so
+light levels need **no page select**. Vendor/PN/SN are in upper page 00h and do,
+which is why `DecodeQSFP` takes `upper` as optional and a board that cannot
+write a page select still reports light levels.
+
+```
+byte 22   temperature      (s16, /256 degC)
+byte 26   supply voltage   (u16, 100uV units)
+byte 34   Rx power   4 lanes x 2 bytes (u16, 0.1uW units)
+byte 42   Tx bias    4 lanes           (u16, 2uA units)
+byte 50   Tx power   4 lanes, OPTIONAL
+```
+
+An SFP+ is different and the code asks the module which it is rather than
+assuming from the cage: SFF-8472 puts identity at `0x50` and diagnostics on a
+second address, `0x51`, and reading an SFP the QSFP way returns its identity
+bytes interpreted as temperatures.
+
+**3. three traps, all handled** — `internal/platformhal/sff/`
+
+- **Data not ready.** Status byte 2 bit 0. A module read too soon after
+  power-on reports zeros everywhere, which looks exactly like a dark link.
+- **Tx power is optional.** A module that does not implement it reports zero,
+  and so does a dead laser. Separated by asking whether ANY lane is non-zero,
+  not by a capability bit vendors set inconsistently. Confirmed against byte
+  220 on a real module, which had the Tx-power bit clear.
+- **No light is not a small number.** `log(0)` is `-inf`, and an operator
+  reading "-inf dBm" takes it for a very weak signal rather than for no signal.
+  Zero microwatts prints as `no signal`.
+
+The decode is board-independent on purpose: it is a *module* standard, so the
+same optic reports the same bytes in any switch. Only fetching the bytes is
+board business, behind `platformhal.Optics`, which is the whole of what a new
+board implements.
+
 ## What EOS sets that we do not
 
 EOS's live SDK configuration was dumped from this board and is the closest
