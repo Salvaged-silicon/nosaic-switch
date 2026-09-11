@@ -94,6 +94,271 @@ static void active_trial(const char *dir, char *active, size_t alen,
 		*tries = atoi(n);
 }
 
+/*
+ * ---- installing an image into a slot -------------------------------------
+ *
+ * This used to refuse, and say so:
+ *
+ *   "Installing an image into a slot is done from the build host with
+ *    `nosaic upgrade install <disk> <image> --slot <a|b>`"
+ *
+ * The reasoning was that putting a raw-device write behind a one-word
+ * subcommand on the switch itself is how somebody overwrites the running
+ * image. The reasoning was sound and the conclusion was wrong, because the Go
+ * CLI it pointed at cannot run on this board -- 32-bit big-endian PowerPC is a
+ * target the Go toolchain has never had, which is why this CLI exists at all.
+ * So the board had no upgrade path, and the way an image actually got into
+ * slot B on 2026-09-11 was a hand-typed dd at a serial console, with no
+ * partition table in front of it, no active-slot refusal, no squashfs check
+ * and no overlay clear. Refusing to offer the guarded operation did not
+ * prevent the dangerous one; it guaranteed it.
+ *
+ * So the guards move here, where they can actually run:
+ *
+ *   - the target is the INACTIVE slot, chosen automatically, and naming the
+ *     active one is refused;
+ *   - the resolved device must not be the one carrying the running root, which
+ *     catches a slot table that disagrees with reality rather than trusting it;
+ *   - the image must start with the squashfs magic, because a truncated
+ *     download that gets written and pointed at is a switch that boots to
+ *     nothing;
+ *   - it must fit the partition;
+ *   - the slot's overlay is cleared, or the new image comes up wearing the old
+ *     one's changes;
+ *   - and the slot is marked as a TRIAL, never as active. Nothing becomes the
+ *     committed choice until it has booted and said it is healthy.
+ *
+ * That is internal/upgrade.Install, in the same order, for the boards Go
+ * cannot reach.
+ */
+
+/* Where a slot's image lives. Resolved the way the initramfs resolves it, and
+ * for the same reason: if this and the boot script disagree about which device
+ * is slot B, an upgrade installs somewhere the switch will never boot from.
+ *
+ * By label first, because that is what the installer writes and the only
+ * answer that is not a convention. The numeric fallback is the convention --
+ * slot a is partition 2, slot b is partition 3 -- for a disk whose labels the
+ * running kernel cannot read. */
+static int slot_device(const char *slot, char *out, size_t len)
+{
+	static const char *disks[] = { "/dev/vda", "/dev/sda", "/dev/mmcblk0p" };
+	struct stat st;
+	size_t i;
+	int n;
+
+	snprintf(out, len, "/dev/disk/by-label/nosaic-slot-%s", slot);
+	if (stat(out, &st) == 0 && S_ISBLK(st.st_mode))
+		return 0;
+
+	n = (strcmp(slot, "a") == 0) ? 2 : 3;
+	for (i = 0; i < sizeof(disks) / sizeof(disks[0]); i++) {
+		snprintf(out, len, "%s%d", disks[i], n);
+		if (stat(out, &st) == 0 && S_ISBLK(st.st_mode))
+			return 0;
+	}
+	*out = '\0';
+	return -1;
+}
+
+/* Refuse to write the device the running system is mounted from.
+ *
+ * The slot tables say which partition is which; this asks the kernel what is
+ * actually underneath "/". If those two ever disagree, believing the table
+ * overwrites the running switch, and the first symptom is at the next reboot. */
+static int is_root_device(const char *dev)
+{
+	struct stat root, d;
+
+	if (stat("/", &root) != 0 || stat(dev, &d) != 0)
+		return 0;
+	return d.st_rdev == root.st_dev;
+}
+
+/* rm -rf, without a shell. */
+static int rm_rf(const char *path)
+{
+	char child[512];
+	struct dirent *e;
+	struct stat st;
+	DIR *d;
+
+	if (lstat(path, &st) != 0)
+		return (errno == ENOENT) ? 0 : -1;
+	if (!S_ISDIR(st.st_mode))
+		return unlink(path);
+
+	if ((d = opendir(path)) == NULL)
+		return -1;
+	while ((e = readdir(d)) != NULL) {
+		if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+			continue;
+		snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+		if (rm_rf(child) != 0) {
+			closedir(d);
+			return -1;
+		}
+	}
+	closedir(d);
+	return rmdir(path);
+}
+
+/* The new image must not inherit the old one's writable layer.
+ *
+ * internal/upgrade records two silently-wrong installs from skipping this: the
+ * version reported and the files present came from different images, which is
+ * the hardest kind of wrong to see because everything works. */
+static int clear_overlay(const char *slot)
+{
+	char dir[256], sub[320];
+	struct stat st;
+	size_t i;
+	static const char *layers[] = { "upper", "work" };
+
+	snprintf(dir, sizeof(dir), "/mnt/data/slot-%s", slot);
+	if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode))
+		return 0;   /* never booted; nothing to clear */
+
+	for (i = 0; i < sizeof(layers) / sizeof(layers[0]); i++) {
+		snprintf(sub, sizeof(sub), "%s/%s", dir, layers[i]);
+		if (stat(sub, &st) != 0)
+			continue;
+		if (rm_rf(sub) != 0 || mkdir(sub, 0755) != 0) {
+			fprintf(stderr, "nosaic: clearing slot %s's %s layer: %s\n",
+				slot, layers[i], strerror(errno));
+			return -1;
+		}
+		printf("cleared slot %s's %s layer\n", slot, layers[i]);
+	}
+	return 0;
+}
+
+static int cmd_install(const char *dir, const char *image, const char *want)
+{
+	char active[16], trial[16], slot[16], dev[256];
+	char buf[1 << 20];
+	unsigned char magic[4];
+	off_t isize, dsize;
+	int tries, src, dst, rc = 1;
+	ssize_t n;
+
+	active_trial(dir, active, sizeof(active), trial, sizeof(trial), &tries);
+
+	/* Default to the slot that is not running. Choosing it here rather than
+	 * making the operator name it is most of the safety: the overwhelmingly
+	 * common mistake is naming the one you are booted from. */
+	if (want != NULL)
+		snprintf(slot, sizeof(slot), "%s", want);
+	else
+		snprintf(slot, sizeof(slot), "%s",
+			 strcmp(active, "a") == 0 ? "b" : "a");
+
+	if (strcmp(slot, "a") != 0 && strcmp(slot, "b") != 0) {
+		fprintf(stderr, "nosaic: slot must be a or b, not %s\n", slot);
+		return 1;
+	}
+	if (strcmp(slot, active) == 0) {
+		fprintf(stderr,
+			"nosaic: slot %s is the active slot; installing into it would "
+			"overwrite the running image and leave nothing to roll back to\n",
+			slot);
+		return 1;
+	}
+
+	if ((src = open(image, O_RDONLY)) < 0) {
+		fprintf(stderr, "nosaic: %s: %s\n", image, strerror(errno));
+		return 1;
+	}
+	if (read(src, magic, sizeof(magic)) != (ssize_t)sizeof(magic) ||
+	    memcmp(magic, "hsqs", 4) != 0) {
+		fprintf(stderr,
+			"nosaic: %s does not start with the squashfs magic.\n"
+			"A truncated download written into a slot and booted is a switch\n"
+			"that comes up to nothing, so this refuses rather than finding out.\n",
+			image);
+		close(src);
+		return 1;
+	}
+	isize = lseek(src, 0, SEEK_END);
+	if (isize < 0 || lseek(src, 0, SEEK_SET) != 0) {
+		fprintf(stderr, "nosaic: %s: %s\n", image, strerror(errno));
+		close(src);
+		return 1;
+	}
+
+	if (slot_device(slot, dev, sizeof(dev)) != 0) {
+		fprintf(stderr, "nosaic: cannot find the device for slot %s\n", slot);
+		close(src);
+		return 1;
+	}
+	if (is_root_device(dev)) {
+		fprintf(stderr,
+			"nosaic: %s is the device this system is running from, and the\n"
+			"slot table says it is slot %s. Those disagree, and writing would\n"
+			"overwrite the running switch. Nothing was written.\n", dev, slot);
+		close(src);
+		return 1;
+	}
+
+	if ((dst = open(dev, O_WRONLY)) < 0) {
+		fprintf(stderr, "nosaic: %s: %s\n", dev, strerror(errno));
+		close(src);
+		return 1;
+	}
+	dsize = lseek(dst, 0, SEEK_END);
+	if (dsize > 0 && isize > dsize) {
+		fprintf(stderr, "nosaic: the image is %.1f MiB and slot %s is %.1f MiB\n",
+			(double)isize / (1 << 20), slot, (double)dsize / (1 << 20));
+		goto out;
+	}
+	if (lseek(dst, 0, SEEK_SET) != 0) {
+		fprintf(stderr, "nosaic: %s: %s\n", dev, strerror(errno));
+		goto out;
+	}
+
+	printf("installing %s (%.1f MiB) into slot %s on %s\n",
+	       image, (double)isize / (1 << 20), slot, dev);
+	while ((n = read(src, buf, sizeof(buf))) > 0) {
+		ssize_t off = 0;
+		while (off < n) {
+			ssize_t w = write(dst, buf + off, (size_t)(n - off));
+			if (w <= 0) {
+				fprintf(stderr, "nosaic: writing %s: %s\n", dev, strerror(errno));
+				goto out;
+			}
+			off += w;
+		}
+	}
+	if (n < 0) {
+		fprintf(stderr, "nosaic: reading %s: %s\n", image, strerror(errno));
+		goto out;
+	}
+	/* On disk before the pointer moves. A trial that is pointed at but not
+	 * yet written is a rollback nobody asked for. */
+	if (fsync(dst) != 0) {
+		fprintf(stderr, "nosaic: flushing %s: %s\n", dev, strerror(errno));
+		goto out;
+	}
+
+	if (clear_overlay(slot) != 0)
+		goto out;
+
+	if (write_state(dir, "trial", slot) != 0 ||
+	    write_state(dir, "tries", "0") != 0) {
+		fprintf(stderr, "nosaic: cannot write the boot pointer: %s\n",
+			strerror(errno));
+		goto out;
+	}
+	printf("slot %s is installed and on trial; reboot to try it\n", slot);
+	printf("it commits itself if the datapath comes up, and rolls back to %s if not\n",
+	       active);
+	rc = 0;
+out:
+	close(dst);
+	close(src);
+	return rc;
+}
+
 static int cmd_status(const char *dir)
 {
 	char active[16], trial[16];
@@ -259,18 +524,41 @@ int nosaic_upgrade(int argc, char **argv)
 	if (strcmp(argv[2], "confirm") == 0)
 		return cmd_confirm(dir);
 
-	/* Writing a slot is not offered here on purpose.
-	 *
-	 * On this board a slot is a partition, and putting a raw-device write
-	 * behind a one-word subcommand on the switch itself is how somebody
-	 * overwrites the running image. The Go CLI on the build host does it,
-	 * with the partition table in front of it and the active-slot refusal in
-	 * the same code path. */
+	if (strcmp(argv[2], "install") == 0) {
+		const char *image = NULL, *slot = NULL;
+		int i;
+
+		for (i = 3; i < argc; i++) {
+			if (strcmp(argv[i], "--slot") == 0 && i + 1 < argc)
+				slot = argv[++i];
+			else if (strncmp(argv[i], "--slot=", 7) == 0)
+				slot = argv[i] + 7;
+			else if (image == NULL)
+				image = argv[i];
+			else {
+				fprintf(stderr, "nosaic: unexpected argument %s\n", argv[i]);
+				return 2;
+			}
+		}
+		if (image == NULL) {
+			fprintf(stderr,
+				"usage: nosaic upgrade install <image.sqsh> [--slot <a|b>]\n"
+				"\n"
+				"Without --slot the inactive slot is chosen, which is almost\n"
+				"always what is meant. The image is the rootfs squashfs from a\n"
+				"build, not the installer .bin -- that one replaces the whole\n"
+				"disk and is for a first install from ONIE.\n");
+			return 2;
+		}
+		return cmd_install(dir, image, slot);
+	}
+
 	fprintf(stderr,
-		"usage: nosaic upgrade <status|commit|confirm>\n"
+		"usage: nosaic upgrade <status|install|commit|confirm>\n"
 		"\n"
-		"Installing an image into a slot is done from the build host with\n"
-		"`nosaic upgrade install <disk> <image> --slot <a|b>`, which has the\n"
-		"partition table in front of it.\n");
+		"  status   which slot is active, and whether one is on trial\n"
+		"  install  write an image into the inactive slot and mark it a trial\n"
+		"  commit   accept the slot on trial as the one this switch boots\n"
+		"  confirm  commit only if the datapath is actually up\n");
 	return 2;
 }

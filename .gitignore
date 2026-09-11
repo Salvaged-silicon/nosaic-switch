@@ -56,4 +56,10 @@ datapath/*/tdp-probe
 # commit.
 cli/*.o
 cli/nosaic
+
+# The serial-console driver used to reach a board over a terminal server. It
+# lives at the repository root only because the Bash permission rule that
+# allows it matches on "python3 con.py", and the working directory resets
+# between calls. It is a local operator tool, not part of the build.
+/con.py
 refs/

@@ -303,7 +303,52 @@ image for it on the build host. See `~/backups/as5610-edgenos-20260903/`.
 
 ---
 
-## 8. What this does not do yet
+## 8. Upgrading a running switch
+
+Two artifacts come out of a build and they are not interchangeable. The
+`.bin` is the ONIE installer and it replaces the **whole disk** -- both slots
+and the data partition with them. It is for a first install, from ONIE. An
+upgrade takes `rootfs.sqsh`, which is one slot's worth of image.
+
+Get it onto the switch however you like -- the management port reaches the
+build host -- and then:
+
+```sh
+doas wget -O /mnt/data/rootfs.new http://<build-host>:8080/rootfs.sqsh
+doas nosaic upgrade install /mnt/data/rootfs.new
+doas reboot
+```
+
+`install` takes the **inactive** slot unless `--slot` says otherwise, because
+naming the slot you are booted from is the mistake worth designing out. It
+refuses to write the active slot, refuses a device that is carrying the
+running root even if the slot table claims otherwise, refuses an image that
+does not start with the squashfs magic, refuses one that does not fit, clears
+the slot's overlay so the new image does not come up wearing the old one's
+changes, and marks the slot a **trial** -- never active.
+
+The switch then judges it. On the next boot the trial confirms itself if the
+datapath comes up, and rolls back on its own if it does not:
+
+```
+NOSAIC-TRIAL slot a is on trial (attempt 1); checking whether it works
+datapath answers: 10 configured, 10 up
+NOSAIC-TRIAL COMMIT slot a is healthy and is now the slot this switch boots
+```
+
+This ran here on 2026-09-11, both the guards and the install, on the running
+switch.
+
+Until that day this board had no upgrade path at all. The CLI refused to write
+a slot and pointed at the Go CLI on the build host -- which cannot run on
+32-bit big-endian PowerPC, which is the entire reason this board has a C CLI.
+So the way an image actually got into a slot was a hand-typed `dd` at the
+serial console, with none of the checks above. Refusing to offer the guarded
+operation did not prevent the dangerous one.
+- **`onie_boot_reason=rescue` is not useful remotely** — no networking. Use
+  `install`.
+
+## 9. What this does not do yet
 
 - **A/B is one-sided for the kernel.** Rollback restores the root filesystem,
   not the FIT. §2.
@@ -315,8 +360,6 @@ image for it on the build host. See `~/backups/as5610-edgenos-20260903/`.
   inactive slot booted as a trial and **committed itself** here, judged by the
   switch rather than by anyone watching. `nosaic upgrade status` shows the
   pointer and `nosaic upgrade confirm` is the explicit form.
-- **`onie_boot_reason=rescue` is not useful remotely** — no networking. Use
-  `install`.
 
 ## See also
 
