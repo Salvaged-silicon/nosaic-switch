@@ -62,8 +62,8 @@ so an HTTP boot fails with "Network is unreachable" before it fetches anything:
 
 ```
 Aboot# initnetdev
-Aboot# ifconfig ma1 10.1.1.241 netmask 255.255.255.0 up
-Aboot# route add default gw 10.1.1.1
+Aboot# ifconfig ma1 10.10.32.2 netmask 255.255.255.0 up
+Aboot# route add default gw 10.10.32.1
 Aboot# ping -c 2 10.22.1.5
 Aboot# boot http://10.22.1.5:8080/nosaic.swi
 ```

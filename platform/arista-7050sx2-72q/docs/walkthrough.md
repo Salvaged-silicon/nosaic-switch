@@ -118,8 +118,8 @@ Reboot the switch and interrupt the countdown with **Ctrl-C**, then:
 
 ```
 Aboot# initnetdev
-Aboot# ifconfig ma1 10.1.1.241 netmask 255.255.255.0 up
-Aboot# route add default gw 10.1.1.1
+Aboot# ifconfig ma1 10.10.32.2 netmask 255.255.255.0 up
+Aboot# route add default gw 10.10.32.1
 Aboot# ping -c 2 <build host>
 Aboot# boot http://<build host>:8080/nosaic.swi
 ```
@@ -235,7 +235,7 @@ carries the switch's own management traffic — a 77 MB image at 21 KB/s instead
 of 2 MB/s. Pin it:
 
 ```
-route 10.22.1.0/24 via 10.1.1.1 dev eth0
+route 10.22.1.0/24 via 10.10.32.1 dev eth0
 ```
 
 If you would rather do it by hand for one boot, the taps are recreated whenever
