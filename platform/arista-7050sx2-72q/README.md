@@ -32,8 +32,9 @@ The board runs as a router. On the switch, verified rather than assumed:
 - **both 40G QSFP+ cages link at 40000 and pass traffic**, to two different
   neighbours, from a cold boot with no manual step — see
   [hardware](docs/hardware.md#the-40g-cages) for what that took;
-- FRR holds **OSPFv2 and OSPFv3 adjacencies at Full** with two different
-  vendors' boxes;
+- FRR holds an **OSPFv2 adjacency at Full** with the AS5610 over a 40G cage.
+  OSPFv3 has run here, and the `frr.conf` on the switch today carries
+  `router ospf` and no `ospf6` at all, so nothing holds a v6 adjacency;
 - **its addressing and OSPF configuration come back on their own** after a power
   cycle: loopback, every routed port, and the routing daemons, nothing typed in;
 - the kernel FIB is mirrored into the ASIC — `CHIP route 96/8192`, from the

@@ -170,15 +170,59 @@ What you still do not get:
 - **The kernel and initramfs are outside A/B.** A slot holds a root filesystem;
   the SWI is written in place and cannot be rolled back. An upgrade that changes
   both is only half atomic.
-- **`upgrade install` on the switch is untested here**, though nothing in the
-  way stands in its way any more. It used to require the disk and the slot as
-  arguments, which made it a build-host tool; it now takes neither, defaulting
-  to this system and to the slot it is not booted from. The refusal it is
-  usually described by -- a slot file that is currently loop-mounted -- applies
-  to the *active* slot, which an upgrade never writes. The 7050SX2's upgrades
-  have all been driven from the build host, so on-switch install is stated here
-  as untried rather than as working. The AS5610 has done it, on partitions
-  rather than files.
+- **`upgrade install` on the switch works, and was done from the switch.**
+  Proven on 2026-09-11: a rootfs streamed to the box over ssh, installed into
+  the inactive slot with the running CLI, rebooted, and **committed itself** --
+  `NOSAIC-TRIAL COMMIT slot a is healthy and is now the slot this switch boots`
+  on the console, and `active a / trial none` afterwards. It used to require
+  the disk and the slot as arguments, which made it a build-host tool; it now
+  takes neither, defaulting to this system and to the slot it is not booted
+  from. The refusal it is usually described by -- a slot file that is currently
+  loop-mounted -- applies to the *active* slot, which an upgrade never writes.
+
+  Two things that catch you out, neither of them a fault:
+
+  **The host key changes.** Each slot keeps its own `/etc`, and installing
+  clears the target slot's upper layer, so the new slot generates a fresh
+  dropbear host key on its first boot. The switch then greets you with
+  `REMOTE HOST IDENTIFICATION HAS CHANGED` and refuses the connection, which
+  is indistinguishable from the attack that warning is for. Expect it after
+  every upgrade, and clear the entry:
+
+  ```sh
+  ssh-keygen -R <switch>
+  ```
+
+  **Status can read stale for a few seconds.** The commit runs detached from
+  the boot -- `trial-confirm.sh` is `setsid`'d so it cannot hold s6 up -- so
+  `upgrade status` immediately after the switch answers can still say
+  `trial a (attempt 1)`. It settles to `active a / trial none` on its own.
+
+  **Both slots have a full `/var/log`, and `find` will hand you the wrong
+  one.** Each slot keeps its own overlay, so
+  `/mnt/data/slot-{a,b}/upper/var/log/` both exist and both look current.
+  A `find / -name current -path '*nosd*' | head -1` returns whichever the
+  filesystem lists first, which is not necessarily the slot you are running.
+  Reading the inactive slot's log and attributing it to the running image is
+  an easy and convincing mistake -- it produced a confident report of a bug in
+  a fixed image here. Either use `/var/log/...`, which the overlay resolves to
+  the running slot, or name the slot explicitly.
+
+  Kept deliberately, because that second log is also an asset: after an
+  upgrade the superseded image's log is still on the box, so old and new can
+  be compared on one switch minutes apart. That is how the DMA pool fix was
+  measured rather than assumed -- see
+  [the todo](todo.md#fixed-on-2026-09-11).
+
+  **Dropbear ships no sftp-server**, so `scp` fails with
+  `/usr/libexec/sftp-server: not found`. Pipe instead, which is also faster --
+  63 MiB in 2.3 s over the management port:
+
+  ```sh
+  cat rootfs.sqsh | ssh root@<switch> 'cat > /mnt/flash/nosaic-new.sqsh'
+  nosaic upgrade install /mnt/flash/nosaic-new.sqsh --slot a
+  ```
+
 - **The vendor OS is still there**, and that is deliberate. It is the recovery
   path, and the eMMC has room for both.
 

@@ -27,6 +27,22 @@ datapath -- `datapath/common` -- so a fix in one often lands in both.
   path needs no CPU DMA -- but anything the box tried to *send* failed, so the
   control plane was down while every port still showed carrier.
 
+  **Do not read "still forwarded in silicon" as a property of the bug.** It is
+  what this board happened to show. The 7050SX2 ran the same bug into a worse
+  place: `CHIP route 0/8192` in every sample, meaning the FIB mirror had
+  programmed **nothing** into the chip, with unresolved next hops climbing
+  steadily. Already-programmed forwarding survives an exhausted pool because
+  it needs no CPU DMA; *installing* forwarding state does not survive it. Which
+  of the two you see depends on whether the pool ran out before or after the
+  routes went in, so the same bug reads as "control plane cannot transmit" on
+  one box and "switch is not routing at all" on the other.
+
+  That comparison was possible because an A/B upgrade leaves the old image in
+  the inactive slot: on the 7050SX2 on 2026-09-11, slot b's log carried 703
+  `DMA pool exhausted` lines and `CHIP route 0/8192`, and slot a's carried
+  none and `CHIP route 15/8192`, on one switch minutes apart. Keeping the
+  superseded slot is worth more than the disk it costs.
+
   The cause was ours, not the SDK's. `sal_dma_alloc` bumped a pointer and
   `sal_dma_free` did nothing, on the recorded reasoning that "the SDK takes
   what it needs during initialisation and keeps it for the life of the
@@ -44,7 +60,8 @@ datapath -- `datapath/common` -- so a fix in one often lands in both.
   Fixed by making the pool a real allocator -- `datapath/common/dmapool.c`,
   first fit over blocks in address order, splitting on allocation and
   coalescing both ways on free, under a mutex. **Shared with the 7050SX2**,
-  which carried its own copy of the same bug. The header's old note that PCI
+  which carried its own copy of the same bug -- since measured there, and it
+  had been doing the damage above rather than merely being able to. The header's old note that PCI
   plumbing was "deliberately not the same file yet ... a question worth
   answering with two working boards rather than one" is what decided it: two
   working boards, one bug, in two copies of the same code.

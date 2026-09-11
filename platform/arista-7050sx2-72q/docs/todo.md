@@ -250,6 +250,40 @@ is unobserved rather than known-good.
   exists because working out which caller had taken the pool the first time
   meant reading Broadcom's source rather than asking the switch.
 
+  **Measured here on 2026-09-11, and it was not hypothetical.** The A/B
+  upgrade left the old image in slot b and the fixed one in slot a, so the two
+  logs sit side by side on the same switch:
+
+  | | old image (slot b) | fixed (slot a) |
+  |---|---|---|
+  | `DMA pool exhausted` lines | **703** | **0** |
+  | pool | `67107520 / 67108864` -- full | 8.3 MiB of 64, peak 8.9 |
+  | **chip FIB** | **`CHIP route 0/8192`**, every sample | `CHIP route 15/8192` |
+  | unresolved next hops | climbing, 62760 -> 62940 | 240, steady |
+
+  **The third row is the one that matters.** This was not log noise: the box
+  had stopped programming routes into the ASIC altogether -- zero routes in
+  hardware, in all 100 samples, while it still linked, still held its OSPF
+  adjacency and still answered ping. A switch in that state looks entirely
+  healthy from outside and forwards nothing it has to route.
+
+  Worth contrasting with the AS5610, where the same bug left silicon
+  forwarding intact and only stopped the control plane transmitting. Already
+  programmed forwarding needs no CPU DMA; installing it does. Which symptom
+  you get depends on whether the pool ran out before or after the routes went
+  in, so this bug does not have one signature to look for.
+
+  The callers named at the wall here were `fp_64_bit_counter` (602) and
+  `l2 traverse` (101) -- the periodic collectors, which allocate every
+  interval and, with `free` doing nothing, never gave one back. The AS5610's
+  write-up names `bcm_tx` instead. Both leak; whoever asks *after* the pool is
+  full is who gets named, so the caller in the message is not the culprit.
+
+  The entry above explained the absence of observations here by this board
+  RAM-booting with a larger reservation. That half is now out of date -- it
+  installs to flash and boots from a slot -- which is likely why it finally
+  showed: ordinary pool, ordinary uptime.
+
 - **`make image` shipped stale binaries, and only warned about it.** The image
   build composes whatever is in `out/packages/`, which is right. But three
   recipes build from directories in this repository, and for those "already
