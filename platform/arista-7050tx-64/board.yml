@@ -48,13 +48,18 @@ data_mib: 512
 # memmap reserves the DMA pool the userspace BDE claims. 0xd0000000 rather than
 # 0x100000000 because this board has 3839 MB and 4 GB is past the end of memory.
 #
-# ⚠ NOTE THE ABSENCE OF iomem=relaxed. The SX2 needs it, because without it
-# /dev/mem cannot map that region and the mapping fails silently. EdgeNOS does
-# not pass it here and its BDE still works -- it reaches BAR0 through
-# /sys/bus/pci/.../resource0 rather than /dev/mem. Whether NOSaic's BDE needs it
-# on this board depends on which path its dmapool takes, so decide that from the
-# code rather than by copying either line.
-kernel_params: "console=ttyS0,9600n8 panic=10 reboot=p memmap=64M$0xd0000000"
+# iomem=relaxed is required, and the reason is worth stating because EdgeNOS
+# does NOT pass it on this board and its datapath works anyway.
+#
+# The two projects reach the chip differently. EdgeNOS maps BAR0 through
+# /sys/bus/pci/.../resource0, which needs no relaxation. NOSaic's BDE maps BAR0
+# the same way but claims its DMA pool through /dev/mem (datapath/td2/bde.c),
+# and CONFIG_STRICT_DEVMEM refuses that mapping without iomem=relaxed -- it
+# fails silently, which is the worst way for it to fail.
+#
+# So this is not carried over from the SX2 on the assumption that two Arista
+# boards are alike. It is here because of which path this tree's BDE takes.
+kernel_params: "console=ttyS0,9600n8 panic=10 reboot=p memmap=64M$0xd0000000 iomem=relaxed"
 
 # Arista's SCD, an FPGA on the PCI bus, owns the board's own hardware -- reset
 # lines, watchdog, sensors, LEDs, and the MDIO bus the copper PHYs hang off. It
