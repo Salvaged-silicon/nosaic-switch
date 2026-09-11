@@ -52,7 +52,7 @@ available now
   pkg order [--profile P]      list recipes in dependency order
   build [board]                assemble a board's image; lists boards if omitted
   upgrade status <disk>        show which slot is active or on trial
-  upgrade install <disk> <img> --slot b   install into the inactive slot
+  upgrade install <img> [--slot b]       install into the inactive slot
 
 on a running switch
   show ports | routes | caps    what the datapath is doing
@@ -526,14 +526,26 @@ func dialDatapath(within time.Duration) (*nosdclient.Client, error) {
 
 func upgradeCmd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: nosaic upgrade <status|install|commit> <disk> | confirm")
+		return fmt.Errorf("usage: nosaic upgrade <status|install|commit|confirm>\n" +
+			"\n" +
+			"  status   which slot is active, and whether one is on trial\n" +
+			"  install  write an image into the inactive slot and mark it a trial\n" +
+			"  commit   accept the slot on trial as the one this switch boots\n" +
+			"  confirm  commit only if the datapath is actually up\n" +
+			"\n" +
+			"Each takes the running system's own disk. Pass one to work on an\n" +
+			"image file instead: status and commit as an argument, install as --disk.")
 	}
 	switch args[0] {
 	case "status":
-		if len(args) != 2 {
-			return fmt.Errorf("usage: nosaic upgrade status <disk>")
+		// The disk is optional for the same reason it is on install: on a
+		// switch there is one, and it is this one. An argument is still taken,
+		// for a disk image on a build host.
+		d, err := diskArg(args[1:])
+		if err != nil {
+			return err
 		}
-		st, err := upgrade.Status(upgrade.Disk{Path: args[1]})
+		st, err := upgrade.Status(d)
 		if err != nil {
 			return err
 		}
@@ -548,22 +560,64 @@ func upgradeCmd(args []string) error {
 		return w.Flush()
 
 	case "install":
-		if len(args) < 3 {
-			return fmt.Errorf("usage: nosaic upgrade install <disk> <image> --slot <a|b>")
-		}
-		disk, image := args[1], args[2]
+		// `install <image> [--slot a|b] [--disk <path>]`, which is what the C
+		// CLI takes. It used to be `install <disk> <image> --slot <a|b>`, with
+		// both the disk and the slot required, because it was a build-host
+		// tool operating on an image file. It is also the command an operator
+		// runs on a switch, and there the disk is "this one" and the slot is
+		// "the one I am not booted from" -- so requiring both meant typing two
+		// answers the machine already knows, one of which is destructive to
+		// get wrong.
+		//
+		// --disk keeps the offline case: a disk image on the build host has no
+		// running system to ask.
 		fs := flag.NewFlagSet("upgrade install", flag.ExitOnError)
-		slot := fs.String("slot", "", "slot to install into (must not be the active one)")
-		if err := fs.Parse(args[3:]); err != nil {
+		slot := fs.String("slot", "", "slot to install into (default: the inactive one)")
+		disk := fs.String("disk", "", "disk or image to install into (default: this system's)")
+		var image string
+		rest := args[1:]
+		for len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+			if image != "" {
+				// Almost certainly the old argument order. Say so, rather than
+				// treating the disk as an image and refusing it as not a
+				// squashfs three steps later.
+				return fmt.Errorf("unexpected argument %q.\n"+
+					"The form is `nosaic upgrade install <image> [--slot a|b] [--disk <path>]`;\n"+
+					"the disk is no longer positional, because on a switch it is this one.", rest[0])
+			}
+			image, rest = rest[0], rest[1:]
+		}
+		if err := fs.Parse(rest); err != nil {
 			return err
 		}
-		if *slot == "" {
-			return fmt.Errorf("--slot is required")
+		if image == "" {
+			return fmt.Errorf("usage: nosaic upgrade install <image.sqsh> [--slot <a|b>] [--disk <path>]\n" +
+				"\n" +
+				"The image is a build's rootfs squashfs, not an installer .bin --\n" +
+				"that one replaces the whole disk and is for a first install.")
 		}
-		if err := upgrade.Install(upgrade.Disk{Path: disk, Log: os.Stdout}, *slot, image); err != nil {
+
+		d := upgrade.Disk{Path: *disk, Log: os.Stdout}
+		if *disk == "" {
+			local, err := upgrade.Local()
+			if err != nil {
+				return fmt.Errorf("%w\n(pass --disk to install into an image instead)", err)
+			}
+			d = local
+			d.Log = os.Stdout
+		}
+		target := *slot
+		if target == "" {
+			t, err := upgrade.Inactive(d)
+			if err != nil {
+				return err
+			}
+			target = t
+		}
+		if err := upgrade.Install(d, target, image); err != nil {
 			return err
 		}
-		fmt.Printf("installed %s into slot %s, marked for trial\n", filepath.Base(image), *slot)
+		fmt.Printf("installed %s into slot %s, marked for trial\n", filepath.Base(image), target)
 		fmt.Println("it becomes active only after it boots and is committed")
 		return nil
 
@@ -573,10 +627,11 @@ func upgradeCmd(args []string) error {
 		// gated on nosaic.selftest in the kernel command line, which no real
 		// switch sets. Without this a good upgrade on hardware rolls back
 		// exactly like a bad one.
-		if len(args) != 2 {
-			return fmt.Errorf("usage: nosaic upgrade commit <disk>")
+		d, err := diskArg(args[1:])
+		if err != nil {
+			return err
 		}
-		slot, err := upgrade.Commit(upgrade.Disk{Path: args[1], Log: os.Stdout})
+		slot, err := upgrade.Commit(d)
 		if err != nil {
 			return err
 		}
@@ -1106,4 +1161,27 @@ func pct(n, of uint64) uint64 {
 		return 0
 	}
 	return n * 100 / of
+}
+
+// diskArg resolves the disk a subcommand works on: the one named, or the
+// running system's.
+//
+// Every upgrade subcommand used to require it. On a build host that is right --
+// the target is a disk image and nothing else could be meant. On a switch it is
+// a question with one answer, asked every time, and the C CLI never asked it.
+// Two CLIs that take different arguments for the same operation is the
+// divergence the single-CLI commitment exists to prevent.
+func diskArg(args []string) (upgrade.Disk, error) {
+	if len(args) > 1 {
+		return upgrade.Disk{}, fmt.Errorf("unexpected argument %q", args[1])
+	}
+	if len(args) == 1 {
+		return upgrade.Disk{Path: args[0], Log: os.Stdout}, nil
+	}
+	d, err := upgrade.Local()
+	if err != nil {
+		return upgrade.Disk{}, fmt.Errorf("%w\n(name a disk or image to work on that instead)", err)
+	}
+	d.Log = os.Stdout
+	return d, nil
 }

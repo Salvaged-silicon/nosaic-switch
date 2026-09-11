@@ -503,17 +503,43 @@ static int cmd_confirm(const char *dir)
 	return 0;
 }
 
+/* The same text the Go CLI prints, because they are the same command.
+ *
+ * Printed before the boot state is resolved, so that asking what the
+ * subcommands are works on a machine that is not a switch. It used to need
+ * mounted boot state to tell you what it could do. */
+static int usage(void)
+{
+	fprintf(stderr,
+		"usage: nosaic upgrade <status|install|commit|confirm>\n"
+		"\n"
+		"  status   which slot is active, and whether one is on trial\n"
+		"  install  write an image into the inactive slot and mark it a trial\n"
+		"  commit   accept the slot on trial as the one this switch boots\n"
+		"  confirm  commit only if the datapath is actually up\n");
+	return 2;
+}
+
 int nosaic_upgrade(int argc, char **argv)
 {
-	const char *dir = state_dir();
+	const char *dir;
 	char slot[16];
 
+	/* Bare `nosaic upgrade` lists the subcommands rather than running one.
+	 * It used to print status, which the Go CLI does not, and two CLIs that
+	 * answer the same command differently is the divergence the single-CLI
+	 * commitment exists to prevent. */
+	if (argc < 3 || strcmp(argv[2], "help") == 0 ||
+	    strcmp(argv[2], "-h") == 0 || strcmp(argv[2], "--help") == 0)
+		return usage();
+
+	dir = state_dir();
 	if (dir == NULL) {
 		fprintf(stderr, "nosaic: this system has no mounted boot state: "
 			"neither /mnt/boot/boot nor /mnt/data/boot is there\n");
 		return 1;
 	}
-	if (argc < 3 || strcmp(argv[2], "status") == 0)
+	if (strcmp(argv[2], "status") == 0)
 		return cmd_status(dir);
 	if (strcmp(argv[2], "commit") == 0) {
 		if (commit(dir, slot, sizeof(slot)) != 0)
@@ -553,12 +579,6 @@ int nosaic_upgrade(int argc, char **argv)
 		return cmd_install(dir, image, slot);
 	}
 
-	fprintf(stderr,
-		"usage: nosaic upgrade <status|install|commit|confirm>\n"
-		"\n"
-		"  status   which slot is active, and whether one is on trial\n"
-		"  install  write an image into the inactive slot and mark it a trial\n"
-		"  commit   accept the slot on trial as the one this switch boots\n"
-		"  confirm  commit only if the datapath is actually up\n");
-	return 2;
+	fprintf(stderr, "nosaic: %s is not an upgrade subcommand\n", argv[2]);
+	return usage();
 }

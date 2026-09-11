@@ -3,6 +3,7 @@ package upgrade
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -291,5 +292,47 @@ func TestFilesForcesTheFileBackedLayout(t *testing.T) {
 	d := Disk{Path: filepath.Join(t.TempDir(), "not-a-directory"), Files: true}
 	if !d.fileBacked() {
 		t.Error("Files was set and the layout was still treated as partitioned")
+	}
+}
+
+// The image is validated before the disk is touched.
+//
+// The squashfs check used to live inside the file-backed write path only, so a
+// partition slot handed a truncated download had already been overwritten by
+// the time anything noticed. Here the disk does not even exist: if the check
+// runs first, the error is about the image, and if it does not, it is about
+// the disk.
+func TestInstallChecksTheImageBeforeTheDisk(t *testing.T) {
+	junk := filepath.Join(t.TempDir(), "not-an-image")
+	if err := os.WriteFile(junk, []byte("this is not a squashfs at all"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, _, _ := newFileBacked(t, "a")
+	d.Path = filepath.Join(t.TempDir(), "no-such-disk.img")
+
+	err := Install(d, "b", junk)
+	if err == nil {
+		t.Fatal("installing something that is not a squashfs should be refused")
+	}
+	if !strings.Contains(err.Error(), "squashfs") {
+		t.Errorf("the image should be rejected before the disk is opened, got: %v", err)
+	}
+}
+
+// Inactive is the slot that is not running. Both CLIs default to it, so they
+// must not be able to work it out differently.
+func TestInactiveIsTheSlotNotRunning(t *testing.T) {
+	for _, tc := range []struct{ active, want string }{
+		{"a", "b"},
+		{"b", "a"},
+	} {
+		d, _, _ := newFileBacked(t, tc.active)
+		got, err := Inactive(d)
+		if err != nil {
+			t.Fatalf("active=%q: %v", tc.active, err)
+		}
+		if got != tc.want {
+			t.Errorf("active=%q: inactive is %q, want %q", tc.active, got, tc.want)
+		}
 	}
 }

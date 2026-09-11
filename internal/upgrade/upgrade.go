@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // State is the boot pointer.
@@ -119,6 +120,24 @@ func Install(d Disk, slot, image string) error {
 		return err
 	}
 
+	// The image, before the disk.
+	//
+	// This used to be checked only on the file-backed path, inside
+	// writeSlotFile, which is the wrong way round: a slot FILE that is not a
+	// squashfs fails later at the loop mount with the old image still
+	// bootable, while a slot PARTITION that is not a squashfs has already
+	// overwritten the slot by the time anyone finds out. The cheapest check
+	// belongs ahead of the destructive step, on both paths.
+	if f, err := os.Open(image); err != nil {
+		return err
+	} else {
+		err = checkSquashfs(f)
+		f.Close()
+		if err != nil {
+			return err
+		}
+	}
+
 	// Slots as files, for a board whose bootloader owns the whole disk.
 	if d.fileBacked() {
 		if err := d.writeSlotFile(slot, image); err != nil {
@@ -146,6 +165,18 @@ func Install(d Disk, slot, image string) error {
 	fi, err := src.Stat()
 	if err != nil {
 		return err
+	}
+	// Never the partition the running system is mounted from.
+	//
+	// slot != active is a check against the boot pointer, which is a file
+	// somebody can edit and the installer can have got wrong. This is a check
+	// against the kernel: whatever "/" is actually on must not be what we are
+	// about to write. Where the two disagree, believing the pointer overwrites
+	// the running switch and the first symptom is at the next reboot.
+	if start, ok := rootPartitionStart(); ok && start == parts[idx].Start {
+		return fmt.Errorf("slot %s is at sector %d, which is the partition this "+
+			"system is running from; the boot pointer and the kernel disagree "+
+			"about which slot is active, so nothing was written", slot, start)
 	}
 	limit := parts[idx].Size * 512
 	if fi.Size() > limit {
@@ -378,3 +409,53 @@ func (d Disk) writeState(files map[string]string) error {
 		return nil
 	})
 }
+
+// Inactive is the slot that is not running, which is the only one an upgrade
+// may be installed into.
+//
+// Exists so that neither CLI has to work it out, and so they cannot work it
+// out differently. Choosing the target rather than making an operator name it
+// is most of the safety here: the mistake worth designing out is naming the
+// slot you are booted from.
+func Inactive(d Disk) (string, error) {
+	st, err := Status(d)
+	if err != nil {
+		return "", err
+	}
+	if st.Active == "b" {
+		return "a", nil
+	}
+	return "b", nil
+}
+
+// rootPartitionStart is the first sector of the partition mounted at "/", read
+// from the kernel rather than from any table we keep.
+//
+// Returns false when "/" is not on a partitioned block device at all -- an
+// overlay on a loop mount, a container, a test -- which is not an error and
+// not a reason to refuse anything.
+func rootPartitionStart() (int64, bool) {
+	fi, err := os.Stat("/")
+	if err != nil {
+		return 0, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	maj, min := unix_major(uint64(st.Dev)), unix_minor(uint64(st.Dev))
+	b, err := os.ReadFile(fmt.Sprintf("/sys/dev/block/%d:%d/start", maj, min))
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// The encoding of a device number, which is not the same as its layout in
+// memory and is not exported by syscall.
+func unix_major(dev uint64) uint64 { return (dev >> 8) & 0xfff }
+func unix_minor(dev uint64) uint64 { return dev & 0xff }
