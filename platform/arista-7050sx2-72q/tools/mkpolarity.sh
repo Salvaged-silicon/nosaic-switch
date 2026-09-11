@@ -67,7 +67,15 @@ MAP=$(printf 'phy info\n' | bsh | awk '
         lane = ""
         for (i = 1; i <= NF; i++) if ($i ~ /\//) { lane = $i; break }
         sub(/.*\//, "", lane)
+        # A 10G port is one lane and names it. A 40G port drives all four
+        # lanes of its macro and names the lane "4", which is not a lane
+        # number -- it means the whole macro. Dropping those, which this did,
+        # silently excluded every 40G port from the table: the six QSFP cages
+        # here appeared only while they were broken out into 4x10G, and the
+        # values that left behind were wrong for the cage once it was 40G
+        # again. That cost a day on a link that would not come up.
         if (p != "" && $5 ~ /^[0-9a-f]+$/ && lane ~ /^[0-3]$/) print p, $5, lane
+        if (p != "" && $5 ~ /^[0-9a-f]+$/ && lane == "4")       print p, $5, "0,1,2,3"
     }')
 
 [ -n "$MAP" ] || { echo "mkpolarity: could not read 'phy info' from $SW" >&2; exit 1; }
@@ -80,17 +88,25 @@ NPORT=$(printf '%s\n' "$MAP" | wc -l)
 #
 #   TX_PMD_DP_INVERT   TLB_TX_TLB_TX_MISC_CFG (0xd0e3) bit 0
 #   RX_PMD_DP_INVERT   TLB_RX_TLB_RX_MISC_CFG (0xd0d3) bit 0
-CMDS=$(printf '%s\n' "$MAP" | while read -r port macro lane; do
-           echo "phy raw sbus 0x$macro 1.$lane 0xd0e3"
-           echo "phy raw sbus 0x$macro 1.$lane 0xd0d3"
+CMDS=$(printf '%s\n' "$MAP" | while read -r port macro lanes; do
+           for l in $(printf '%s' "$lanes" | tr ',' ' '); do
+               echo "phy raw sbus 0x$macro 1.$l 0xd0e3"
+               echo "phy raw sbus 0x$macro 1.$l 0xd0d3"
+           done
        done)
+
+# How many registers this asks for: two per LANE, not two per port.
+NREG=$(printf '%s\n' "$MAP" | while read -r port macro lanes; do
+           printf '%s\n' "$lanes" | tr ',' '\n'
+       done | grep -c .)
+NREG=$((NREG * 2))
 
 VALS=$(printf '%s\n' "$CMDS" | bsh | grep -oE '0x[0-9a-f]+: *0x[0-9a-f]+' \
        | sed -E 's/.*: *0x0*([0-9a-f]+)/\1/; s/^$/0/')
 
 NVAL=$(printf '%s\n' "$VALS" | grep -c .)
-if [ "$NVAL" -ne $((NPORT * 2)) ]; then
-    echo "mkpolarity: asked for $((NPORT * 2)) registers, got $NVAL answers." >&2
+if [ "$NVAL" -ne "$NREG" ]; then
+    echo "mkpolarity: asked for $NREG registers, got $NVAL answers." >&2
     echo "  Refusing to emit a table that may be misaligned. A wrong polarity" >&2
     echo "  table brings links up carrying garbage, which is worse than none." >&2
     exit 1
@@ -109,9 +125,21 @@ printf '# board shows these written as 0 with a later phase setting them, and\n'
 printf '# reasoning from the capture produced a confidently wrong answer once.\n'
 
 TXO=""; RXO=""; ntx=0; nrx=0; i=1
-while read -r port macro lane; do
-    tx=$(printf '%s\n' "$VALS" | sed -n "${i}p"); i=$((i+1))
-    rx=$(printf '%s\n' "$VALS" | sed -n "${i}p"); i=$((i+1))
+while read -r port macro lanes; do
+    # The value is a bitmask over the port's lanes: one bit for a 10G cage,
+    # up to four for a 40G one. Emitting 0x1 for a 40G port says "lane 0 only"
+    # and inverts three lanes the wrong way, which brings the link up
+    # carrying garbage rather than failing visibly.
+    tx=0; rx=0; bit=1
+    for l in $(printf '%s' "$lanes" | tr ',' ' '); do
+        t=$(printf '%s\n' "$VALS" | sed -n "${i}p"); i=$((i+1))
+        r=$(printf '%s\n' "$VALS" | sed -n "${i}p"); i=$((i+1))
+        [ $(( 0x${t:-0} & 1 )) -eq 1 ] && tx=$((tx | bit))
+        [ $(( 0x${r:-0} & 1 )) -eq 1 ] && rx=$((rx | bit))
+        bit=$((bit << 1))
+    done
+    tx=$(printf '%x' "$tx"); rx=$(printf '%x' "$rx")
+    lane=$lanes
     # BOTH KEY FORMS, because the SDK looks the property up by port NAME first.
     #
     # soc_property_port_get_str (src/soc/common/drv.c:1196) tries
@@ -124,13 +152,13 @@ while read -r port macro lane; do
     # polarity in the table behaving identically on the wire, both corrupting
     # every frame. Emitting both forms costs nothing and removes the question.
     xe=$((port - 1))
-    [ $(( 0x${tx:-0} & 1 )) -eq 1 ] && {
-        TXO="$TXO$(printf 'phy_xaui_tx_polarity_flip_xe%s=0x1\t# port %s, macro 0x%s lane %s' "$xe" "$port" "$macro" "$lane")"$'\n'
-        TXO="$TXO$(printf 'phy_xaui_tx_polarity_flip_%s=0x1' "$port")"$'\n'
+    [ "$tx" != "0" ] && {
+        TXO="$TXO$(printf 'phy_xaui_tx_polarity_flip_xe%s=0x%s\t# port %s, macro 0x%s lane %s' "$xe" "$tx" "$port" "$macro" "$lane")"$'\n'
+        TXO="$TXO$(printf 'phy_xaui_tx_polarity_flip_%s=0x%s' "$port" "$tx")"$'\n'
         ntx=$((ntx+1)); }
-    [ $(( 0x${rx:-0} & 1 )) -eq 1 ] && {
-        RXO="$RXO$(printf 'phy_xaui_rx_polarity_flip_xe%s=0x1\t# port %s, macro 0x%s lane %s' "$xe" "$port" "$macro" "$lane")"$'\n'
-        RXO="$RXO$(printf 'phy_xaui_rx_polarity_flip_%s=0x1' "$port")"$'\n'
+    [ "$rx" != "0" ] && {
+        RXO="$RXO$(printf 'phy_xaui_rx_polarity_flip_xe%s=0x%s\t# port %s, macro 0x%s lane %s' "$xe" "$rx" "$port" "$macro" "$lane")"$'\n'
+        RXO="$RXO$(printf 'phy_xaui_rx_polarity_flip_%s=0x%s' "$port" "$rx")"$'\n'
         nrx=$((nrx+1)); }
 done <<< "$MAP"
 
