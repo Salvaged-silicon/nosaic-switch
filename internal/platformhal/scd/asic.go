@@ -24,15 +24,37 @@ const asicSafeWindow = 0x1000
 // window above, and the right response to needing one value further out is to
 // name that value, not to read more of a device whose registers can have side
 // effects.
+const cmicDevRevID = 0x010224
+
+// cmicDevRev packs a PCI device and revision the way CMIC_DEV_REV_ID reports
+// them: the device in the low 16 bits, the revision above it.
 //
-// On this board it must read 0x0002b860: device 0xb860 is the BCM56860, and
-// revision 0x02 matches what PCI configuration space reports. That makes it a
-// genuine check rather than a plausible-looking number -- it is cross-checked
-// against a completely separate source on the same box.
-const (
-	cmicDevRevID     = 0x010224
-	cmicDevRevExpect = 0x0002b860
-)
+// This used to be a constant, 0x0002b860 -- the BCM56860 at revision 0x02, the
+// only switch chip in the tree at the time. What made it a real check was never
+// the number: it was that the same identity is readable from PCI configuration
+// space, so agreement means two independent paths to the chip concur. A
+// hardcoded constant keeps the check for one ASIC and turns it into a false
+// negative for every other, which is how the Trident2 board found it -- the
+// BCM56855 answers 0x0003b855 and was reported as a chip that did not match.
+//
+// Deriving it keeps the cross-check and costs the board nothing to declare.
+func cmicDevRev(device, revision uint32) uint32 {
+	return (revision << 16) | (device & 0xffff)
+}
+
+// CMICDevRev is what CMIC_DEV_REV_ID should report for the chip at bdf, built
+// from what PCI configuration space says about it.
+//
+// Exported because the S-Channel self-test needs the same expectation and had
+// its own copy of the constant. Two hardcoded identities is one more than it
+// takes to make a board that is not the first one look broken.
+func CMICDevRev(bdf string) (uint32, error) {
+	dir := filepath.Join("/sys/bus/pci/devices", bdf)
+	if _, err := os.Stat(dir); err != nil {
+		return 0, fmt.Errorf("the switch chip is not on the bus at %s: %w", bdf, err)
+	}
+	return cmicDevRev(hexAttr(dir, "device"), hexAttr(dir, "revision")), nil
+}
 
 // ASICProbe is what the switch chip says about itself.
 type ASICProbe struct {
@@ -114,7 +136,7 @@ func (s *SCD) ProbeASIC() (*ASICProbe, error) {
 			syscall.PROT_READ, syscall.MAP_SHARED)
 		if err == nil {
 			p.DevRevID = binary.LittleEndian.Uint32(idmap[cmicDevRevID : cmicDevRevID+4])
-			p.DevRevOK = p.DevRevID == cmicDevRevExpect
+			p.DevRevOK = p.DevRevID == cmicDevRev(p.Device, p.Revision)
 			syscall.Munmap(idmap)
 		}
 	}
