@@ -22,6 +22,7 @@
 #include "hal.h"
 #include "config.h"
 #include "asic.h"
+#include "optics.h"
 #include "show.h"
 #include "upgrade.h"
 
@@ -427,9 +428,18 @@ int main(int argc, char **argv)
 				   "PCI and out of reset before Linux starts");
 	if (strcmp(argv[2], "watchdog") == 0)
 		return unsupported("watchdog");
-	if (strcmp(argv[2], "transceivers") == 0 || strcmp(argv[2], "tx") == 0)
-		return unsupported("transceiver control: this board's cages are "
-				   "driven by the front-panel init script");
+	if (strcmp(argv[2], "transceivers") == 0 || strcmp(argv[2], "xcvr") == 0) {
+		/* Same shape as the Go CLI: no argument lists the cages, a cage
+		 * number asks that module, and `raw` dumps its memory. */
+		if (argc > 3) {
+			int cage = atoi(argv[3]);
+
+			if (argc > 4 && strcmp(argv[4], "raw") == 0)
+				return nosaic_optics_dump(cage);
+			return nosaic_optics_show(cage);
+		}
+		return nosaic_optics_list();
+	}
 	if (strcmp(argv[2], "asic") == 0 || strcmp(argv[2], "schan") == 0)
 		return unsupported("chip access: use tdp-probe on this board");
 

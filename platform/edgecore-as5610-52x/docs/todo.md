@@ -1019,6 +1019,72 @@ does not transfer.
 cannot read its own MAC comes up with a random one that changes every boot,
 which is worth solving before the first install.
 
+## Transceiver diagnostics — identity works, the monitors read zero
+
+`nosaic platform transceivers` reads this board's cages now: presence across all
+52, identity from the module, and a raw dump. Cage-to-bus is resolved from the
+device-tree paths in sysfs rather than from a table of bus numbers, because
+those come from probe order -- EdgeNOS sees the QSFPs on buses 18-21 and NOSaic
+sees them on 66-69, same hardware, different kernel. A hardcoded map would have
+been wrong on the first boot.
+
+    cage 49  /dev/i2c-66  CISCO-AVAGO  AFBR-79EBPZ-CS2  M2149U5UY
+
+**What does not work is the part that was asked for.** Temperature, supply and
+every per-lane power read `0x00` on all three fitted modules, while byte 0 and
+everything in upper page 00h -- vendor, part, serial, the date code at 212 --
+read correctly. So the bus is right, the addressing is right, and the monitors
+are empty.
+
+They should not be. `swp49` and `swp52` are **up at 40000** and carrying traffic
+to the 7050SX2. A module with its lasers running is not at 0 C and 0 V.
+
+Ruled out, with the test that ruled it out:
+
+- **Read length.** 256-byte reads returned the identifier then zeros; chunked
+  to 16. No change.
+- **Split transactions across the mux.** These muxes are
+  `i2c-mux-idle-disconnect`, so the kernel parks the channel between a separate
+  write and read. Moved to a combined `I2C_RDWR`. No change -- and `i2cget`,
+  which has always used combined SMBus transactions, reads zero too.
+- **Low power mode.** `0x70` reads `0xf0`: LPMODE[3:0] driven low, which is
+  high power. Cumulus sets exactly the same three: LPMODE 0, MODSEL_L 0,
+  RST_L 1.
+- **Our decode.** Three implementations agree on where the numbers live.
+
+### What the other three operating systems do with this board
+
+Worth recording, because it says this is not a gap we alone have:
+
+| | QSFP monitor values | how |
+|---|---|---|
+| EdgeNOS, C/ONLP | never attempts | `sfp_dom_read` returns -1 above port 48 and reads SFF-8472 at `0x51`, which is the SFP scheme |
+| EdgeNOS, Python | decodes, gets zeros | has an explicit branch: `# module doesn't populate DDM` |
+| Cumulus 2.5 | decodes flags only | `sff8436QsfpDom` maps bytes 1-12 -- alarm and warning bits -- and has no field at 22, 26, 34, 42 or 50 at all |
+| NOSaic | decodes, gets zeros | offsets identical to EdgeNOS's, arrived at independently |
+
+So no OS that has run on this board has ever reported a light level from a QSFP
+cage on it, and the one that tried shipped a named branch for the zeros.
+
+### What is left to try
+
+The optic is a Cisco 40G BiDi (`AFBR-79EBPZ-CS2`), and the same model reads on
+the 7050SX2 -- but that is the module at the *other* end of the fibre, a
+different physical unit. Nothing here has yet compared the same piece of glass
+on both boards.
+
+The decisive test is a swap: put this board's module in the Arista and the
+Arista's in this board. That separates "this module does not populate DDM" from
+"this board cannot get it out of a module that does", and no amount of reading
+code will.
+
+The four-lane display is right for this part and does not need changing. BiDi
+differs from SR4 optically -- two wavelengths over duplex multimode rather than
+eight fibres of a ribbon -- but the host-side electrical interface is the
+ordinary QSFP+ one, four lanes of 10G, which is what the SFF-8636 per-lane
+monitor layout describes. An earlier draft of this entry called it a two-lane
+part and was wrong.
+
 ## Features — what this board could do and does not yet
 
 Ordered by what a switch is expected to do, not by effort. Anything shared with
