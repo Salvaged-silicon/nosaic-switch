@@ -9,6 +9,7 @@ package imgbuild
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -46,6 +47,18 @@ type Options struct {
 	// time: the bootloader fetches it over the network, the vendor's OS stays
 	// intact on flash, and a power cycle undoes everything.
 	RAMBoot bool
+
+	// AllowStale composes the image from packages that are older than the
+	// source they were built from, instead of refusing.
+	//
+	// The refusal is the default because of how this fails: an image carrying
+	// a stale binary boots, runs, and disagrees with the source tree, so the
+	// diagnosis lands on the hardware rather than on the build. But there are
+	// legitimate reasons to build against a package you have not rebuilt --
+	// bisecting a regression, or pairing today's image with yesterday's
+	// datapath -- and those are deliberate acts that deserve a flag rather
+	// than a rebuild.
+	AllowStale bool
 }
 
 // Result is what was produced.
@@ -89,7 +102,9 @@ func Build(o Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	warnStalePackages(o, selected)
+	if err := reportStale(o, selected); err != nil {
+		return nil, err
+	}
 
 	var names []string
 	var kernel string
@@ -1223,42 +1238,51 @@ setsid /usr/bin/nosaic upgrade confirm </dev/null >/dev/console 2>&1 &
 exit 0
 `
 
-// warnStalePackages says when a package built from this repository is older
-// than the source it was built from.
+// staleFinding is one selected package that is older than the source it was
+// built from.
+type staleFinding struct {
+	pkg    string // the package file about to be composed into the image
+	recipe string // the recipe that builds it
+	source string // the source file that changed after it was built
+	by     time.Duration
+}
+
+// stalePackages reports selected packages that are older than the source they
+// were built from.
 //
 // `make image` composes whatever is already in out/packages, which is right --
 // building an image should not rebuild the world. But three of the recipes
 // build from directories inside this repository, and for those "already built"
-// and "current" are different things. Editing cli/ or datapath/ and running
-// `make image` silently ships the previous binary, and the image looks correct
-// in every way except behaviour.
+// and "current" are different things. Editing cli/ or datapath/ and composing
+// an image ships the previous binary, and the image looks correct in every way
+// except behaviour.
 //
 // It has cost real time: a CLI shipped without the commands just added to it,
 // and a datapath shipped without the contract ops the CLI had started calling,
 // each diagnosed on hardware as a missing feature rather than a stale build.
 //
-// A warning rather than an error: there are legitimate reasons to build an
-// image against a package you have not rebuilt, and refusing would make this
-// worse than the problem.
-func warnStalePackages(o Options, refs []pkgRef) {
-	// This is advisory. A panic in a warning must not be what stops an image
-	// from being built, which is exactly what it did the first time -- but it
-	// must not be silent either, or the check quietly stops checking and the
-	// staleness it exists to catch comes back unannounced.
+// The second return is a checking failure rather than a finding. The two are
+// kept apart because they mean opposite things: a finding stops the build, and
+// a check that could not run must not, or a bug in here becomes a bug that
+// stops images being built.
+func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr error) {
 	defer func() {
-		if p := recover(); p != nil && o.Log != nil {
-			fmt.Fprintf(o.Log, "    (could not check packages against their "+
-				"source: %v)\n", p)
+		if p := recover(); p != nil {
+			found, checkErr = nil, fmt.Errorf("%v", p)
 		}
 	}()
-	if o.Log == nil {
-		return
+
+	others, err := siblingSubdirs(o.Root)
+	if err != nil {
+		return nil, err
 	}
+
 	for _, r := range refs {
 		// A package can be present without a recipe of that name -- a virtual
 		// provide resolves to a differently-named recipe -- so a miss here is
 		// ordinary and not worth reporting.
-		rec, err := recipe.Load(filepath.Join(o.Root, "recipes", r.Name, "recipe.yml"))
+		recPath := filepath.Join(o.Root, "recipes", r.Name, "recipe.yml")
+		rec, err := recipe.Load(recPath)
 		if err != nil || rec == nil || rec.Source == nil || rec.Source.Local == "" {
 			continue
 		}
@@ -1266,29 +1290,149 @@ func warnStalePackages(o Options, refs []pkgRef) {
 		if err != nil {
 			continue
 		}
-		newest, name := newestFile(filepath.Join(o.Root, rec.Source.Local))
+
+		// The recipe is source too: it carries the compiler flags, the build
+		// targets and what gets staged, so changing it changes the binary
+		// without touching a line of C.
+		newest, name := time.Time{}, ""
+		if fi, err := os.Stat(recPath); err == nil {
+			newest, name = fi.ModTime(), recPath
+		}
+
+		// Only the part of the tree this recipe actually compiles. nosd-td2p
+		// and nosd-tdp both declare `local: datapath` and differ by subdir:
+		// td2p builds td2p/ and common/, and never tdp/. Walking the whole
+		// tree marks this board's package stale when the other board's daemon
+		// is edited -- a warning that fires for something that cannot affect
+		// the binary is how a check gets ignored.
+		skip := others[rec.Source.Local][subdirOf(rec)]
+		if t, n := newestSource(filepath.Join(o.Root, rec.Source.Local), skip); t.After(newest) {
+			newest, name = t, n
+		}
+
 		if newest.IsZero() || !newest.After(pkg.ModTime()) {
 			continue
 		}
-		fmt.Fprintf(o.Log,
-			"    WARNING %s is older than its source: %s changed %s after the "+
-				"package was built.\n            This image will ship the previous "+
-				"binary. Run: make pkg PKG=%s ARCH=%s\n",
-			r.file, name, newest.Sub(pkg.ModTime()).Round(time.Second), r.Name, o.Arch.ID)
+		found = append(found, staleFinding{
+			pkg:    r.file,
+			recipe: r.Name,
+			source: rel(o.Root, name),
+			by:     newest.Sub(pkg.ModTime()).Round(time.Second),
+		})
 	}
+	return found, nil
 }
 
-// newestFile is the most recently modified file under dir, and its path.
-func newestFile(dir string) (time.Time, string) {
+// reportStale composes the staleness check into the build: it refuses unless
+// the caller asked for stale packages, and says exactly how to fix it.
+//
+// A check that could not run is reported and allowed through. It is a
+// diagnostic, and a broken diagnostic must not be the thing that stops an
+// image being built -- but it must not be silent either, or the check quietly
+// stops checking and the staleness it exists to catch comes back unannounced.
+func reportStale(o Options, refs []pkgRef) error {
+	found, err := stalePackages(o, refs)
+	if err != nil {
+		fmt.Fprintf(o.Log, "    (could not check packages against their source: %v)\n", err)
+		return nil
+	}
+	if len(found) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	verb := "refusing to build"
+	if o.AllowStale {
+		verb = "building anyway (--allow-stale)"
+	}
+	fmt.Fprintf(&b, "%d package(s) older than their source -- %s:\n", len(found), verb)
+	for _, f := range found {
+		fmt.Fprintf(&b, "    %s: %s changed %s after the package was built\n",
+			f.pkg, f.source, f.by)
+	}
+	b.WriteString("\nThis image would ship the previous binary. Rebuild:\n")
+	for _, f := range found {
+		fmt.Fprintf(&b, "    make pkg PKG=%s ARCH=%s\n", f.recipe, o.Arch.ID)
+	}
+
+	if o.AllowStale {
+		fmt.Fprint(o.Log, "    "+b.String())
+		return nil
+	}
+	return errors.New(b.String() + "\nOr pass --allow-stale if that is what you meant.")
+}
+
+// siblingSubdirs maps a local source root to, for each recipe's subdir, the set
+// of sibling subdirs that belong to other recipes and so are not its source.
+func siblingSubdirs(root string) (map[string]map[string]map[string]bool, error) {
+	paths, err := filepath.Glob(filepath.Join(root, "recipes", "*", "recipe.yml"))
+	if err != nil {
+		return nil, err
+	}
+	// local root -> the subdirs any recipe builds in.
+	subdirs := map[string]map[string]bool{}
+	for _, p := range paths {
+		rec, err := recipe.Load(p)
+		if err != nil || rec == nil || rec.Source == nil || rec.Source.Local == "" || subdirOf(rec) == "" {
+			continue
+		}
+		if subdirs[rec.Source.Local] == nil {
+			subdirs[rec.Source.Local] = map[string]bool{}
+		}
+		subdirs[rec.Source.Local][subdirOf(rec)] = true
+	}
+	out := map[string]map[string]map[string]bool{}
+	for local, all := range subdirs {
+		out[local] = map[string]map[string]bool{}
+		for mine := range all {
+			skip := map[string]bool{}
+			for other := range all {
+				if other != mine {
+					skip[other] = true
+				}
+			}
+			out[local][mine] = skip
+		}
+	}
+	return out, nil
+}
+
+// subdirOf is where a recipe's build runs, or "" for one that builds at its
+// source root. A recipe need not have a build block at all, so this is not
+// reachable as a field.
+func subdirOf(rec *recipe.Recipe) string {
+	if rec == nil || rec.Build == nil {
+		return ""
+	}
+	return rec.Build.Subdir
+}
+
+// rel is path relative to root, for messages. It falls back to the absolute
+// path rather than failing: this is a diagnostic, and a long path beats none.
+func rel(root, path string) string {
+	if r, err := filepath.Rel(root, path); err == nil {
+		return r
+	}
+	return path
+}
+
+// newestSource is the most recently modified source file under dir, and its
+// path. Top-level directories named in skip are not this recipe's source.
+func newestSource(dir string, skip map[string]bool) (time.Time, string) {
 	var newest time.Time
 	var which string
 
 	_ = filepath.Walk(dir, func(p string, fi os.FileInfo, err error) error {
-		if err != nil || fi.IsDir() {
+		if err != nil {
 			return nil
 		}
-		// Build output in the source directory is not a source change.
-		if strings.HasSuffix(p, ".o") || filepath.Base(p) == "nosaic" {
+		if fi.IsDir() {
+			if skip[rel(dir, p)] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isBuildOutput(p, fi) {
 			return nil
 		}
 		if fi.ModTime().After(newest) {
@@ -1297,4 +1441,19 @@ func newestFile(dir string) (time.Time, string) {
 		return nil
 	})
 	return newest, which
+}
+
+// isBuildOutput is whether a file under a source directory was produced by
+// building it. Object files and libraries are named by extension; linked
+// binaries are not, so they are recognised the way they differ from source --
+// executable, and with no extension. Building in the tree is how these recipes
+// work, and counting a build's own output as a source change would make every
+// package look stale the moment it was built.
+func isBuildOutput(p string, fi os.FileInfo) bool {
+	switch filepath.Ext(p) {
+	case ".o", ".a", ".d", ".so", ".lo", ".gch":
+		return true
+	}
+	base := filepath.Base(p)
+	return !strings.Contains(base, ".") && fi.Mode().Perm()&0o111 != 0
 }

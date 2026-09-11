@@ -51,6 +51,7 @@ available now
   pkg verify <file.nos>        re-derive every digest in a package
   pkg order [--profile P]      list recipes in dependency order
   build [board]                assemble a board's image; lists boards if omitted
+                               --allow-stale: compose packages older than their source
   upgrade status <disk>        show which slot is active or on trial
   upgrade install <img> [--slot b]       install into the inactive slot
 
@@ -131,6 +132,7 @@ func main() {
 		target := ""
 		profileOverride := ""
 		ramBoot := false
+		allowStale := false
 		rest := args[1:]
 		for i := 0; i < len(rest); i++ {
 			switch {
@@ -141,6 +143,8 @@ func main() {
 				profileOverride = strings.TrimPrefix(rest[i], "--profile=")
 			case rest[i] == "--ram-boot":
 				ramBoot = true
+			case rest[i] == "--allow-stale":
+				allowStale = true
 			default:
 				target = rest[i]
 			}
@@ -157,7 +161,7 @@ func main() {
 			}
 			target = chosen
 		}
-		if err := buildImage(root, target, profileOverride, ramBoot); err != nil {
+		if err := buildImage(root, target, profileOverride, ramBoot, allowStale); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
 		}
@@ -373,7 +377,7 @@ func printManifest(m *nospkg.Manifest, verified bool) {
 // all, and no way for CI to build every profile -- which the design names as
 // the thing keeping the abstract services: stanza honest, since a recipe
 // reaching for a systemd-specific feature breaks the s6 tier first.
-func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
+func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool) error {
 	b, err := board.Load(filepath.Join(root, "platform", boardID, "board.yml"))
 	if err != nil {
 		return err
@@ -396,6 +400,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot bool) error {
 		Arch:       a,
 		Profile:    pr,
 		RAMBoot:    ramBoot,
+		AllowStale: allowStale,
 		PackageDir: filepath.Join(root, "out", "packages"),
 		OutDir:     filepath.Join(root, "out", "images", boardID),
 		Version:    version.Version,

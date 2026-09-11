@@ -244,6 +244,34 @@ is unobserved rather than known-good.
   exists because working out which caller had taken the pool the first time
   meant reading Broadcom's source rather than asking the switch.
 
+- **`make image` shipped stale binaries, and only warned about it.** The image
+  build composes whatever is in `out/packages/`, which is right. But three
+  recipes build from directories in this repository, and for those "already
+  built" and "current" are different things: editing `datapath/td2p/*.c` and
+  running `make image` produced an image containing the **previous** binary.
+
+  A warning had been added for it and was not enough -- it scrolled past in a
+  long build log on the day it was written. The build now **refuses**, names the
+  file that changed and the `make pkg` line that fixes it, and takes
+  `--allow-stale` for the times you mean it (bisecting, or pairing today's image
+  with yesterday's datapath).
+
+  The warning was also too coarse to trust. `nosd-td2p` and `nosd-tdp` both
+  declare `source: local: datapath` and differ only by `build.subdir`, so
+  editing the **AS5610's** daemon marked this board's package stale -- for a
+  file its build never compiles. The check now follows what the recipe actually
+  builds: its own subdir plus `datapath/common`, and not the other board's. It
+  counts the recipe itself as source, since that carries the compiler flags and
+  the staging, and it does not count a build's own output in the tree, which
+  would otherwise make every package look stale the moment it was built.
+
+  Proven against this tree in all three directions: clean when fresh, silent
+  when `datapath/tdp` is touched, refusing when `datapath/common/dmapool.c` is.
+
+  It is mtime-based, so a `git checkout` that rewrites timestamps can still make
+  a package look stale when it is not; the flag covers that and a content hash
+  would remove it. Worth doing when it becomes annoying rather than before.
+
 ## Features — what this board could do and does not yet
 
 Shared with the AS5610 where marked *(shared)*: both run `datapath/common`, so
@@ -384,28 +412,3 @@ Two things to know before starting:
 PSU and transceiver access is SCD-specific and the CLI reaches it through type
 assertions. It works, and it is not the seam
 [the design](../../../docs/DESIGN.md) describes.
-
-## Build and tooling
-
-### `make image` does not rebuild changed C source
-
-`make image` composes the image from the prebuilt `.nos` packages under
-`out/packages/`. It does not notice that a recipe's source has changed, so
-editing `datapath/td2p/*.c` and running `make image` produces an image
-containing the *previous* binary, silently and with no warning.
-
-The workaround is `make pkg PKG=nosd-td2p ARCH=x86_64` before `make image`.
-The fix is for the image build to compare recipe source mtimes (or hashes)
-against the package it is about to use, and either rebuild or refuse.
-
-This is worth fixing ahead of most things on this list because of how it
-fails. An image that silently carries stale code does not look broken --
-it boots, it runs, and it disagrees with the source tree. Several
-conclusions in the 40G bring-up were drawn from images that did not
-contain the change being tested, including a "the SCD fix works" that had
-to be withdrawn and re-proven.
-
-Until it is fixed, verify before booting:
-
-    unsquashfs -d r -f nosaic-rootfs.sqsh usr/sbin/nosd-td2p
-    grep -c '<a string from your change>' r/usr/sbin/nosd-td2p

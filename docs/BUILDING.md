@@ -113,41 +113,60 @@ make image BOARD=virt-x86_64        # compose the A/B disk image
 
 `make help` lists every target. `nosaic build` with no board lists the boards.
 
-### `make image` does not rebuild changed source
+### `make image` refuses to ship a stale binary
 
-`make image` composes an image from the packages already in `out/packages/`. It does
-**not** notice that a recipe's source changed. Editing `datapath/td2p/*.c` and running
-`make image` produces an image containing the *previous* binary, silently, with no
-warning and no error.
+`make image` composes an image from the packages already in `out/packages/`, which is
+right — building an image should not rebuild the world. But three recipes build from
+directories inside this repository (`cli/`, and `datapath/` twice), and for those
+"already built" and "current" are different things.
+
+**If you changed `cli/` or `datapath/`, rebuild that package first:**
 
 ```sh
 make pkg PKG=nosd-td2p ARCH=x86_64      # rebuild the package first
 make image BOARD=arista-7050sx2-72q     # then compose
 ```
 
-**If you changed `cli/` or `datapath/`, rebuild that package first.** `make image`
-composes whatever is already in `out/packages`; three recipes build from directories
-inside this repository, and for those "already built" and "current" are different things.
-The image build now says so:
+If you forget, the build stops rather than composing:
 
 ```
-WARNING nosd-td2p_0.1.0_x86_64.nos is older than its source:
-        datapath/common/query.c changed 3h44m37s after the package was built.
-        Run: make pkg PKG=nosd-td2p ARCH=x86_64
+1 package(s) older than their source -- refusing to build:
+    nosd-td2p_0.1.0_x86_64.nos: datapath/common/query.c changed 3h44m37s after the package was built
+
+This image would ship the previous binary. Rebuild:
+    make pkg PKG=nosd-td2p ARCH=x86_64
+
+Or pass --allow-stale if that is what you meant.
 ```
 
-It is a warning rather than an error, so read it. Ignoring it ships the previous binary,
-and the image looks correct in every way except behaviour — which has been diagnosed on
-hardware as a missing feature more than once.
+This used to be a warning, and a warning was not enough: it scrolled past in a long
+build log on the day it was added. An image carrying stale code does not look broken —
+it boots, it runs, and it quietly disagrees with your source tree, so the diagnosis
+lands on the hardware rather than on the build. It invalidated several conclusions
+during the 7050SX2 bring-up, including a fix that was declared proven and had to be
+withdrawn, because the image under test never contained the change being tested.
 
-This is worth knowing because of how it fails. An image carrying stale code does not
-look broken — it boots, it runs, and it quietly disagrees with your source tree. It
-invalidated several conclusions during the 7050SX2 bring-up, including a fix that was
-declared proven and had to be withdrawn, because the image under test never contained
-the change being tested.
+**`--allow-stale` when you mean it.** Composing against a package you have not rebuilt
+is a real thing to want — bisecting a regression, or pairing today's image with
+yesterday's datapath. The flag allows it and still prints what it is doing.
 
-Until the build closes that gap, **verify before you boot**. Extract the image and grep
-the binary for a string from your change:
+```sh
+make image BOARD=arista-7050sx2-72q ARGS=--allow-stale
+```
+
+What counts as this recipe's source is what it actually compiles. `nosd-td2p` and
+`nosd-tdp` both declare `local: datapath` and differ only by `build.subdir`, so
+editing `datapath/tdp/` does not implicate the Trident2+ package, while editing
+`datapath/common/` implicates both. The recipe itself counts too: it carries the
+compiler flags and the staging, so changing it changes the binary without touching a
+line of C. A build's own output in the tree — object files, archives, linked binaries —
+does not count, or every package would look stale the moment it was built.
+
+The check is mtime-based, so a `git checkout` that rewrites timestamps can make a
+package look stale when it is not. Rebuild it, or pass the flag.
+
+If you need to confirm what an image actually contains, extract it and grep the binary
+for a string from your change:
 
 ```sh
 python3 -c "import zipfile; zipfile.ZipFile('NOSaic-....swi').extractall('.')"
