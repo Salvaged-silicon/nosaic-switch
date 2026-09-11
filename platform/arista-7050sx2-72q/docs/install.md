@@ -170,9 +170,15 @@ What you still do not get:
 - **The kernel and initramfs are outside A/B.** A slot holds a root filesystem;
   the SWI is written in place and cannot be rolled back. An upgrade that changes
   both is only half atomic.
-- **`upgrade install` runs from the build host**, not from the switch. On the
-  board a slot is a file the running system may be reading, and the installer
-  refuses to write one that is currently loop-mounted.
+- **`upgrade install` on the switch is untested here**, though nothing in the
+  way stands in its way any more. It used to require the disk and the slot as
+  arguments, which made it a build-host tool; it now takes neither, defaulting
+  to this system and to the slot it is not booted from. The refusal it is
+  usually described by -- a slot file that is currently loop-mounted -- applies
+  to the *active* slot, which an upgrade never writes. The 7050SX2's upgrades
+  have all been driven from the build host, so on-switch install is stated here
+  as untried rather than as working. The AS5610 has done it, on partitions
+  rather than files.
 - **The vendor OS is still there**, and that is deliberate. It is the recovery
   path, and the eMMC has room for both.
 

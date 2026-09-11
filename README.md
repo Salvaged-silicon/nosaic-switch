@@ -196,7 +196,10 @@ section above says so; where it is not yet demonstrated on silicon, it says that
 - **The core has no board knowledge.** NOSaic builds, boots and is tested with no board
   support in it at all. If the core cannot build without a board, the boundary is not real.
 - **The same commands on every switch.** One CLI, one declarative config, one northbound
-  contract. Chips differ underneath; what you type does not.
+  contract. Chips differ underneath; what you type does not. Where an architecture the Go
+  compiler cannot reach forces a second implementation in C, the two are diffed against
+  each other on a board that can host either — `show caps` and `show ports` come back
+  byte-for-byte identical, and so does the list of `upgrade` subcommands.
 - **Honest about capability.** Silicon varies. Every board advertises what it supports, and
   an unsupported operation is reported rather than silently doing less.
 - **A/B images with rollback.** An immutable image under an overlay, two slots, trial boots

@@ -62,7 +62,7 @@ grep -aq 'NOSAIC-SELFTEST OK'  "$LOG" || die "the baseline boot did not self-tes
 
 echo
 echo "=== 2. install a good image into the inactive slot b ==="
-go run ./cmd/nosaic upgrade install "$DIR/disk.img" "$DIR/rootfs.sqsh" --slot b
+go run ./cmd/nosaic upgrade install "$DIR/rootfs.sqsh" --slot b --disk "$DIR/disk.img"
 status
 
 echo
@@ -74,13 +74,29 @@ grep -aq 'NOSAIC-SELFTEST COMMIT'             "$LOG" || die "a healthy trial did
 status | grep -q 'active *b' || die "slot b should now be active"
 
 echo
-echo "=== 4. install a deliberately broken image into the now-inactive slot a ==="
-head -c 4000000 /dev/urandom > "$DIR/broken.img"
-go run ./cmd/nosaic upgrade install "$DIR/disk.img" "$DIR/broken.img" --slot a
+echo "=== 4. the installer refuses an image that is not a squashfs ==="
+# Ahead of the rollback test on purpose: these are two different layers, and
+# they used to be tested as one. The CLI check is the cheap one and it belongs
+# in front of the destructive step -- a slot partition written with a truncated
+# download is already overwritten by the time the initramfs gets a say.
+head -c 4000000 /dev/urandom > "$DIR/junk.img"
+if go run ./cmd/nosaic upgrade install "$DIR/junk.img" --slot a --disk "$DIR/disk.img" 2>/dev/null; then
+    die "installing something that is not a squashfs was allowed"
+fi
+echo "    refused, as it must"
+
+echo
+echo "=== 5. install a deliberately broken image into the now-inactive slot a ==="
+# Claims to be a squashfs and is not, so it gets past the installer and fails
+# where this test wants it to: at the mount, in the initramfs, with a
+# known-good slot to fall back to. Random bytes would now be refused above,
+# which would test the CLI twice and the rollback never.
+{ printf 'hsqs'; head -c 4000000 /dev/urandom; } > "$DIR/broken.img"
+go run ./cmd/nosaic upgrade install "$DIR/broken.img" --slot a --disk "$DIR/disk.img"
 status
 
 echo
-echo "=== 5. the broken slot must roll back, not strand the switch ==="
+echo "=== 6. the broken slot must roll back, not strand the switch ==="
 boot
 grep -aq 'NOSAIC-BOOT-ROLLBACK' "$LOG" || die "a slot containing garbage did not roll back"
 grep -aq 'NOSAIC-BOOT-SLOT b'   "$LOG" || die "the rollback did not return to the known-good slot"
@@ -88,8 +104,8 @@ grep -aq 'NOSAIC-SELFTEST OK'   "$LOG" || die "the rolled-back system is not hea
 status | grep -q 'trial *none' || die "the failed trial was not cleared"
 
 echo
-echo "=== 6. refusing to overwrite the running slot ==="
-if go run ./cmd/nosaic upgrade install "$DIR/disk.img" "$DIR/rootfs.sqsh" --slot b 2>/dev/null; then
+echo "=== 7. refusing to overwrite the running slot ==="
+if go run ./cmd/nosaic upgrade install "$DIR/rootfs.sqsh" --slot b --disk "$DIR/disk.img" 2>/dev/null; then
     die "installing into the active slot was allowed; there would be nothing to roll back to"
 fi
 echo "    refused, as it must"
