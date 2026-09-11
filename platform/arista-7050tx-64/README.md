@@ -22,9 +22,12 @@ second in the tree rather than first — see
 
 ## What works
 
-**Nothing in NOSaic yet.** This port is `bringup`: the board directory exists,
-`board.yml` is filled in from measurements, and the hardware is documented. No
-NOSaic image has been built or booted here.
+**An image builds. Nothing has booted.** This port is `bringup`: the board
+directory, a Trident2 datapath, the copper PHY layer and the ASIC configuration
+all exist, `make image BOARD=arista-7050tx-64` produces a 14.6 MiB SWI carrying
+them, and not one line of it has executed on the switch.
+
+That gap is the whole of what is left — see [todo](docs/todo.md).
 
 What is established is the *board*, under **EdgeNOS** — the predecessor project,
 which boots this switch and forwards in hardware. Everything in

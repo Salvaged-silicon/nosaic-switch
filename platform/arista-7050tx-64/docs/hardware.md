@@ -132,13 +132,29 @@ binary.
 
 ## Datapath
 
-`nosd-td2` — not yet written. It should copy `datapath/td2p/` (same CMICm
-generation, same architecture, same userspace-BDE approach) and reuse
-`datapath/common/` rather than forking it. The known deltas:
+`nosd-td2`, derived from `datapath/td2p/` — same CMICm generation, same
+architecture, same userspace BDE over an mmap of BAR0 — reusing
+`datapath/common/` rather than forking it. It builds and is in the image; it has
+never run on this hardware.
 
-- PCI device `0xb855` rather than `0xb860`.
-- `internal/platformhal/scd/asic.go` hardcodes `cmicDevRevExpect` for Trident2+; it needs to be per-ASIC. That is a **core** change and belongs in its own commit.
-- The 48 external PHYs have no counterpart on either existing board.
+What differs from the sibling:
+
+- PCI device `0xb855` at revision `0x03`, both read off the board. The SDK matches on the pair.
+- `datapath/td2/phy.c`, which has no counterpart on either existing board.
+
+**The PHY layer.** The SDK owns the BCM84848 itself: its `phy8481` driver
+downloads the firmware and runs link training, given `load_firmware` and
+`phy_bus_i2c_<n>` from `asic.conf`. What it does not do is keep the switch
+chip's MAC side agreeing with what the PHY negotiated on the wire, and that gap
+is the "links but bridges nothing" failure in the quirks below. `phy.c` closes
+it, and three things about how are deliberate:
+
+- It writes **only on a genuine mismatch**. `bcm_port_interface_set` takes the MAC through reset, and on the sibling board re-applying a setting a port already had correctly left both 40G ports linked at the PCS and deaf at the MAC — the same zero-frames signature, from the opposite direction.
+- Ports are found from the **properties**, not a port-number range, so a board declaring no external PHYs runs the same code and does nothing.
+- The **MDIO budget is bounded** to four speed reads a second, round robin. Link state comes from `bcm_port_link_status_get`, which is software state linkscan maintains and costs no bus transaction.
+
+A port is matched once and left alone until its link drops, which is the event
+that can change the negotiated speed.
 
 EdgeNOS drives this chip through Broadcom's OpenBCM SDK with a userspace BDE
 over an mmap of BAR0 — the same shape NOSaic uses — and reaches hardware
