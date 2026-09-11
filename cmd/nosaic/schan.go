@@ -18,14 +18,18 @@ import (
 // initialisation releases them, so a timeout from one of those would say
 // nothing about whether S-Channel works.
 //
-// The expected value is not merely plausible. 0x0002b860 is the BCM56860 at
-// revision 02, and the same identity is readable from PCI configuration space
-// and from CMIC_DEV_REV_ID by two completely separate paths on this board. A
-// transaction that returns it has demonstrably reached the chip.
+// The expected value is not merely plausible: the same identity is readable
+// from PCI configuration space and from CMIC_DEV_REV_ID by two completely
+// separate paths, so a transaction that returns it has demonstrably reached
+// the chip.
+//
+// It used to be the constant 0x0002b860 -- the BCM56860 at revision 02, the
+// only switch chip in the tree then. Derived now, from PCI, because a
+// hardcoded identity keeps the check for one ASIC and makes every other board
+// report a chip that does not match.
 const (
-	topBlock      = 57
-	topDevRevID   = 0x02030000
-	topDevRevWant = 0x0002b860
+	topBlock    = 57
+	topDevRevID = 0x02030000
 )
 
 const schanUsage = `usage: nosaic platform schan <command>
@@ -52,6 +56,11 @@ func schanCmd(b *board.Board, args []string) error {
 		return nil
 	}
 
+	want, err := scd.CMICDevRev(b.PlatformHAL.ASICPCI)
+	if err != nil {
+		return err
+	}
+
 	c, err := scd.OpenSChan(b.PlatformHAL.ASICPCI, 0)
 	if err != nil {
 		return err
@@ -61,7 +70,7 @@ func schanCmd(b *board.Board, args []string) error {
 
 	switch args[0] {
 	case "selftest":
-		return schanSelftest(c)
+		return schanSelftest(c, want)
 	case "read":
 		return schanRead(c, args[1:])
 	}
@@ -74,7 +83,7 @@ func schanCmd(b *board.Board, args []string) error {
 // ever checks.
 const defaultACC = 5
 
-func schanSelftest(c *scd.SChan) error {
+func schanSelftest(c *scd.SChan, topDevRevWant uint32) error {
 	fmt.Printf("reading TOP_DEV_REV_ID (block %d, %#08x); expecting %#08x\n\n",
 		topBlock, topDevRevID, topDevRevWant)
 
@@ -117,7 +126,7 @@ func schanSelftest(c *scd.SChan) error {
 			}
 			if len(r.Response) > 1 && r.Response[1] == topDevRevWant {
 				fmt.Printf("\nS-Channel reaches the chip: TOP_DEV_REV_ID reads %#08x, "+
-					"the BCM56860 at revision 02.\n"+
+					"which is what PCI reports for it.\n"+
 					"Header variant: %s.  Access field for a register read: %d.\n",
 					r.Response[1], variant, acc)
 				return nil

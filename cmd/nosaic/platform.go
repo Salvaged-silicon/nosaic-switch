@@ -376,10 +376,16 @@ func probeASIC(hal platformhal.HAL) error {
 	fmt.Fprintf(w, "bar0\t%#x  %d KiB\n", r.BAR0, r.BAR0Size/1024)
 	switch {
 	case r.DevRevOK:
-		fmt.Fprintf(w, "dev_rev_id\t%#08x  matches the BCM56860 at revision 02\n", r.DevRevID)
+		// Named from what PCI reported rather than from a constant: the point
+		// of the check is that two independent paths to the chip agree, and
+		// printing a fixed part number would state the opposite of what was
+		// verified on any board but the first.
+		fmt.Fprintf(w, "dev_rev_id\t%#08x  matches BCM%04x at revision %02x from PCI\n",
+			r.DevRevID, r.Device, r.Revision)
 	case r.DevRevID != 0:
 		// Worth failing loudly on: the chip answered, with the wrong identity.
-		fmt.Fprintf(w, "dev_rev_id\t%#08x  UNEXPECTED, want %#08x\n", r.DevRevID, 0x0002b860)
+		fmt.Fprintf(w, "dev_rev_id\t%#08x  UNEXPECTED, PCI says BCM%04x revision %02x\n",
+			r.DevRevID, r.Device, r.Revision)
 	}
 	w.Flush()
 
