@@ -116,54 +116,35 @@ static void nosaic_pci_conf_write(soc_cm_dev_t *dev, uint32 addr, uint32 data)
 }
 
 /*
- * The DMA pool, handed out by bumping a pointer.
+ * The DMA pool.
  *
- * There is no free: the SDK takes what it needs during initialisation and
- * keeps it for the life of the process, so a real allocator would be
- * complexity for a case that does not arise. Exhausting the pool is reported
- * with what asked for it, because "out of memory" on its own does not say
- * which table was being built.
+ * The allocator itself is in datapath/common/dmapool.c, shared with the
+ * Trident2+ datapath: both boards reserve a region, map it once and hand
+ * pieces of it to the chip, and neither has any business having its own
+ * opinion about how that region is divided. Until that file existed both had
+ * the same one -- bump a pointer, never reclaim -- which cost this board its
+ * control plane after a few hours of ordinary traffic. See dmapool.h.
  */
 /* One pool, two callers: the SDK reaches it through the device vector during
  * chip initialisation and through the SAL hook above for packet buffers. */
-static void *pool_alloc(struct nosaic_tdp_bde *b, int size, const char *name)
+static void *nosaic_salloc(soc_cm_dev_t *dev, int size, const char *name)
 {
-	size_t aligned;
-	void *p;
+	struct nosaic_tdp_bde *b = bde_of(dev);
 
-	if (!b->dma) {
-		fprintf(stderr, "nosd-tdp: salloc(%d, %s) with no DMA pool mapped\n",
+	/* The SDK's salloc takes a signed size. A negative one is a bug above
+	 * us, and passing it to something that takes size_t would turn it into
+	 * a request for most of the address space. */
+	if (size < 0) {
+		fprintf(stderr, "nosd-tdp: salloc(%d, %s): negative size\n",
 			size, name ? name : "?");
 		return NULL;
 	}
-	/* Cache-line aligned: these addresses are handed to the chip, and an
-	 * unaligned descriptor shows up as corrupt traffic rather than an error. */
-	aligned = ((size_t)size + 63u) & ~(size_t)63u;
-	if (b->dma_used + aligned > b->dma_len) {
-		fprintf(stderr,
-			"nosd-tdp: DMA pool exhausted: %s wanted %d, %zu of %zu bytes used\n"
-			"  enlarge nosaic-dma in the board's device tree\n",
-			name ? name : "?", size, b->dma_used, b->dma_len);
-		return NULL;
-	}
-	p = (char *)b->dma + b->dma_used;
-	b->dma_used += aligned;
-	memset(p, 0, aligned);
-	return p;
-	/* Note: free does not reclaim, so dma_used only grows. That is fine for
-	 * initialisation and for a packet pool taken once at startup, and would
-	 * not be for something allocating per packet. */
-}
-
-static void *nosaic_salloc(soc_cm_dev_t *dev, int size, const char *name)
-{
-	return pool_alloc(bde_of(dev), size, name);
+	return nosaic_dmapool_alloc(&b->pool, (size_t)size, name);
 }
 
 static void nosaic_sfree(soc_cm_dev_t *dev, void *ptr)
 {
-	(void)dev;
-	(void)ptr;   /* see above: the pool outlives every allocation from it */
+	nosaic_dmapool_free(&bde_of(dev)->pool, ptr);
 }
 
 /*
@@ -984,6 +965,11 @@ int nosaic_tdp_sdk_run(int unit)
 	 * Not fatal if it fails: a switch that forwards without a way to ask it
 	 * questions is better than one that refuses to start without one.
 	 */
+	/* sal_dev is the BDE this daemon attached to, set before the SDK was
+	 * brought up. Guarded because a datapath that got this far without one
+	 * should serve the rest of the socket rather than crash on it. */
+	if (sal_dev != NULL)
+		nosaic_query_set_dmapool(&sal_dev->pool);
 	nosaic_query_start(unit, NOSAIC_QUERY_SOCKET);
 
 	/* The panel, before the pump takes the thread for good. Failure is
@@ -1468,12 +1454,16 @@ void *sal_dma_alloc(unsigned int size, char *name)
 			size, name ? name : "?");
 		return NULL;
 	}
-	return pool_alloc(sal_dev, (int)size, name ? name : "sal_dma");
+	return nosaic_dmapool_alloc(&sal_dev->pool, (size_t)size,
+				    name ? name : "sal_dma");
 }
 
 void sal_dma_free(void *ptr)
 {
-	(void)ptr;   /* the pool outlives every allocation taken from it */
+	/* The SDK frees these in balance with the allocations above. It always
+	 * did; what changed is that the pool now listens. */
+	if (sal_dev)
+		nosaic_dmapool_free(&sal_dev->pool, ptr);
 }
 
 /*

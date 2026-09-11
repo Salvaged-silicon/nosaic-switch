@@ -162,7 +162,14 @@ int nosaic_bde_open(struct nosaic_bde *b, const char *bdf)
 		b->dma = NULL;
 		return -1;
 	}
-	b->dma_used = 0;
+	if (nosaic_dmapool_init(&b->pool, b->dma, b->dma_len, "nosd-td2p") != 0) {
+		fprintf(stderr, "nosd-td2p: the DMA region at %#llx is too small "
+			"to divide (%zu bytes)\n",
+			(unsigned long long)b->dma_phys, b->dma_len);
+		munmap(b->dma, b->dma_len);
+		b->dma = NULL;
+		return -1;
+	}
 	return 0;
 }
 
@@ -326,38 +333,23 @@ void nosaic_bde_set_sal_device(struct nosaic_bde *b) { sal_dev = b; }
 
 void *sal_dma_alloc(unsigned int size, char *name)
 {
-	size_t aligned;
-	void *p;
-
 	if (!sal_dev || !sal_dev->dma) {
 		fprintf(stderr, "nosd-td2p: sal_dma_alloc(%u, %s) before the BDE was opened\n",
 			size, name ? name : "?");
 		return NULL;
 	}
-
-	/* Cache-line aligned. The SDK hands these addresses to the chip, and an
-	 * unaligned descriptor is a class of failure that shows up as corrupt
-	 * traffic rather than as an error. */
-	aligned = ((size_t)size + 63u) & ~(size_t)63u;
-	if (sal_dev->dma_used + aligned > sal_dev->dma_len) {
-		fprintf(stderr,
-			"nosd-td2p: DMA pool exhausted: %s wanted %u, %zu of %zu bytes used\n"
-			"  raise the reservation on the kernel command line\n",
-			name ? name : "?", size, sal_dev->dma_used, sal_dev->dma_len);
-		return NULL;
-	}
-	p = (char *)sal_dev->dma + sal_dev->dma_used;
-	sal_dev->dma_used += aligned;
-	memset(p, 0, aligned);
-	return p;
+	return nosaic_dmapool_alloc(&sal_dev->pool, (size_t)size, name);
 }
 
 void sal_dma_free(void *ptr)
 {
-	/* Deliberately nothing. See above: the pool outlives every allocation
-	 * taken from it, and pretending to reclaim would be less honest than
-	 * not trying. */
-	(void)ptr;
+	/* This used to do nothing, on the reasoning that the pool outlived
+	 * every allocation taken from it. It does not: bcm_tx takes a DMA
+	 * vector per transmitted packet and gives it back, and a free that
+	 * reclaimed nothing turned that into a leak that emptied 64 MiB and
+	 * took the control plane with it. See datapath/common/dmapool.h. */
+	if (sal_dev)
+		nosaic_dmapool_free(&sal_dev->pool, ptr);
 }
 
 void sal_config_init_defaults(void)

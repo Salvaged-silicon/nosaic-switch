@@ -99,6 +99,19 @@ untested, the `prefdl` SEEPROM is not read yet so the management MAC comes from
 configuration rather than from the board, and `fanread` returns garbage while
 temperatures, PSU presence and fan control all read correctly.
 
+**The DMA pool reclaims now, and did not.** Both datapaths handed out the
+chip's DMA region by bumping a pointer, with a free that did nothing, on the
+reasoning that the SDK takes what it needs at initialisation and keeps it.
+That is true of initialisation and false of `bcm_tx`, which takes a buffer per
+transmitted packet and gives it back — so every packet the control plane sent
+leaked 1408 bytes. The AS5610 was found with its 64 MiB pool full, 448 bytes
+free, failing an allocation two hundred times a second: still forwarding in
+silicon, because that path needs no CPU DMA, and unable to send anything of
+its own. Both boards now share one real allocator, and `nosaic show dma`
+reports what the pool holds and which caller is holding it — because working
+out that answer the first time meant reading the vendor's source rather than
+asking the switch.
+
 It is reachable over the network now: dropbear is packaged, host keys are
 generated on the box rather than shipped, and authorised keys come from the
 board's gitignored `config/authorized_keys`. Login takes 0.096 s where the

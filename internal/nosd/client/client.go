@@ -15,9 +15,12 @@ package client
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"syscall"
 	"time"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/nosd/proto"
@@ -39,8 +42,7 @@ func Dial(path string) (*Client, error) {
 	}
 	conn, err := net.DialTimeout("unix", path, 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("cannot reach nosd at %s: %w "+
-			"(is the datapath running?)", path, err)
+		return nil, dialError(path, err)
 	}
 	return &Client{
 		path: path,
@@ -88,6 +90,34 @@ func (c *Client) Capabilities() switchapi.Capabilities {
 
 // Start and Close are the client's own lifecycle: the datapath is already
 // running, since something had to be listening for Dial to succeed.
+// DMAPool is what the datapath's DMA allocator holds, and who is holding it.
+//
+// Not part of the switchapi contract: a DMA pool is a property of a datapath
+// that drives silicon through a vendor SDK, and the virtual platform has
+// nothing to report. Asking a datapath without one is answered with a refusal
+// rather than with zeroes, which is the capability model doing its job.
+type DMAPool struct {
+	Bytes, Used, Largest, Peak uint64
+	Fails                      uint64
+	Callers                    []DMACaller
+}
+
+// DMACaller is one allocation name's share of the pool. Outstanding climbing
+// with uptime is a leak, and naming the caller is the whole point: the first
+// time this pool was exhausted, working out which caller had taken it meant
+// reading the vendor's source and inferring.
+type DMACaller struct {
+	Name                 string
+	Outstanding, Peak    uint64
+	Allocs, Frees, Fails uint64
+}
+
+func (c *Client) DMAPool() (DMAPool, error) {
+	var out DMAPool
+	err := c.call("asic.dma", nil, &out)
+	return out, err
+}
+
 func (c *Client) Start() error { return nil }
 func (c *Client) Close() error { return c.conn.Close() }
 
@@ -173,4 +203,31 @@ func (c *Client) Routes() ([]switchapi.Route, error) {
 		out = append(out, route)
 	}
 	return out, nil
+}
+
+// dialError says why the socket could not be opened.
+//
+// It used to be one message -- "is the datapath running?" -- for every cause.
+// That describes a missing socket well and a permission failure not at all,
+// and the socket is mode 0600 owned by root, so the ordinary case of an
+// operator running `nosaic show ports` as the login account got a message
+// about the datapath being down. The datapath was fine. Pointing the next
+// person at the silicon instead of at the privilege path is a real cost, and
+// the errno needed to tell them apart was already in hand.
+func dialError(path string, err error) error {
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		return fmt.Errorf("not allowed to open %s: %w\n"+
+			"The datapath is probably fine: this socket is root-only, and you "+
+			"are not root. Try `doas nosaic ...` (or `sudo nosaic ...`).", path, err)
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("there is no %s: %w\n"+
+			"The daemon creates it once the chip is up; if nosd is running and "+
+			"this is missing, it did not get that far.", path, err)
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return fmt.Errorf("%s exists but nothing is listening on it: %w\n"+
+			"That is what a daemon that died without tidying up leaves behind.", path, err)
+	default:
+		return fmt.Errorf("cannot reach nosd at %s: %w", path, err)
+	}
 }

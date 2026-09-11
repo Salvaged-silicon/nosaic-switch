@@ -17,6 +17,7 @@ CFLAGS  += -Wall -Wextra -Wno-unused-parameter
 # architecture and has no business being written twice.
 CFLAGS  += -I../common
 LDFLAGS ?=
+LDLIBS  += -lpthread
 
 # The SDK is optional at build time. `make` alone builds the BDE and its probe,
 # which is what a contributor without the SDK staged can do and what CI runs;
@@ -52,7 +53,11 @@ endif
 # binary was built without the SDK, which is a better answer than a link error
 # naming a symbol -- and it keeps the probe's argument handling identical
 # whether or not the vendor tree was staged.
-OBJS += probe.o bde.o sdk.o ../common/props.o
+# dmapool is always built, not only with the SDK staged: the BDE divides the
+# reserved region whether or not there is a vendor library above it, and it
+# takes a mutex to do so, so pthread is a base dependency rather than an SDK
+# one. Without this the no-SDK build CI runs fails at the link.
+OBJS += probe.o bde.o sdk.o ../common/props.o ../common/dmapool.o
 
 all: tdp-probe
 

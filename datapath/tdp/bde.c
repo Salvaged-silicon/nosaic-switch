@@ -171,6 +171,14 @@ int nosaic_tdp_bde_map_dma(struct nosaic_tdp_bde *b)
 		b->dma = NULL;
 		return -1;
 	}
+	if (nosaic_dmapool_init(&b->pool, b->dma, b->dma_len, "nosd-tdp") != 0) {
+		fprintf(stderr, "nosd-tdp: the DMA pool at %#llx is too small to "
+			"divide (%zu bytes)\n",
+			(unsigned long long)b->dma_phys, b->dma_len);
+		munmap(b->dma, b->dma_len);
+		b->dma = NULL;
+		return -1;
+	}
 	return 0;
 }
 

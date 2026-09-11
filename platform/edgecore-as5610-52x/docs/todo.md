@@ -13,6 +13,81 @@ Status is in [the README](../README.md); the hardware is in
 [its own todo](../../arista-7050sx2-72q/docs/todo.md), and the two share a
 datapath -- `datapath/common` -- so a fix in one often lands in both.
 
+## Fixed on 2026-09-11
+
+- **The DMA pool leaked, and the control plane died with it.** Found on a
+  running unit at 14h51m uptime: the 64 MiB `nosaic-dma@28000000` pool was at
+  67108416 of 67108864 bytes -- 448 bytes free -- and `nosd-tdp` was printing
+
+      nosd-tdp: DMA pool exhausted: sdma_dmabuf_alloc wanted 1408, ...
+
+  about **200 times a second**, 28 KB/s of log, steady across samples ten
+  minutes apart. `bcm_tx: Could not allocate dv/dv info` alongside it, and 499
+  `tx_dropped` across the taps. The switch still forwarded in silicon -- that
+  path needs no CPU DMA -- but anything the box tried to *send* failed, so the
+  control plane was down while every port still showed carrier.
+
+  The cause was ours, not the SDK's. `sal_dma_alloc` bumped a pointer and
+  `sal_dma_free` did nothing, on the recorded reasoning that "the SDK takes
+  what it needs during initialisation and keeps it for the life of the
+  process". That is true of initialisation and false of `bcm_tx`, which takes
+  a DMA vector per transmitted packet through `soc_dma_dv_alloc_by_port` and
+  gives it back through `soc_dma_dv_free`. Every packet the control plane sent
+  cost the pool 1408 bytes for ever. At the ~1.5 packets/s this board sends
+  that is a few hours to consume 64 MiB, which matches the uptime it was found
+  at.
+
+  The comment above the allocator had said, from the first commit, that the
+  design "would not be [fine] for something allocating per packet". It was
+  right; nothing checked whether that case had arrived.
+
+  Fixed by making the pool a real allocator -- `datapath/common/dmapool.c`,
+  first fit over blocks in address order, splitting on allocation and
+  coalescing both ways on free, under a mutex. **Shared with the 7050SX2**,
+  which carried its own copy of the same bug. The header's old note that PCI
+  plumbing was "deliberately not the same file yet ... a question worth
+  answering with two working boards rather than one" is what decided it: two
+  working boards, one bug, in two copies of the same code.
+
+  Two things were added beyond making free work, both because of how the
+  investigation went:
+
+  - **The exhaustion message distinguishes full from fragmented.** A bump
+    allocator could only ever be full. A real one can also fail with megabytes
+    free in pieces too small, which is a different fault with a different fix,
+    so the message now carries the free total and the largest block.
+  - **Allocations are tracked by the name the SDK gives them**, and served over
+    the query socket as `asic.dma` -- `nosaic show dma` in both CLIs. Working
+    out that `bcm_tx` was the caller meant reading Broadcom's source and
+    reasoning about a free list; a name whose outstanding total climbs with
+    uptime answers it from the switch.
+
+  Verified on the host under ASan and UBSan: 200,000 `bcm_tx`-shaped
+  alloc/free pairs leave the pool exactly where it started, where the old
+  allocator would have consumed 281 MB. Fragmentation into 482 holes coalesces
+  back to a single free block. Eight threads churning concurrently leak
+  nothing.
+
+- **`nosaic show ports` blamed the chip for a permission error.** The query
+  socket is mode 0600 and owned by root, so running the CLI as the `admin`
+  login account got
+
+      cannot reach the datapath on /run/nosd.sock.
+      The daemon serves it once the chip is up; if nosd is running and this
+      is missing, it did not get that far.
+
+  which describes ENOENT well and EACCES not at all. The socket was there and
+  the daemon was running. This cost real time on this board: it was read as
+  the datapath being down, and the investigation went to the silicon. Both
+  CLIs now separate permission denied, no socket, and a socket with nothing
+  listening, and the first says to use `doas`.
+
+- **`sudo` exists on this tier now**, as a shim onto doas written by the image
+  builder. `sudo: not found` had already been read once as "this box has no
+  path to root", which is false -- doas was there the whole time. The shim
+  forwards the forms doas has and refuses anything else by name rather than
+  dropping a flag and running the command anyway. See `base/minimal.yml`.
+
 ## Done, 2026-09-02 to 09-03
 
 Kept short; each has a commit with the reasoning.

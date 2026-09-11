@@ -114,11 +114,7 @@ int nosaic_asic_ports(void)
 	int n = 0, bad = 0;
 
 	if (resp == NULL) {
-		fprintf(stderr,
-			"nosaic: cannot reach the datapath on %s.\n"
-			"The daemon serves it once it is bridging ports; if nosd is "
-			"running and this is missing, it did not get that far.\n",
-			NOSAIC_QUERY_SOCKET);
+		nosaic_query_explain(NOSAIC_QUERY_SOCKET);
 		return 1;
 	}
 	if (strstr(resp, "\"ok\":true") == NULL) {
@@ -307,8 +303,7 @@ int nosaic_asic_routes(void)
 	int i, missing = 0, only_asic = 0, connected = 0, partial;
 
 	if (resp == NULL) {
-		fprintf(stderr, "nosaic: cannot reach the datapath on %s\n",
-			NOSAIC_QUERY_SOCKET);
+		nosaic_query_explain(NOSAIC_QUERY_SOCKET);
 		return 1;
 	}
 	if (strstr(resp, "\"ok\":true") == NULL) {

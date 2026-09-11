@@ -380,6 +380,8 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "show") == 0) {
 		if (argc > 2 && strcmp(argv[2], "caps") == 0)
 			return nosaic_show_caps();
+		if (argc > 2 && strcmp(argv[2], "dma") == 0)
+			return nosaic_show_dma();
 		if (argc > 2 && strcmp(argv[2], "ports") == 0)
 			return nosaic_show_ports();
 		if (argc > 2 && strcmp(argv[2], "routes") == 0)

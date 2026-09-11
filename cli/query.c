@@ -5,6 +5,7 @@
  * Shared, because two different commands ask the same daemon the same way and
  * the copy that existed in one of them read its responses incorrectly.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,10 +75,58 @@ char *nosaic_query_once(const char *path, const char *request)
 	char *resp;
 
 	if (fd < 0)
-		return NULL;
+		return NULL;   /* errno is the connect failure; see explain() */
 	resp = nosaic_query_ask(fd, request);
-	nosaic_query_close(fd);
+	{
+		/* close() can succeed and still leave errno set from something it
+		 * did internally, and a caller about to explain a failure would
+		 * then explain the wrong one. */
+		int saved = errno;
+		nosaic_query_close(fd);
+		errno = saved;
+	}
 	return resp;
+}
+
+/*
+ * Say why the datapath could not be reached.
+ *
+ * This used to be one message for every cause: "the daemon serves it once the
+ * chip is up; if nosd is running and this is missing, it did not get that
+ * far." That is a good description of ENOENT and a bad one of EACCES, and the
+ * difference matters -- the socket is mode 0600 and owned by root, so the
+ * ordinary case of an operator running `nosaic show ports` as the login
+ * account hit the message about the chip not coming up, and pointed the
+ * investigation at the silicon. It cost an afternoon on a switch whose
+ * datapath was fine.
+ */
+void nosaic_query_explain(const char *path)
+{
+	switch (errno) {
+	case EACCES:
+	case EPERM:
+		fprintf(stderr,
+			"nosaic: not allowed to open %s (%s).\n"
+			"The datapath is probably fine: this socket is root-only, and you\n"
+			"are not root. Try `doas nosaic ...` (or `sudo nosaic ...`).\n",
+			path, strerror(errno));
+		return;
+	case ENOENT:
+		fprintf(stderr,
+			"nosaic: there is no %s.\n"
+			"The daemon creates it once the chip is up; if nosd is running and\n"
+			"this is missing, it did not get that far.\n", path);
+		return;
+	case ECONNREFUSED:
+		fprintf(stderr,
+			"nosaic: %s exists but nothing is listening on it.\n"
+			"That is what a daemon that died without tidying up leaves behind.\n",
+			path);
+		return;
+	default:
+		fprintf(stderr, "nosaic: cannot reach the datapath on %s: %s\n",
+			path, strerror(errno));
+	}
 }
 
 int nosaic_jint(const char *rec, const char *key, int missing)

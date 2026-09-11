@@ -28,6 +28,12 @@ char *nosaic_query_ask(int fd, const char *request);
 /* Open, ask once, close. For the commands that need a single answer. */
 char *nosaic_query_once(const char *path, const char *request);
 
+/* Explain, on stderr, why the last nosaic_query_open or _once failed. Reads
+ * errno, so call it before anything else that could set it. The cases are
+ * genuinely different -- root-only socket, no socket, stale socket -- and one
+ * message for all three sent an investigation after the wrong fault once. */
+void nosaic_query_explain(const char *path);
+
 /* One flat JSON record's fields. Enough for responses whose shape we define,
  * and far less code than a parser. */
 int nosaic_jint(const char *rec, const char *key, int missing);

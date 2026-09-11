@@ -65,11 +65,10 @@ static void emit(const struct table *t)
 
 static void no_datapath(void)
 {
-	fprintf(stderr,
-		"nosaic: cannot reach the datapath on %s.\n"
-		"The daemon serves it once the chip is up; if nosd is running and this\n"
-		"is missing, it did not get that far.\n",
-		NOSAIC_QUERY_SOCKET);
+	/* Reads errno, so nothing may intervene between the failed call and this.
+	 * The cases it separates -- root-only socket, absent socket, stale socket
+	 * -- used to share one message that described only the second. */
+	nosaic_query_explain(NOSAIC_QUERY_SOCKET);
 }
 
 static int refused(const char *resp)
@@ -228,5 +227,78 @@ int nosaic_show_routes(void)
 		return 0;
 	}
 	emit(&t);
+	return 0;
+}
+
+/* Bytes an operator can read at a glance. 64 MiB is a size people recognise;
+ * 67108864 is one they have to count the digits of -- and counting them wrong
+ * is how a full pool gets mistaken for an empty one. */
+static void human_bytes(char *out, size_t len, unsigned long long n)
+{
+	if (n >= (1ULL << 20))
+		snprintf(out, len, "%.1f MiB", (double)n / (double)(1ULL << 20));
+	else if (n >= (1ULL << 10))
+		snprintf(out, len, "%.1f KiB", (double)n / (double)(1ULL << 10));
+	else
+		snprintf(out, len, "%llu B", n);
+}
+
+int nosaic_show_dma(void)
+{
+	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"asic.dma\"}");
+	char b1[32], b2[32], b3[32];
+	unsigned long long bytes, used, largest, peak, fails;
+	const char *p;
+
+	if (resp == NULL) {
+		no_datapath();
+		return 1;
+	}
+	if (refused(resp)) {
+		free(resp);
+		return 1;
+	}
+
+	bytes   = (unsigned long long)nosaic_jint(resp, "Bytes", 0);
+	used    = (unsigned long long)nosaic_jint(resp, "Used", 0);
+	largest = (unsigned long long)nosaic_jint(resp, "Largest", 0);
+	peak    = (unsigned long long)nosaic_jint(resp, "Peak", 0);
+	fails   = (unsigned long long)nosaic_jint(resp, "Fails", 0);
+
+	human_bytes(b1, sizeof(b1), bytes);
+	human_bytes(b2, sizeof(b2), used);
+	human_bytes(b3, sizeof(b3), largest);
+	printf("pool                %s\n", b1);
+	printf("used                %s (%llu%%)\n", b2,
+	       bytes ? used * 100ULL / bytes : 0ULL);
+	human_bytes(b2, sizeof(b2), peak);
+	printf("peak                %s\n", b2);
+	/* Beside `used`, this is what separates a full pool from a fragmented
+	 * one -- two faults with different fixes that the totals alone cannot
+	 * tell apart. */
+	printf("largest free        %s\n", b3);
+	printf("failed allocations  %llu\n", fails);
+
+	/* A name whose outstanding total climbs with uptime is a leak. That is
+	 * the question this table exists to answer, and the reason it exists is
+	 * that it could not be answered from the switch the first time. */
+	if ((p = strstr(resp, "\"Callers\":[")) != NULL && strstr(p, "{") != NULL) {
+		printf("\n%-24s %12s %12s %10s %10s %8s\n",
+		       "CALLER", "OUTSTANDING", "PEAK", "ALLOCS", "FREES", "FAILS");
+		for (p = strchr(p, '{'); p != NULL; p = strchr(p + 1, '{')) {
+			char name[NOSAIC_DMA_NAME_MAX];
+
+			nosaic_jstr(p, "Name", name, sizeof(name));
+			human_bytes(b1, sizeof(b1),
+				    (unsigned long long)nosaic_jint(p, "Outstanding", 0));
+			human_bytes(b2, sizeof(b2),
+				    (unsigned long long)nosaic_jint(p, "Peak", 0));
+			printf("%-24s %12s %12s %10d %10d %8d\n", name, b1, b2,
+			       nosaic_jint(p, "Allocs", 0),
+			       nosaic_jint(p, "Frees", 0),
+			       nosaic_jint(p, "Fails", 0));
+		}
+	}
+	free(resp);
 	return 0;
 }

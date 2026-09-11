@@ -700,6 +700,30 @@ func showCmd(c *nosdclient.Client, what string) error {
 		}
 		return nil
 
+	case "dma":
+		// Used against Largest says whether a pool that cannot satisfy an
+		// allocation is full or fragmented; the per-caller table says which
+		// allocation to go and look at. Both exist because this pool ran out
+		// once and neither question could be answered from the switch.
+		d, err := c.DMAPool()
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "pool\t%s\n", humanBytes(d.Bytes))
+		fmt.Fprintf(w, "used\t%s (%d%%)\n", humanBytes(d.Used), pct(d.Used, d.Bytes))
+		fmt.Fprintf(w, "peak\t%s\n", humanBytes(d.Peak))
+		fmt.Fprintf(w, "largest free\t%s\n", humanBytes(d.Largest))
+		fmt.Fprintf(w, "failed allocations\t%d\n", d.Fails)
+		if len(d.Callers) > 0 {
+			fmt.Fprintln(w, "\nCALLER\tOUTSTANDING\tPEAK\tALLOCS\tFREES\tFAILS")
+			for _, k := range d.Callers {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%d\n", k.Name,
+					humanBytes(k.Outstanding), humanBytes(k.Peak),
+					k.Allocs, k.Frees, k.Fails)
+			}
+		}
+		return nil
+
 	case "ports":
 		ports, err := c.Ports()
 		if err != nil {
@@ -1062,4 +1086,24 @@ func verifyCmd(args []string) error {
 			"here; `nosaic show %s` reports the datapath's own view", what, what)
 	}
 	return fmt.Errorf("usage: nosaic verify <ports|routes>")
+}
+
+// humanBytes keeps the pool figures readable: 64 MiB is a size an operator
+// recognises and 67108864 is one they have to count digits on.
+func humanBytes(n uint64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/float64(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(n)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+func pct(n, of uint64) uint64 {
+	if of == 0 {
+		return 0
+	}
+	return n * 100 / of
 }

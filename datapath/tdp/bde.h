@@ -5,14 +5,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "dmapool.h"
+
 /*
  * The BDE for Trident+ (BCM56840 family, BCM56846 on the AS5610).
  *
- * Same shape as the Trident2+ one and deliberately not the same file yet: what
- * the two genuinely share is PCI plumbing and MMIO ordering, and the second is
- * already in datapath/common/mmio.h. Whether the first should follow is a
- * question worth answering with two working boards rather than one, which is
- * the test the project plan says this board exists to run.
+ * Same shape as the Trident2+ one and still not the same file: what the two
+ * genuinely share is PCI plumbing, MMIO ordering and the DMA pool, and the
+ * last two are already in datapath/common/. The pool moved there the way this
+ * comment said such things should be decided -- with two working boards
+ * rather than one, after both were found carrying the same bug in their own
+ * copy of it. PCI plumbing has not earned the same treatment: the two boards
+ * find their device and their memory in genuinely different places, a device
+ * tree on one and the kernel command line on the other.
  */
 struct nosaic_tdp_bde {
 	char           bdf[32];
@@ -21,10 +26,12 @@ struct nosaic_tdp_bde {
 	volatile void *bar;
 	size_t         bar_len;
 
-	/* The DMA pool, from the device tree's reserved-memory. */
+	/* The DMA pool, from the device tree's reserved-memory. dma/dma_phys/
+	 * dma_len describe the region; pool is what divides it up. */
 	void          *dma;
 	uint64_t       dma_phys;
-	size_t         dma_len, dma_used;
+	size_t         dma_len;
+	struct nosaic_dmapool pool;
 };
 
 /*

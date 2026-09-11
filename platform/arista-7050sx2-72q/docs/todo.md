@@ -217,6 +217,33 @@ Macros 42 and 45 use `xgxs_tx_lane_map_core` rather than a per-macro exception.
 Two derived exceptions were tried and refuted. Neither cage is cabled, so this
 is unobserved rather than known-good.
 
+## Fixed on 2026-09-11
+
+- **The DMA pool leaked here too, and had not been noticed.** This board's
+  `sal_dma_alloc` bumped a pointer and its `sal_dma_free` did nothing, the same
+  design and the same reasoning as the AS5610's separate copy. `bcm_tx` takes a
+  DMA vector per transmitted packet and gives it back, so every packet the
+  control plane sent cost the pool 1408 bytes for ever.
+
+  It was **found on the AS5610**, which exhausted 64 MiB in a few hours and
+  spent the rest of its uptime failing every allocation about 200 times a
+  second with its control plane down. Nothing had been observed here, which is
+  not the same as nothing happening: this board RAM-boots with a larger
+  reservation and had not been left up long enough under control-plane traffic.
+  The bug was identical.
+
+  Both boards now share one allocator -- `datapath/common/dmapool.c`, first fit
+  with coalescing, under a mutex -- rather than a copy each. The reasoning, the
+  measurements and what the SDK actually does are in
+  [the AS5610's todo](../../edgecore-as5610-52x/docs/todo.md), which is where it
+  was found; this entry exists so the fix is not invisible from the board that
+  also carried the bug.
+
+  `nosaic show dma` reports the pool and, per allocation name, what is
+  outstanding. A name whose total climbs with uptime is a leak. That table
+  exists because working out which caller had taken the pool the first time
+  meant reading Broadcom's source rather than asking the switch.
+
 ## Features — what this board could do and does not yet
 
 Shared with the AS5610 where marked *(shared)*: both run `datapath/common`, so
@@ -249,6 +276,8 @@ one fix lands on both. The AS5610's list is
 - **Port LED blink is unused.** *(shared)* Bit 24 flashes and nothing drives it.
   The obvious meaning is traffic, which costs a per-port counter sweep every
   interval — the same shape as the collection that exhausted the DMA pool here.
+  Cheaper than it was: the pool reclaims now, so a sweep that allocates and
+  frees costs nothing permanent.
   Worth doing only alongside a counter cache something else already maintains.
 - **The watchdog is not armed** — its own section.
 - **Two QSFP macros are left at the global lane map** — its own section.

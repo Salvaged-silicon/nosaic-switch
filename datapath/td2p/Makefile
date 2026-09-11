@@ -24,8 +24,11 @@ CFLAGS  += -Wall -Wextra -Wno-unused-parameter
 # architecture and has no business being written twice.
 CFLAGS  += -I../common
 LDFLAGS ?=
+LDLIBS  += -lpthread
 
-OBJS = main.o bde.o ../common/props.o
+# dmapool is always built: see the note in ../tdp/Makefile. It takes a mutex,
+# so pthread is a base dependency rather than an SDK one.
+OBJS = main.o bde.o ../common/props.o ../common/dmapool.o
 
 # SDK_DIR points at the staged prefix. The openbcm package puts its headers in
 # include/openbcm and its archives in lib/openbcm, so both get that suffix --

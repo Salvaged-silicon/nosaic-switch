@@ -491,6 +491,7 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 		 * run against this board unmodified, which is the gate this board
 		 * was chosen to prove.
 		 */
+		nosaic_query_set_dmapool(&b->pool);
 		nosaic_query_start(unit, NOSAIC_QUERY_SOCKET);
 
 		printf("nosd: the datapath is up on unit %d\n", unit);

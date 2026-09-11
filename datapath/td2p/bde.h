@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "dmapool.h"
+
 struct nosaic_bde {
 	char      bdf[32];
 	int       bar_fd, cfg_fd, mem_fd;
@@ -13,7 +15,8 @@ struct nosaic_bde {
 	size_t    bar_len;
 	void     *dma;
 	uint64_t  dma_phys;
-	size_t    dma_len, dma_used;
+	size_t    dma_len;
+	struct nosaic_dmapool pool;
 };
 
 int  nosaic_bde_open(struct nosaic_bde *b, const char *bdf);

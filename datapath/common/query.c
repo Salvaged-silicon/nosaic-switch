@@ -39,10 +39,40 @@
 #include <bcm/l3.h>
 #include <bcm/types.h>
 
+#include "dmapool.h"
 #include "tapbridge.h"
 #include "query.h"
 
 static int query_unit;
+
+/* The BDE's pool, if the datapath handed it over. NULL is a legitimate state:
+ * see nosaic_query_set_dmapool. */
+static struct nosaic_dmapool *query_pool;
+
+void nosaic_query_set_dmapool(struct nosaic_dmapool *p)
+{
+	query_pool = p;
+}
+
+/* JSON string escaping for allocation names.
+ *
+ * The names come from the SDK, not from us, so they are not ours to assume
+ * anything about. One containing a quote would produce a response the CLI
+ * cannot parse, and the fault would look like the socket rather than the
+ * name. */
+static void json_str(FILE *out, const char *s)
+{
+	fputc('"', out);
+	for (; *s != '\0'; s++) {
+		if (*s == '"' || *s == '\\')
+			fprintf(out, "\\%c", *s);
+		else if ((unsigned char)*s < 0x20)
+			fprintf(out, "\\u%04x", (unsigned char)*s);
+		else
+			fputc(*s, out);
+	}
+	fputc('"', out);
+}
 
 /*
  * What the chip holds for one port.
@@ -170,6 +200,45 @@ static void handle(FILE *out, const char *req)
 		fprintf(out, "]}\n");
 		return;
 	}
+	/*
+	 * What the DMA pool holds, and who is holding it.
+	 *
+	 * `used` and `largest` together say whether a pool that cannot satisfy
+	 * an allocation is full or merely fragmented, which are different
+	 * faults. The per-name table says which caller to go and look at: a
+	 * name whose outstanding total climbs with uptime is a leak, and that
+	 * is exactly the shape this daemon shipped with for two boards.
+	 */
+	if (strstr(req, "\"asic.dma\"") != NULL) {
+		struct nosaic_dma_stat st[NOSAIC_DMA_NAMES];
+		int n, k;
+
+		if (query_pool == NULL) {
+			fprintf(out, "{\"ok\":false,\"error\":\"this datapath has no DMA pool registered\"}\n");
+			return;
+		}
+		n = nosaic_dmapool_stats(query_pool, st, NOSAIC_DMA_NAMES);
+		fprintf(out,
+			"{\"ok\":true,\"result\":{\"Bytes\":%zu,\"Used\":%zu,"
+			"\"Largest\":%zu,\"Peak\":%zu,\"Fails\":%llu,\"Callers\":[",
+			query_pool->len, nosaic_dmapool_used(query_pool),
+			nosaic_dmapool_largest(query_pool), query_pool->peak,
+			(unsigned long long)query_pool->fails);
+		for (k = 0; k < n; k++) {
+			fprintf(out, "%s{\"Name\":", k ? "," : "");
+			json_str(out, st[k].name);
+			fprintf(out,
+				",\"Outstanding\":%zu,\"Peak\":%zu,"
+				"\"Allocs\":%llu,\"Frees\":%llu,\"Fails\":%llu}",
+				st[k].outstanding, st[k].peak,
+				(unsigned long long)st[k].allocs,
+				(unsigned long long)st[k].frees,
+				(unsigned long long)st[k].fails);
+		}
+		fprintf(out, "]}}\n");
+		return;
+	}
+
 	/*
 	 * The contract's own operations, so the CLI runs against this chip
 	 * unmodified.

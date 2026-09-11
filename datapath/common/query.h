@@ -17,6 +17,22 @@
  */
 int nosaic_query_start(int unit, const char *path);
 
+/*
+ * Let the socket answer questions about the DMA pool.
+ *
+ * Optional, and separate from starting the server, because the pool belongs to
+ * the BDE and the BDE is per datapath. A daemon that does not call this still
+ * serves everything else; `asic.dma` then reports that it has no pool to look
+ * at rather than inventing numbers.
+ *
+ * This exists because the pool ran out once and naming the caller that had
+ * consumed it meant reading the vendor's source and inferring. Per-name
+ * totals turn the next occurrence into a question the switch can answer
+ * about itself.
+ */
+struct nosaic_dmapool;
+void nosaic_query_set_dmapool(struct nosaic_dmapool *p);
+
 /* What this provider calls itself in `show caps`. Set per datapath so an
  * operator can tell which silicon answered without knowing the board. */
 #ifndef NOSAIC_QUERY_DRIVER
