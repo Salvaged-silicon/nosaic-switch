@@ -1,8 +1,10 @@
 package imgbuild
 
 import (
+	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -124,5 +126,84 @@ func TestStickyAndSetuidBitsSurviveChmodRaw(t *testing.T) {
 		if err := os.Remove(p); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// The sudo shim must forward what it claims to forward and refuse the rest by
+// name. The whole reason it is allowed to exist instead of packaging sudo is
+// that it never silently does something other than what was asked -- a shim
+// that dropped an unrecognised flag and ran the command anyway would be worse
+// than the "sudo: not found" it replaces, because that at least told the
+// truth. So this runs the generated script against a stand-in doas that just
+// prints its arguments.
+func TestSudoShimForwardsAndRefuses(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, "usr/bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "doas"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = writePrivilege(root, "admin", "doas", io.Discard)
+
+	shim := filepath.Join(bin, "sudo")
+	if _, err := os.Stat(shim); err != nil {
+		t.Fatalf("the shim was not written: %v", err)
+	}
+	// A doas that reports what it was handed, earlier in PATH than anything real.
+	stub := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stub, "doas"),
+		[]byte("#!/bin/sh\necho \"doas:$*\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string // expected stdout, when the shim should forward
+		deny string // expected on stderr, when it should refuse
+	}{
+		{name: "plain", args: []string{"ls", "-l"}, want: "doas:ls -l"},
+		{name: "non-interactive", args: []string{"-n", "id"}, want: "doas:-n id"},
+		{name: "user long", args: []string{"-u", "frr", "id"}, want: "doas:-u frr id"},
+		{name: "user attached", args: []string{"-ufrr", "id"}, want: "doas:-u frr id"},
+		{name: "shell", args: []string{"-s"}, want: "doas:-s"},
+		{name: "ddash", args: []string{"--", "ls"}, want: "doas:ls"},
+		// The command's own flags must reach it untouched, not be eaten.
+		{name: "command flags", args: []string{"nosaic", "show", "--json"}, want: "doas:nosaic show --json"},
+		// sudo-only flags: refused by name rather than dropped.
+		{name: "preserve env", args: []string{"-E", "make"}, deny: "-E is not supported"},
+		{name: "login shell", args: []string{"-i"}, deny: "-i is not supported"},
+		{name: "list", args: []string{"-l"}, deny: "-l is not supported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("/bin/sh", append([]string{shim}, tc.args...)...)
+			cmd.Env = append(os.Environ(), "PATH="+stub+":"+os.Getenv("PATH"))
+			var out, errb bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &errb
+			err := cmd.Run()
+
+			if tc.deny != "" {
+				if err == nil {
+					t.Errorf("%v should have been refused, got stdout %q", tc.args, out.String())
+				}
+				if !strings.Contains(errb.String(), tc.deny) {
+					t.Errorf("%v: refusal should name the flag (%q), got: %s",
+						tc.args, tc.deny, errb.String())
+				}
+				// The point of refusing: the command must not have run.
+				if strings.Contains(out.String(), "doas:") {
+					t.Errorf("%v was refused but still ran doas: %s", tc.args, out.String())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%v: %v (stderr: %s)", tc.args, err, errb.String())
+			}
+			if got := strings.TrimSpace(out.String()); got != tc.want {
+				t.Errorf("%v forwarded %q, want %q", tc.args, got, tc.want)
+			}
+		})
 	}
 }

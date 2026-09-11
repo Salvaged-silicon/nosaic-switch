@@ -12,6 +12,16 @@ init: s6
 # doas rather than sudo, because this tier is for boards where systemd does not
 # fit and sudo is a megabyte of setuid C with a configuration language. The
 # job is the same and the account is the same; only the binary differs.
+#
+# `sudo` still works here, as a shim onto doas written by the image builder.
+# That is not a second privilege system: /etc/doas.conf remains the only
+# policy and doas remains the only setuid binary. It exists because "sudo: not
+# found" reads as "this box has no path to root", which is false and has
+# already been concluded once from a running switch. The shim forwards the
+# forms doas has (-n, -s, -u, a plain command) and refuses anything else BY
+# NAME rather than dropping the flag -- a `sudo -E` that silently discarded -E
+# would be worse than not existing. The reasoning is in
+# internal/imgbuild/privilege.go; the behaviour is pinned by a test.
 privilege: doas
 
 # Everything the image contains. Dependencies are resolved from here, so this
