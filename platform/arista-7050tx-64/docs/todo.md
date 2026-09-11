@@ -16,6 +16,22 @@ has booted on the hardware. The split below is by what blocks what.
   The image picks it up and the "no datapath" warning is gone. Never run on
   hardware.
 
+- **`config/asic.conf` and the generators are written**, and both generators
+  were checked against this board rather than assumed: fed the capture from a
+  switch running the vendor OS, `mkportmap.sh` and `mkpolarity.sh` reproduce
+  the working configuration **exactly**, byte for byte. Two transforms had to
+  be right for that, and neither is obvious:
+
+  - the capture is a **61-port** board and this one is 52, so the QSFP cages
+    collapse from four 10G lanes to one 40G port;
+  - a 40G port's polarity is a **bitmask over its four lanes**, not the first
+    lane's value — cage 3 is `0xd`, not the `0x1` its first lane carries — and
+    a cage that appears once in the capture is already collapsed and must be
+    passed through untouched.
+
+  Getting either wrong produces a port that trains and then errors, which
+  reads as a marginal cable.
+
 ## Blocking — NOSaic does not run on this board without these
 
 - **`cmicDevRevExpect` is hardcoded to Trident2+.**
@@ -45,21 +61,16 @@ has booted on the hardware. The split below is by what blocks what.
   `prefdl` under EOS and set it; Aboot refuses an image whose epoch claim is
   wrong, so a guess turns a working image into one that will not load.
 
-- **No thermal policy.** Deliberate, and the reason is a publication decision
-  rather than missing information — see
-  [the README](../README.md#an-open-question-before-this-goes-further). Until it
-  is resolved the fans run at the controller's default rather than to a curve,
-  which is safe but loud.
+- **The cooling band is carried, not validated.** 25–40 °C comes from the
+  predecessor project running this board, translated from its five-step curve
+  into NOSaic's band. Nothing has measured it here, and `fanread` returns
+  garbage on the sibling board — whether it is trustworthy on this one is
+  unestablished, so the thermal loop may be acting on numbers nobody has
+  checked against this hardware.
 
 - **Flash layout is provisional.** `boot_mib`/`slot_mib`/`data_mib` are carried
   from the SX2 and have not been sized against this board's 3.4 GB flash, which
   also holds two EOS images totalling around 1 GB.
-
-- **The port map generator is not written.** `tools/` should carry the
-  equivalent of the SX2's `mkportmap.sh`/`mkpolarity.sh`, reading the map off a
-  switch running the vendor OS. EdgeNOS has a working generator to adapt. Until
-  then the datapath has no map to load and reports itself unconfigured — which
-  is the correct failure, not a silent one.
 
 - **Management MAC handling differs from the sibling.** On this board the real
   address is read in Aboot and passed on the kernel command line, because `tg3`

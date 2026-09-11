@@ -50,25 +50,21 @@ those PHYs, and each cost real time to find: a link with no speed is not a link,
 the MAC interface must follow the negotiated speed, and MDIO is a shared bus the
 datapath depends on.
 
-## An open question before this goes further
+## Cooling
 
-⚠ **The cooling curve is not in `board.yml`, deliberately.** This board's fan
-policy was extracted from the board description file on the switch, which is
-vendor-confidential, so the numbers are not ours to publish here — even though
-the vendor publishes the same class of data for other boards, and even though
-the SX2 carries its thermal band inline.
+The band is 25–40 °C, narrower and earlier than the SX2's 35–65. That is not a
+copy with the numbers changed: 48 copper PHYs dissipate considerably more than
+48 SFP+ cages, and this board starts ramping ten degrees sooner.
 
-EdgeNOS handles this by reading the curve at runtime from a file the operator
-generates on their own switch, the same split this project uses for the port map.
-NOSaic's `thermal:` schema expects values in `board.yml` instead, so one of three
-things has to happen, and it is a decision rather than an oversight:
+The two ends are what carries into NOSaic's model. EdgeNOS drives this board in
+five discrete steps — 45, 60, 75, 90 and 100 percent, with thresholds at 25,
+31.66, 36.66 and 40 °C — and NOSaic expresses a band instead, so the floor below
+which spinning up gains nothing and the ceiling above which there is nothing
+left to give are the parts that survive the translation.
 
-1. ship a generator in `tools/` and teach the thermal code to read its output, as the port map already works;
-2. establish a curve on this board by our own measurement and commit that;
-3. decide the simplified `min_c`/`max_c` band is the public class of data the audit found it to be, and commit it.
-
-Until then the board declares no thermal policy, which means the fans run at the
-controller's own default rather than to a curve.
+⚠ The curve has not been validated against this board *under NOSaic*, only
+carried from the predecessor that runs it. `fanread` returns garbage on the
+sibling board; whether it is trustworthy here is unestablished.
 
 ## Reverse engineering
 
