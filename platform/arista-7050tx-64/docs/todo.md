@@ -3,18 +3,20 @@
 Ordered by whether the switch works without it, not by effort. The board status
 as a whole is in [the README](../README.md).
 
-This port is at `bringup`: the board directory and the hardware documentation
-exist, and no NOSaic image has been built or booted here. Everything below is
-therefore outstanding — the split is by what blocks what.
+This port is at `bringup`: an image builds and carries a datapath, and nothing
+has booted on the hardware. The split below is by what blocks what.
+
+## Done
+
+- **An image builds.** `make image BOARD=arista-7050tx-64` produces a 14.6 MiB
+  SWI with a 63.1 MiB root filesystem, from the shared x86_64 toolchain and the
+  `minimal` profile. Not booted.
+- **`datapath/td2` and `recipes/nosd-td2` exist and build.** Derived from
+  `td2p` — PCI device `0xb855` and revision `0x03`, both read off the board.
+  The image picks it up and the "no datapath" warning is gone. Never run on
+  hardware.
 
 ## Blocking — NOSaic does not run on this board without these
-
-- **`recipes/nosd-td2` and `datapath/td2` do not exist.** The board declares
-  `asic: td2` and nothing provides `nosd` for it, so the image builder warns and
-  produces an image with no datapath. Derive from `datapath/td2p/` — same CMICm
-  generation, same architecture, same userspace BDE — reusing `datapath/common/`
-  rather than forking it. Known deltas: PCI device `0xb855` not `0xb860`, and
-  the external PHYs below.
 
 - **`cmicDevRevExpect` is hardcoded to Trident2+.**
   `internal/platformhal/scd/asic.go` expects `0x0002b860`, so the SCD driver will
@@ -65,11 +67,15 @@ therefore outstanding — the split is by what blocks what.
   from a configuration file instead. Neither reads `prefdl` properly, which also
   gates the ASIC core voltage on that board.
 
-- **Whether `iomem=relaxed` is needed here is unresolved.** The SX2 requires it
-  for `/dev/mem` to map the DMA region; EdgeNOS does not pass it on this board
-  and its BDE works, because it reaches BAR0 through `sysfs` instead. Which path
-  NOSaic's `dmapool` takes decides it — read the code rather than copying either
-  board's line.
+- **The makefile's SDK-free build does not work, for either ASIC.** Both
+  `datapath/td2/Makefile` and `datapath/td2p/Makefile` say `make` alone builds
+  the BDE without the SDK, "which is what a contributor without the SDK staged
+  can do and what CI runs". It fails at the first object: `main.c` includes
+  `../common/l3sync.h` unconditionally and that pulls in `<bcm/types.h>`.
+  Verified against `td2p` as well, so this is the tree's state rather than
+  anything this board introduced. Either the include becomes conditional or the
+  comment should stop claiming it — changing the comment is a claim about CI,
+  so it is left to whoever owns that.
 
 ## Open questions
 
