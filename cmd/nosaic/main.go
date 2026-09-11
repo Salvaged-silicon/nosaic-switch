@@ -404,6 +404,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 		PackageDir: filepath.Join(root, "out", "packages"),
 		OutDir:     filepath.Join(root, "out", "images", boardID),
 		Version:    version.Version,
+		Commit:     version.Commit,
 		Log:        os.Stdout,
 	})
 	if err != nil {

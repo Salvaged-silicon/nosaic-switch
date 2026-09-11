@@ -40,7 +40,12 @@ type Options struct {
 	PackageDir string
 	OutDir     string
 	Version    string
-	Log        io.Writer
+
+	// Commit is the git SHA of the tree this image was built from. It is
+	// stamped into the CLI alongside Version so a switch can say not just
+	// which release it runs but which build of it.
+	Commit string
+	Log    io.Writer
 
 	// RAMBoot carries the root filesystem inside the initramfs, so the image
 	// boots with no storage of ours. It is how a board is tried the first
@@ -468,7 +473,7 @@ HOME_URL="https://github.com/salvaged-silicon/nosaic-switch"
 	}
 
 	// The CLI, which the cooling loop and the operator both need.
-	haveGoCLI, err := installCLI(o.Root, rootfs, o.Arch.GoArch, o.Log)
+	haveGoCLI, err := installCLI(o.Root, rootfs, o.Arch.GoArch, o.Version, o.Commit, o.Log)
 	if err != nil {
 		return err
 	}

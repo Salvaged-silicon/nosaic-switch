@@ -272,6 +272,33 @@ is unobserved rather than known-good.
   a package look stale when it is not; the flag covers that and a content hash
   would remove it. Worth doing when it becomes annoying rather than before.
 
+- **The on-box CLI reported the wrong version, and always had.** The image
+  said `0.1.0` -- `/etc/nosaic/image.json` and the SWI's `version` file both --
+  while `nosaic version` on the same switch said `0.0.0-dev (unknown)`.
+
+  `internal/imgbuild/cli.go` compiled the CLI during the image build with
+  `-ldflags "-s -w"` and never passed the `-X …version.Version=` stamp. The
+  Makefile's `LDFLAGS` reaches `go build`, `go run` and `pkg build`, so every
+  build-host path was stamped and the one binary that actually ships was not.
+  Nothing caught it because the CLI is not a package -- it is pure static Go,
+  built in-tree rather than from a recipe, so it sits outside the packaging
+  that commit `50ecc36` taught to stamp itself.
+
+  It reads as cosmetic and is not: the first question after an A/B upgrade is
+  which image you are on, and an unstamped CLI answers `0.0.0-dev` from both
+  slots.
+
+  Fixed, and verified without touching the switch -- the CLI was extracted
+  from the newly built `rootfs.sqsh` and run on the build host:
+
+      nosaic 0.1.0 (166e910)
+
+  A `-X` naming a package that has moved fails silently: the build succeeds
+  and the variable keeps its default, which is how this went missing in the
+  first place. So the path is a stated constant and a test checks that it
+  still resolves to a real package declaring `var Version` and `var Commit`,
+  rather than trusting the string.
+
 ## Features — what this board could do and does not yet
 
 Shared with the AS5610 where marked *(shared)*: both run `datapath/common`, so

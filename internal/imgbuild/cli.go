@@ -18,7 +18,12 @@ import (
 // disabled -- no sysroot, no cross toolchain, nothing to link against. A
 // recipe would mean copying the whole repository into a build tree to compile
 // one static binary.
-func installCLI(root, rootfs, goarch string, log io.Writer) (bool, error) {
+// versionPkg is where the build identity lives. Stated once: a -X flag naming
+// a package that has been moved fails silently -- the build succeeds and the
+// variable keeps its default -- which is how the stamp went missing unnoticed.
+const versionPkg = "github.com/salvaged-silicon/nosaic-switch/internal/version"
+
+func installCLI(root, rootfs, goarch, ver, commit string, log io.Writer) (bool, error) {
 	// An architecture Go cannot target gets no CLI, and says so.
 	//
 	// GOARCH="" does not mean "pick something sensible", it means "build for
@@ -47,11 +52,22 @@ func installCLI(root, rootfs, goarch string, log io.Writer) (bool, error) {
 		return false, err
 	}
 
+	// Stripped, and stamped with the same version the image declares.
+	//
+	// The stamp was missing for as long as this function has existed, and the
+	// result was a switch that disagreed with itself: `/etc/nosaic/image.json`
+	// said 0.1.0 while `nosaic version` on the same box said 0.0.0-dev. The
+	// Makefile's LDFLAGS reach `go build`, `go run` and `pkg build` -- every
+	// build-host path -- and missed the one binary that actually ships,
+	// because the CLI is not a package. It is pure static Go built in-tree,
+	// so it sits outside the packaging that was taught to stamp itself.
+	//
+	// It reads as cosmetic and is not: the first question after an A/B upgrade
+	// is which image you are on, and an unstamped CLI answers 0.0.0-dev from
+	// both slots.
 	cmd := exec.Command("go", "build",
 		"-trimpath",
-		// Stripped: this rides in every image and the debug information is
-		// most of its size.
-		"-ldflags", "-s -w",
+		"-ldflags", cliLDFlags(ver, commit),
 		"-o", out, "./cmd/nosaic")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(),
@@ -70,4 +86,21 @@ func installCLI(root, rootfs, goarch string, log io.Writer) (bool, error) {
 	fmt.Fprintf(log, "    nosaic CLI %.1f MiB into /usr/bin\n",
 		float64(fi.Size())/(1<<20))
 	return true, chmodRaw(out, 0o755)
+}
+
+// cliLDFlags is the link-time configuration for the shipped CLI: stripped, and
+// stamped with the identity the image declares.
+//
+// An empty value is left at the package default rather than stamped as empty,
+// so an offline build without a version produces a CLI that says 0.0.0-dev --
+// which is true -- rather than one that says nothing at all.
+func cliLDFlags(ver, commit string) string {
+	f := "-s -w"
+	if ver != "" {
+		f += " -X " + versionPkg + ".Version=" + ver
+	}
+	if commit != "" {
+		f += " -X " + versionPkg + ".Commit=" + commit
+	}
+	return f
 }
