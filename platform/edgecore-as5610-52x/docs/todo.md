@@ -68,6 +68,21 @@ datapath -- `datapath/common` -- so a fix in one often lands in both.
   back to a single free block. Eight threads churning concurrently leak
   nothing.
 
+  **Confirmed on this switch the same day.** The fixed image was installed into
+  the inactive slot, trial-booted, and committed itself. `nosaic show dma` then
+  reported, five minutes apart:
+
+      used                6.1 MiB (9%)
+      largest free        57.9 MiB
+      failed allocations  0
+      sdma_dmabuf_alloc   24.8 KiB   18 allocs     <- t+0
+      sdma_dmabuf_alloc   24.8 KiB   18 allocs     <- t+5min
+
+  Not a byte of growth, and not one new allocation: the SDK's own free list is
+  recycling the vectors now that freeing them means something. The old
+  allocator would have added about 630 KiB over the same window at this board's
+  ~1.5 packets/s, which is how it reached 64 MiB in a few hours.
+
 - **`nosaic show ports` blamed the chip for a permission error.** The query
   socket is mode 0600 and owned by root, so running the CLI as the `admin`
   login account got
@@ -81,6 +96,25 @@ datapath -- `datapath/common` -- so a fix in one often lands in both.
   the datapath being down, and the investigation went to the silicon. Both
   CLIs now separate permission denied, no socket, and a socket with nothing
   listening, and the first says to use `doas`.
+
+- **There was no upgrade path on this board, and now there is.** The CLI
+  refused to write a slot and pointed at `nosaic upgrade install` on the build
+  host -- which cannot run here, because the Go toolchain has no 32-bit
+  big-endian PowerPC target, which is the entire reason this board has a C CLI.
+  So the only way to install an image was a hand-typed `dd` at the serial
+  console, with no active-slot refusal, no squashfs check, no size check and no
+  overlay clear. That is how the image carrying this fix was installed, and it
+  is worse than the thing the refusal was protecting against: declining to
+  offer the guarded operation did not prevent the dangerous one, it guaranteed
+  it.
+
+  `nosaic upgrade install <image.sqsh> [--slot a|b]` now exists here, with the
+  guards `internal/upgrade.Install` has and one it does not -- it refuses a
+  device that carries the running root even where the slot table claims the
+  device is the inactive slot, because believing the table when the two
+  disagree overwrites the running switch. Exercised on the board: all three
+  refusals fired without writing, and a real install chose the inactive slot on
+  its own, cleared both overlay layers, trial-booted and committed itself.
 
 - **`sudo` exists on this tier now**, as a shim onto doas written by the image
   builder. `sudo: not found` had already been read once as "this box has no

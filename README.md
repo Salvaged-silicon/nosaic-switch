@@ -110,7 +110,9 @@ silicon, because that path needs no CPU DMA, and unable to send anything of
 its own. Both boards now share one real allocator, and `nosaic show dma`
 reports what the pool holds and which caller is holding it — because working
 out that answer the first time meant reading the vendor's source rather than
-asking the switch.
+asking the switch. Confirmed on the board: five minutes apart, the
+allocation that had emptied the pool sat at 24.8 KiB across 18 allocations and
+had not moved, where the old allocator would have added about 630 KiB.
 
 It is reachable over the network now: dropbear is packaged, host keys are
 generated on the box rather than shipped, and authorised keys come from the
