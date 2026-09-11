@@ -148,9 +148,26 @@ while read -r kind dest via gw rest; do
     # carrying its own management traffic across the datapath. A route named
     # "default" prints as "default via ..." anyway, so the extra alternative
     # was never needed for the case it was presumably written for.
-    ip route show | grep -q "^${dest} via ${gw}" && continue
-    if ip route add "$dest" via "$gw" $rest 2>/dev/null; then
+    #
+    # The family comes from the gateway, not from a flag in the file. Plain
+    # "ip route" assumes inet, so an IPv6 gateway was rejected with
+    # "inet address is expected" -- and rejected silently, because the failure
+    # is swallowed below. A config format that accepts IPv6 interfaces and not
+    # IPv6 routes is a trap: it takes the line, says nothing, and leaves the
+    # box with addresses and no way off the subnet.
+    case "$gw" in
+        *:*) fam="-6" ;;
+        *)   fam="" ;;
+    esac
+    ip $fam route show | grep -q "^${dest} via ${gw}" && continue
+    if ip $fam route add "$dest" via "$gw" $rest 2>/dev/null; then
         say "route $dest via $gw"
+    else
+        # Worth saying out loud. The common cause is a gateway that is not on
+        # any configured subnet, and a silent failure there is a box that comes
+        # up looking correct and is reachable from nowhere.
+        ip $fam route show | grep -q "^${dest} " \
+            || say "route $dest via $gw FAILED"
     fi
 done < "$CONF"
 }
