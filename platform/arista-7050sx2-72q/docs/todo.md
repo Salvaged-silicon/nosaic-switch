@@ -191,7 +191,7 @@ written, this file is correct for exactly one switch.
 board. Either boot it or change the declaration; a board description that
 disagrees with reality is worse than either.
 
-### ~~ECMP~~ — fixed in the shared datapath, untested here
+### ~~ECMP~~ — proven here on 2026-09-11, in hardware
 
 `l3sync` read routes from `/proc/net/route`, which lists one gateway per prefix,
 so a multipath route was programmed as a single path and reported success. It
@@ -199,10 +199,52 @@ now reads them over netlink and builds ECMP groups, and the multipath hash is
 configured -- without that the group exists and sends everything down one
 member anyway.
 
-Proven on the AS5610: 150 transit packets across 30 destinations, 80 and 70
-across the pair. **Not exercised here**, because this box's two uplinks have
-different costs, so nothing offers it an equal-cost route to try. Give it one
-before trusting it.
+Proven on the AS5610 first: 150 transit packets across 30 destinations, 80 and
+70 across the pair.
+
+**Now proven here too, and it only became testable when Ethernet52 came up.**
+The blocker recorded here was real -- this box's uplinks had different costs, so
+nothing offered it an equal-cost route. et52 and et53 both reach the
+7050TX-64, both at 40G, both Full, so the box finally had a pair:
+
+```
+O>* 10.101.107.0/24 [110/20] via 10.101.101.74, et53, weight 1
+  *                          via 10.101.101.82, et52, weight 1
+```
+
+Six prefixes carry two next hops, both resolved to egress objects on different
+ports, and the chip built one group serving all of them:
+
+```
+l3: next hop 10.101.101.74 dev et53 via 02:1c:73:00:00:35 -> egress 100007
+l3: next hop 10.101.101.82 dev et52 via 02:1c:73:00:00:31 -> egress 100007
+l3: ecmp group of 2 -> egress 200256
+```
+
+And it splits. 75 transit packets across 15 destinations, from the AS5610:
+
+| port | before | after | forwarded |
+|---|---|---|---|
+| et52 | 38 | 78 | **40** |
+| et53 | 34 | 69 | **35** |
+
+40 + 35 = 75, against 75 sent. Exact, so nothing was lost or double-counted.
+
+Two things the method needed, both worth knowing before repeating it:
+
+  - **CPU-originated traffic does not test this.** The kernel picks the next
+    hop and hands the packet to one tap, so the chip's group is never
+    consulted. Only traffic the chip *forwards* exercises the hash, which
+    means a source behind another switch.
+  - **Nothing sends this box transit, by design.** `max-metric router-lsa` is
+    deliberate, and the AS5610 confirmed it by routing around us. The test
+    needed a temporary static route on the AS5610 pointing one prefix at our
+    et54, removed afterwards; its routing was checked back to its original
+    state.
+
+The split is per-flow and hashes on the destination, so it is lumpy with few
+flows and evens out with more -- at the halfway mark this run stood at 35/10
+and finished at 35/40. Do not read a small sample as a broken hash.
 
 ### The watchdog is not armed
 
