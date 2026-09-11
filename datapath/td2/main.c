@@ -28,6 +28,7 @@
 #include "sdk.h"
 #include "l3sync.h"
 #include "led.h"
+#include "phy.h"
 #include "query.h"
 #include "tapbridge.h"
 
@@ -65,7 +66,7 @@ static long elapsed_ms(const struct timespec *then, const struct timespec *now)
  */
 static void datapath_tick(void)
 {
-	static struct timespec last_l3, last_stats, last_led;
+	static struct timespec last_l3, last_stats, last_led, last_phy;
 	struct timespec now;
 
 	if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
@@ -81,6 +82,14 @@ static void datapath_tick(void)
 	if (elapsed_ms(&last_led, &now) >= 2000) {
 		last_led = now;
 		nosaic_led_poll();
+	}
+	/* The copper PHYs, at one second. Not for responsiveness -- it is the
+	 * bounded MDIO budget inside that decides how fast ports get matched --
+	 * but because a port that has just linked and is bridging nothing is
+	 * worth fixing before anybody notices it as a dead cable. */
+	if (elapsed_ms(&last_phy, &now) >= 1000) {
+		last_phy = now;
+		nosaic_phy_poll();
 	}
 	if (elapsed_ms(&last_stats, &now) >= 60000) {
 		last_stats = now;
@@ -487,6 +496,9 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 		/* The front panel. Not fatal if it fails: a switch with a dark
 		 * panel still forwards, and a board with no SCD has no panel. */
 		nosaic_led_start(unit);
+		/* After the ports are enabled: a port that is not enabled cannot
+		 * report a link, and this has nothing to match until one does. */
+		nosaic_phy_start(unit);
 
 		/*
 		 * The socket, so the CLI can ask this chip what it holds.

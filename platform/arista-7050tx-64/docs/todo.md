@@ -32,24 +32,34 @@ has booted on the hardware. The split below is by what blocks what.
   Getting either wrong produces a port that trains and then errors, which
   reads as a marginal cable.
 
+- **The CMIC identity is no longer hardcoded to one chip.** Two places expected
+  `0x0002b860` and would have reported this board's `0x0003b855` as a chip that
+  did not match. Derived from PCI configuration space now, which keeps the
+  cross-check the constant was there for — two independent paths agreeing —
+  without baking in silicon. A core change, in its own commit.
+
+- **The copper PHY layer is written** — `datapath/td2/phy.c`. The SDK owns the
+  PHY itself and downloads its firmware given `load_firmware` and
+  `phy_bus_i2c_<n>`; what it does not do is keep the chip's MAC side agreeing
+  with what the PHY negotiated, which is the failure that reads as a dead cable.
+  Ports are discovered from the properties rather than a number range, matched
+  once and re-checked when a link drops, and the MDIO budget is bounded to four
+  reads a second. **Never executed** — see below.
+
 ## Blocking — NOSaic does not run on this board without these
 
-- **`cmicDevRevExpect` is hardcoded to Trident2+.**
-  `internal/platformhal/scd/asic.go` expects `0x0002b860`, so the SCD driver will
-  reject this board's CMIC. Making it per-ASIC is a **core** change: separate
-  commit, its own reasoning, and worth asking whether the board should be
-  supplying that value rather than the core knowing it.
+- **Nothing has been booted, and this is now the only thing in the way.** An
+  image builds and carries a datapath, a PHY layer and the board configuration,
+  and not one line of it has executed on the switch. Every claim in this
+  directory is about the board or about what the build produced — none is about
+  NOSaic running on this hardware.
 
-- **The 48 BCM84848 PHYs have no driver in this tree.** Firmware must load over
-  the SCD's MDIO before any copper port links, and neither existing board has an
-  external PHY at all. This is the reason the port was deferred and it is the
-  bulk of the work. The constraints that must survive into whatever is written
-  are in [hardware.md](hardware.md#quirks) — they were each found the expensive
-  way.
-
-- **Nothing has been booted.** No toolchain run, no image, no console session
-  with a NOSaic kernel on this hardware. Every claim in this directory is about
-  the board, not about NOSaic on the board.
+  What to expect when it does boot, so a first attempt is not read as failure:
+  the four QSFP+ cages are direct SerDes and should come up first. The 48 copper
+  ports depend on the SDK downloading PHY firmware, which fails transiently on
+  some cold starts and is cleared by restarting the datapath. `phy:` lines in
+  the log say whether the MAC interface is being matched, and silence from them
+  with copper ports up is itself the signal that something is wrong.
 
 - **No flash backup since the board's contents changed.** The existing backup
   predates everything written to `/mnt/flash` since, and the vendor images on
