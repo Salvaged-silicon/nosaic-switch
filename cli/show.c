@@ -19,19 +19,14 @@
 #include "show.h"
 
 #define MAXPORTS 512
-#define MAXCOLS  8
+#define MAXCOLS  NOSAIC_TABLE_COLS
 
-/* Text laid out the way Go's tabwriter lays it out: every column is as wide as
- * its widest cell plus two, and the last column is not padded. Matching it by
- * eye would drift the first time a port name got longer. */
-struct table {
-	char cell[MAXPORTS + 2][MAXCOLS][40];
-	int  rows, cols;
-};
+/* The layout itself is in show.h, shared with optics.c: see the note there. */
+#define table nosaic_table
 
-static void put(struct table *t, int r, int c, const char *s)
+void nosaic_table_put(struct table *t, int r, int c, const char *s)
 {
-	if (r >= MAXPORTS + 2 || c >= MAXCOLS)
+	if (r >= NOSAIC_TABLE_ROWS || c >= MAXCOLS)
 		return;
 	snprintf(t->cell[r][c], sizeof(t->cell[r][c]), "%s", s);
 	if (r + 1 > t->rows)
@@ -40,7 +35,7 @@ static void put(struct table *t, int r, int c, const char *s)
 		t->cols = c + 1;
 }
 
-static void emit(const struct table *t)
+void nosaic_table_emit(const struct table *t)
 {
 	int w[MAXCOLS] = {0};
 	int r, c;
@@ -62,6 +57,9 @@ static void emit(const struct table *t)
 		printf("\n");
 	}
 }
+
+#define put  nosaic_table_put
+#define emit nosaic_table_emit
 
 static void no_datapath(void)
 {

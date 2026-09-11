@@ -49,6 +49,7 @@
 #include <linux/i2c-dev.h>
 
 #include "optics.h"
+#include "show.h"
 
 /* Bytes per i2c transaction. See read_bytes: longer reads return zeros here
  * rather than failing, which is a fault that decodes. */
@@ -302,61 +303,68 @@ int nosaic_optics_list(void)
 	return 0;
 }
 
-static void print_lane(int lane, int rx_tenths, int tx_tenths, int tx_ok, int bias_2ua)
-{
-	char rx[32], tx[32];
-
-	fmt_dbm(rx, sizeof(rx), rx_tenths);
-	if (tx_ok)
-		fmt_dbm(tx, sizeof(tx), tx_tenths);
-	else
-		snprintf(tx, sizeof(tx), "not measured");
-	printf("%-5d %-14s %-14s %.1f mA\n", lane, rx, tx, (double)bias_2ua * 2.0 / 1000.0);
-}
-
 static int show_qsfp(int cage, int bus)
 {
 	unsigned char lo[QSFP_LOWER_LEN], up[64];
-	char s[64];
-	int i, tx_ok = 0;
+	struct nosaic_table t;
+	char s[64], v[96], val[64];
+	int i, r = 0, tx_ok = 0, lanes = 0;
 
 	if (read_bytes(bus, I2C_ADDR_MODULE, 0, lo, sizeof(lo)) != 0) {
 		fprintf(stderr, "nosaic: cage %d: reading the module: %s\n",
 			cage, strerror(errno));
 		return 1;
 	}
+	memset(&t, 0, sizeof(t));
 
-	printf("cage         %d\n", cage);
-	printf("type         QSFP+ (identifier %#04x)\n", lo[QSFP_ID]);
-	printf("bus          /dev/i2c-%d\n", bus);
+	snprintf(val, sizeof(val), "%d", cage);
+	nosaic_table_put(&t, r, 0, "cage");
+	nosaic_table_put(&t, r++, 1, val);
 
-	if (read_bytes(bus, I2C_ADDR_MODULE, QSFP_VENDOR, up, 16) == 0) {
-		sff_string(s, sizeof(s), up, 16);
-		if (*s != '\0')
-			printf("vendor       %s\n", s);
-	}
+	snprintf(val, sizeof(val), "QSFP+ (identifier %#02x)", lo[QSFP_ID]);
+	nosaic_table_put(&t, r, 0, "type");
+	nosaic_table_put(&t, r++, 1, val);
+
+	*v = '\0';
+	if (read_bytes(bus, I2C_ADDR_MODULE, QSFP_VENDOR, up, 16) == 0)
+		sff_string(v, sizeof(v), up, 16);
 	if (read_bytes(bus, I2C_ADDR_MODULE, QSFP_PN, up, 16) == 0) {
 		sff_string(s, sizeof(s), up, 16);
-		if (*s != '\0')
-			printf("part         %s\n", s);
+		if (*s != '\0') {
+			size_t n = strlen(v);
+
+			snprintf(v + n, sizeof(v) - n, "%s%s", n ? " " : "", s);
+		}
+	}
+	if (*v != '\0') {
+		nosaic_table_put(&t, r, 0, "vendor");
+		nosaic_table_put(&t, r++, 1, v);
 	}
 	if (read_bytes(bus, I2C_ADDR_MODULE, QSFP_SN, up, 16) == 0) {
 		sff_string(s, sizeof(s), up, 16);
-		if (*s != '\0')
-			printf("serial       %s\n", s);
+		if (*s != '\0') {
+			nosaic_table_put(&t, r, 0, "serial");
+			nosaic_table_put(&t, r++, 1, s);
+		}
 	}
 
 	/* The module has not finished its first measurement cycle. Every
 	 * diagnostic reads zero until it has, which is indistinguishable from a
 	 * dark link unless this bit is consulted. */
 	if (lo[QSFP_STATUS2] & 0x01) {
+		nosaic_table_emit(&t);
 		printf("\nthis module has not finished measuring yet "
 		       "(data not ready); try again in a moment\n");
 		return 0;
 	}
 
-	printf("temperature  %.1f C\n", (double)sbe16(lo, QSFP_TEMP) / 256.0);
-	printf("supply       %.2f V\n", (double)be16(lo, QSFP_VCC) / 10000.0);
+	snprintf(val, sizeof(val), "%.1f C", (double)sbe16(lo, QSFP_TEMP) / 256.0);
+	nosaic_table_put(&t, r, 0, "temperature");
+	nosaic_table_put(&t, r++, 1, val);
+	snprintf(val, sizeof(val), "%.2f V", (double)be16(lo, QSFP_VCC) / 10000.0);
+	nosaic_table_put(&t, r, 0, "supply");
+	nosaic_table_put(&t, r++, 1, val);
+	nosaic_table_emit(&t);
 
 	/* Transmit power is optional on QSFP. A module that does not implement
 	 * it reports zero, and so does a dead laser -- so they are separated by
@@ -365,80 +373,123 @@ static int show_qsfp(int cage, int bus)
 	for (i = 0; i < 4; i++)
 		if (be16(lo, QSFP_TXPOWER + 2 * i) != 0)
 			tx_ok = 1;
-
 	for (i = 0; i < 4; i++)
 		if (be16(lo, QSFP_RXPOWER + 2 * i) != 0 ||
 		    be16(lo, QSFP_TXBIAS + 2 * i) != 0)
-			break;
-	if (i == 4 && !tx_ok) {
+			lanes = 1;
+
+	if (!lanes && !tx_ok) {
 		/*
-		 * Every monitor reads zero.
+		 * Every monitor reads zero. This says what was observed and not
+		 * why, because several causes look identical from here and this
+		 * cannot tell them apart: passive copper has no monitors, an
+		 * optical module can decline to implement them, and one that is
+		 * not powered reports the same zeros. An earlier version
+		 * asserted passive copper and was wrong on the first module it
+		 * met, which was an Avago BiDi carrying 40G at the time.
 		 *
-		 * This says what was observed and does not say why, because the
-		 * honest answer is that several causes look identical here and
-		 * this code cannot tell them apart: a passive copper cable has
-		 * no monitors, an optical module can decline to implement them,
-		 * and a module that is not powered reports the same zeros. An
-		 * earlier version of this line asserted passive copper, and on
-		 * the first module it met -- an Avago SR4 -- it was wrong.
-		 *
-		 * The identity fields above are the useful signal for the
-		 * reader: if the vendor and part number came back, the bus and
-		 * the address are fine and only the monitors are empty.
+		 * The Go CLI prints the same sentence for the same case.
 		 */
-		printf("\nno diagnostics: temperature, supply and all four lanes "
-		       "read zero\n");
-		if (lo[QSFP_TEMP] == 0 && lo[QSFP_TEMP + 1] == 0)
-			printf("the identity above read correctly, so the bus is "
-			       "good and the monitors themselves are empty\n");
+		printf("\nthis module reports no diagnostics\n");
 		return 0;
 	}
 
-	printf("\n%-5s %-14s %-14s %s\n", "LANE", "RX", "TX", "BIAS");
-	for (i = 0; i < 4; i++)
-		print_lane(i + 1, be16(lo, QSFP_RXPOWER + 2 * i),
-			   be16(lo, QSFP_TXPOWER + 2 * i), tx_ok,
-			   be16(lo, QSFP_TXBIAS + 2 * i));
+	memset(&t, 0, sizeof(t));
+	nosaic_table_put(&t, 0, 0, "lane");
+	nosaic_table_put(&t, 0, 1, "rx");
+	nosaic_table_put(&t, 0, 2, "tx");
+	nosaic_table_put(&t, 0, 3, "bias");
+	for (i = 0; i < 4; i++) {
+		snprintf(val, sizeof(val), "%d", i + 1);
+		nosaic_table_put(&t, i + 1, 0, val);
+		fmt_dbm(val, sizeof(val), be16(lo, QSFP_RXPOWER + 2 * i));
+		nosaic_table_put(&t, i + 1, 1, val);
+		if (tx_ok)
+			fmt_dbm(val, sizeof(val), be16(lo, QSFP_TXPOWER + 2 * i));
+		else
+			snprintf(val, sizeof(val), "not measured");
+		nosaic_table_put(&t, i + 1, 2, val);
+		snprintf(val, sizeof(val), "%.1f mA",
+			 (double)be16(lo, QSFP_TXBIAS + 2 * i) * 2.0 / 1000.0);
+		nosaic_table_put(&t, i + 1, 3, val);
+	}
+	printf("\n");
+	nosaic_table_emit(&t);
 	return 0;
 }
 
+/* Same fields and same order as the QSFP path above and as the Go CLI, because
+ * an operator moving between an SFP cage and a QSFP cage should not have to
+ * re-read the output. */
 static int show_sfp(int cage, int bus)
 {
 	unsigned char b[128], dom[112];
-	char s[64];
+	struct nosaic_table t;
+	char s[64], v[96], val[64];
+	int r = 0;
 
 	if (read_bytes(bus, I2C_ADDR_MODULE, 0, b, sizeof(b)) != 0) {
 		fprintf(stderr, "nosaic: cage %d: reading the module: %s\n",
 			cage, strerror(errno));
 		return 1;
 	}
-	printf("cage         %d\n", cage);
-	printf("type         SFP+ (identifier %#04x)\n", b[SFP_ID]);
-	printf("bus          /dev/i2c-%d\n", bus);
-	sff_string(s, sizeof(s), b + SFP_VENDOR, 16);
-	if (*s != '\0')
-		printf("vendor       %s\n", s);
-	sff_string(s, sizeof(s), b + SFP_PN, 16);
-	if (*s != '\0')
-		printf("part         %s\n", s);
-	sff_string(s, sizeof(s), b + SFP_SN, 16);
-	if (*s != '\0')
-		printf("serial       %s\n", s);
+	memset(&t, 0, sizeof(t));
 
-	/* SFF-8472 keeps diagnostics at a different i2c address, not a
-	 * different page. A module without them does not answer there at all,
-	 * which is not an error. */
+	snprintf(val, sizeof(val), "%d", cage);
+	nosaic_table_put(&t, r, 0, "cage");
+	nosaic_table_put(&t, r++, 1, val);
+	snprintf(val, sizeof(val), "SFP+ (identifier %#02x)", b[SFP_ID]);
+	nosaic_table_put(&t, r, 0, "type");
+	nosaic_table_put(&t, r++, 1, val);
+
+	sff_string(v, sizeof(v), b + SFP_VENDOR, 16);
+	sff_string(s, sizeof(s), b + SFP_PN, 16);
+	if (*s != '\0') {
+		size_t n = strlen(v);
+
+		snprintf(v + n, sizeof(v) - n, "%s%s", n ? " " : "", s);
+	}
+	if (*v != '\0') {
+		nosaic_table_put(&t, r, 0, "vendor");
+		nosaic_table_put(&t, r++, 1, v);
+	}
+	sff_string(s, sizeof(s), b + SFP_SN, 16);
+	if (*s != '\0') {
+		nosaic_table_put(&t, r, 0, "serial");
+		nosaic_table_put(&t, r++, 1, s);
+	}
+
+	/* SFF-8472 keeps diagnostics at a different i2c address, not a different
+	 * page. A module without them does not answer there at all, which is not
+	 * an error. */
 	if (read_bytes(bus, I2C_ADDR_SFPDOM, 0, dom, sizeof(dom)) != 0) {
-		printf("\nthis module reports no diagnostics "
-		       "(nothing answers at %#04x)\n", I2C_ADDR_SFPDOM);
+		nosaic_table_emit(&t);
+		printf("\nthis module reports no diagnostics\n");
 		return 0;
 	}
-	printf("temperature  %.1f C\n", (double)sbe16(dom, SFP_DOM_TEMP) / 256.0);
-	printf("supply       %.2f V\n", (double)be16(dom, SFP_DOM_VCC) / 10000.0);
+	snprintf(val, sizeof(val), "%.1f C", (double)sbe16(dom, SFP_DOM_TEMP) / 256.0);
+	nosaic_table_put(&t, r, 0, "temperature");
+	nosaic_table_put(&t, r++, 1, val);
+	snprintf(val, sizeof(val), "%.2f V", (double)be16(dom, SFP_DOM_VCC) / 10000.0);
+	nosaic_table_put(&t, r, 0, "supply");
+	nosaic_table_put(&t, r++, 1, val);
+	nosaic_table_emit(&t);
 
-	printf("\n%-5s %-14s %-14s %s\n", "LANE", "RX", "TX", "BIAS");
-	print_lane(1, be16(dom, SFP_DOM_RXPWR), be16(dom, SFP_DOM_TXPWR), 1,
-		   be16(dom, SFP_DOM_BIAS));
+	memset(&t, 0, sizeof(t));
+	nosaic_table_put(&t, 0, 0, "lane");
+	nosaic_table_put(&t, 0, 1, "rx");
+	nosaic_table_put(&t, 0, 2, "tx");
+	nosaic_table_put(&t, 0, 3, "bias");
+	nosaic_table_put(&t, 1, 0, "1");
+	fmt_dbm(val, sizeof(val), be16(dom, SFP_DOM_RXPWR));
+	nosaic_table_put(&t, 1, 1, val);
+	fmt_dbm(val, sizeof(val), be16(dom, SFP_DOM_TXPWR));
+	nosaic_table_put(&t, 1, 2, val);
+	snprintf(val, sizeof(val), "%.1f mA",
+		 (double)be16(dom, SFP_DOM_BIAS) * 2.0 / 1000.0);
+	nosaic_table_put(&t, 1, 3, val);
+	printf("\n");
+	nosaic_table_emit(&t);
 	return 0;
 }
 

@@ -169,11 +169,14 @@ What is left:
 
 ## Nice to have — the switch works without these
 
-- **et1 and et2 are configured against nothing.** Both are admin up with
-  addresses and no link, and neither far end (`10.101.101.41`, `.58`) answers.
-  They are left as they are deliberately, but a switch carrying addresses for
-  links that do not exist is a switch whose configuration lies about the
-  topology.
+- **~~et1 and et2 are configured against nothing~~** — removed on 2026-09-11.
+  Both were admin up with an address and no carrier, and neither far end
+  (`10.101.101.41`, `.58`) ever answered. Two costs, not one: `show ports` and
+  `ip addr` both read as a cabling fault on two ports that are simply not
+  cabled, and FRR advertised each /29 into the area the moment it saw an
+  address on an up interface, so OSPF carried two prefixes no traffic could
+  reach. The addresses are in `config/network.conf`'s comment and in the git
+  history; putting either back is one line.
 
 ### The MAC address is hard-coded
 
@@ -339,24 +342,61 @@ is unobserved rather than known-good.
   still resolves to a real package declaring `var Version` and `var Commit`,
   rather than trusting the string.
 
-- **Ethernet52 is configured and waits on its far end.** Cabling after the
-  move is Et52 -> 7050TX-64 port 49, Et53 -> 7050TX-64 port 50, Et54 ->
-  AS5610 port 51. Et52 was not configured at all; it now is:
-  `tap_et52=61:1052:1600` and `10.101.101.81/29`, the next free /29 after
-  et53's, this end taking the lower address the way et53 and et54 do.
+- **Ethernet52 was dark because its SerDes polarity was wrong, and the
+  generator could never have found it.** Cabling after the move is Et52 ->
+  7050TX-64 port 49, Et53 -> port 50, Et54 -> AS5610 port 51. Et52 was not
+  configured at all; it now is -- `tap_et52=61:1052:1600` and
+  `10.101.101.81/29`, the next free /29 after et53's, this end taking the
+  lower address the way et53 and et54 do.
 
   **The cage number is not the logical port.** Ethernet52 is logical port 61
   (physical 81) -- the cages are not in physical order, and `portmap_53` is
-  Ethernet50. `tap_et*` takes the logical port, so reading the front-panel
-  number off the name and using it would have configured Ethernet49's lanes.
+  Ethernet50. `tap_et*` takes the logical port. EOS agrees: its `ps` shows
+  `xe60( 61) up 40G` for this cage, so the port map was never in question.
 
-  It came up admin up at 40000 with the address on, and **oper down**. Our end
-  is not the problem: cage 52 reads `0x00` at the SCD, the same as the two
-  cages that work, so it is out of low power and reset with a module in it,
-  and both its lane map (`0x2031`/`0x1302`) and its polarity are real derived
-  values rather than the global default. The far end is where it stops --
-  the 7050TX-64 has link on port 50 and nothing on port 49, which is the
-  shape of a port that was cabled after that box booted.
+  It then linked admin-up at 40000 and stayed **oper down**, with the far end
+  reporting no light from us. Everything obvious was correct: cage 52 out of
+  low power and reset, TX_DISABLE clear and demonstrably controllable, and the
+  ASIC port initialising identically to the two cages that work -- same speed,
+  same ability word, same interface, no errors.
+
+  **Booting EOS settled it in one command.** `Et52/1 connected 40G` on the same
+  module, the same fibre and the same far-end port. So the hardware was fine
+  and the fault was ours. Reading the SerDes polarity out of the running EOS
+  for the three 40G macros gave:
+
+  | cage | macro | EOS | NOSaic shipped | |
+  |---|---|---|---|---|
+  | Et53 (61→65) | `0x181` | tx `0x01` rx `0x04` | tx `0x1` rx `0x4` | match |
+  | Et54 (69) | `0x18d` | tx `0x0e` rx `0x0b` | tx `0xe` rx `0xb` | match |
+  | **Et52 (61)** | `0xf1` | **tx `0x0d` rx `0x0b`** | tx `0x1` rx `0x1` | **wrong** |
+
+  Corrected through `/mnt/data/config/polarity.conf`, and **et52 came up at
+  40000 on the next datapath restart.**
+
+  **Why the generator missed it, which is the part worth keeping.**
+  `tools/mkpolarity.sh` read the lane out of the PHY name and filtered on
+  `lane ~ /^[0-3]$/`. A 40G port names its lane **`4`** -- not a lane number,
+  it means the whole macro -- so **every 40G port was silently dropped from the
+  table**. The values that were in the file came from a capture taken while
+  these cages were broken out into 4x10G, where they did appear as lanes 0..3;
+  correct for that configuration and wrong once the cage was a single 40G port.
+  Et53 and Et54 happened to survive it. Et52, never cabled then, did not.
+
+  Worse than the filter: even had a 40G port passed, the script emitted `0x1` --
+  a single bit -- where the value is a bitmask over the port's lanes and a 40G
+  port needs up to four. Both fixed: the generator now takes lane `4` as lanes
+  0..3 and builds the mask per lane.
+
+  This is the failure mode the polarity work has always had, and it stayed true
+  here: wrong polarity does not announce itself. On a single-lane 10G port it
+  brings the link **up** carrying garbage. On a four-lane 40G port it prevents
+  link entirely, which reads exactly like a dead cage, a bad optic or a far-end
+  fault -- and it was diagnosed as all three before EOS ruled them out.
+
+  Left over: the far side of et52 (`10.101.101.82`) is not configured yet.
+  `et1` and `et2` were also carrying addresses and OSPF networks for links
+  whose far ends had never answered; those were removed on 2026-09-11.
 
 ## Features — what this board could do and does not yet
 

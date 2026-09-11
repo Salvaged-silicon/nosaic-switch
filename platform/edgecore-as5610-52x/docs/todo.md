@@ -1019,7 +1019,7 @@ does not transfer.
 cannot read its own MAC comes up with a random one that changes every boot,
 which is worth solving before the first install.
 
-## Transceiver diagnostics — identity works, the monitors read zero
+## Transceiver diagnostics — SFP+ reads light, QSFP+ reads zero
 
 `nosaic platform transceivers` reads this board's cages now: presence across all
 52, identity from the module, and a raw dump. Cage-to-bus is resolved from the
@@ -1030,11 +1030,27 @@ been wrong on the first boot.
 
     cage 49  /dev/i2c-66  CISCO-AVAGO  AFBR-79EBPZ-CS2  M2149U5UY
 
-**What does not work is the part that was asked for.** Temperature, supply and
-every per-lane power read `0x00` on all three fitted modules, while byte 0 and
-everything in upper page 00h -- vendor, part, serial, the date code at 212 --
-read correctly. So the bus is right, the addressing is right, and the monitors
-are empty.
+**The SFP+ cages report light.** Cage 6, on a running link:
+
+    cage         6
+    type         SFP+ (identifier 0x03)
+    vendor       CISCO-AVAGO SFBR-709S-CS1
+    temperature  35.2 C
+    supply       3.31 V
+
+    lane  rx         tx         bias
+    1     -2.72 dBm  -2.30 dBm  5.6 mA
+
+**The four QSFP+ cages do not.** Temperature, supply and every per-lane power
+read `0x00` on all three fitted modules, while byte 0 and everything in upper
+page 00h -- vendor, part, serial, the date code at 212 -- read correctly.
+
+That split is the useful fact, and it took a working SFP+ read to see it. The
+same binary, the same mux tree, the same i2c reads and the same decoder get
+real numbers out of an SFP+ and zeros out of a QSFP+. So this is not the bus,
+not the mux arbitration, not the read method and not the offsets -- all of
+those are shared, and all of them work. Whatever is left is specific to the
+QSFP+ modules or to how this board brings them up.
 
 They should not be. `swp49` and `swp52` are **up at 40000** and carrying traffic
 to the 7050SX2. A module with its lasers running is not at 0 C and 0 V.
@@ -1050,7 +1066,8 @@ Ruled out, with the test that ruled it out:
 - **Low power mode.** `0x70` reads `0xf0`: LPMODE[3:0] driven low, which is
   high power. Cumulus sets exactly the same three: LPMODE 0, MODSEL_L 0,
   RST_L 1.
-- **Our decode.** Three implementations agree on where the numbers live.
+- **Our decode.** Three implementations agree on where the numbers live, and
+  the SFP+ path proves the machinery end to end on this board.
 
 ### What the other three operating systems do with this board
 
