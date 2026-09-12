@@ -142,6 +142,11 @@ type SCD struct {
 	asic  string
 	close func() error
 
+	// smbusMap is where this board's sensors and fan controller sit. Nil
+	// where the board states none, which is an answer rather than a default:
+	// see platformhal.SMBusMap.
+	smbusMap *platformhal.SMBusMap
+
 	// lamps is the board's chassis-lamp map, loaded once on first use from a
 	// generated file. Cached including the failure: a board without the map
 	// should say so quickly every time rather than stat a missing file on
@@ -158,9 +163,14 @@ func (s *SCD) trace(f string, a ...any) {
 	}
 }
 
-// Open maps the SCD's BAR0. pciAddr is the SCD's PCI address, asicAddr the
-// address the switch chip will appear at once released.
-func Open(pciAddr, asicAddr string) (*SCD, error) {
+// Open maps the SCD's BAR0.
+//
+// cfg carries the SCD's own PCI address, the address the switch chip will
+// appear at once released, and where the board's sensors and fan controller
+// sit on the SMBus. The last of those has no default on purpose -- see the
+// note on SMBusMap.
+func Open(cfg platformhal.Config) (*SCD, error) {
+	pciAddr, asicAddr := cfg.PCI, cfg.ASICPCI
 	path := fmt.Sprintf("/sys/bus/pci/devices/%s/resource0", pciAddr)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_SYNC, 0)
 	if err != nil {
@@ -183,7 +193,7 @@ func Open(pciAddr, asicAddr string) (*SCD, error) {
 		return nil, fmt.Errorf("mapping %s: %w", path, err)
 	}
 	return &SCD{
-		bar: bar, pci: pciAddr, asic: asicAddr,
+		bar: bar, pci: pciAddr, asic: asicAddr, smbusMap: cfg.SMBus,
 		close: func() error { munmapFile(bar); return f.Close() },
 	}, nil
 }
