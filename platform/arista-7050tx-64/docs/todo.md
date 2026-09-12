@@ -78,40 +78,33 @@ the box could make.
   ⚠ Both generators had been verified against the working configuration and
   reproduced it "byte for byte" — a diff cannot show a family that is absent
   from both sides.
+- **The board shipped no `frr.conf`**, so three routed links carried no routing.
 
 ## Blocking — NOSaic does not forward on this board without these
 
-- **Transmit does not reach the neighbour.** Receive is fixed — see below — and
-  the two links to the 7050SX2 now take frames all the way to the Linux taps
-  (45 packets, `/proc/net/dev`). Nothing unicast ever comes back: `in-uc=0` on
-  every port, so no ARP resolves and no adjacency forms. The far end is sending
-  broadcast and is therefore alive and configured; it is not answering us.
+- **et52 to the Edgecore AS5610 receives nothing.** The other two links forward,
+  so the board's 40G path is proven end to end and this is the one port that
+  does not work. `link=1`, so the far end's optics are transmitting and our PCS
+  locks; `in-nuc=0`, so its MAC is sending no frames at all.
 
-  What is already ruled out: the SDK read every property this board supplies
-  except `xgxs_lcpll_xtal_refclk`, and the generated configuration now matches
-  the predecessor's working file on every property but the one deliberate
-  divergence. So the remaining difference is in the **call sequence**, not the
-  configuration. EdgeNOS makes these calls and NOSaic makes none of them:
+  ⚠ Our side is configured identically to the two ports that work — same
+  generator, same code path, same code — plus one property: `phy_an_c73_61=1`,
+  which is the predecessor's own hand-edit for this neighbour and therefore the
+  known-good value. Do not "fix" that by reverting it without evidence; it
+  moves away from the only configuration this link is known to have worked
+  under.
 
-  | call | what it is for |
-  |---|---|
-  | `bcm_port_interface_set(XGMII)` + `speed_set(40000)` + `duplex_set(FULL)` + `autoneg_set(0)` | the explicit 40G bring-up, applied per cage |
-  | `bcm_port_probe` | binds a PHY driver to each port; matters most for the 48 copper |
-  | `bcm_linkscan_mode_set_pbm(HW)` | NOSaic sets linkscan running but never sets a per-port mode |
-  | `bcm_port_control_set(bcmPortControlIP4/IP6, 1)` | per-port L3 enable — needed to route, above the MAC |
-  | `bcm_l3_enable_set(1)` | egress-object L3 model |
-  | `bcm_multicast_create` + `bcm_multicast_egress_add` | control multicast to the CPU, which is how OSPF is heard |
+  The AS5610 answers on `10.10.35.2` and its `config/network.conf` gives
+  `swp52` the matching `10.101.101.49/29`, so the box is alive and addressed.
+  What is not established is whether its port is up and its datapath running.
+  **Check that before touching anything here.**
 
-  ⚠ The 40G sequence is the one to try first and the one to be careful with.
-  NOSaic skips it deliberately, and the reason is in `datapath/td2/sdk.c`: on
-  the **sibling** board, re-applying a setting a port already had left both 40G
-  ports linked at the PCS and deaf at the MAC. That reasoning was imported here
-  without being retested, and this board's predecessor does apply it and does
-  forward. The sibling's symptom was zero frames in *and* out; this board's is
-  zero in and frames out, so they are not the same fault.
-
-  `et52` to the Edgecore AS5610 is further behind than the other two: it
-  receives nothing at all, where the SX2 links receive. Treat it separately.
+- **No OSPFv3 adjacency.** Our side is configured and running: `ospf6d` answers,
+  all three taps have link-local addresses, and each interface declares
+  `ipv6 ospf6 area 0.0.0.0`. The 7050SX2 forms OSPFv2 with us over both links
+  and nothing over v3, and it ships no `config/frr.conf` of its own — its
+  routing configuration comes from `/mnt/data/config/frr.conf` on that box.
+  Likeliest that it simply does not run OSPFv3 on these links.
 
 - **No flash backup since the board's contents changed.** The existing backup
   predates everything written to `/mnt/flash` since, and the vendor images on
