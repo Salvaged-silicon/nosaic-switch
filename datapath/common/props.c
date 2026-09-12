@@ -116,6 +116,31 @@ const char *nosaic_props_get(const char *name)
 }
 
 /*
+ * The SDK's own name resolution.
+ *
+ * soc_property_get("portmap_1") on unit 0 means "portmap_1.0 if it exists,
+ * otherwise portmap_1". The suffixed form is what a configuration read off a
+ * real switch contains, so a lookup that does not try it finds nothing in the
+ * one file that matters most.
+ *
+ * A name that already carries a suffix is passed through: the caller has
+ * resolved it itself, and appending a second one would look for
+ * "portmap_1.0.0".
+ */
+const char *nosaic_props_get_unit(const char *name, int unit)
+{
+	char key[192];
+	const char *v;
+
+	if (strchr(name, '.') == NULL) {
+		snprintf(key, sizeof(key), "%s.%d", name, unit);
+		if ((v = nosaic_props_get(key)) != NULL)
+			return v;
+	}
+	return nosaic_props_get(name);
+}
+
+/*
  * Report properties the SDK never asked for.
  *
  * This exists because a misspelt or mistimed property is silent. It is loaded,

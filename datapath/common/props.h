@@ -26,6 +26,26 @@ int nosaic_props_load(const char *path);
  * default for this chip". */
 const char *nosaic_props_get(const char *name);
 
+/*
+ * Look up a property the way the SDK's own configuration layer does: the
+ * unit-suffixed name first, then the bare one.
+ *
+ * ⚠ A PROPERTY FILE FROM A REAL SWITCH IS SUFFIXED, AND AN EXACT MATCH MISSES
+ * EVERY LINE OF IT.
+ *
+ * Broadcom's config.bcm writes "portmap_1.0", where the ".0" is the unit. A
+ * map generated from a switch running the vendor OS therefore arrives suffixed
+ * -- and on the 7050TX-64 all 278 port-map properties and all 104 polarity
+ * properties loaded, were counted, were reported on the console, and were then
+ * invisible to every lookup in the daemon. "no port map" printed immediately
+ * under "278 properties from /etc/nosaic/portmap.conf".
+ *
+ * That is the failure props_report_unused exists to catch, arriving from the
+ * other side: not a property the SDK never asked for, but a property the SDK
+ * asked for under a name nothing here would match.
+ */
+const char *nosaic_props_get_unit(const char *name, int unit);
+
 /* Load every *.conf in a directory, in name order. Returns how many
  * properties were read, or -1 if the directory is not there. */
 int nosaic_props_load_dir(const char *dir);
