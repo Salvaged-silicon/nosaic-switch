@@ -147,6 +147,7 @@ static const char *const datapath_conf[] = {
 	"asic.conf",      /* shipped: SDK properties for this board model */
 	"portmap.conf",   /* generated: which lane reaches which cage */
 	"polarity.conf",  /* generated: which lanes the PCB inverts */
+	"serdes.conf",    /* generated: this board's transmit equalisation */
 };
 
 /* Where the switch chip appears once the board controller releases it. */
