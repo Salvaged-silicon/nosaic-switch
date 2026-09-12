@@ -48,12 +48,42 @@ knowing before debugging a strange failure:
 - The SDK's *own* compile-line defines are captured into `sdk-defines.txt` and the datapath must build with that exact set. A wrong set compiles, links, runs, and corrupts every struct the SDK shares with us.
 - The SDK is fetched and hash-pinned, never committed.
 
-**Per-unit board data is generated, not shipped.** The port map and SerDes
-polarity are read off a switch running the vendor OS by the scripts in `tools/`
-and land in `config/`, which is gitignored. A build without them produces an
-image whose datapath reports itself unconfigured — which is the right failure.
-A guessed map satisfies every bandwidth rule the chip enforces and reaches none
-of the right cages.
+**Per-board vendor data is generated, not shipped.** Four generators in
+`tools/`, each read off a switch running the vendor OS, each landing in
+`config/`, all four gitignored. Run them once per switch:
+
+| generator | produces | without it |
+|---|---|---|
+| `mkportmap.sh` | `portmap.conf` — which lane reaches which cage, and each copper PHY's MDIO address | the datapath refuses to start: "no port map, so the chip would initialise and reach no front-panel cage" |
+| `mkpolarity.sh` | `polarity.conf` — SerDes lane polarity, the lane swizzle and the firmware mode | cages link at 40000 and carry **zero frames**, with no error on either end |
+| `mkretimer.sh` | `retimer.conf` — the DS100KR800's amplitude and de-emphasis | Et51 and Et52 receive perfectly and transmit nothing; the far end never links |
+| `mkserdes.sh` | `serdes.conf` — this board's transmit tap profile | the cage behind the repeater links and the far end reports a remote fault |
+
+```sh
+cd platform/arista-7050tx-64/tools
+./mkportmap.sh  <switch-ip> > ../config/portmap.conf
+./mkpolarity.sh <switch-ip> > ../config/polarity.conf
+./mkretimer.sh  <switch-ip> > ../config/retimer.conf
+./mkserdes.sh   <switch-ip> > ../config/serdes.conf
+```
+
+⚠ **A guessed map satisfies every bandwidth rule the chip enforces and reaches
+none of the right cages**, so the failure is a dead port rather than an error.
+Every one of the four fails silently in its own way — the table above is what
+each silence looks like.
+
+⚠ **A generator verified against the reference can still be missing a whole
+family.** Both the port map and polarity generators reproduced this board's
+working configuration "byte for byte" while emitting no lane maps at all: a
+diff only compares the keys a generator emits, and a family absent from both
+sides cannot show up as a difference. Compare the *whole* reference file
+against the *whole* generated set, and watch the counts each generator prints
+on stderr.
+
+**Shipped board configuration**, by contrast, is committed and needs nothing
+from you: `asic.conf` (SDK properties and the tap declarations), `network.conf`,
+`frr.conf`, and `statusleds.conf` — the last of these unusually, because
+nothing in this board's lamp map is the vendor's. See its header for why.
 
 ## Profile
 
