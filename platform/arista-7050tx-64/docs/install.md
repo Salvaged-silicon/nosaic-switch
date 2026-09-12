@@ -105,6 +105,28 @@ bash sudo mv -f /mnt/flash/nosaic-slot-a.sqsh.new /mnt/flash/nosaic-slot-a.sqsh
 bash sync
 ```
 
+## Before the image is worth installing
+
+⚠ **Four files must be generated against your own switch first**, or the image
+boots and the front panel does nothing useful. They are per-board vendor data,
+so they are not shipped — see [build.md](build.md) for the commands and for
+what each silence looks like. Briefly: no `portmap.conf` and the datapath
+refuses to start; no `polarity.conf` and the cages link and carry nothing; no
+`retimer.conf` or `serdes.conf` and Et51/Et52 transmit nothing while reporting
+themselves up.
+
+**Getting in afterwards.** The image ships `config/authorized_keys` if you put
+one there, which is worth doing before the first install:
+
+```sh
+cp ~/.ssh/id_ed25519.pub platform/arista-7050tx-64/config/authorized_keys
+```
+
+That gives `ssh -i ~/.ssh/id_ed25519 root@<switch>`. The `admin` account has no
+password and dropbear refuses empty ones, so **without a key the console is the
+only way in** — and on a 9600 console that is a slow way to debug a switch that
+has lost its network.
+
 ## Booting it
 
 ```
@@ -164,6 +186,19 @@ pointing at them by default.
 
 **The banner scrolls past and EOS boots.** The Control-C window was missed.
 Reload and start sending Control-C before the banner appears, not after.
+
+**The console is silent, at every baud, on a box that is demonstrably running.**
+Suspect the terminal server before the cable. On the Cisco 2811 used here the
+console lines die *per chip* — `port n -> chip n/4`, so one bad chip takes four
+consecutive panel ports — and `dmesg` names it (`chip N microcode failed`).
+⚠ Re-downloading microcode at runtime is not a repair and made it worse; a
+**power cycle of the terminal server** is what clears it. Prove the direction
+first by having the switch write to its own console while you read the line:
+
+```sh
+# on the switch, under the vendor OS
+bash (for i in 1 2 3 4 5; do echo LOOPBACK > /dev/ttyS0; sleep 2; done) &
+```
 
 **`boot` reports the image cannot be loaded.** Check the md5 against the build
 host. A truncated `wget` produces exactly this.

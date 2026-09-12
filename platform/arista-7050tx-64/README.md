@@ -13,7 +13,7 @@ second in the tree rather than first — see
 | Management | RJ45, `tg3` |
 | Bootloader | Aboot 4.0.7, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots, forwards and routes on all three 40G links |
+| Status | **bringup** — boots, forwards and routes on all three 40G links; copper untested |
 
 - **[Hardware reference](docs/hardware.md)** — diagrams, port map, registers, quirks
 - **[Build](docs/build.md)** — building an image for it
@@ -22,41 +22,43 @@ second in the tree rather than first — see
 
 ## What works
 
-NOSaic boots on this switch, drives the Trident2, and brings its three cabled
-40G links up. Measured on the hardware, 2026-09-11/12:
+NOSaic boots this switch, drives the Trident2, and routes over all three of its
+cabled 40G links. Measured on the hardware:
 
 - **Boots from Aboot into its own userland**, into an A/B slot with a persistent
-  data image. The management port answers on its configured address.
-- **A/B upgrade works in both directions, unattended.** A rootfs was streamed to
-  the switch, installed into the inactive slot by the running CLI, and booted;
-  an image the health check declined was left to roll back, and a healthy one
-  committed itself — `NOSAIC-TRIAL COMMIT slot b is healthy and is now the slot
-  this switch boots`.
+  data image, and answers on its management address and over ssh.
+- **A/B upgrade works in both directions, unattended.** A rootfs streamed to the
+  switch, installed into the inactive slot by the running CLI, and booted; an
+  image the health check declined was left to roll back, and a healthy one
+  committed itself.
 - **The chip initialises.** `soc_misc_init`, `soc_mmu_init`, `bcm_attach`,
   `bcm_init` and `bcm_stat_init` all complete, 52 ports are created from the
   generated port map, and the four QSFP cages land on SDK ports 49, 53, 57 and
-  61 exactly as [the port map](docs/hardware.md#port-map) says they should.
-- **Three 40G links are up**, and `nosaic show ports` answers from the silicon:
-  `et49 et50 et52`, all `up 40000` at MTU 1600.
-- **Thermal control works** — four sensors, and the fans take their commands.
-- **The copper PHY layer finds its 48 ports** and is watching them.
+  61 exactly as [the port map](docs/hardware.md#port-map) says.
+- **All three 40G links forward and route.** `nosaic show ports` answers from
+  the silicon — `et49 et50 et52`, all `up 40000` at MTU 1600 — with three
+  OSPFv2 adjacencies Full, an OSPFv3 adjacency on `et52`, and 23 routes
+  programmed into the chip.
+- **ECMP is real**, not just configured: `l3: ecmp group of 2 -> egress 200000`,
+  a shared `bcm_l3_egress_ecmp` group carrying both members of the pair, and the
+  chip reports `ecmp yes, up to 1024 paths`.
+- **The board's own hardware is driven** — four thermal sensors and fan control,
+  PSU presence, chassis lamps, the QSFP cages, the transceiver EEPROMs, and the
+  DS100KR800 signal repeater in front of the last two cages.
 
-- **It forwards, and it routes.** Two OSPFv2 adjacencies with the 7050SX2 over
-  both members of the ECMP pair, eleven routes learned with two next hops each,
-  and eleven programmed into the chip. That board's loopback answers in 0.4 ms
-  across the fabric rather than over the management port.
+**It is still `bringup`, and the reasons are specific.** The 48 copper ports
+have never had a cable in them, so the PHY layer has never matched one. The
+watchdog is not armed, because arming it without a petting service is a timer
+that power-cycles the switch. `prefdl` is unread, so the board cannot say what
+it is and the management MAC lives in a config file. And `boot-config` still
+points at the vendor OS, so every NOSaic boot is a one-shot from the Aboot
+prompt — a power cycle returns to EOS. Until that changes it is a demo rather
+than an installation.
 
-- **All three 40G links forward**, including the one to the Edgecore AS5610,
-  which needed the board's signal repeater programmed before anything it
-  transmitted reached the cage. Three OSPFv2 adjacencies, all Full.
-
-**What does not work:** there is no OSPFv3 adjacency, which looks like the
-neighbours rather than this board. The 48 copper ports have not been exercised.
-See [todo](docs/todo.md).
+Everything left is in [todo](docs/todo.md).
 
 The board itself was established first under **EdgeNOS**, the predecessor
-project, which forwards in hardware here — IPv4 and IPv6, OSPFv2/v3, ECMP as a
-shared group, LEDs, PSU and thermal monitoring. Everything in
+project, which forwards in hardware here. Everything in
 [hardware.md](docs/hardware.md) was read off the running unit rather than
 inferred.
 
@@ -71,6 +73,14 @@ Three of the quirks in [hardware.md](docs/hardware.md) exist only because of
 those PHYs, and each cost real time to find: a link with no speed is not a link,
 the MAC interface must follow the negotiated speed, and MDIO is a shared bus the
 datapath depends on.
+
+## Before you build one
+
+⚠ **Four files must be generated against your own switch**, because they are
+this board's vendor data and are not shipped: the port map, the SerDes
+polarity, the repeater tuning and the transmit taps. `tools/` has a generator
+for each, [build.md](docs/build.md) has the commands, and each one fails
+silently in its own way if you skip it.
 
 ## Cooling
 

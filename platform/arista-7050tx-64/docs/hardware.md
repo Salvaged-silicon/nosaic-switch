@@ -140,8 +140,8 @@ are public facts about the hardware rather than anything derived from a vendor
 binary.
 
 ⚠ **Consistent layout is not identical placement, and the difference is where
-this board has cost the most time.** Three things sit somewhere else here than
-on the sibling 7050SX2, and each was found only after the wrong one had been
+this board has cost the most time.** Six things sit somewhere else here than on
+the sibling 7050SX2, and every one was found only after the wrong one had been
 driven:
 
 | | 7050SX2-72Q | this board |
@@ -150,6 +150,8 @@ driven:
 | fan PWM full scale | 255 | **180**, measured |
 | cage control table | **54** entries at `0xa010` | **4** at `0xa100` |
 | cage EEPROMs | accel 2–8 | accel 1, buses 0–3 |
+| SMBus accelerator 1 | `0x8080` (regular `0x80` stride) | **`0x9400`** |
+| chassis lamps | colour **bits** in a byte on the fan CPLD, over SMBus | whole **32-bit words** written to the SCD at `0x6050`–`0x6090` |
 
 None of these fail loudly. The wrong SMBus bus is a fan controller that refuses
 every command while being in perfect health; the wrong full scale clamps the
@@ -159,15 +161,59 @@ leaves the real cages held in reset and low power — a module that answers
 nothing and emits nothing while the switch chip reports an enabled port at
 40000 with no error anywhere.
 
-All three are now board data, in `board.yml` under `platform_hal`, rather than
-constants in the driver.
+The accelerator base is the quietest of the lot: it only breaks reads nothing
+depends on, so every attempt to read a module's own EEPROM returned `no
+response, cs=0x00000000` while the SCD's cage register answered perfectly and
+made the optics look fully accounted for. The board could not see a
+transceiver's view of itself — identifier, TX disable, TX fault, loss of signal
+— for as long as that was wrong.
+
+The lamp difference is worse than a wrong address: it is a wrong *mechanism*.
+Driving this board the sibling's way sends an SMBus byte to a device that is
+not listening, so the panel stays dark and nothing reports an error.
+
+All six are now board data — `platform_hal` in `board.yml`, and
+`config/statusleds.conf` for the lamps — rather than constants in the driver.
+
+## The QSFP signal repeater
+
+⚠ **Et51 and Et52 are not wired straight to the SerDes. Et49 and Et50 are.**
+
+A TI **DS100KR800** sits between the switch chip and the last two QSFP cages.
+Eight channels: two ports' worth of four lanes, **in the host-to-module
+direction only**.
+
+That asymmetry is the whole reason it is hard to spot. A cage behind an
+unprepared repeater receives its neighbour perfectly — that path does not go
+through the part — and transmits nothing. So this end locks onto the far end's
+light and reports the port **up at 40000 with no error anywhere**, while the
+far end reports no link at all.
+
+Two separate things must happen, and doing only the first is not enough:
+
+| | where | what happens without it |
+|---|---|---|
+| **Release its reset** | SCD reset block, **bit 8** — `platform_hal.resets` in `board.yml` | held in reset from power-on; a live read at bring-up is `0x000001ff`, nine bits implemented and every one asserted |
+| **Program it** | SMBus `0x58` on accelerator 0 bus 0 — `platform_hal.smbus.retimer` | out of reset and unconfigured it still conditions nothing |
+
+⚠ The tuning values are **not in this repository**. Output amplitude and
+de-emphasis are per-trace-length numbers from the board's own description file;
+`tools/mkretimer.sh` generates `config/retimer.conf` from your own switch, and
+the driver refuses to program rather than guess. The register offsets are
+public — TI's SNLS340E Table 6 — and live in the driver.
+
+Two details that cost real time:
+
+- **The per-channel register bases are not a uniform stride.** `0x0f 0x16 0x1d 0x24 0x2c 0x33 0x3a 0x41` — channels 0–3 step by 7, then there is an eight-byte gap at the bank boundary. Computing them with a stride puts three of the eight channels at the wrong address.
+- **De-emphasis reads back with bit 7 set by the hardware**, so a byte written as `0x01` reads `0x81` and looks wrong.
 
 ## Datapath
 
 `nosd-td2`, derived from `datapath/td2p/` — same CMICm generation, same
 architecture, same userspace BDE over an mmap of BAR0 — reusing
-`datapath/common/` rather than forking it. It builds and is in the image; it has
-never run on this hardware.
+`datapath/common/` rather than forking it. It runs on this board: the chip
+reaches `init complete`, 52 ports are created from the generated map, and the
+three cabled 40G cages forward and route.
 
 What differs from the sibling:
 

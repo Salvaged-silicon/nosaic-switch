@@ -79,6 +79,18 @@ the box could make.
   reproduced it "byte for byte" — a diff cannot show a family that is absent
   from both sides.
 - **The board shipped no `frr.conf`**, so three routed links carried no routing.
+- **ECMP was working and disclaimed.** The datapath had been building real
+  `bcm_l3_egress_ecmp` groups all along; the capability response simply omitted
+  the field, so `show caps` said `ecmp no` and an operator would have designed
+  around a limitation the silicon does not have. Now reported from
+  `bcm_l3_info`: `ecmp yes, up to 1024 paths`.
+- **The chassis lamps were unreachable by mechanism, not by map.** They are
+  32-bit words on the SCD here, not colour bits on the fan CPLD, so the driver
+  sent SMBus bytes to a device that was not listening — and the error told
+  operators to run the *sibling's* generator, which would not have helped.
+- **The SMBus accelerator base was wrong**, so no module EEPROM on this board
+  had ever been readable: accelerator 1 is at `0x9400`, not at the regular
+  stride's `0x8080`.
 - **The signal repeater was never driven.** A TI DS100KR800 in front of Et51 and
   Et52 was held in reset and then, once released, left unprogrammed. Its eight
   channels carry those two ports in the host-to-module direction only, so the
@@ -86,14 +98,32 @@ the box could make.
   at 40000 and the far end reported it down. Programming it brought Et52 up,
   confirmed from both ends, with an OSPF adjacency and 1.8 ms round trip.
 
-## Blocking — NOSaic does not forward on this board without these
+## Blocking — the board is not at parity with the predecessor without these
 
-- **No OSPFv3 adjacency.** Our side is configured and running: `ospf6d` answers,
-  all three taps have link-local addresses, and each interface declares
-  `ipv6 ospf6 area 0.0.0.0`. The 7050SX2 forms OSPFv2 with us over both links
-  and nothing over v3, and it ships no `config/frr.conf` of its own — its
-  routing configuration comes from `/mnt/data/config/frr.conf` on that box.
-  Likeliest that it simply does not run OSPFv3 on these links.
+- **The 48 copper ports have never been exercised.** Nothing has been cabled to
+  one, so `phy.c` has found its 48 and matched none: the survey reports
+  `3 of 52 ports have link`, all of them QSFP. The predecessor runs copper here
+  at 1G and 100M, and the MAC-interface matching that `phy.c` exists for is
+  exactly what those speeds need. **Plug anything into a front copper port,
+  declare a `tap_etN` for it in `config/asic.conf`, and the whole path can be
+  proven** — blocked on a cable, not on code.
+
+- **The watchdog is not armed, and arming it alone would be worse than leaving
+  it.** Its action is a power cycle, so it needs a petting service to exist
+  first; that service is the actual work. `nosaic platform watchdog arm <ms>`
+  is there for a human who is watching.
+
+- **It does not boot standalone.** `boot-config` still names the vendor OS, so
+  every NOSaic boot is a one-shot from the Aboot prompt and a power cycle
+  returns to EOS. That is the safety property and it is deliberate, but until
+  it changes this is a demo rather than an installation. ⚠ Do not change it
+  while the console is unreliable: with no console and a bad image there is no
+  way back in.
+
+- **No OSPFv3 adjacency with the 7050SX2.** There is one with the Edgecore on
+  `et52`, and this end is configured and running on all three — `ospf6d`
+  answers and every tap has a link-local address — so this looks like the
+  neighbour rather than this board.
 
 - **No flash backup since the board's contents changed.** The existing backup
   predates everything written to `/mnt/flash` since, and the vendor images on
@@ -101,11 +131,17 @@ the box could make.
 
 ## Not blocking — the switch runs, short of these
 
-- **The chassis status lamps have no map.** The thermal loop reports, once per
-  cycle, that `/etc/nosaic/statusleds.conf` is not configured — and points at
-  `platform/arista-7050sx2-72q/tools/mkstatusleds.sh`, which is the sibling's
-  tool and the sibling's register bits. This board needs its own, or the
-  message needs to stop naming one that does not apply here.
+- **The management MAC and board identity still come from a file.** `prefdl` is
+  on an i2c SEEPROM whose bus and address have not been established, so
+  `nosaic platform status` cannot say what the board is and
+  `config/network.conf` is the only thing that knows the address — correct for
+  exactly one switch.
+
+- **The cage-word decode table is the sibling's.**
+  `internal/platformhal/scd/transceiver.go` knows `0x47`, `0x1c0` and `0x180`;
+  this board reads `0x108` for a cabled cage and `0x105` for an empty one, so
+  every cage decodes as "undetermined". Honest but useless, and read-only to
+  fix: measure the four values here.
 
 - **`boot-config` still points at EOS, deliberately.** NOSaic is booted as a
   one-shot from the Aboot prompt every time, so a power cycle returns to the
