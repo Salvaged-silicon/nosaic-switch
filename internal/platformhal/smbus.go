@@ -24,6 +24,9 @@ type SMBusMap struct {
 
 	Sensors []SMBusSensor  `yaml:"sensors"`
 	Fans    *FanController `yaml:"fans"`
+	// Retimer is a signal repeater between the ASIC and some cages, if the
+	// board has one. Its tuning is not here -- see scd.LoadRetimerTuning.
+	Retimer *SMBusAddr `yaml:"retimer"`
 }
 
 // SMBusAddr locates one device: which accelerator, which of its buses, and the
@@ -107,6 +110,11 @@ func (m *SMBusMap) Validate() error {
 			return fmt.Errorf("smbus sensor %q: unknown part %q", s.Name, s.Part)
 		}
 		if err := s.SMBusAddr.validate(s.Name); err != nil {
+			return err
+		}
+	}
+	if m.Retimer != nil {
+		if err := m.Retimer.validate("retimer"); err != nil {
 			return err
 		}
 	}

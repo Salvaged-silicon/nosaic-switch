@@ -63,3 +63,7 @@ cli/nosaic
 # between calls. It is a local operator tool, not part of the build.
 /con.py
 refs/
+
+# The repeater's tuning is per-board, comes from the board's own description
+# file, and is the vendor's rather than ours -- same rule as the port map.
+/platform/*/config/retimer.conf

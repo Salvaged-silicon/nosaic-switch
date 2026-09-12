@@ -155,6 +155,14 @@ platform_hal:
     # policy". Measured headroom exists (dropping the trays from 73% to 53%
     # for six minutes moved board temperature by 1 °C at 31 °C ambient), and
     # it is deliberately not spent.
+    # The TI DS100KR800 repeater, on the general bus. Eight channels: Et51 and
+    # Et52's four lanes each, in the host-to-module direction only -- which is
+    # why a cage behind it receives perfectly and transmits nothing until it is
+    # programmed. Its tuning is per-trace-length, comes from this board's own
+    # description file, and is generated rather than shipped: see
+    # tools/mkretimer.sh.
+    retimer: {accel: 0, bus: 0, addr: 0x58}
+
     fans: {part: crow-cpld, accel: 0, bus: 1, addr: 0x60, count: 4, max_pwm: 180, floor_percent: 60}
 
   # The front-panel transceiver cages.

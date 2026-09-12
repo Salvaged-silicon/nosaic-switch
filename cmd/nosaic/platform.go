@@ -22,6 +22,7 @@ const platformUsage = `usage: nosaic platform <command>
   release-asic         take the switch chip out of reset and wait for it
   asic                 what the switch chip says about itself (read-only)
   transceivers         which front-panel cages have modules in them
+  retimer [--program]  the signal repeater in front of some cages
   tx <cage|all> on|off turn transmitters on or off
   thermal [--once] [--interval N]
                        run the cooling loop: fans track the hottest sensor,
@@ -70,6 +71,33 @@ func platformCmd(args []string) error {
 		return probeASIC(hal)
 	case "schan":
 		return schanCmd(b, rest[1:])
+	case "retimer":
+		// The repeater between the ASIC and the cages behind it. Reports by
+		// default and programs only when asked, because the values it writes
+		// are per-board tuning and a wrong one is a marginal link rather than
+		// a dead one.
+		sc, ok := hal.(*scd.SCD)
+		if !ok {
+			return fmt.Errorf("this board's platform driver has no repeater support")
+		}
+		if len(rest) > 1 && rest[1] == "--program" {
+			t, err := scd.LoadRetimerTuning(scd.RetimerConfPath)
+			if err != nil {
+				return err
+			}
+			if err := sc.ProgramRetimer(t, func(f string, a ...any) {
+				fmt.Printf(f+"\n", a...)
+			}); err != nil {
+				return err
+			}
+		}
+		out, err := sc.RetimerReport()
+		if err != nil {
+			return err
+		}
+		fmt.Print(out)
+		return nil
+
 	case "transceivers", "xcvr":
 		return showTransceivers(hal, rest[1:])
 	case "tx":
