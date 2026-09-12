@@ -3,13 +3,13 @@
 Written for somebody holding the switch who has never seen it before. Assume a
 console cable and nothing else.
 
-⚠ **NOSaic has not been installed on this board yet.** What is written below is
-established: the console, getting a file onto the flash, booting an unsigned
-image from Aboot, and returning to the vendor OS have all been done repeatedly
-with the predecessor project's images. What does **not** exist yet is the
-install-to-flash step with A/B slots — see [todo.md](todo.md). Until that lands,
-this board is booted as a one-shot from the Aboot prompt and returns to EOS on
-the next power cycle.
+**NOSaic has been installed and booted on this board.** First boot 2026-09-11,
+into slot A with a persistent data image; the procedure below is a transcript of
+what was done rather than a plan.
+
+⚠ It is still booted as a **one-shot from the Aboot prompt**. `boot-config` is
+untouched, so a power cycle returns to EOS by itself. Making NOSaic the default
+is one line and it is deliberately not done yet — see [todo.md](todo.md).
 
 ## Before you start
 
@@ -62,13 +62,50 @@ the same thing.
 
 ## Installing
 
-Not yet implemented. The intended shape, following `arista-7050sx2-72q`: two
-squashfs slots and one ext4 data image as **files** on Aboot's own FAT,
-loop-mounted at boot. No repartitioning — Aboot resolves `flash:` by matching on
-the storage controller, so adding partitions risks the bootloader coming up
-pointing at a slot with no image in it.
+Three files on Aboot's own FAT, loop-mounted at boot. No repartitioning — Aboot
+resolves `flash:` by matching on the storage controller, so adding partitions
+risks the bootloader coming up pointing at a slot with no image in it.
 
-Until then, boot it as a one-shot:
+| file | what it is | where it comes from |
+|---|---|---|
+| `nosaic.swi` | kernel and initramfs | `NOSaic-*-arista-7050tx-64.swi` |
+| `nosaic-slot-a.sqsh` | the root filesystem for slot A | `rootfs.sqsh`, renamed |
+| `nosaic-data.img` | ext4: configuration, the boot pointer, each slot's writable layer | made on the switch, once |
+
+⚠ **WITHOUT `nosaic-data.img` THE SWITCH BOOTS STATELESS AND SAYS SO ONCE.**
+
+The initramfs falls back to a tmpfs and prints a single
+`no data partition; booting stateless` line in the middle of the boot. Everything
+then works and nothing is kept: no `/mnt/data/config` for a port map, no boot
+pointer, so no A/B and no rollback. The first NOSaic boot on this board ran that
+way for want of one file nobody had made.
+
+It is not produced by the build — the build's `disk.img` is a whole partitioned
+disk, which is the layout this board does not use — so make it once, on the
+switch, from the vendor OS:
+
+```sh
+bash sudo dd if=/dev/zero of=/mnt/flash/nosaic-data.img bs=1M count=512
+bash sudo mkfs.ext4 -q -F -L nosaic-data /mnt/flash/nosaic-data.img
+```
+
+512 MiB against 1.2 GB free, alongside two EOS images that must stay. It
+survives reinstalls: only make it again if you mean to discard the switch's
+state.
+
+Then the two image files, fetched to temporary names and renamed only after the
+sums check out:
+
+```sh
+bash sudo wget -q -O /mnt/flash/nosaic.swi.new http://<build-host>:8899/NOSaic-0.1.0-arista-7050tx-64.swi
+bash sudo wget -q -O /mnt/flash/nosaic-slot-a.sqsh.new http://<build-host>:8899/rootfs.sqsh
+bash md5sum /mnt/flash/nosaic.swi.new /mnt/flash/nosaic-slot-a.sqsh.new
+bash sudo mv -f /mnt/flash/nosaic.swi.new /mnt/flash/nosaic.swi
+bash sudo mv -f /mnt/flash/nosaic-slot-a.sqsh.new /mnt/flash/nosaic-slot-a.sqsh
+bash sync
+```
+
+## Booting it
 
 ```
 Aboot# boot --testonly flash:/nosaic.swi     # stages via kexec, does not jump
@@ -76,7 +113,24 @@ Aboot# boot flash:/nosaic.swi
 ```
 
 Run the dry run first. It catches a malformed or truncated image and prints
-`staged OK, not jumping` before you spend a boot on it.
+`NOSaic: staged, not booting (testonly)` before you spend a boot on it. Read the
+command line it echoes: `kernel-params` lives *inside* the archive, and the
+`memmap=64M$0xd0000000 iomem=relaxed` reservation the datapath's DMA pool needs
+has to be on that line.
+
+A good boot says, in this order:
+
+```
+NOSAIC-INITRAMFS flash appeared after 2s (/dev/sda1)
+NOSAIC-INITRAMFS data image mounted (/mnt/flash/nosaic-data.img)
+NOSAIC-BOOT want slot a, active=a trial=none tries=0
+NOSAIC-INITRAMFS overlay assembled (persistent=yes)
+NOSAIC-NET using /etc/nosaic/network.conf
+thermal: floor 60%, 25°C->40°C maps 60%->100%, every 10s
+```
+
+`persistent=yes` and the data-image line are the two worth checking; both are
+absent on a stateless boot and nothing later complains.
 
 To reach the Aboot prompt: reload the switch and press **Control-C** when the
 banner appears. The window is short, so start sending before you expect it.

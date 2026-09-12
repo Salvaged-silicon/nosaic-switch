@@ -3,8 +3,9 @@
 Ordered by whether the switch works without it, not by effort. The board status
 as a whole is in [the README](../README.md).
 
-This port is at `bringup`: an image builds and carries a datapath, and nothing
-has booted on the hardware. The split below is by what blocks what.
+This port is at `bringup`: NOSaic boots on the switch, initialises the Trident2
+and brings its three cabled 40G links up, and forwards nothing. The split below
+is by what blocks what.
 
 ## Done
 
@@ -46,26 +47,79 @@ has booted on the hardware. The split below is by what blocks what.
   once and re-checked when a link drops, and the MDIO budget is bounded to four
   reads a second. **Never executed** — see below.
 
-## Blocking — NOSaic does not run on this board without these
+## Fixed on the hardware, 2026-09-11/12
 
-- **Nothing has been booted, and this is now the only thing in the way.** An
-  image builds and carries a datapath, a PHY layer and the board configuration,
-  and not one line of it has executed on the switch. Every claim in this
-  directory is about the board or about what the build produced — none is about
-  NOSaic running on this hardware.
+Five faults, found by booting it. Each one had passed every check the build and
+the box could make.
 
-  What to expect when it does boot, so a first attempt is not read as failure:
-  the four QSFP+ cages are direct SerDes and should come up first. The 48 copper
-  ports depend on the SDK downloading PHY firmware, which fails transiently on
-  some cold starts and is cleared by restarting the datapath. `phy:` lines in
-  the log say whether the MAC interface is being matched, and silence from them
-  with copper ports up is itself the signal that something is wrong.
+- **The fan controller was addressed on the wrong SMBus bus.** `0x60` is on bus
+  1 here, the CPU card's, and the driver carried the sibling's bus 0 as a
+  constant. Four refusals a cooling cycle from a healthy controller, on a box
+  whose thermal failure mode is silent — and since the thermal loop returns an
+  error rather than continuing, the service restarted on a loop and flooded the
+  console. Placement is board data now. Four sensors read, and they agree with
+  what EOS reports.
+- **The initramfs probed for flash once, half a second too early.** This board
+  boots off USB and the stack enumerated it at 25.7 s against a probe at 25.2 s.
+  The boot stopped at `unknown slot 'a'`, which reads as a corrupt install.
+- **A port map read off this switch is unit-suffixed and nothing was resolving
+  the suffix.** 278 properties loaded, counted, printed — and invisible. See
+  [hardware.md](hardware.md#port-map).
+- **The cage control table was the sibling's**: 54 entries at `0xa010` instead
+  of 4 at `0xa100`, writing across this board's per-cage LED block and leaving
+  the real cages in reset and low power.
+- **`upgrade install` wrote slots where the initramfs does not look.** It
+  reported success, marked a trial, and the next boot rolled back for want of a
+  file that was on the box — with every visible signal saying the upgrade had
+  worked.
+
+## Blocking — NOSaic does not forward on this board without these
+
+- **Every transit port receives nothing.** All three cabled 40G links show
+  `link=1` and transmit — ARP goes out, `out-nuc` climbs — and every one of them
+  reports `in-uc=0 in-nuc=0`, no errors, on both the two links to the 7050SX2
+  and the one to the Edgecore AS5610. Not one frame reaches the MAC, so nothing
+  above it can be judged: no ARP, no OSPF, no L2 learning, and the FIB sync
+  reports every route skipped as "not a router interface" because no neighbour
+  has ever resolved.
+
+  ⚠ **Do not assume this end.** The far ends have not been checked since this
+  work started, and PCS lock proves only that light is arriving, not that the
+  neighbour has a configured interface sending frames. A neighbour whose
+  interface is down sends idles, which lock a PCS perfectly. Establish the
+  far-end state *first*: the SX2 answers on `10.10.32.2` and its
+  `config/network.conf` already addresses these exact links. This project has
+  made the opposite mistake before — concluding a port fault was physical when
+  it was ours — and it cost an evening.
+
+  If it is this end, the two candidates are RX polarity (`polarity.conf` is
+  generated per board and a wrong flip gives exactly this: link, no frames) and
+  the MAC-side interface on a 40G cage.
 
 - **No flash backup since the board's contents changed.** The existing backup
   predates everything written to `/mnt/flash` since, and the vendor images on
-  that flash are the recovery path. Take one before the first install, not after.
+  that flash are the recovery path. Take one.
 
-## Not blocking — the switch would run, short of these
+## Not blocking — the switch runs, short of these
+
+- **The chassis status lamps have no map.** The thermal loop reports, once per
+  cycle, that `/etc/nosaic/statusleds.conf` is not configured — and points at
+  `platform/arista-7050sx2-72q/tools/mkstatusleds.sh`, which is the sibling's
+  tool and the sibling's register bits. This board needs its own, or the
+  message needs to stop naming one that does not apply here.
+
+- **`boot-config` still points at EOS, deliberately.** NOSaic is booted as a
+  one-shot from the Aboot prompt every time, so a power cycle returns to the
+  vendor OS on its own. Making it the default is one line, and it should wait
+  until the box forwards.
+
+- **The kernel has no `tigon/tg357766.bin`**, so `tg3` logs a firmware load
+  failure and disables EEE on the management port. The port works; only energy-
+  efficient Ethernet is lost.
+
+- **The management MAC is in `config/network.conf`.** `boot0` does not read
+  prefdl on this board, so the one place that knows the address is a file
+  correct for exactly one switch.
 
 - **`aboot_max_hwepoch` is unset.** Left blank rather than guessed. Read it from
   `prefdl` under EOS and set it; Aboot refuses an image whose epoch claim is
