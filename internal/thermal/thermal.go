@@ -111,6 +111,7 @@ func Run(ctx context.Context, c platformhal.Cooling, s Sensors, curve Curve, onc
 	curve = curve.WithDefaults()
 	floor := c.FanFloorPercent()
 
+	lastLampErr := ""
 	cur := 100
 	if refused, err := c.SetFanPercent(cur); err != nil {
 		return fmt.Errorf("cannot command the fans at all (%d of %d refused): %w",
@@ -169,7 +170,15 @@ func Run(ctx context.Context, c platformhal.Cooling, s Sensors, curve Curve, onc
 		if l, ok := c.(Lamps); ok {
 			fans, fanErr := c.Fans()
 			if err := l.HealthLamps(fans, hot, curve.MaxC, fanErr); err != nil {
-				fmt.Fprintf(log, "thermal: chassis lamps: %v\n", err)
+				// Once per distinct fault, not once per sweep. A board with no
+				// lamp map is in a steady state, and repeating it every
+				// interval for ever is how a log stops being read.
+				if s := err.Error(); s != lastLampErr {
+					fmt.Fprintf(log, "thermal: chassis lamps: %v\n", err)
+					lastLampErr = s
+				}
+			} else {
+				lastLampErr = ""
 			}
 		}
 
