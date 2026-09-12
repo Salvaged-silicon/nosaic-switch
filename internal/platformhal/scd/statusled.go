@@ -33,8 +33,8 @@ import (
 // switch telling an operator something false about its own health.
 //
 // ⚠ Do not go looking for these by sweeping the CPLD. Two attempts to find the
-// fan PWM register that way powered this switch off -- the note on crowAddr in
-// thermal.go is about the same part.
+// fan PWM register that way powered this switch off, and the fan controller in
+// thermal.go is the same part.
 const lampConfPath = "/etc/nosaic/statusleds.conf"
 
 // ErrNoLampMap is returned when the board's lamp map has not been generated.
@@ -238,15 +238,21 @@ func (s *SCD) SetLamp(l Lamp, c Colour) error {
 	if err != nil {
 		return err
 	}
-	v, err := s.smb().ReadReg(crowAccel, crowBus, crowAddr, l.Reg)
+	// The chassis lamps are registers on the fan CPLD, so they are placed by
+	// the same board data.
+	fc, err := s.fanController()
+	if err != nil {
+		return err
+	}
+	v, err := s.smb().ReadReg(fc.Accel, fc.Bus, fc.Addr, l.Reg)
 	if err != nil {
 		return fmt.Errorf("status lamp %s (CPLD %#02x reg %#02x): %w",
-			l.Name, crowAddr, l.Reg, err)
+			l.Name, fc.Addr, l.Reg, err)
 	}
 	v = (v &^ m.mask()) | m.bits(c)
-	if err := s.smb().WriteReg(crowAccel, crowBus, crowAddr, l.Reg, v); err != nil {
+	if err := s.smb().WriteReg(fc.Accel, fc.Bus, fc.Addr, l.Reg, v); err != nil {
 		return fmt.Errorf("status lamp %s (CPLD %#02x reg %#02x): %w",
-			l.Name, crowAddr, l.Reg, err)
+			l.Name, fc.Addr, l.Reg, err)
 	}
 	return nil
 }
@@ -257,10 +263,14 @@ func (s *SCD) Lamps() (map[string]Colour, error) {
 	if err != nil {
 		return nil, err
 	}
+	fc, err := s.fanController()
+	if err != nil {
+		return nil, err
+	}
 	out := map[string]Colour{}
 	var firstErr error
 	for _, l := range m.order {
-		v, err := s.smb().ReadReg(crowAccel, crowBus, crowAddr, l.Reg)
+		v, err := s.smb().ReadReg(fc.Accel, fc.Bus, fc.Addr, l.Reg)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("status lamp %s: %w", l.Name, err)
@@ -291,17 +301,21 @@ func (s *SCD) SetBeacon(on bool) error {
 	if m.beacon < 0 {
 		return errors.New("this board has no locator beacon")
 	}
-	v, err := s.smb().ReadReg(crowAccel, crowBus, crowAddr, m.beacon)
+	fc, err := s.fanController()
 	if err != nil {
-		return fmt.Errorf("beacon (CPLD %#02x reg %#02x): %w", crowAddr, m.beacon, err)
+		return err
+	}
+	v, err := s.smb().ReadReg(fc.Accel, fc.Bus, fc.Addr, m.beacon)
+	if err != nil {
+		return fmt.Errorf("beacon (CPLD %#02x reg %#02x): %w", fc.Addr, m.beacon, err)
 	}
 	if on {
 		v |= 1 << m.blue
 	} else {
 		v &^= 1 << m.blue
 	}
-	if err := s.smb().WriteReg(crowAccel, crowBus, crowAddr, m.beacon, v); err != nil {
-		return fmt.Errorf("beacon (CPLD %#02x reg %#02x): %w", crowAddr, m.beacon, err)
+	if err := s.smb().WriteReg(fc.Accel, fc.Bus, fc.Addr, m.beacon, v); err != nil {
+		return fmt.Errorf("beacon (CPLD %#02x reg %#02x): %w", fc.Addr, m.beacon, err)
 	}
 	return nil
 }
@@ -315,9 +329,13 @@ func (s *SCD) BeaconOn() (bool, error) {
 	if m.beacon < 0 {
 		return false, errors.New("this board has no locator beacon")
 	}
-	v, err := s.smb().ReadReg(crowAccel, crowBus, crowAddr, m.beacon)
+	fc, err := s.fanController()
 	if err != nil {
-		return false, fmt.Errorf("beacon (CPLD %#02x reg %#02x): %w", crowAddr, m.beacon, err)
+		return false, err
+	}
+	v, err := s.smb().ReadReg(fc.Accel, fc.Bus, fc.Addr, m.beacon)
+	if err != nil {
+		return false, fmt.Errorf("beacon (CPLD %#02x reg %#02x): %w", fc.Addr, m.beacon, err)
 	}
 	return v&(1<<m.blue) != 0, nil
 }

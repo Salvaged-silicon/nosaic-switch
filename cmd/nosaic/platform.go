@@ -119,7 +119,11 @@ func openBoardHAL(id string) (platformhal.HAL, *board.Board, error) {
 var installedBoardFile = "/etc/nosaic/board.yml"
 
 func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
-	hal, err := platformhal.Open(b.PlatformHAL.Driver, b.PlatformHAL.PCI, b.PlatformHAL.ASICPCI)
+	hal, err := platformhal.Open(b.PlatformHAL.Driver, platformhal.Config{
+		PCI:     b.PlatformHAL.PCI,
+		ASICPCI: b.PlatformHAL.ASICPCI,
+		SMBus:   b.PlatformHAL.SMBus,
+	})
 	if err != nil {
 		return nil, nil, err
 	}

@@ -16,6 +16,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
+	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
 )
 
 // Status is how far a port has got, and it is stated rather than filtered on.
@@ -295,6 +296,13 @@ func (b *Board) Validate(root string) []string {
 			boot, slot, data)
 	}
 
+	// An SMBus address that cannot be right is caught here rather than at the
+	// bus: a wrong one does not fail loudly, it reads a device that is not
+	// there and reports a controller that refuses every command.
+	if err := b.PlatformHAL.SMBus.Validate(); err != nil {
+		bad("platform_hal.smbus: %s", err)
+	}
+
 	// Checked here rather than at build time: a U-Boot board with no load
 	// address cannot produce a bootable image, and finding that out after a
 	// full build wastes an hour.
@@ -360,6 +368,12 @@ type PlatformHAL struct {
 	// is absent from the bus until then, which is why it is stated here
 	// rather than discovered.
 	ASICPCI string `yaml:"asic_pci"`
+	// SMBus is where the board's sensors and fan controller sit on the
+	// controller's SMBus. Optional, because a board may have none -- but a
+	// driver that needs it refuses to guess, which is the point: the same
+	// hardcoded placement is right for one Arista board and silently wrong
+	// for the next.
+	SMBus *platformhal.SMBusMap `yaml:"smbus"`
 }
 
 // Thermal is a board's cooling curve.
