@@ -76,3 +76,6 @@ refs/
 # The repeater's tuning is per-board, comes from the board's own description
 # file, and is the vendor's rather than ours -- same rule as the port map.
 /platform/*/config/retimer.conf
+
+# SerDes transmit equalisation: per-trace tuning from the board description.
+/platform/*/config/serdes.conf
