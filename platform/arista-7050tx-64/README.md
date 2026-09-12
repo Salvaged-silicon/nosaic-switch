@@ -13,7 +13,7 @@ second in the tree rather than first — see
 | Management | RJ45, `tg3` |
 | Bootloader | Aboot 4.0.7, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots, drives the chip, three 40G links up, forwards nothing yet |
+| Status | **bringup** — boots, forwards and routes; one of three links still dark |
 
 - **[Hardware reference](docs/hardware.md)** — diagrams, port map, registers, quirks
 - **[Build](docs/build.md)** — building an image for it
@@ -41,11 +41,15 @@ NOSaic boots on this switch, drives the Trident2, and brings its three cabled
 - **Thermal control works** — four sensors, and the fans take their commands.
 - **The copper PHY layer finds its 48 ports** and is watching them.
 
-**It does not forward yet.** Every transit port shows link, transmits, and
-receives *nothing*: zero frames at the MAC in either unicast or broadcast, with
-no errors. Whether that is this end or the far ends is not yet established —
-see [todo](docs/todo.md), which is also where everything else that is missing
-is written down.
+- **It forwards, and it routes.** Two OSPFv2 adjacencies with the 7050SX2 over
+  both members of the ECMP pair, eleven routes learned with two next hops each,
+  and eleven programmed into the chip. That board's loopback answers in 0.4 ms
+  across the fabric rather than over the management port.
+
+**What does not work:** the third link, to the Edgecore AS5610, receives
+nothing — and the far end's state has not been established. There is no OSPFv3
+adjacency, which looks like the neighbour rather than this board. See
+[todo](docs/todo.md).
 
 The board itself was established first under **EdgeNOS**, the predecessor
 project, which forwards in hardware here — IPv4 and IPv6, OSPFv2/v3, ECMP as a
