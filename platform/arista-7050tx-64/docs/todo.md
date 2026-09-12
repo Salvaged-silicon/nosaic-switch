@@ -79,49 +79,14 @@ the box could make.
   reproduced it "byte for byte" — a diff cannot show a family that is absent
   from both sides.
 - **The board shipped no `frr.conf`**, so three routed links carried no routing.
+- **The signal repeater was never driven.** A TI DS100KR800 in front of Et51 and
+  Et52 was held in reset and then, once released, left unprogrammed. Its eight
+  channels carry those two ports in the host-to-module direction only, so the
+  cage received perfectly and transmitted nothing: this end reported the port up
+  at 40000 and the far end reported it down. Programming it brought Et52 up,
+  confirmed from both ends, with an OSPF adjacency and 1.8 ms round trip.
 
 ## Blocking — NOSaic does not forward on this board without these
-
-- **et52 to the Edgecore AS5610 does not link.** Both ends now agree it is down,
-  which is itself progress: this end used to report it up at 40000. Read the far
-  end directly with `ssh -i ~/.ssh/id_ed25519 root@10.10.35.2`.
-
-  ⚠ **It worked under the predecessor**, so this is ours to find. The chip there
-  held an L3 host entry for the AS5610 on port 61, OSPF ran over `xe60`, and the
-  port showed `up 40G FD Forward`.
-
-  Four faults on the path were found and fixed getting this far — the SMBus
-  accelerator address, the retimer reset, module select, and linkscan mode; see
-  the commit. None of them was sufficient. What is now established:
-
-  - **Configuration is not the difference.** Every property matches the
-    predecessor's working file, and the 40G bring-up applies *nothing* because
-    the chip already has XGMII, 40000, full duplex and autoneg off.
-  - **This end receives cleanly and the far end cannot receive us.** The
-    predecessor reached exactly this state and recorded it as `Fault(Remote)`.
-
-  ⚠ **Read `td2-7050tx64-reverse-engineering/docs/SCD-SMBUS-WORKING.md` before
-  spending an evening here.** It is a long investigation of this one port that
-  ends unresolved at the same place, and it rules out a great deal: the taps,
-  the polarity flip, the lane maps and the PCS registers were all made
-  byte-identical to the vendor OS and the fault persisted. It also leaves three
-  concrete things untried here, in the order it recommends:
-
-  1. **Program the retimer.** It is out of reset now and still unprogrammed.
-     `tools/retimer-program.sh` in that repo has the 27 registers, the offsets
-     from TI's SNLS340E Table 6, and a report-only mode. Note the per-channel
-     bases are not a uniform stride, and which channel group serves Et52 is not
-     established.
-  2. **Force the transmit taps.** `serdes_preemphasis_lane<N>_61 = 0x81F4` and
-     `serdes_driver_current_lane<N>_61 = 0`. Bit 15 is the tap-force bit; a 40G
-     CR4/KR4 port uses the KR tap set and the property cannot reach it without
-     that bit. The packing is `post<<10 | main<<4 | pre`, and this board's FDL
-     gives pre 4, main 31, post 0.
-  3. **`bcm_port_probe`** on the cage, the one part of the documented bring-up
-     sequence not yet tried here.
-
-  There is now a fast oracle for all three: the far end's `nosaic show ports`
-  says whether anything changed, in seconds.
 
 - **No OSPFv3 adjacency.** Our side is configured and running: `ospf6d` answers,
   all three taps have link-local addresses, and each interface declares
