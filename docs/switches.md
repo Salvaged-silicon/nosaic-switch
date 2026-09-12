@@ -38,7 +38,7 @@ switch:
   Run them once against a switch running the vendor's OS, drop the output
   in [config/](../platform/arista-7050sx2-72q/config/), and it ships in every image you build for that
   board. Full instructions are in that board's README.
-- **arista-7050tx-64** — [tools/](../platform/arista-7050tx-64/tools/): `mkpolarity.sh`, `mkportmap.sh`, `mkretimer.sh`
+- **arista-7050tx-64** — [tools/](../platform/arista-7050tx-64/tools/): `mkpolarity.sh`, `mkportmap.sh`, `mkretimer.sh`, `mkserdes.sh`
   Run them once against a switch running the vendor's OS, drop the output
   in [config/](../platform/arista-7050tx-64/config/), and it ships in every image you build for that
   board. Full instructions are in that board's README.
