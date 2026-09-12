@@ -82,22 +82,49 @@ the box could make.
 
 ## Blocking — NOSaic does not forward on this board without these
 
-- **et52 to the Edgecore AS5610 receives nothing.** The other two links forward,
-  so the board's 40G path is proven end to end and this is the one port that
-  does not work. `link=1`, so the far end's optics are transmitting and our PCS
-  locks; `in-nuc=0`, so its MAC is sending no frames at all.
+- **et52 to the Edgecore AS5610 is down in one direction, and the evidence says
+  it is physical.** Both ends were read directly for this — the AS5610 takes
+  `ssh -i ~/.ssh/id_ed25519 root@10.10.35.2`, which its board ships the key for.
 
-  ⚠ Our side is configured identically to the two ports that work — same
-  generator, same code path, same code — plus one property: `phy_an_c73_61=1`,
-  which is the predecessor's own hand-edit for this neighbour and therefore the
-  known-good value. Do not "fix" that by reverting it without evidence; it
-  moves away from the only configuration this link is known to have worked
-  under.
+  | | this board (et52, port 61) | AS5610 (swp52, port 52) |
+  |---|---|---|
+  | link | **up** — PCS locked on their light | **down** |
+  | frames | `in-nuc=0`, `out-nuc` climbing | `in-nuc` frozen at 8161 |
 
-  The AS5610 answers on `10.10.35.2` and its `config/network.conf` gives
-  `swp52` the matching `10.101.101.49/29`, so the box is alive and addressed.
-  What is not established is whether its port is up and its datapath running.
-  **Check that before touching anything here.**
+  Asymmetric link state is the signature: we lock onto their transmitter, they
+  never lock onto ours. Their `in-nuc=8161` says this link carried traffic
+  historically, so the cabling is right and the cage numbering is right.
+
+  What has been ruled out, each with the far end as the witness rather than a
+  local status:
+
+  - **Configuration on this end.** Port 61 now matches the predecessor's
+    working file on every property — lane maps, polarity, firmware mode,
+    autoneg — and the identical code brings up et49 and et50.
+  - **Clause-73 autoneg.** Tried set and clear; `swp52` stayed down for both.
+  - **A stuck link.** Full chip re-initialisation on *each* end independently,
+    which retrains the port. No change either time.
+  - **The optic being held down.** Cage 4's control register takes writes
+    correctly (`0x108 -> 0x140` with TX_DISABLE set, `-> 0x100` clearing it)
+    and a power cycle of the module changed nothing.
+  - **The far end being broken generally.** Its `swp49` and `swp51` are up and
+    receiving, so its receive path works on its other two 40G cages.
+
+  That leaves one direction of the path between the two cages: the AOC, or one
+  end's optic. **The next step is physical and takes a minute:** move this
+  board's end of the cable from Et52 to Et51, the empty cage. If the link comes
+  up there, this board's cage 4 or its end of the optic is at fault; if it stays
+  down, the cable or the far end's cage is. Et51 is port 57 and already has its
+  lane map and polarity generated — it needs a `tap_et51`, an address and an
+  OSPF cost, all one line each.
+
+- **The cage-word decode table is the sibling's and does not fit this board.**
+  `internal/platformhal/scd/transceiver.go` knows `0x47`, `0x1c0` and `0x180`;
+  this board reads `0x108` for a cabled cage, `0x105` for an empty one and
+  `0x100` for a cabled one whose latched status has been cleared. So every cage
+  here decodes as "undetermined", which is honest but useless — and it is the
+  fourth thing in this driver that was one board's constant. Measuring the four
+  values on this board would make presence reporting work, and it is read-only.
 
 - **No OSPFv3 adjacency.** Our side is configured and running: `ospf6d` answers,
   all three taps have link-local addresses, and each interface declares
