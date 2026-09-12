@@ -1,6 +1,10 @@
 package scd
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
+)
 
 // The SCD's per-cage transceiver control table.
 //
@@ -9,15 +13,12 @@ import "fmt"
 // independence is the point: it gives a cage numbering that owes nothing to the
 // port map, which is what makes it usable for establishing one.
 //
-// 54 entries, 48 SFP+ cages then 6 QSFP+ cages, matching the front panel in
-// order.
+// One entry per front-panel cage, in order, the SFP+ ones first. WHERE the
+// table is and HOW MANY entries it has come from the board -- see
+// platformhal.CageTable -- because both differ between two boards with the
+// same FPGA, and using one board's numbers on the other writes over registers
+// that belong to something else.
 const (
-	xcvrBase   = 0xa010
-	xcvrStride = 0x10
-	xcvrCount  = 54
-	// xcvrSFPCount is how many of those are SFP+; the rest are QSFP+.
-	xcvrSFPCount = 48
-
 	// xcvrTXDisable is bit 6. Asserted for an empty cage and for a module the
 	// board has not qualified, deasserted once one has.
 	xcvrTXDisable = 1 << 6
@@ -36,6 +37,19 @@ const (
 	// under EOS and under our own OS was what located it.
 	xcvrQSFPLowPower = (1 << 5) | (1 << 7)
 )
+
+// cageTable is the board's cage table, or an error naming what is missing.
+//
+// No default: the alternative is writing a guessed register table on an FPGA
+// that owns the reset lines, which is how this board was driven before and is
+// exactly what the board data exists to stop.
+func (s *SCD) cageTable() (*platformhal.CageTable, error) {
+	if s.cages == nil {
+		return nil, fmt.Errorf("%w: this board does not state its transceiver "+
+			"cage table (platform_hal.cages in board.yml)", platformhal.ErrUnsupported)
+	}
+	return s.cages, nil
+}
 
 // Known values of a cage word, measured on this board.
 const (
@@ -87,17 +101,21 @@ type Cage struct {
 // link because the port map does not reach this cage" -- two states that are
 // identical from the switch chip's side and need completely different work.
 func (s *SCD) Transceivers() ([]Cage, error) {
-	end := xcvrBase + xcvrCount*xcvrStride
+	t, err := s.cageTable()
+	if err != nil {
+		return nil, err
+	}
+	end := t.Base + t.Count*t.Stride
 	if end > len(s.bar) {
 		return nil, fmt.Errorf("the cage table ends at %#x, past the %d-byte BAR",
 			end, len(s.bar))
 	}
 
-	cages := make([]Cage, 0, xcvrCount)
-	for i := 0; i < xcvrCount; i++ {
-		v := s.read32(xcvrBase + i*xcvrStride)
+	cages := make([]Cage, 0, t.Count)
+	for i := 0; i < t.Count; i++ {
+		v := s.read32(t.Base + i*t.Stride)
 		c := Cage{Index: i + 1, Raw: v, Kind: "SFP+"}
-		if i >= xcvrSFPCount {
+		if i >= t.SFPCount {
 			c.Kind = "QSFP+"
 		}
 		// Only the three words measured on this board are decoded. Anything
@@ -151,10 +169,14 @@ func (c Cage) TXEnabled() bool { return c.Raw&xcvrTXDisable == 0 }
 // read-back, which is why the check below tests only the bit whose behaviour is
 // established.
 func (s *SCD) SetTX(cage int, on bool) (before, after uint32, err error) {
-	if cage < 1 || cage > xcvrCount {
-		return 0, 0, fmt.Errorf("cage %d is outside 1..%d", cage, xcvrCount)
+	t, err := s.cageTable()
+	if err != nil {
+		return 0, 0, err
 	}
-	off := xcvrBase + (cage-1)*xcvrStride
+	if cage < 1 || cage > t.Count {
+		return 0, 0, fmt.Errorf("cage %d is outside 1..%d", cage, t.Count)
+	}
+	off := t.Base + (cage-1)*t.Stride
 	if off+4 > len(s.bar) {
 		return 0, 0, fmt.Errorf("cage %d is past the mapped BAR", cage)
 	}
@@ -163,7 +185,7 @@ func (s *SCD) SetTX(cage int, on bool) (before, after uint32, err error) {
 	v := before | xcvrTXDisable
 	if on {
 		v = before &^ uint32(xcvrTXDisable)
-		if cage > xcvrSFPCount {
+		if cage > t.SFPCount {
 			v &^= uint32(xcvrQSFPLowPower)
 		}
 	}

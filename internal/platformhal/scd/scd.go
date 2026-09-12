@@ -147,6 +147,10 @@ type SCD struct {
 	// see platformhal.SMBusMap.
 	smbusMap *platformhal.SMBusMap
 
+	// cages is the board's front-panel transceiver table. Nil where the board
+	// states none, which is an answer: this board has no cages to drive.
+	cages *platformhal.CageTable
+
 	// lamps is the board's chassis-lamp map, loaded once on first use from a
 	// generated file. Cached including the failure: a board without the map
 	// should say so quickly every time rather than stat a missing file on
@@ -193,7 +197,8 @@ func Open(cfg platformhal.Config) (*SCD, error) {
 		return nil, fmt.Errorf("mapping %s: %w", path, err)
 	}
 	return &SCD{
-		bar: bar, pci: pciAddr, asic: asicAddr, smbusMap: cfg.SMBus,
+		bar: bar, pci: pciAddr, asic: asicAddr,
+		smbusMap: cfg.SMBus, cages: cfg.Cages,
 		close: func() error { munmapFile(bar); return f.Close() },
 	}, nil
 }

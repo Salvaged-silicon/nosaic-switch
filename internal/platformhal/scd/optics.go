@@ -31,15 +31,26 @@ const (
 )
 
 // cageSMBus is which SMBus accelerator and bus reach a cage's module.
-func cageSMBus(cage int) (accel, bus int) {
-	if cage <= xcvrSFPCount {
-		return 2 + (cage-1)/8, (cage - 1) % 8
+//
+// The arithmetic is the board's, not this driver's: where the SX2 spreads 48
+// SFP+ cages over six accelerators eight buses at a time, the TX-64 has four
+// QSFP cages on four buses of one. See platformhal.CageTable.
+func (s *SCD) cageSMBus(cage int) (accel, bus int) {
+	t, err := s.cageTable()
+	if err != nil {
+		return -1, -1
 	}
-	return 8, cage - 1 - xcvrSFPCount
+	return t.CageSMBus(cage)
 }
 
 // CageCount implements platformhal.Optics.
-func (s *SCD) CageCount() int { return xcvrCount }
+func (s *SCD) CageCount() int {
+	t, err := s.cageTable()
+	if err != nil {
+		return 0
+	}
+	return t.Count
+}
 
 // ReadModuleBytes implements platformhal.Optics.
 //
@@ -47,14 +58,18 @@ func (s *SCD) CageCount() int { return xcvrCount }
 // read-byte-data and a module's diagnostics are under a hundred bytes. Reading
 // a whole 256-byte page would be worth batching; reading light levels is not.
 func (s *SCD) ReadModuleBytes(cage, addr, page, offset, n int) ([]byte, error) {
-	if cage < 1 || cage > xcvrCount {
-		return nil, fmt.Errorf("cage %d: this board has %d", cage, xcvrCount)
+	t, err := s.cageTable()
+	if err != nil {
+		return nil, err
+	}
+	if cage < 1 || cage > t.Count {
+		return nil, fmt.Errorf("cage %d: this board has %d", cage, t.Count)
 	}
 	if n <= 0 || offset < 0 || offset+n > 256 {
 		return nil, fmt.Errorf("cage %d: %d bytes at offset %d is outside a 256-byte page",
 			cage, n, offset)
 	}
-	accel, bus := cageSMBus(cage)
+	accel, bus := s.cageSMBus(cage)
 	m := s.smb()
 
 	if page >= 0 {
@@ -82,11 +97,12 @@ func (s *SCD) ReadModuleBytes(cage, addr, page, offset, n int) ([]byte, error) {
 // into it. Useful when the module cannot be read at all: it says whether an
 // empty QSFP cage or a failed read is being looked at.
 func (s *SCD) ModuleKindHint(cage int) sff.Kind {
-	if cage > xcvrSFPCount && cage <= xcvrCount {
+	t, err := s.cageTable()
+	if err != nil || cage < 1 || cage > t.Count {
+		return sff.Unknown
+	}
+	if cage > t.SFPCount {
 		return sff.QSFP
 	}
-	if cage >= 1 {
-		return sff.SFP
-	}
-	return sff.Unknown
+	return sff.SFP
 }

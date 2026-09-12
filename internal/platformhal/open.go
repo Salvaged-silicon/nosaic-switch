@@ -17,6 +17,9 @@ type Config struct {
 	// a driver that needs it says so itself, so a board with no SMBus
 	// devices is not obliged to invent an empty section.
 	SMBus *SMBusMap
+	// Cages is the board's front-panel transceiver table. Optional in the
+	// same way and for the same reason: a board with no cages states none.
+	Cages *CageTable
 }
 
 // Opener constructs a board's HAL from its configuration.
@@ -40,6 +43,9 @@ func Open(driver string, cfg Config) (HAL, error) {
 	}
 	if err := cfg.SMBus.Validate(); err != nil {
 		return nil, fmt.Errorf("this board's smbus map: %w", err)
+	}
+	if err := cfg.Cages.Validate(); err != nil {
+		return nil, fmt.Errorf("this board's cage table: %w", err)
 	}
 	return o(cfg)
 }
