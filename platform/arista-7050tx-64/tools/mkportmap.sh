@@ -29,7 +29,13 @@
 #
 # Everything keyed on a port number that describes wiring: portmap_<n>,
 # port_phy_addr_<n>, phy_mdi_pair_map_<n>, phy_long_xfi_<n>, phy_fiber_pref_<n>,
-# phy_an_c73_<n>, phy_an_c37_<n>, port_init_autoneg_<n>.
+# phy_an_c73_<n>, phy_an_c37_<n>, port_init_autoneg_<n>, port_phy_clause_<n> and
+# rate_ext_download_mdio_divisor_<n>.
+#
+# The last two are how the MDIO bus is DRIVEN rather than where a PHY answers:
+# the clause (0x2d is clause 45, which is what a 10GBASE-T PHY speaks) and the
+# clock divisor used while its firmware is downloaded. port_phy_addr_<n> without
+# port_phy_clause_<n> is a correct address talked to in the wrong protocol.
 #
 # NOT phy_bus_i2c_<n>, despite it being port-keyed. It appears nowhere in the
 # vendor's configuration -- it is ours, added to put the external PHYs on the
@@ -141,7 +147,7 @@ fi
 
 props=$(printf '%s\n' "$src" |
 	sed 's/^[[:space:]]*//' |
-	grep -E "^(portmap_[0-9]+|port_phy_addr_[0-9]+|phy_mdi_pair_map_[0-9]+|phy_long_xfi_[0-9]+|phy_fiber_pref_[0-9]+|phy_an_c73_[0-9]+|phy_an_c37_[0-9]+|port_init_autoneg_[0-9]+)(\.[0-9]+)?=" |
+	grep -E "^(portmap_[0-9]+|port_phy_addr_[0-9]+|phy_mdi_pair_map_[0-9]+|phy_long_xfi_[0-9]+|phy_fiber_pref_[0-9]+|phy_an_c73_[0-9]+|phy_an_c37_[0-9]+|port_init_autoneg_[0-9]+|port_phy_clause_[0-9]+|rate_ext_download_mdio_divisor_[0-9]+)(\.[0-9]+)?=" |
 	sed "s/\.${UNIT_FROM}=/.${UNIT_TO}=/" |
 	awk -v breakout="$QSFP_BREAKOUT" "$LANE_FILTER" |
 	sort)
