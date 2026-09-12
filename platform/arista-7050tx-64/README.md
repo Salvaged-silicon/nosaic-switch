@@ -13,7 +13,7 @@ second in the tree rather than first — see
 | Management | RJ45, `tg3` |
 | Bootloader | Aboot 4.0.7, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots, forwards and routes; one of three links still dark |
+| Status | **bringup** — boots, forwards and routes on all three 40G links |
 
 - **[Hardware reference](docs/hardware.md)** — diagrams, port map, registers, quirks
 - **[Build](docs/build.md)** — building an image for it
@@ -46,10 +46,13 @@ NOSaic boots on this switch, drives the Trident2, and brings its three cabled
   and eleven programmed into the chip. That board's loopback answers in 0.4 ms
   across the fabric rather than over the management port.
 
-**What does not work:** the third link, to the Edgecore AS5610, receives
-nothing — and the far end's state has not been established. There is no OSPFv3
-adjacency, which looks like the neighbour rather than this board. See
-[todo](docs/todo.md).
+- **All three 40G links forward**, including the one to the Edgecore AS5610,
+  which needed the board's signal repeater programmed before anything it
+  transmitted reached the cage. Three OSPFv2 adjacencies, all Full.
+
+**What does not work:** there is no OSPFv3 adjacency, which looks like the
+neighbours rather than this board. The 48 copper ports have not been exercised.
+See [todo](docs/todo.md).
 
 The board itself was established first under **EdgeNOS**, the predecessor
 project, which forwards in hardware here — IPv4 and IPv6, OSPFv2/v3, ECMP as a
