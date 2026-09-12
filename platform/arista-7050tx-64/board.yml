@@ -74,6 +74,54 @@ platform_hal:
   pci: "0000:02:00.0"
   asic_pci: "0000:01:00.0"
 
+  # Where the platform devices sit on the SCD's SMBus accelerator 0.
+  #
+  # ⚠ THIS IS NOT THE SAME LAYOUT AS THE SIBLING BOARD, AND THE DIFFERENCE IS
+  # NOT COSMETIC.
+  #
+  # The driver used to carry the 7050SX2's placement as a constant for every
+  # Arista board: fan CPLD at accelerator 0, bus 0. Here the CPLD is on bus 1,
+  # the CPU card's bus, and a write to bus 0 reaches a bus with nothing at
+  # 0x60. NOSaic's first boot on this switch flooded the console with
+  #
+  #   cannot command the fans at all (4 of 4 refused):
+  #   setting fan 1 to 100%: SMBus 0x60 reg 0x10: write not acknowledged
+  #
+  # from a fan controller that was working perfectly and simply never heard
+  # from us. Nothing in that message says "wrong bus".
+  #
+  # Placement is from the board's own description file, by way of the
+  # predecessor project, and both buses are confirmed by their readings rather
+  # than by their names: bus 0 gave 39.0/34.2 °C against EOS's Board 41 °C and
+  # Front-panel 35 °C, bus 1 gave 32.0/30.0 °C against EOS's CPU board 32 °C
+  # and Back-panel 30 °C.
+  smbus:
+    # Two MAX6658s, one per card, each with a local diode and one remote. They
+    # share address 0x4c and are told apart only by which bus they are on --
+    # which is exactly the mistake this section exists to prevent.
+    sensors:
+      - {name: board,        part: max6658,        accel: 0, bus: 0, addr: 0x4c}
+      - {name: front-panel,  part: max6658-remote, accel: 0, bus: 0, addr: 0x4c}
+      - {name: cpu-board,    part: max6658,        accel: 0, bus: 1, addr: 0x4c}
+      - {name: back-panel,   part: max6658-remote, accel: 0, bus: 1, addr: 0x4c}
+
+    # The StandbyCpld, which Arista's own tree calls "murder". Four bays.
+    #
+    # ⚠ max_pwm IS 180 AND NOT 255, MEASURED. Arista's published driver defines
+    # the register as 0-255, but EOS on this chassis reports "Configured Speed
+    # 71%" while the register holds 127, and 71% of 180 is 127.8. Scaling by
+    # 255 commands about 140% of full scale for anything above 70%, so the top
+    # third of the curve clamps to one speed and the fans stop responding to
+    # temperature at exactly the point where that matters.
+    #
+    # ⚠ floor_percent is 60 because that is the lowest the board's OWN curve
+    # ever asks for on this chassis -- level 2, at 25 °C inlet. It is not a
+    # number chosen for comfort: it is "never quieter than the vendor's own
+    # policy". Measured headroom exists (dropping the trays from 73% to 53%
+    # for six minutes moved board temperature by 1 °C at 31 °C ambient), and
+    # it is deliberately not spent.
+    fans: {part: crow-cpld, accel: 0, bus: 1, addr: 0x60, count: 4, max_pwm: 180, floor_percent: 60}
+
 # The cooling curve. At or below 25 °C the fans sit at the controller's floor;
 # at or above 40 °C they are flat out.
 #
