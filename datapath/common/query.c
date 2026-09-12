@@ -251,18 +251,36 @@ static void handle(FILE *out, const char *req)
 	 */
 	if (strstr(req, "\"capabilities\"") != NULL) {
 		bcm_l3_info_t info;
-		int maxv4 = 0;
+		int maxv4 = 0, maxecmp = 0;
 
 		bcm_l3_info_t_init(&info);
-		if (bcm_l3_info(query_unit, &info) == BCM_E_NONE)
+		if (bcm_l3_info(query_unit, &info) == BCM_E_NONE) {
 			maxv4 = info.l3info_max_route;
+			maxecmp = info.l3info_max_ecmp;
+		}
 
+		/*
+		 * ⚠ ECMP WAS NEVER REPORTED, AND IT HAD BEEN WORKING ALL ALONG.
+		 *
+		 * This response simply omitted the field, so the Go side unmarshalled
+		 * the zero value and `show caps` answered "ecmp no" -- on a switch
+		 * whose log says `l3: ecmp group of 2 -> egress 200000`, with a real
+		 * bcm_l3_egress_ecmp group in the chip carrying both members of an
+		 * equal-cost pair. An operator reading that capability would have
+		 * concluded the board could not do multipath and designed around a
+		 * limitation it does not have.
+		 *
+		 * The width comes from the chip rather than from a constant here: it
+		 * is what the silicon reports it can do, which is the same rule the
+		 * port speeds follow.
+		 */
 		fprintf(out,
 			"{\"ok\":true,\"result\":{\"Contract\":\"1\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"L2Learning\":true,\"L3\":true,"
-			"\"MaxV4\":%d}}\n",
-			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4);
+			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d}}\n",
+			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
+			maxecmp > 1 ? "true" : "false", maxecmp);
 		return;
 	}
 
