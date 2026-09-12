@@ -159,13 +159,39 @@ mount_flash() {
         FLASH=/mnt/flash
         return 0
     fi
-    for _d in /dev/mmcblk0p1 /dev/sda1 /dev/vda1; do
-        [ -b "$_d" ] || continue
-        mkdir -p /mnt/flash
-        mount -t vfat "$_d" /mnt/flash 2>/dev/null || continue
-        FLASH=/mnt/flash
-        return 0
+    # ⚠ WAIT FOR THE DEVICE. IT MAY NOT EXIST YET.
+    #
+    # On a board whose flash is eMMC or virtio the node is there before /init
+    # runs, because the kernel enumerates those synchronously. On one whose
+    # flash is a USB stick -- which is what an Arista 7050TX-64 has -- it is
+    # not: the USB stack finds the device a second or two later, and probing
+    # once finds nothing.
+    #
+    # The failure is not a message about storage. Every candidate is skipped,
+    # no slot file is found, and the boot stops at "unknown slot 'a'" with the
+    # disk arriving in the log immediately afterwards. That reads as a bad
+    # image or a bad slot, and it is neither.
+    #
+    # Bounded, and it costs nothing where the device is already present: the
+    # first pass returns immediately on such a board, and only a board with no
+    # usable flash at all waits out the timeout -- which is a boot that is
+    # going to fail regardless, and is better for having said so slowly.
+    _waited=0
+    while :; do
+        for _d in /dev/mmcblk0p1 /dev/sda1 /dev/vda1; do
+            [ -b "$_d" ] || continue
+            mkdir -p /mnt/flash
+            mount -t vfat "$_d" /mnt/flash 2>/dev/null || continue
+            FLASH=/mnt/flash
+            [ "$_waited" -gt 0 ] && \
+                echo "NOSAIC-INITRAMFS flash appeared after ${_waited}s ($_d)"
+            return 0
+        done
+        [ "$_waited" -ge 15 ] && break
+        _waited=$((_waited + 1))
+        sleep 1
     done
+    echo "NOSAIC-INITRAMFS-WARN no flash filesystem after ${_waited}s"
     return 1
 }
 
