@@ -4,9 +4,9 @@ How this switch is built and how NOSaic drives it. Everything below was read off
 a running unit; where a value has not been measured yet it says so rather than
 carrying a plausible number.
 
-⚠ **NOSaic has not booted on this board yet.** The measurements here come from
-EdgeNOS, the predecessor project, which does boot it and forwards in hardware.
-They describe the board, not a NOSaic port — see [todo.md](todo.md).
+NOSaic boots on this board and drives the chip; what it does not do yet is
+forward. Measurements marked as EdgeNOS's come from the predecessor project,
+which does forward here — see [todo.md](todo.md) for the split.
 
 ## At a glance
 
@@ -100,6 +100,14 @@ the SDK numbers skip, while the Linux taps stay consecutive:
 Code that assumes one rule for both mis-maps the QSFP capacity, and it presents
 as a dead port rather than as a wrong index.
 
+⚠ **A port map read off this switch is unit-suffixed, and an exact-match lookup
+misses every line of it.** The vendor's configuration spells the property
+`portmap_1.0`, where the `.0` is the SDK unit. All 278 port-map properties and
+all 104 polarity properties loaded, were counted, were printed on the console,
+and were then invisible to every lookup — `no port map` appeared on the line
+directly below `278 properties from /etc/nosaic/portmap.conf`. Resolve
+`name.<unit>` before `name`, the way the SDK's own configuration layer does.
+
 The i2c bus numbers were measured by reading the SFF identifier byte (`0x00`) at
 address `0x50` on each bus and seeing which answered `0x0d` (QSFP+).
 
@@ -123,12 +131,36 @@ right cages.
 | SCD `0xA000` + n×`0x10` | per-QSFP-cage LEDs, per lane |
 | SCD `0xA100`+ | QSFP transceiver control — **note the boundary**: the LED block ends at `0xA0F0`, and an off-by-one walks into transceiver control |
 | SCD i2c adapters | 13 buses exposed to Linux by the `scd` driver; QSFP EEPROMs on 9–12 |
+| SCD SMBus accelerator 0 `0x8000` | bus 0 the switch card, **bus 1 the CPU card** |
 | BCM84848 MMD 1 / 7 | per-PHY control and autonegotiation, over SCD MDIO |
 
 The SCD register layout is architecturally consistent across Arista platforms and
 these offsets also appear in Arista's own published SONiC platform tree, so they
 are public facts about the hardware rather than anything derived from a vendor
 binary.
+
+⚠ **Consistent layout is not identical placement, and the difference is where
+this board has cost the most time.** Three things sit somewhere else here than
+on the sibling 7050SX2, and each was found only after the wrong one had been
+driven:
+
+| | 7050SX2-72Q | this board |
+|---|---|---|
+| fan CPLD `0x60` | accelerator 0, **bus 0** | accelerator 0, **bus 1** (CPU card) |
+| fan PWM full scale | 255 | **180**, measured |
+| cage control table | **54** entries at `0xa010` | **4** at `0xa100` |
+| cage EEPROMs | accel 2–8 | accel 1, buses 0–3 |
+
+None of these fail loudly. The wrong SMBus bus is a fan controller that refuses
+every command while being in perfect health; the wrong full scale clamps the
+top third of the cooling curve to one speed; the wrong cage table writes 54
+entries from `0xa010`, straight through this board's per-cage LED block, and
+leaves the real cages held in reset and low power — a module that answers
+nothing and emits nothing while the switch chip reports an enabled port at
+40000 with no error anywhere.
+
+All three are now board data, in `board.yml` under `platform_hal`, rather than
+constants in the driver.
 
 ## Datapath
 

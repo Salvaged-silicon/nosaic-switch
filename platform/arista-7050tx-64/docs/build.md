@@ -4,10 +4,7 @@ Only what is specific to this board. The general build — toolchain, packages,
 image, VM — is in [docs/BUILDING.md](../../../docs/BUILDING.md), and repeating
 it here means it will drift.
 
-⚠ **Not yet demonstrated.** No NOSaic image has been built for this board. The
-commands below are the shape the build takes, not a transcript of one that has
-run; the datapath package they depend on does not exist yet. See
-[todo.md](todo.md).
+These commands have been run and the image they produce boots on the switch.
 
 ## The short version
 
@@ -25,15 +22,24 @@ board only the image step is new.
 
 ## What this board needs that the generic build does not
 
-**`nosd-td2` — the Trident2 datapath. Does not exist yet.** This board declares
-`asic: td2`, and the image builder resolves that to whichever package provides
-`nosd` for it. Until `recipes/nosd-td2/` is written the build emits a warning and
-produces an image with no datapath: it will boot and answer on the management
-port, and it will not forward.
-
-It should be derived from `datapath/td2p/` — the same CMICm generation, the same
+**`nosd-td2` — the Trident2 datapath.** This board declares `asic: td2`, and the
+image builder resolves that to whichever package provides `nosd` for it. It is
+derived from `datapath/td2p/` — the same CMICm generation, the same
 architecture, the same userspace BDE — reusing `datapath/common/` rather than
-forking it.
+forking it, and adding `phy.c` for the 48 copper PHYs.
+
+⚠ **`make packages` will not rebuild it after a source edit.** The package is
+already built, so the recipe is skipped and the image silently carries the old
+binary — which looks exactly like a fix that did not work. Force it:
+
+```sh
+rm -rf .cache/pkg/nosd-td2
+make pkg PKG=nosd-td2 ARCH=x86_64
+```
+
+The cache holds object files as well as the package, and a stale `props.o`
+there is what turns a new function in `datapath/common/` into an undefined
+reference at link time.
 
 **The Broadcom SDK is a build dependency and is never shipped.** `openbcm` is
 staged for the compiler and stays out of the image. Two consequences worth
