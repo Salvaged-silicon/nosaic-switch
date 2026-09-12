@@ -74,6 +74,26 @@ platform_hal:
   pci: "0000:02:00.0"
   asic_pci: "0000:01:00.0"
 
+  # ⚠ THE SWITCH CHIP IS NOT THE ONLY THING THIS BOARD HOLDS IN RESET.
+  #
+  # A TI DS100KR800 retimer sits between the ASIC's SerDes and the LAST TWO
+  # QSFP cages -- Et51 and Et52 -- and the board holds it in reset from
+  # power-on on bit 8 of the same block as the switch chip. Et49 and Et50 are
+  # direct SerDes and do not pass through it, which is exactly the line between
+  # the cages that worked here and the one that did not.
+  #
+  # Leaving it asserted is invisible from this end. The ASIC transmits, its MAC
+  # counters climb, and this side locks onto the far end's light and reports
+  # the port up at 40000 with no error anywhere -- while the module reports
+  # loss of signal on all four transmit lanes, because nothing electrical ever
+  # reaches it, and the neighbour never links at all.
+  #
+  # Bit 8 is from this board's own description file, which names it
+  # `ds100Kr.resetGpo = resetGpoBlock[0].newBit(8)`. A live read of the block
+  # at bring-up is 0x000001ff: nine bits implemented, every one asserted.
+  resets:
+    - {name: qsfp-retimer, bit: 8}
+
   # Where the platform devices sit on the SCD's SMBus accelerator 0.
   #
   # ⚠ THIS IS NOT THE SAME LAYOUT AS THE SIBLING BOARD, AND THE DIFFERENCE IS
@@ -96,6 +116,21 @@ platform_hal:
   # Front-panel 35 °C, bus 1 gave 32.0/30.0 °C against EOS's CPU board 32 °C
   # and Back-panel 30 °C.
   smbus:
+    # ⚠ THE ACCELERATORS ARE NOT AT A REGULAR STRIDE ON THIS BOARD.
+    #
+    # Accelerator 0 is at 0x8000 and carries the platform: sensors, the fan
+    # CPLD, the power controllers. Accelerator 1 carries one bus per QSFP cage
+    # and is at 0x9400 -- NOT at 0x8080, which is what a 0x80 stride computes
+    # and what the driver assumed from the sibling board.
+    #
+    # The cost of that was invisible because it only breaks reads that nothing
+    # depends on: every attempt to read a module's own EEPROM returned "no
+    # response, cs=0x00000000", so this board could never see a transceiver's
+    # view of itself -- identifier, TX disable, TX fault, loss of signal --
+    # while the SCD's cage register at 0xA100 answered perfectly and made the
+    # optics look fully accounted for.
+    accelerators: [0x8000, 0x9400]
+
     # Two MAX6658s, one per card, each with a local diode and one remote. They
     # share address 0x4c and are told apart only by which bus they are on --
     # which is exactly the mistake this section exists to prevent.

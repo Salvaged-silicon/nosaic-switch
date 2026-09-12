@@ -18,4 +18,9 @@ func (s *SCD) Write32(off int, v uint32) { s.write32(off, v) }
 // Len is the size of the mapped BAR.
 func (s *SCD) Len() int { return len(s.bar) }
 
-func (s *SCD) smb() *scdsmbus.Master { return scdsmbus.New(s) }
+func (s *SCD) smb() *scdsmbus.Master {
+	if s.smbusMap != nil && len(s.smbusMap.Accelerators) > 0 {
+		return scdsmbus.NewAt(s, s.smbusMap.Accelerators)
+	}
+	return scdsmbus.New(s)
+}

@@ -73,8 +73,14 @@ func TestFirstCageIsQSFPOnABoardWithNoSFPCages(t *testing.T) {
 	if _, _, err := s.SetTX(1, true); err != nil {
 		t.Fatalf("SetTX: %v", err)
 	}
-	if got := s.read32(off); got&xcvrQSFPLowPower != 0 {
+	got := s.read32(off)
+	if got&xcvrQSFPLowPower != 0 {
 		t.Errorf("cage 1: low-power/reset still set: %#x", got)
+	}
+	// Module select must be ASSERTED, not merely left alone: a cage whose
+	// select was never driven reports a module that does not answer.
+	if got&xcvrModSel == 0 {
+		t.Errorf("cage 1: module select not asserted: %#x", got)
 	}
 	if s.ModuleKindHint(1).String() == "SFP" {
 		t.Error("cage 1 is reported as SFP+ on a board whose cages are all QSFP+")

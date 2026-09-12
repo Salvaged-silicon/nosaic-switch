@@ -37,10 +37,28 @@ type Registers interface {
 }
 
 // Master is one SMBus accelerator block.
-type Master struct{ r Registers }
+type Master struct {
+	r Registers
+	// bases is where each accelerator lives, by index. Empty means the
+	// regular stride below.
+	bases []int
+}
 
-// New returns a master over the given register access.
-func New(r Registers) *Master { return &Master{r} }
+// New returns a master over the given register access, with the accelerators
+// at the regular stride.
+func New(r Registers) *Master { return &Master{r: r} }
+
+// NewAt returns a master whose accelerators are at the given base addresses,
+// by index.
+//
+// ⚠ THE STRIDE IS NOT UNIVERSAL. It holds on the board this was written
+// against, where nine accelerators sit at 0x8000 every 0x80. It does not hold
+// on the 7050TX-64, whose second accelerator -- the one carrying every QSFP
+// module's EEPROM -- is at 0x9400 and not at 0x8080. Computing that address
+// reads a part of the FPGA that answers nothing, so every module read returned
+// "no response" and the board could never see a transceiver's own view of
+// itself: TX disable, TX fault, loss of signal.
+func NewAt(r Registers, bases []int) *Master { return &Master{r: r, bases: bases} }
 
 // The SCD carries nine SMBus accelerators at 0x8000, stride 0x80. Everything
 // on the board that is not on the PCI bus hangs off one of them: the thermal
@@ -58,7 +76,12 @@ const (
 	smbParamED = 0
 )
 
-func smbBase(accel int) int { return smbBase0 + smbStride*accel }
+func (m *Master) base(accel int) int {
+	if accel >= 0 && accel < len(m.bases) && m.bases[accel] > 0 {
+		return m.bases[accel]
+	}
+	return smbBase0 + smbStride*accel
+}
 
 // smbReq packs one request word.
 //
@@ -112,7 +135,7 @@ func (m *Master) smbEnter(base int) error {
 // is fed four requests. The last response carries the data.
 // ReadReg reads one register from one device.
 func (m *Master) ReadReg(accel, bus, addr, reg int) (byte, error) {
-	base := smbBase(accel)
+	base := m.base(accel)
 	if base+smbRespOff+4 > m.r.Len() {
 		return 0, fmt.Errorf("SMBus accelerator %d is past the mapped BAR", accel)
 	}
@@ -164,7 +187,7 @@ func (m *Master) ReadReg(accel, bus, addr, reg int) (byte, error) {
 // index, data. There is no read phase and no repeated start.
 // WriteReg writes one register on one device.
 func (m *Master) WriteReg(accel, bus, addr, reg int, val byte) error {
-	base := smbBase(accel)
+	base := m.base(accel)
 	if base+smbRespOff+4 > m.r.Len() {
 		return fmt.Errorf("SMBus accelerator %d is past the mapped BAR", accel)
 	}

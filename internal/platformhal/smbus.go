@@ -17,6 +17,11 @@ import "fmt"
 // MAX6658 wherever it is soldered. Which bus it is soldered to is the board's
 // to say.
 type SMBusMap struct {
+	// Accelerators is where each SMBus accelerator block lives, by index.
+	// Optional: a board that leaves it out gets the regular stride, which is
+	// right on some boards and not on others -- see scdsmbus.NewAt.
+	Accelerators []int `yaml:"accelerators"`
+
 	Sensors []SMBusSensor  `yaml:"sensors"`
 	Fans    *FanController `yaml:"fans"`
 }
@@ -83,6 +88,11 @@ var SMBusParts = map[string]int{
 func (m *SMBusMap) Validate() error {
 	if m == nil {
 		return nil
+	}
+	for i, b := range m.Accelerators {
+		if b < 0 || b > 0xfffff {
+			return fmt.Errorf("smbus accelerator %d: base %#x is not a register offset", i, b)
+		}
 	}
 	seen := map[string]bool{}
 	for i, s := range m.Sensors {
@@ -215,4 +225,49 @@ func (c *CageTable) CageSMBus(cage int) (accel, bus int) {
 		return -1, -1
 	}
 	return e.AccelBase + idx/e.BusesPerAccel, idx % e.BusesPerAccel
+}
+
+// ResetLine is one reset the board wants released during bring-up, beyond the
+// switch chip's own.
+//
+// ⚠ A BOARD CAN HOLD MORE THAN THE ASIC IN RESET, AND THE REST IS INVISIBLE.
+//
+// The 7050TX-64 puts a TI DS100KR800 retimer in front of its last two QSFP
+// cages and holds it in reset from power-on, on bit 8 of the same block as the
+// switch chip. Releasing only the chip leaves those two cages fed by a part
+// that passes nothing: the ASIC transmits, its MAC counters climb, and the
+// module reports loss of signal on all four transmit lanes because nothing
+// electrical ever arrives at it. The near end still locks onto the far end's
+// light and reports the port up at 40000, so every status on this side says
+// the link is healthy while the far end never links at all.
+//
+// Which bits exist and what they gate is per board -- the sibling 7050SX2 has
+// no retimer and no bit 8 -- so they are named here rather than compiled in.
+type ResetLine struct {
+	// Name is what it gates, for the log. "qsfp-retimer", not "bit 8".
+	Name string `yaml:"name"`
+	Bit  uint   `yaml:"bit"`
+}
+
+// ValidateResets reports a reset line a board cannot have meant.
+func ValidateResets(rs []ResetLine) error {
+	seen := map[uint]bool{}
+	for _, r := range rs {
+		switch {
+		case r.Name == "":
+			return fmt.Errorf("reset on bit %d has no name", r.Bit)
+		case r.Bit > 31:
+			return fmt.Errorf("reset %q: bit %d is outside a 32-bit register", r.Name, r.Bit)
+		case r.Bit <= 1:
+			// Bits 0 and 1 are the switch chip's own and are released by the
+			// bring-up sequence, which waits for the device to appear. Listing
+			// one here would release it a second time, out of that order.
+			return fmt.Errorf("reset %q: bit %d is the switch chip's own and is "+
+				"released by the bring-up sequence", r.Name, r.Bit)
+		case seen[r.Bit]:
+			return fmt.Errorf("reset %q: bit %d is listed twice", r.Name, r.Bit)
+		}
+		seen[r.Bit] = true
+	}
+	return nil
 }
