@@ -82,49 +82,46 @@ the box could make.
 
 ## Blocking — NOSaic does not forward on this board without these
 
-- **et52 to the Edgecore AS5610 is down in one direction, and the evidence says
-  it is physical.** Both ends were read directly for this — the AS5610 takes
-  `ssh -i ~/.ssh/id_ed25519 root@10.10.35.2`, which its board ships the key for.
+- **et52 to the Edgecore AS5610 does not link.** Both ends now agree it is down,
+  which is itself progress: this end used to report it up at 40000. Read the far
+  end directly with `ssh -i ~/.ssh/id_ed25519 root@10.10.35.2`.
 
-  | | this board (et52, port 61) | AS5610 (swp52, port 52) |
-  |---|---|---|
-  | link | **up** — PCS locked on their light | **down** |
-  | frames | `in-nuc=0`, `out-nuc` climbing | `in-nuc` frozen at 8161 |
+  ⚠ **It worked under the predecessor**, so this is ours to find. The chip there
+  held an L3 host entry for the AS5610 on port 61, OSPF ran over `xe60`, and the
+  port showed `up 40G FD Forward`.
 
-  Asymmetric link state is the signature: we lock onto their transmitter, they
-  never lock onto ours. Their `in-nuc=8161` says this link carried traffic
-  historically, so the cabling is right and the cage numbering is right.
+  Four faults on the path were found and fixed getting this far — the SMBus
+  accelerator address, the retimer reset, module select, and linkscan mode; see
+  the commit. None of them was sufficient. What is now established:
 
-  What has been ruled out, each with the far end as the witness rather than a
-  local status:
+  - **Configuration is not the difference.** Every property matches the
+    predecessor's working file, and the 40G bring-up applies *nothing* because
+    the chip already has XGMII, 40000, full duplex and autoneg off.
+  - **This end receives cleanly and the far end cannot receive us.** The
+    predecessor reached exactly this state and recorded it as `Fault(Remote)`.
 
-  - **Configuration on this end.** Port 61 now matches the predecessor's
-    working file on every property — lane maps, polarity, firmware mode,
-    autoneg — and the identical code brings up et49 and et50.
-  - **Clause-73 autoneg.** Tried set and clear; `swp52` stayed down for both.
-  - **A stuck link.** Full chip re-initialisation on *each* end independently,
-    which retrains the port. No change either time.
-  - **The optic being held down.** Cage 4's control register takes writes
-    correctly (`0x108 -> 0x140` with TX_DISABLE set, `-> 0x100` clearing it)
-    and a power cycle of the module changed nothing.
-  - **The far end being broken generally.** Its `swp49` and `swp51` are up and
-    receiving, so its receive path works on its other two 40G cages.
+  ⚠ **Read `td2-7050tx64-reverse-engineering/docs/SCD-SMBUS-WORKING.md` before
+  spending an evening here.** It is a long investigation of this one port that
+  ends unresolved at the same place, and it rules out a great deal: the taps,
+  the polarity flip, the lane maps and the PCS registers were all made
+  byte-identical to the vendor OS and the fault persisted. It also leaves three
+  concrete things untried here, in the order it recommends:
 
-  That leaves one direction of the path between the two cages: the AOC, or one
-  end's optic. **The next step is physical and takes a minute:** move this
-  board's end of the cable from Et52 to Et51, the empty cage. If the link comes
-  up there, this board's cage 4 or its end of the optic is at fault; if it stays
-  down, the cable or the far end's cage is. Et51 is port 57 and already has its
-  lane map and polarity generated — it needs a `tap_et51`, an address and an
-  OSPF cost, all one line each.
+  1. **Program the retimer.** It is out of reset now and still unprogrammed.
+     `tools/retimer-program.sh` in that repo has the 27 registers, the offsets
+     from TI's SNLS340E Table 6, and a report-only mode. Note the per-channel
+     bases are not a uniform stride, and which channel group serves Et52 is not
+     established.
+  2. **Force the transmit taps.** `serdes_preemphasis_lane<N>_61 = 0x81F4` and
+     `serdes_driver_current_lane<N>_61 = 0`. Bit 15 is the tap-force bit; a 40G
+     CR4/KR4 port uses the KR tap set and the property cannot reach it without
+     that bit. The packing is `post<<10 | main<<4 | pre`, and this board's FDL
+     gives pre 4, main 31, post 0.
+  3. **`bcm_port_probe`** on the cage, the one part of the documented bring-up
+     sequence not yet tried here.
 
-- **The cage-word decode table is the sibling's and does not fit this board.**
-  `internal/platformhal/scd/transceiver.go` knows `0x47`, `0x1c0` and `0x180`;
-  this board reads `0x108` for a cabled cage, `0x105` for an empty one and
-  `0x100` for a cabled one whose latched status has been cleared. So every cage
-  here decodes as "undetermined", which is honest but useless — and it is the
-  fourth thing in this driver that was one board's constant. Measuring the four
-  values on this board would make presence reporting work, and it is read-only.
+  There is now a fast oracle for all three: the far end's `nosaic show ports`
+  says whether anything changed, in seconds.
 
 - **No OSPFv3 adjacency.** Our side is configured and running: `ospf6d` answers,
   all three taps have link-local addresses, and each interface declares
