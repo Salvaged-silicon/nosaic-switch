@@ -814,6 +814,25 @@ static void bring_up_40g(int unit, bcm_port_t port)
 		bcm_port_if_t have_if;
 		int have_speed = 0, have_duplex = 0, have_an = 0, wrote = 0;
 
+		/* Bind a PHY driver to the port before asking it anything.
+		 *
+		 * The board's working configuration runs this as the first step of
+		 * its per-port bring-up, and nothing here did. It is cheap and it is
+		 * idempotent: on a direct-SerDes cage it re-binds the internal
+		 * driver the chip already chose.
+		 */
+		{
+			bcm_pbmp_t want, okay;
+
+			BCM_PBMP_CLEAR(want);
+			BCM_PBMP_CLEAR(okay);
+			BCM_PBMP_PORT_ADD(want, port);
+			rv = bcm_port_probe(unit, want, &okay);
+			if (rv < 0 || !BCM_PBMP_MEMBER(okay, port))
+				printf("port %d: bcm_port_probe rv=%d, probed=%d\n",
+				       port, rv, BCM_PBMP_MEMBER(okay, port) ? 1 : 0);
+		}
+
 		if (bcm_port_interface_get(unit, port, &have_if) == BCM_E_NONE &&
 		    have_if != BCM_PORT_IF_XGMII) {
 			rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_XGMII);
