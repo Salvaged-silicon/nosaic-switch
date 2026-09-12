@@ -13,7 +13,7 @@ second in the tree rather than first — see
 | Management | RJ45, `tg3` |
 | Bootloader | Aboot 4.0.7, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — NOSaic has not booted on this board yet |
+| Status | **bringup** — boots, drives the chip, three 40G links up, forwards nothing yet |
 
 - **[Hardware reference](docs/hardware.md)** — diagrams, port map, registers, quirks
 - **[Build](docs/build.md)** — building an image for it
@@ -22,24 +22,36 @@ second in the tree rather than first — see
 
 ## What works
 
-**An image builds. Nothing has booted.** This port is `bringup`: the board
-directory, a Trident2 datapath, the copper PHY layer and the ASIC configuration
-all exist, `make image BOARD=arista-7050tx-64` produces a 14.6 MiB SWI carrying
-them, and not one line of it has executed on the switch.
+NOSaic boots on this switch, drives the Trident2, and brings its three cabled
+40G links up. Measured on the hardware, 2026-09-11/12:
 
-That gap is the whole of what is left — see [todo](docs/todo.md).
+- **Boots from Aboot into its own userland**, into an A/B slot with a persistent
+  data image. The management port answers on its configured address.
+- **A/B upgrade works in both directions, unattended.** A rootfs was streamed to
+  the switch, installed into the inactive slot by the running CLI, and booted;
+  an image the health check declined was left to roll back, and a healthy one
+  committed itself — `NOSAIC-TRIAL COMMIT slot b is healthy and is now the slot
+  this switch boots`.
+- **The chip initialises.** `soc_misc_init`, `soc_mmu_init`, `bcm_attach`,
+  `bcm_init` and `bcm_stat_init` all complete, 52 ports are created from the
+  generated port map, and the four QSFP cages land on SDK ports 49, 53, 57 and
+  61 exactly as [the port map](docs/hardware.md#port-map) says they should.
+- **Three 40G links are up**, and `nosaic show ports` answers from the silicon:
+  `et49 et50 et52`, all `up 40000` at MTU 1600.
+- **Thermal control works** — four sensors, and the fans take their commands.
+- **The copper PHY layer finds its 48 ports** and is watching them.
 
-What is established is the *board*, under **EdgeNOS** — the predecessor project,
-which boots this switch and forwards in hardware. Everything in
+**It does not forward yet.** Every transit port shows link, transmits, and
+receives *nothing*: zero frames at the MAC in either unicast or broadcast, with
+no errors. Whether that is this end or the far ends is not yet established —
+see [todo](docs/todo.md), which is also where everything else that is missing
+is written down.
+
+The board itself was established first under **EdgeNOS**, the predecessor
+project, which forwards in hardware here — IPv4 and IPv6, OSPFv2/v3, ECMP as a
+shared group, LEDs, PSU and thermal monitoring. Everything in
 [hardware.md](docs/hardware.md) was read off the running unit rather than
-inferred, and that is the value this directory carries today. EdgeNOS reaches
-hardware forwarding for IPv4 and IPv6, OSPFv2/v3 adjacencies, ECMP programmed as
-a shared group, LEDs, and PSU and thermal monitoring — none of which is NOSaic
-code.
-
-Being explicit about that gap is the point of shipping the port at `bringup`
-rather than holding it back: somebody with this switch in a rack can see that
-the project knows the hardware and where the work stopped.
+inferred.
 
 ## What this board needs that the SX2 did not
 
