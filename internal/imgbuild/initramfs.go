@@ -183,15 +183,27 @@ mount_flash() {
             mkdir -p /mnt/flash
             mount -t vfat "$_d" /mnt/flash 2>/dev/null || continue
             FLASH=/mnt/flash
+            # ⚠ NOT STDOUT. This function is called from inside slotdev(),
+            # whose stdout IS its return value, so anything printed here is
+            # captured as the slot's device path. A board with no flash
+            # filesystem then tries to mount a warning message as squashfs and
+            # fails with "slot a does not contain a mountable image", which
+            # names the slot and says nothing about the real cause.
             [ "$_waited" -gt 0 ] && \
-                echo "NOSAIC-INITRAMFS flash appeared after ${_waited}s ($_d)"
+                echo "NOSAIC-INITRAMFS flash appeared after ${_waited}s ($_d)" >&2
             return 0
         done
+        # A board whose state is already on a real partition does not have
+        # its slots in files on a bootloader filesystem, so there is nothing
+        # to wait for: waiting adds the timeout to every boot of every
+        # partitioned board to no purpose.
+        [ "${FLASH_OPTIONAL:-no}" = yes ] && break
         [ "$_waited" -ge 15 ] && break
         _waited=$((_waited + 1))
         sleep 1
     done
-    echo "NOSAIC-INITRAMFS-WARN no flash filesystem after ${_waited}s"
+    [ "${FLASH_OPTIONAL:-no}" = yes ] || \
+        echo "NOSAIC-INITRAMFS-WARN no flash filesystem after ${_waited}s" >&2
     return 1
 }
 
@@ -199,6 +211,9 @@ PERSIST=no
 DATA="$(findfs LABEL=nosaic-data 2>/dev/null || echo /dev/vda4)"
 if mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
     echo "NOSAIC-INITRAMFS data partition mounted ($DATA)"
+    # This board keeps its state in partitions, so its slots are partitions
+    # too and no bootloader filesystem needs waiting for.
+    FLASH_OPTIONAL=yes
     mkdir -p /mnt/data/config /mnt/data/secrets
     PERSIST=yes
 elif mount_flash && [ -f "$FLASH/nosaic-data.img" ] \
