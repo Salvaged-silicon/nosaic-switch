@@ -313,9 +313,23 @@ static int nosaic_interrupt_disconnect(soc_cm_dev_t *dev)
  */
 static char *nosaic_config_var_get(soc_cm_dev_t *dev, const char *name)
 {
+	/* ⚠ RESOLVE THE UNIT SUFFIX, OR A REAL SWITCH'S CONFIGURATION IS INERT.
+	 *
+	 * The SDK asks for "portmap_1" and config.bcm spells it "portmap_1.0".
+	 * Its own configuration layer bridges that; ours is the configuration
+	 * layer here, so it has to. Without this the chip initialises on its
+	 * built-in defaults with every property loaded, counted and unread --
+	 * which is not a port map that is wrong, it is a port map that is
+	 * absent while the console says it was loaded.
+	 *
+	 * Unit 0 because this daemon creates exactly one device, and the SDK
+	 * asks these questions while creating it -- before there is a unit
+	 * number to be had from anywhere else.
+	 */
+	(void)dev;
 	/* The SDK's own prototype is not const-correct; the value is not
 	 * modified, and casting here keeps that fact in one place. */
-	return (char *)nosaic_props_get(name);
+	return (char *)nosaic_props_get_unit(name, 0);
 }
 
 /*
@@ -716,13 +730,13 @@ static void report_delta(bcm_port_t port, const struct pcounters *a,
  * Applied only to ports the map declares as 40G. The 10G cages reach link on
  * the property defaults, and there is no reason to touch what works.
  */
-static int port_is_40g(int port)
+static int port_is_40g(int unit, int port)
 {
 	char key[32];
 	const char *v;
 
 	snprintf(key, sizeof(key), "portmap_%d", port);
-	v = nosaic_props_get(key);
+	v = nosaic_props_get_unit(key, unit);
 	if (v == NULL)
 		return 0;
 	v = strchr(v, ':');
@@ -840,7 +854,7 @@ int nosaic_sdk_ports(int unit)
 			char key[32];
 
 			snprintf(key, sizeof(key), "portmap_%d", p);
-			if (nosaic_props_get(key) == NULL)
+			if (nosaic_props_get_unit(key, unit) == NULL)
 				continue;
 			if (!BCM_PBMP_MEMBER(cfg.port, p)) {
 				printf("port %d is in the map and NOT in the chip's port "
@@ -864,7 +878,7 @@ int nosaic_sdk_ports(int unit)
 
 		/* Before enabling: the interface type has to be right as the port
 		 * comes up, not corrected afterwards. */
-		if (port_is_40g(port))
+		if (port_is_40g(unit, port))
 			bring_up_40g(unit, port);
 
 		erv = bcm_port_enable_set(unit, port, 1);

@@ -81,7 +81,7 @@ static void phy_scan_properties(void)
 		char key[32];
 
 		snprintf(key, sizeof(key), "phy_bus_i2c_%d", p);
-		if (nosaic_props_get(key) != NULL) {
+		if (nosaic_props_get_unit(key, phy_unit) != NULL) {
 			phy_copper[p] = 1;
 			phy_any = 1;
 		}

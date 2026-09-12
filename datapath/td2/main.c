@@ -272,7 +272,7 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
 		nosaic_bde_close(b);
 		return 1;
 	}
-	if (nosaic_props_get("portmap_1") == NULL)
+	if (nosaic_props_get_unit("portmap_1", 0) == NULL)
 		fprintf(stderr, "nosd-td2: warning: no portmap_1 property. The SDK cannot\n"
 			"  attach without a port map, and this board's is generated rather\n"
 			"  than shipped -- see platform/<board>/tools/mkportmap.sh\n");
@@ -379,7 +379,7 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 			SHIPPED_CONF_DIR, PERSIST_CONF_DIR);
 		return 1;
 	}
-	if (nosaic_props_get("portmap_1") == NULL) {
+	if (nosaic_props_get_unit("portmap_1", 0) == NULL) {
 		fprintf(stderr,
 			"nosd: no port map, so the chip would initialise and reach no\n"
 			"      front-panel cage. The map is generated from your own switch\n"
