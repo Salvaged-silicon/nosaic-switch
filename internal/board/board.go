@@ -302,6 +302,9 @@ func (b *Board) Validate(root string) []string {
 	if err := b.PlatformHAL.SMBus.Validate(); err != nil {
 		bad("platform_hal.smbus: %s", err)
 	}
+	if err := b.PlatformHAL.Cages.Validate(); err != nil {
+		bad("platform_hal.%s", err)
+	}
 
 	// Checked here rather than at build time: a U-Boot board with no load
 	// address cannot produce a bootable image, and finding that out after a
@@ -374,6 +377,10 @@ type PlatformHAL struct {
 	// hardcoded placement is right for one Arista board and silently wrong
 	// for the next.
 	SMBus *platformhal.SMBusMap `yaml:"smbus"`
+	// Cages is the front-panel transceiver table: where the SCD's per-cage
+	// control words are and how many there are. Also per-board, and also
+	// something a wrong value writes registers for rather than failing.
+	Cages *platformhal.CageTable `yaml:"cages"`
 }
 
 // Thermal is a board's cooling curve.

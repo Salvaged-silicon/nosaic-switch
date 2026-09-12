@@ -122,6 +122,34 @@ platform_hal:
     # it is deliberately not spent.
     fans: {part: crow-cpld, accel: 0, bus: 1, addr: 0x60, count: 4, max_pwm: 180, floor_percent: 60}
 
+  # The front-panel transceiver cages.
+  #
+  # ⚠ FOUR CAGES AT 0xA100, NOT FIFTY-FOUR AT 0xA010.
+  #
+  # The sibling board is 48 SFP+ plus 6 QSFP+ and its control table starts at
+  # 0xa010. This board's first 48 ports are RJ45 and have no cage at all, so
+  # the table is four QSFP+ entries at 0xa100 -- and the sibling's numbers,
+  # which the driver used to carry as constants, write 54 entries from 0xa010
+  # straight through this board's per-QSFP-cage LED block at 0xa000..0xa0f0
+  # and out the far side.
+  #
+  # The boundary is why hardware.md flags it: the LED block ends at 0xa0f0 and
+  # transceiver control begins at 0xa100, so an off-by-one in either direction
+  # lands on the other thing.
+  #
+  # Getting this wrong is what a dark cage looks like. A QSFP module held in
+  # low power and reset answers nothing and emits nothing, while the switch
+  # chip reports a port that is enabled, at 40000, with the right lane map and
+  # polarity, and no error anywhere.
+  cages:
+    base: 0xA100
+    stride: 0x10
+    count: 4
+    sfp_count: 0
+    # Et49..Et52 are accelerator 1, buses 0..3 -- measured by reading the SFF
+    # identifier byte at 0x50 on each bus and seeing which answered 0x0d.
+    qsfp_eeprom: {accel_base: 1, buses_per_accel: 8}
+
 # The cooling curve. At or below 25 °C the fans sit at the controller's floor;
 # at or above 40 °C they are flat out.
 #

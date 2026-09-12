@@ -133,3 +133,86 @@ func (a SMBusAddr) validate(what string) error {
 	}
 	return nil
 }
+
+// CageTable is a board's front-panel transceiver cages.
+//
+// ⚠ ALSO BOARD DATA, AND FOR THE SAME REASON AS THE SMBus MAP ABOVE.
+//
+// The SCD gates every cage's laser, and where that table lives differs per
+// board: the 7050SX2 has 54 cages at 0xa010 and the 7050TX-64 has 4 at 0xa100,
+// because the TX's first 48 ports are RJ45 and have no cage at all. Driving the
+// TX with the SX2's numbers writes 54 entries starting at 0xa010 -- straight
+// through that board's per-cage LED block and out the far side of the real
+// control table.
+//
+// It is also what the cages being dark looks like: the module is held in reset
+// and low power, so it answers nothing and emits nothing, while the switch chip
+// reports a port that is enabled, at the right speed, with the right lane map.
+type CageTable struct {
+	// Base and Stride locate the per-cage control words.
+	Base   int `yaml:"base"`
+	Stride int `yaml:"stride"`
+	// Count is how many cages the front panel has, and SFPCount how many of
+	// those come first as SFP+; the rest are QSFP+. A board of nothing but
+	// QSFP+ states sfp_count: 0.
+	Count    int `yaml:"count"`
+	SFPCount int `yaml:"sfp_count"`
+	// SFPEEPROM and QSFPEEPROM say which SMBus accelerator and bus reach each
+	// range's module EEPROM: accel = accel_base + index/buses_per_accel, and
+	// bus = index % buses_per_accel, with index counted from the start of that
+	// range. SFPEEPROM may be omitted on a board with no SFP+ cages.
+	SFPEEPROM  *CageEEPROM `yaml:"sfp_eeprom"`
+	QSFPEEPROM *CageEEPROM `yaml:"qsfp_eeprom"`
+}
+
+// CageEEPROM is how one range of cages is laid out across the SMBus.
+type CageEEPROM struct {
+	AccelBase     int `yaml:"accel_base"`
+	BusesPerAccel int `yaml:"buses_per_accel"`
+}
+
+// Validate reports what a board got wrong about its cages.
+func (c *CageTable) Validate() error {
+	if c == nil {
+		return nil
+	}
+	switch {
+	case c.Base <= 0:
+		return fmt.Errorf("cages: base %#x is not a register offset", c.Base)
+	case c.Stride <= 0:
+		return fmt.Errorf("cages: stride %d must be positive", c.Stride)
+	case c.Count < 1 || c.Count > 256:
+		return fmt.Errorf("cages: count %d is outside 1..256", c.Count)
+	case c.SFPCount < 0 || c.SFPCount > c.Count:
+		return fmt.Errorf("cages: sfp_count %d is outside 0..%d", c.SFPCount, c.Count)
+	case c.SFPCount > 0 && c.SFPEEPROM == nil:
+		return fmt.Errorf("cages: %d SFP+ cages but no sfp_eeprom", c.SFPCount)
+	case c.SFPCount < c.Count && c.QSFPEEPROM == nil:
+		return fmt.Errorf("cages: %d QSFP+ cages but no qsfp_eeprom", c.Count-c.SFPCount)
+	}
+	for name, e := range map[string]*CageEEPROM{"sfp_eeprom": c.SFPEEPROM, "qsfp_eeprom": c.QSFPEEPROM} {
+		if e == nil {
+			continue
+		}
+		if e.AccelBase < 0 || e.AccelBase > 15 {
+			return fmt.Errorf("cages: %s accel_base %d is outside 0..15", name, e.AccelBase)
+		}
+		if e.BusesPerAccel < 1 || e.BusesPerAccel > 16 {
+			return fmt.Errorf("cages: %s buses_per_accel %d is outside 1..16", name, e.BusesPerAccel)
+		}
+	}
+	return nil
+}
+
+// CageSMBus is which accelerator and bus reach one cage's module EEPROM.
+// Cages are 1-based, matching the front panel.
+func (c *CageTable) CageSMBus(cage int) (accel, bus int) {
+	e, idx := c.QSFPEEPROM, cage-1-c.SFPCount
+	if cage <= c.SFPCount {
+		e, idx = c.SFPEEPROM, cage-1
+	}
+	if e == nil {
+		return -1, -1
+	}
+	return e.AccelBase + idx/e.BusesPerAccel, idx % e.BusesPerAccel
+}
