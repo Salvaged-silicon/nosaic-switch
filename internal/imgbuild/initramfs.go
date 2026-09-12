@@ -278,6 +278,23 @@ slotdev() {
         return
     fi
 
+    # The data filesystem, as a fallback and with a warning.
+    #
+    # This is NOT where a slot belongs -- the bootloader cannot read it, and
+    # the per-slot overlays it does hold have to share the space. It is checked
+    # because an installer that put a slot here once, and a slot file that
+    # exists and is silently ignored is the worst of the available outcomes: an
+    # upgrade that writes its image, marks its trial, rolls back for want of a
+    # file that is right there, and comes up healthy on the old slot with every
+    # signal saying it worked.
+    if [ -f "/mnt/data/$want.sqsh" ]; then
+        echo "NOSAIC-BOOT-WARN slot file found on the data filesystem" \
+             "(/mnt/data/$want.sqsh), which is not where the installer should" \
+             "put it" >&2
+        echo "/mnt/data/$want.sqsh"
+        return
+    fi
+
     # The numeric guess, for one of our disks whose labels are unreadable.
     # A device carrying a squashfs is taken in preference to one that merely
     # exists -- but if none of them do, the first that exists is still

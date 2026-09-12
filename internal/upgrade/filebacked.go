@@ -67,9 +67,43 @@ func Local() (Disk, error) {
 		return Disk{}, fmt.Errorf("this system has no mounted boot state: " +
 			"neither /mnt/boot/boot nor /mnt/data/boot is there")
 	}
-	parent := filepath.Dir(dir)
-	return Disk{Path: parent, Data: parent, Files: true}, nil
+	data := filepath.Dir(dir)
+	d := Disk{Path: data, Data: data, Files: true}
+
+	// ⚠ A SLOT FILE LIVES ON THE BOOTLOADER'S FILESYSTEM, NOT BESIDE THE BOOT
+	// STATE.
+	//
+	// This used to put both in the same place, because on a board with no boot
+	// partition the state lands on the data filesystem and that was the only
+	// directory to hand. The initramfs does not look there for a slot: it
+	// looks on the bootloader's own filesystem, because that is the one the
+	// bootloader can read. So an install "succeeded", wrote 63 MiB, marked a
+	// trial -- and the next boot could not find the slot, rolled back to the
+	// active one, and came up healthy. Every visible signal said the upgrade
+	// worked. Nothing had been upgraded.
+	//
+	// Found by asking where the slot we are RUNNING FROM is, which is the only
+	// answer that cannot be wrong: whatever directory the initramfs mounted
+	// the active slot out of is the directory the next one belongs in.
+	st, err := readStateDir(dir)
+	if err == nil {
+		active := strings.TrimSpace(st["active"])
+		if active == "" {
+			active = "a"
+		}
+		for _, cand := range []string{bootloaderDir, data} {
+			if _, err := os.Stat(filepath.Join(cand, slotFileName(active))); err == nil {
+				d.Path = cand
+				break
+			}
+		}
+	}
+	return d, nil
 }
+
+// bootloaderDir is where the initramfs mounts the bootloader's own filesystem.
+// It matches mount_flash() in the initramfs; the two must not drift apart.
+const bootloaderDir = "/mnt/flash"
 
 // dataDir is the mounted persistent filesystem: boot state and the per-slot
 // overlays live here.
