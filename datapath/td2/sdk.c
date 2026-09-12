@@ -785,28 +785,77 @@ static void bring_up_40g(int unit, bcm_port_t port)
 	}
 
 	/*
-	 * Nothing is set here any more, and that is the point.
+	 * The board's own bring-up, applied ONLY where the chip disagrees.
 	 *
-	 * This function used to force interface, speed, duplex and autoneg on
-	 * every 40G port. It was written when the cages were dark and the cause
-	 * was unknown, and it never brought a port up: the cages were switched
-	 * off at the board controller, and the fix was in the SCD driver.
+	 * ⚠ THIS FUNCTION USED TO DO NOTHING, AND THAT COST A LINK.
 	 *
-	 * What it did do is reconfigure a port the chip had already brought up
-	 * correctly from port_init_speed. bcm_port_interface_set and
-	 * bcm_port_speed_set take the XLPORT MAC through reset to apply a
-	 * change, and applying a change the port already had left both 40G
-	 * ports linked at the PCS and deaf at the MAC -- zero frames in, zero
-	 * frames out, no FCS errors, while every status the SDK reports said
-	 * the port was up at 40000. The two 10G ports, which this function
-	 * never touched, forwarded throughout.
+	 * It once forced interface, speed, duplex and autoneg on every 40G port
+	 * unconditionally, and on the SIBLING board that was actively harmful:
+	 * bcm_port_interface_set and bcm_port_speed_set take the XLPORT MAC
+	 * through reset to apply a change, so applying a change a port already
+	 * had left both its 40G ports linked at the PCS and deaf at the MAC.
+	 * The cure was to stop setting anything at all.
 	 *
-	 * The port map's ":40" and port_init_speed are enough. A port that the
-	 * chip configured at init does not want configuring again.
+	 * That cure was then imported to this board, where it is wrong. The
+	 * predecessor's notes are explicit that the full sequence -- probe,
+	 * interface, speed, duplex, autoneg, enable, linkscan -- "has only ever
+	 * been run against port 61", and port 61 is the one cage here that
+	 * reaches a neighbour the chip's own defaults cannot satisfy. Left
+	 * alone, it locks onto the far end's light and reports up at 40000
+	 * while the far end reports no link at all: a remote fault with a clean
+	 * local receive.
+	 *
+	 * So: read first, write only on a genuine mismatch. That is the end
+	 * state the working configuration reaches, without the re-apply that
+	 * broke the sibling -- a port the chip already configured correctly is
+	 * still not touched, because nothing differs to write.
 	 */
-	if (bcm_port_speed_get(unit, port, &rv) == BCM_E_NONE)
-		printf("port %d: 40G cage, speed %d, left as the chip initialised it\n",
-		       port, rv);
+	{
+		bcm_port_if_t have_if;
+		int have_speed = 0, have_duplex = 0, have_an = 0, wrote = 0;
+
+		if (bcm_port_interface_get(unit, port, &have_if) == BCM_E_NONE &&
+		    have_if != BCM_PORT_IF_XGMII) {
+			rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_XGMII);
+			printf("port %d: interface %d -> XGMII (rv %d)\n", port, have_if, rv);
+			wrote++;
+		}
+		if (bcm_port_speed_get(unit, port, &have_speed) == BCM_E_NONE &&
+		    have_speed != 40000) {
+			rv = bcm_port_speed_set(unit, port, 40000);
+			printf("port %d: speed %d -> 40000 (rv %d)\n", port, have_speed, rv);
+			wrote++;
+		}
+		if (bcm_port_duplex_get(unit, port, &have_duplex) == BCM_E_NONE &&
+		    have_duplex != BCM_PORT_DUPLEX_FULL) {
+			rv = bcm_port_duplex_set(unit, port, BCM_PORT_DUPLEX_FULL);
+			printf("port %d: duplex -> full (rv %d)\n", port, rv);
+			wrote++;
+		}
+		/* Autoneg off: these cages carry SR4/AOC optics, which do not
+		 * negotiate. A cage left negotiating transmits autoneg pages at a
+		 * neighbour that is not listening for them. */
+		if (bcm_port_autoneg_get(unit, port, &have_an) == BCM_E_NONE && have_an) {
+			rv = bcm_port_autoneg_set(unit, port, 0);
+			printf("port %d: autoneg on -> off (rv %d)\n", port, rv);
+			wrote++;
+		}
+
+		/* Linkscan mode, which says HOW a port is scanned. Enabling the
+		 * scan is done once for the unit elsewhere; a port that is never
+		 * given a mode is not managed by it. */
+		{
+			bcm_pbmp_t pbm;
+
+			BCM_PBMP_CLEAR(pbm);
+			BCM_PBMP_PORT_ADD(pbm, port);
+			bcm_linkscan_mode_set_pbm(unit, pbm, BCM_LINKSCAN_MODE_HW);
+		}
+
+		if (bcm_port_speed_get(unit, port, &rv) == BCM_E_NONE)
+			printf("port %d: 40G cage, speed %d, %d setting(s) applied\n",
+			       port, rv, wrote);
+	}
 }
 
 

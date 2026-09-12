@@ -124,6 +124,7 @@ func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
 		ASICPCI: b.PlatformHAL.ASICPCI,
 		SMBus:   b.PlatformHAL.SMBus,
 		Cages:   b.PlatformHAL.Cages,
+		Resets:  b.PlatformHAL.Resets,
 	})
 	if err != nil {
 		return nil, nil, err

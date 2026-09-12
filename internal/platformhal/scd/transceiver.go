@@ -36,6 +36,24 @@ const (
 	// up at once, and before that on a 7050TX-64, where reading the same block
 	// under EOS and under our own OS was what located it.
 	xcvrQSFPLowPower = (1 << 5) | (1 << 7)
+
+	// xcvrModSel is bit 0: module select, and it must be ASSERTED for the
+	// module to be selected and powered.
+	//
+	// ⚠ CLEARING BITS IS NOT ENOUGH. This driver enabled a cage by clearing
+	// TX_DISABLE and the low-power/reset pair and leaving every other bit as
+	// found, which works only for as long as something else has already
+	// asserted this one. The vendor writes the whole word: 0x101 on the
+	// 7050TX-64, established by reading the block under the vendor OS with
+	// the link up and under ours with it down.
+	//
+	// It does not read back as written -- the word mixes read-only status
+	// with control -- so a cage written 0x101 reads 0x108, and a cage whose
+	// module select was never asserted reads 0x100. That one bit of
+	// difference is invisible unless a working cage is there to compare
+	// against, and it is the difference between a module that answers and a
+	// module that does not.
+	xcvrModSel = 1 << 0
 )
 
 // cageTable is the board's cage table, or an error naming what is missing.
@@ -187,6 +205,7 @@ func (s *SCD) SetTX(cage int, on bool) (before, after uint32, err error) {
 		v = before &^ uint32(xcvrTXDisable)
 		if cage > t.SFPCount {
 			v &^= uint32(xcvrQSFPLowPower)
+			v |= xcvrModSel
 		}
 	}
 	s.write32(off, v)

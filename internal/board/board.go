@@ -305,6 +305,9 @@ func (b *Board) Validate(root string) []string {
 	if err := b.PlatformHAL.Cages.Validate(); err != nil {
 		bad("platform_hal.%s", err)
 	}
+	if err := platformhal.ValidateResets(b.PlatformHAL.Resets); err != nil {
+		bad("platform_hal.resets: %s", err)
+	}
 
 	// Checked here rather than at build time: a U-Boot board with no load
 	// address cannot produce a bootable image, and finding that out after a
@@ -381,6 +384,9 @@ type PlatformHAL struct {
 	// control words are and how many there are. Also per-board, and also
 	// something a wrong value writes registers for rather than failing.
 	Cages *platformhal.CageTable `yaml:"cages"`
+	// Resets are board reset lines released during bring-up beyond the switch
+	// chip's own -- a retimer in front of some cages, for instance.
+	Resets []platformhal.ResetLine `yaml:"resets"`
 }
 
 // Thermal is a board's cooling curve.
