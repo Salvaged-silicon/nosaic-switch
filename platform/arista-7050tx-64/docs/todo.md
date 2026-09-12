@@ -72,29 +72,46 @@ the box could make.
   reported success, marked a trial, and the next boot rolled back for want of a
   file that was on the box — with every visible signal saying the upgrade had
   worked.
+- **The generators never emitted the SerDes lane maps**, so three 40G links came
+  up at 40000 and received zero frames. The PCB does not route the four lanes to
+  a QSFP connector in order. Adding them started receive on both SX2 links.
+  ⚠ Both generators had been verified against the working configuration and
+  reproduced it "byte for byte" — a diff cannot show a family that is absent
+  from both sides.
 
 ## Blocking — NOSaic does not forward on this board without these
 
-- **Every transit port receives nothing.** All three cabled 40G links show
-  `link=1` and transmit — ARP goes out, `out-nuc` climbs — and every one of them
-  reports `in-uc=0 in-nuc=0`, no errors, on both the two links to the 7050SX2
-  and the one to the Edgecore AS5610. Not one frame reaches the MAC, so nothing
-  above it can be judged: no ARP, no OSPF, no L2 learning, and the FIB sync
-  reports every route skipped as "not a router interface" because no neighbour
-  has ever resolved.
+- **Transmit does not reach the neighbour.** Receive is fixed — see below — and
+  the two links to the 7050SX2 now take frames all the way to the Linux taps
+  (45 packets, `/proc/net/dev`). Nothing unicast ever comes back: `in-uc=0` on
+  every port, so no ARP resolves and no adjacency forms. The far end is sending
+  broadcast and is therefore alive and configured; it is not answering us.
 
-  ⚠ **Do not assume this end.** The far ends have not been checked since this
-  work started, and PCS lock proves only that light is arriving, not that the
-  neighbour has a configured interface sending frames. A neighbour whose
-  interface is down sends idles, which lock a PCS perfectly. Establish the
-  far-end state *first*: the SX2 answers on `10.10.32.2` and its
-  `config/network.conf` already addresses these exact links. This project has
-  made the opposite mistake before — concluding a port fault was physical when
-  it was ours — and it cost an evening.
+  What is already ruled out: the SDK read every property this board supplies
+  except `xgxs_lcpll_xtal_refclk`, and the generated configuration now matches
+  the predecessor's working file on every property but the one deliberate
+  divergence. So the remaining difference is in the **call sequence**, not the
+  configuration. EdgeNOS makes these calls and NOSaic makes none of them:
 
-  If it is this end, the two candidates are RX polarity (`polarity.conf` is
-  generated per board and a wrong flip gives exactly this: link, no frames) and
-  the MAC-side interface on a 40G cage.
+  | call | what it is for |
+  |---|---|
+  | `bcm_port_interface_set(XGMII)` + `speed_set(40000)` + `duplex_set(FULL)` + `autoneg_set(0)` | the explicit 40G bring-up, applied per cage |
+  | `bcm_port_probe` | binds a PHY driver to each port; matters most for the 48 copper |
+  | `bcm_linkscan_mode_set_pbm(HW)` | NOSaic sets linkscan running but never sets a per-port mode |
+  | `bcm_port_control_set(bcmPortControlIP4/IP6, 1)` | per-port L3 enable — needed to route, above the MAC |
+  | `bcm_l3_enable_set(1)` | egress-object L3 model |
+  | `bcm_multicast_create` + `bcm_multicast_egress_add` | control multicast to the CPU, which is how OSPF is heard |
+
+  ⚠ The 40G sequence is the one to try first and the one to be careful with.
+  NOSaic skips it deliberately, and the reason is in `datapath/td2/sdk.c`: on
+  the **sibling** board, re-applying a setting a port already had left both 40G
+  ports linked at the PCS and deaf at the MAC. That reasoning was imported here
+  without being retested, and this board's predecessor does apply it and does
+  forward. The sibling's symptom was zero frames in *and* out; this board's is
+  zero in and frames out, so they are not the same fault.
+
+  `et52` to the Edgecore AS5610 is further behind than the other two: it
+  receives nothing at all, where the SX2 links receive. Treat it separately.
 
 - **No flash backup since the board's contents changed.** The existing backup
   predates everything written to `/mnt/flash` since, and the vendor images on
