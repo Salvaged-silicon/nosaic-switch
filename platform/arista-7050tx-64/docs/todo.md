@@ -98,6 +98,49 @@ the box could make.
   at 40000 and the far end reported it down. Programming it brought Et52 up,
   confirmed from both ends, with an OSPF adjacency and 1.8 ms round trip.
 
+## Tested on the hardware, 2026-09-13
+
+A deliberate pass over the claims this board had not been asked to prove.
+
+- **Unattended rollback of an unbootable slot.** The inactive slot was
+  overwritten with random bytes and marked for trial. The boot did exactly what
+  it says: `NOSAIC-BOOT-TRIAL slot b attempt 1 of 3`, then
+  `NOSAIC-BOOT-ROLLBACK ... would not mount as squashfs; returning to a`, then
+  up on the active slot with the trial cleared. It rolled back on attempt 1
+  rather than spending all three, which is right — there is nothing to learn
+  from remounting the same corrupt file twice.
+- **The rollback leaves evidence.** `/mnt/data/boot/log` carried the decision
+  afterwards, which is the point of writing it to the data partition: the slot
+  files are cleaned up by a rollback, so the console is otherwise the only
+  record and a switch in a rack has nobody watching it.
+- **Configuration survives a rollback.** A marker written to
+  `/mnt/data/config` was still there after the trial and the rollback.
+- **Jumbo frames.** A 1572-byte payload — 1600 on the wire — crosses the fabric
+  with no loss, so the MTU is real and not just configured.
+- **IPv6 forwarding.** Eight OSPFv3 routes learned over `et52` and programmed
+  into the chip.
+
+## Found by testing, and not yet fixed
+
+- ⚠ **`nosaic platform tx <n> off` does not gate the laser on this board.** It
+  writes the bit, reads it back changed (`0x108 -> 0x140`) and reports success,
+  and the neighbour keeps receiving us: an adjacency held Full with an uptime of
+  six hours across the whole test. The TX_DISABLE bit position is the sibling
+  board's constant and is unconfirmed here, so the read-back check is verifying
+  the wrong bit rather than the effect. A command that claims to turn a
+  transmitter off and silently does nothing is worse than one that refuses.
+
+  Consequence for testing: **link-down behaviour cannot be exercised from this
+  end.** Flapping a port needs a cable pull or a far-end shutdown, so OSPF
+  withdrawal, ECMP member removal and FIB reconvergence are all still unproven
+  here.
+
+- ⚠ **`nosaic verify ports` and `nosaic verify routes` are stubs.** Both are
+  advertised in the CLI's own help and both answer "implemented in the C CLI and
+  not yet here". They are the commands that compare what Linux believes against
+  what the chip actually holds, which is exactly the check this board most
+  wants — every FIB claim here rests on reading the datapath's own log instead.
+
 ## Blocking — the board is not at parity with the predecessor without these
 
 - **The 48 copper ports have never been exercised.** Nothing has been cabled to
