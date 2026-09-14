@@ -148,6 +148,26 @@ void nosaic_phybus_report(void)
 {
 	printf("phybus: %lu read(s), %lu write(s), %lu failure(s) through the "
 	       "copper PHY bus\n", phybus_reads, phybus_writes, phybus_errors);
+	{
+		unsigned long spins = 0, sleeps = 0, polls = 0;
+		int a;
+
+		for (a = 0; a < MDIO_ACCELS; a++) {
+			spins  += phybus_accel[a].spins;
+			sleeps += phybus_accel[a].sleeps;
+			polls  += phybus_accel[a].polls;
+		}
+		/* Where the bring-up spent its time. A transaction answered on
+		 * the spin cost microseconds; one that fell through to the
+		 * sleeping loop cost at least 100 us of scheduler, and 1.8
+		 * million of those is the difference between a one minute PHY
+		 * download and a thirteen minute one. */
+		printf("phybus: %lu transaction(s), %lu extra read(s) and %lu "
+		       "back-off sleep(s) -- %lu.%02lu reads and %lu.%02lu sleeps "
+		       "each\n", polls, spins, sleeps,
+		       polls ? spins / polls : 0, polls ? (100 * spins / polls) % 100 : 0,
+		       polls ? sleeps / polls : 0, polls ? (100 * sleeps / polls) % 100 : 0);
+	}
 	if (phybus_reads == 0 && phybus_writes == 0)
 		printf("phybus: the SDK never used this bus -- the external PHYs "
 		       "were not reached, whatever else reported success\n");
