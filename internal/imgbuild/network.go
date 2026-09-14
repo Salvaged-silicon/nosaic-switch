@@ -47,7 +47,19 @@ CONF=/etc/nosaic/network.conf
 [ -r "$CONF" ] || exit 0
 
 # How long to wait for the datapath to create its interfaces.
-WAIT_SECS=${NOSAIC_NET_WAIT:-600}
+# ⚠ LONG ENOUGH FOR THE SLOWEST DATAPATH, NOT FOR A TYPICAL ONE.
+#
+# This waits for interfaces the datapath creates, so the ceiling has to clear
+# however long that takes. On a board with 48 external PHYs it takes about
+# eleven minutes: Broadcom's driver downloads firmware to every one of them
+# over MDIO -- 1.8 million register writes -- before the chip reports its
+# ports. At the old ten-minute ceiling that board configured eth0, gave up on
+# the rest, and came up with no transit addressing at all, which reads as a
+# dead data plane rather than as a timeout.
+#
+# Nothing is lost by the higher ceiling: a board whose interfaces appear in
+# seconds stops waiting the moment they do.
+WAIT_SECS=${NOSAIC_NET_WAIT:-1500}
 POLL_SECS=5
 
 say() { echo "NOSAIC-NET $*"; }
