@@ -13,7 +13,7 @@ second in the tree rather than first — see
 | Management | RJ45, `tg3` |
 | Bootloader | Aboot 4.0.7, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots, forwards and routes on all three 40G links; copper untested |
+| Status | **bringup** — boots, forwards and routes on all three 40G links; copper links but has carried no traffic |
 
 - **[Hardware reference](docs/hardware.md)** — diagrams, port map, registers, quirks
 - **[Build](docs/build.md)** — building an image for it
@@ -45,11 +45,20 @@ cabled 40G links. Measured on the hardware:
 - **The board's own hardware is driven** — four thermal sensors and fan control,
   PSU presence, chassis lamps, the QSFP cages, the transceiver EEPROMs, and the
   DS100KR800 signal repeater in front of the last two cages.
+- **The copper PHYs link, and the MAC follows what they negotiate.** All 48
+  BCM84848s answer `0x600d`, take their firmware over the SCD's MDIO bus and
+  bind to Broadcom's driver; four ports have been cabled and all four came up —
+  `et1`/`et2` at 1000 with the MAC on SGMII, `et3`/`et4` at 10000 on XFI. The
+  MAC-interface matching is the whole reason [phy.c](../../datapath/td2/phy.c)
+  exists, and those two pairs are the first evidence it works. ⚠ **Link is all
+  that is proven.** No copper port has an address, so nothing has been routed
+  over one and every frame counter on them is zero.
 
-**It is still `bringup`, and the reasons are specific.** The 48 copper ports
-have never had a cable in them, so the PHY layer has never matched one. The
-watchdog is not armed, because arming it without a petting service is a timer
-that power-cycles the switch. `prefdl` is unread, so the board cannot say what
+**It is still `bringup`, and the reasons are specific.** The copper ports link
+but have carried nothing: four of the 48 have been cabled, none has an address,
+and no frame has crossed one in either direction. The watchdog is not armed,
+because arming it without a petting service is a timer that power-cycles the
+switch. `prefdl` is unread, so the board cannot say what
 it is and the management MAC lives in a config file. And `boot-config` still
 points at the vendor OS, so every NOSaic boot is a one-shot from the Aboot
 prompt — a power cycle returns to EOS. Until that changes it is a demo rather
@@ -65,9 +74,13 @@ inferred.
 ## What this board needs that the SX2 did not
 
 The 48 copper ports sit behind **BCM84848 PHYs whose firmware loads over the
-SCD's MDIO bus**, and nothing in the tree does that yet — both existing boards
-use direct-serdes cages. That layer is the work here; the rest has a sibling to
-copy, including the SCD platform HAL and the userspace-BDE approach to the chip.
+SCD's MDIO bus**, where both existing boards use direct-serdes cages. Nothing
+in the tree did that, and it was the work here: [scdmdio](../../datapath/scdmdio/)
+drives the controller's MDIO accelerators, [phybus.c](../../datapath/td2/phybus.c)
+hands the SDK a bus it can reach the parts on, and [phy.c](../../datapath/td2/phy.c)
+keeps the chip's MAC side agreeing with what the wire negotiated. The rest had a
+sibling to copy, including the SCD platform HAL and the userspace-BDE approach
+to the chip.
 
 Three of the quirks in [hardware.md](docs/hardware.md) exist only because of
 those PHYs, and each cost real time to find: a link with no speed is not a link,
