@@ -1,0 +1,238 @@
+# Edgecore AS4610-54T -- Broadcom BCM56340 (Helix4) with its own dual Cortex-A9
+# on the same die. 48 x 1000BASE-T, 4 x SFP+ 10G, 2 x SFP+ 10G stacking.
+#
+# The first board in the fleet with no PCI bus between the CPU and the
+# forwarding silicon. On every other NOSaic board the chip is a PCIe endpoint
+# the CPU enumerates; here the CMIC is a platform device at a fixed physical
+# address inside the SoC, and the CPU is part of the switch chip rather than
+# attached to it. See docs/hardware.md.
+
+id: edgecore-as4610-54t
+vendor: edgecore
+model: as4610-54t
+
+arch: armhf
+asic: helix4
+boot: onie-sfx
+
+# ── U-Boot ───────────────────────────────────────────────────────────────────
+#
+# ONIE is the installer, and underneath it is U-Boot 2012.10, which is what
+# actually loads the FIT. Everything in this block was read off the running
+# switch rather than chosen: the U-Boot environment, and the FIT this board
+# boots today.
+u_boot_arch: arm
+
+# 0x61008000, read out of the vendor's own arm-accton-as4610-54-r0.itb -- both
+# `load` and `entry` on its kernel node.
+#
+# It is DRAM base plus 32 KiB, which is the ARM convention, but the convention
+# is not why it is here: this board's DRAM does not start at zero. The device
+# tree puts memory at 0x61000000, so the usual 0x00008000 would be an address
+# with nothing behind it and a board that goes quiet the moment bootm jumps.
+u_boot_load: "0x61008000"
+u_boot_entry: "0x61008000"
+
+# Where the FIT is parked before bootm unpacks it. The vendor's `loadaddr`, and
+# the address its nos_bootcmd uses, so it is proven on this hardware.
+#
+# 0x70000000 is 240 MiB above where the kernel unpacks, which is the margin
+# that matters: the FIT is read in whole and then decompressed downward into
+# 0x61008000, and a stage address too close has the copy overwrite its own
+# source partway through. The vendor's FIT is 16 MiB and ours is capped at
+# fit_mib below, so the margin is an order of magnitude larger than either.
+u_boot_stage: "0x70000000"
+
+# crc32. This U-Boot knows crc32 and sha1 and nothing else -- its binary,
+# dumped from mtd0 and read, contains no md5 or sha256 hashing at all, only
+# "Unsupported hash algorithm" for everything it does not have. The vendor's
+# own FIT is hashed crc32, which is the value copied here.
+#
+# The failure mode if this is wrong is not a hash mismatch. A FIT hashed with
+# something this firmware cannot compute transfers, reports the configuration
+# it found, and then says it cannot get the kernel image -- which reads like a
+# corrupt image rather than an unsupported digest.
+u_boot_fit_hash: "crc32"
+
+# Deliberately not set, because the vendor's FIT does not set them either: its
+# ramdisk node carries load = <0x0> and its fdt node carries no load at all, so
+# U-Boot places both. The factory environment has initrd_high=0xffffffff, which
+# on this U-Boot means the ramdisk is used where it lies rather than relocated.
+#
+# ⚠ The AS5610-52X's board.yml warns that setting these breaks that board. This
+# is the opposite finding on different firmware, not a contradiction: there the
+# defaults were right and stating them was harmful; here the defaults are also
+# right, and the vendor's FIT is the evidence.
+# u_boot_fdt_addr:
+# u_boot_ramdisk_addr:
+
+# What the installer leaves in the firmware's own boot variable.
+#
+# Shaped like the vendor's, which is `usb start; usbiddev; ext2load usb 0:1
+# $onl_loadaddr $onl_itb; bootm $onl_loadaddr#$onl_platform`. Two things
+# differ: the FIT comes off a raw partition with usbboot instead of a file with
+# ext2load, and the configuration inside it is called `nosaic`.
+#
+# `usb start; usbiddev` is how this U-Boot reaches the disk at all -- the disk
+# is behind the SoC's USB controller, and usbiddev is what defines ${usbdev}.
+# There is no usbdev in the stored environment; it exists only after usbiddev
+# has run, which is why it cannot be resolved here.
+#
+# See fit_mib for why this is a raw read on a board whose firmware can read a
+# filesystem perfectly well.
+#
+# ⚠ uio_pdrv_genirq.of_id IS NOT OPTIONAL AND IS NOT VISIBLE IN THE DEVICE TREE.
+#
+# It is what binds the switch chip. Mainline's uio_pdrv_genirq matches only
+# what this parameter names -- its of_match_table is one empty entry -- so
+# without it nothing binds to the CMIC node, no /dev/uio* appears, and the
+# device tree looks entirely correct while the datapath cannot reach the chip.
+# nosd-helix4 says so when it cannot find the device, because nothing else
+# would.
+#
+# It is here rather than in kernel_params because kernel_params is read only by
+# the aboot backend; on a board whose bootloader is told its own bootargs, this
+# string is the command line.
+u_boot_nos_bootcmd: "usb start; usbiddev; setenv bootargs console=ttyS0,115200 uio_pdrv_genirq.of_id=brcm,iproc-cmicd; usbboot 0x70000000 ${usbdev}:1 && bootm 0x70000000#nosaic"
+
+# ── Disk ─────────────────────────────────────────────────────────────────────
+#
+# ⚠ THE DISK CAN BE WIPED WHOLE HERE, AND ON THE AS5610 IT CANNOT.
+#
+# That is the single most useful difference between the two Accton boards and
+# it is worth stating where the layout is decided. ONIE on this switch lives in
+# NOR flash, not on the disk: mtd3 is a 7 MiB partition named "onie", and the
+# firmware's onie_bootcmd copies it out of flash at 0x1e100000 and boots it.
+# Nothing about ONIE is on /dev/sda. So installing by replacing the whole disk
+# layout -- which is what NOSaic's ONIE backend does -- leaves the way back
+# intact, and the vendor's ONL partitions are ours to take.
+partition_table: dos
+
+# A raw partition for the FIT, and NOT because this firmware cannot do better.
+#
+# It can: it has ext2load, and the vendor's own boot command uses it. That is
+# the tidier mechanism and it is the one this board should end up on. What is
+# missing is on our side -- the image builder makes an ext2 boot partition and
+# puts the slot pointer on it, and has no way to place a FIT there as a file --
+# so the choice today is between the mechanism the code supports and no install
+# at all. docs/todo.md carries this as the first item.
+#
+# 32 MiB against a vendor FIT of 16, and against ours which is a zImage plus an
+# initramfs. Room to grow without repartitioning a switch.
+fit_mib: 32
+
+# The disk is 29 GB, so these are chosen for room rather than to fit.
+#
+# 512 MiB slots because the minimal profile is a fraction of that and the full
+# profile is the reason not to size for today. 1 GiB of data because config,
+# logs and two slots' worth of package overlays live there and 256 is a number
+# picked for a virtual machine.
+slot_mib: 512
+data_mib: 1024
+
+# A P2020 has no ACPI and neither does an iProc. Nothing tells the kernel what
+# is on this board except this file; it is compiled at image time and carried
+# inside the FIT.
+device_tree: dts/as4610-54t.dts
+
+# The switch chip is not held in reset here -- it is the same die as the CPU --
+# but the external PHYs in front of the ports are, and the board CPLD is what
+# releases them. That is done through `nosaic platform release-asic`, which is
+# the platform HAL below rather than a script, so there is no front_panel_init.
+
+# How long the network service waits for interfaces named in network.conf.
+# The swp ports come from the datapath daemon and there is no nosd-helix4 yet,
+# so they cannot appear at all -- the default 600 would be ten minutes spent
+# waiting for something impossible. Raise it once the datapath exists.
+net_wait_secs: 60
+
+profile: minimal
+kernel: ""
+
+# planned. Nothing here has been built or booted: there is no armhf toolchain
+# yet, no nosd-helix4, and NOSaic has never run on this switch. What exists is
+# a board directory whose facts were read off the running machine rather than
+# copied from EdgeNOS -- the FIT addresses, the U-Boot capabilities, the CPU
+# feature list, the i2c topology, the flash layout.
+#
+# The unit in the rack is the lab's out-of-band switch and is not the one to
+# install on; see docs/install.md.
+status: planned
+
+# ── The board's own hardware ─────────────────────────────────────────────────
+#
+# Everything on this board is on i2c, which is a first for this tree: the
+# Arista boards reach their sensors through the SCD's own SMBus accelerators,
+# and this one has neither an SCD nor a PCI bus to hang one off. So it states
+# an i2c map rather than an smbus map, and the driver is Go rather than C --
+# the AS5610's HAL is C only because the gc toolchain has never targeted
+# 32-bit big-endian PowerPC, and armhf it targets fine.
+platform_hal:
+  driver: as4610-cpld
+
+  i2c:
+    # The board controller: a CPLD carrying the fan duty and tachometers, the
+    # power supply status word, and the five PHY reset lines whose release is
+    # what turns the front panel on.
+    controller: {bus: 0, addr: 0x30}
+
+    # What Linux should call that bus. Adapter numbers come from probe order,
+    # so this is the check that a kernel change which renumbers them becomes an
+    # error naming the buses rather than a fan tachometer read off a
+    # transceiver. Substring match; the iProc driver's adapter name carries the
+    # controller's address.
+    adapter: "iProc"
+
+    # The chassis's only temperature sensor, behind channel 7 of the mux.
+    sensors:
+      - {name: board, part: lm77, bus: 9, addr: 0x48}
+
+    # The six SFP+ cages are channels 0..5 of the PCA9548, which Linux numbers
+    # consecutively from 2. Four uplinks and two stacking ports; the 48 copper
+    # ports have no cages, so cage number is not port number on this board.
+    cages: {first_bus: 2, count: 6, addr: 0x50}
+
+    # The identity EEPROM. ONIE TlvInfo, which is what lets a running switch
+    # say what it is from its own hardware rather than from what it was built
+    # as -- though see the driver: that it holds TlvInfo is inference from this
+    # being an ONIE whitebox, and has not been read off the part.
+    eeprom: {bus: 9, addr: 0x50}
+
+# The cooling curve.
+#
+# ⚠ UNVALIDATED, and stated conservatively for that reason. One reading exists:
+# 49 °C at the board sensor with the fan duty register at full, which is where
+# this switch powers up and stays because nothing has ever commanded it
+# otherwise. Where it settles at half speed is unknown.
+#
+# Declaring a platform HAL driver is what starts the cooling loop, so the first
+# boot of an image built from this will take the fans off full. The band is
+# placed above the one known reading and the driver holds a 50% floor
+# underneath it, so the loop cannot do much until somebody has a curve. Both
+# numbers are in docs/todo.md as things to measure rather than to inherit.
+thermal:
+  min_c: 50
+  max_c: 70
+  slew_down_percent: 5
+
+notes: >
+  The CPU is inside the switch chip. A BCM56340's iProc block is two Cortex-A9
+  cores, and the CMIC they reach the rest of the chip through is a platform
+  device at 0x48000000 -- not a PCIe endpoint. Every NOSaic BDE so far maps a
+  PCI BAR and sets bus mastering on the bridge above it; here there is no
+  bridge, no config space and no BAR, and the same job is a mapping of physical
+  memory. That is the substance of the port and it is written up in
+  docs/hardware.md.
+
+  There is no NEON on this Cortex-A9 and no hardware integer divide. Both are
+  optional on an A9 and this part has neither, which makes the obvious
+  toolchain choice the wrong one -- see arch/armhf/arch.yml.
+
+  The management port is the SoC's own bgmac at 18022000, and it is `ma1` under
+  ONL and EdgeNOS. Under NOSaic nothing renames interfaces, so the kernel's own
+  name stands; do not transcribe `ma1` out of `ip addr` on the running switch.
+
+  Mainline Linux carries this SoC family as ARCH_BCM_HR2 and its dtsi is close
+  but not complete for this board: bcm-hr2.dtsi declares one CPU where there
+  are two, and has no USB node at all -- and the disk is behind USB, so a
+  kernel built from it boots and then cannot find a root filesystem.
