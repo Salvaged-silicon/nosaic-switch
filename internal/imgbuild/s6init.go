@@ -130,7 +130,20 @@ echo "NOSAIC-S6 compile rc=$?"
         #
         # The rescue path is for a database that cannot come up, not for a
         # service that is patiently waiting for silicon.
-        s6-rc -t 660000 -u change default
+        #
+        # ⚠ AND SILICON CAN BE SLOWER THAN YOU THINK. Eleven minutes was
+        # chosen against a board whose datapath is up in one. On the 7050TX-64
+        # it is not enough: Broadcom's driver downloads firmware to 48 external
+        # PHYs over MDIO before the chip reports its ports -- 1.8 million
+        # register writes, about thirteen minutes -- so the transaction expired
+        # while network-config was still waiting for the front-panel
+        # interfaces. The result is a switch with every other service running,
+        # its copper ports linked, and no addressing on any of them, which
+        # reads as a dead data plane rather than as a timeout.
+        #
+        # The ceiling costs nothing on a fast board: the transaction ends when
+        # the last service is up, not when the timer expires.
+        s6-rc -t 1800000 -u change default
         rc=$?
         echo "NOSAIC-S6 change rc=$rc"
         [ $rc -eq 0 ] || rescue=1
