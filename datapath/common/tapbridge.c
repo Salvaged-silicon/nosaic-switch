@@ -563,6 +563,36 @@ static int tap_vlan_setup(int unit, struct tap *t, int vid)
 		return -1;
 	}
 
+	/*
+	 * ⚠ AND OUT OF VLAN 1, WHICH IS A CHIP-WIDE BROADCAST DOMAIN.
+	 *
+	 * The chip puts every port in the default VLAN at init and adding one to
+	 * a second VLAN does not take it out of the first. Leaving it there
+	 * keeps every port of the switch in one flood domain, alongside the
+	 * per-port VLANs built above -- so the isolation this function's header
+	 * describes was never actually in place.
+	 *
+	 * It is invisible until two front-panel ports can reach each other. On
+	 * this board two copper ports were patched together for a link test, and
+	 * the first boot on which copper could transmit produced a broadcast
+	 * storm in VLAN 1: 320 million frames each way across the patch in
+	 * minutes, mirrored exactly between the two ports, and flooded out of
+	 * every other member -- 1.2 billion frames at a 40G neighbour that had
+	 * nothing to do with the test.
+	 *
+	 * The predecessor removes the port from VLAN 1 here and never saw this.
+	 *
+	 * Failure is reported and not fatal: a port that keeps its own VLAN still
+	 * routes, and refusing to start over it would be worse than the flooding
+	 * it risks. But it is said out loud, because the consequence is a storm.
+	 */
+	rv = bcm_vlan_port_remove(unit, 1, pbm);
+	if (rv != BCM_E_NONE)
+		fprintf(stderr, "tap: %s stays in VLAN 1 (bcm_vlan_port_remove: %d); "
+			"it shares a broadcast domain with every other port, and two "
+			"front-panel ports that can reach each other will storm\n",
+			t->name, rv);
+
 	/* What an untagged frame arriving on this port is taken to belong to. */
 	rv = bcm_port_untagged_vlan_set(unit, t->port, (bcm_vlan_t)vid);
 	if (rv != BCM_E_NONE) {

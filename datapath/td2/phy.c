@@ -21,14 +21,31 @@
  *
  * SGMII at or below 2.5G, XFI at 10G.
  *
- * ⚠ AND ONLY WHEN IT ACTUALLY DIFFERS.
+ * ⚠ AND IT IS WRITTEN EVEN WHEN IT ALREADY READS BACK CORRECT.
  *
- * bcm_port_interface_set takes the MAC through reset to apply a change. On the
- * sibling board, applying a setting a port had already been given correctly at
- * init left both 40G ports linked at the PCS and deaf at the MAC -- the same
- * zero-frames, zero-errors signature, arrived at from the opposite direction.
- * So this reads first and writes only on a genuine mismatch. A port the chip
- * configured correctly does not want configuring again.
+ * This file used to read the interface first and write only on a mismatch,
+ * carried over from the sibling board where re-applying a setting a 40G port
+ * already had left both its ports linked at the PCS and deaf at the MAC.
+ *
+ * That lesson does not transfer, and skipping the write is what kept the 48
+ * copper ports silent. A port that negotiates 10G wants XFI, XFI is also the
+ * chip's default, and the SDK's own linkscan moves the MAC there on link-up --
+ * so the value matched, nothing was written, and the port passed not one frame
+ * in either direction with every status saying it was fine. There was not a
+ * single line of this file's output in the log to say so.
+ *
+ * Reading the field back is not evidence the port was configured. It is the
+ * field's default, and on this board it is not even stable: a late-cabled port
+ * accepted an interface change and silently reverted to XFI afterwards.
+ *
+ * The predecessor never had the bug because it never made the check -- it sets
+ * the interface unconditionally for any external-PHY port that reports a real
+ * speed, and its copper ports carried traffic. So does this now.
+ *
+ * The sibling's warning is still real, and what keeps it satisfied is that this
+ * happens ONCE PER LINK EVENT, not on a timer: phy_matched[] is set on success
+ * and cleared only when the link drops. Re-applying repeatedly is the harm;
+ * applying once to a port that just came up is the bring-up.
  *
  * ⚠ MDIO IS A SHARED BUS AND THE DATAPATH DEPENDS ON IT.
  *
@@ -280,13 +297,16 @@ void nosaic_phy_poll(void)
 			continue;
 
 		want = phy_want_interface(speed);
-		if (have == want) {
-			/* Already right. Matched without writing anything, which is
-			 * the common case and the one that must stay cheap. */
-			phy_matched[port] = 1;
-			continue;
-		}
 
+		/*
+		 * Written whether or not it already reads back right. See the
+		 * header: the read-back is the field's default, not evidence the
+		 * port was ever configured, and skipping the write here is what
+		 * kept every copper port silent.
+		 *
+		 * Once per link event, because phy_matched[] is set below and
+		 * cleared only when the link drops.
+		 */
 		if (bcm_port_interface_set(phy_unit, port, want) != BCM_E_NONE) {
 			printf("phy: port %d negotiated %d Mb but the MAC would not take "
 			       "%s; it will link and pass nothing\n",
@@ -295,8 +315,12 @@ void nosaic_phy_poll(void)
 			continue;
 		}
 		phy_matched[port] = 1;
-		printf("phy: port %d negotiated %d Mb, MAC interface %s -> %s\n",
-		       port, speed, phy_if_name(have), phy_if_name(want));
+		if (have == want)
+			printf("phy: port %d negotiated %d Mb, MAC interface %s "
+			       "re-applied\n", port, speed, phy_if_name(want));
+		else
+			printf("phy: port %d negotiated %d Mb, MAC interface %s -> %s\n",
+			       port, speed, phy_if_name(have), phy_if_name(want));
 		fflush(stdout);
 	}
 }

@@ -45,6 +45,7 @@
 #include <soc/error.h>
 #include <bcm/init.h>
 #include <bcm/port.h>
+#include <bcm/vlan.h>
 #include <bcm/link.h>
 #include <bcm/stat.h>
 #include <bcm/error.h>
@@ -860,17 +861,6 @@ static void bring_up_40g(int unit, bcm_port_t port)
 			wrote++;
 		}
 
-		/* Linkscan mode, which says HOW a port is scanned. Enabling the
-		 * scan is done once for the unit elsewhere; a port that is never
-		 * given a mode is not managed by it. */
-		{
-			bcm_pbmp_t pbm;
-
-			BCM_PBMP_CLEAR(pbm);
-			BCM_PBMP_PORT_ADD(pbm, port);
-			bcm_linkscan_mode_set_pbm(unit, pbm, BCM_LINKSCAN_MODE_HW);
-		}
-
 		if (bcm_port_speed_get(unit, port, &rv) == BCM_E_NONE)
 			printf("port %d: 40G cage, speed %d, %d setting(s) applied\n",
 			       port, rv, wrote);
@@ -955,6 +945,68 @@ int nosaic_sdk_ports(int unit)
 			fprintf(stderr, "nosd-td2: bcm_port_enable_set(port %d) returned "
 				"%d (%s); further failures not reported\n",
 				port, erv, bcm_errmsg(erv));
+	}
+
+	/*
+	 * ⚠ EVERY PORT NEEDS A LINKSCAN MODE, AND THIS IS THE CALL THAT MAKES
+	 * TRANSMIT WORK.
+	 *
+	 * This used to be done inside the 40G bring-up, so the four QSFP cages
+	 * got a mode and the 48 copper ports never did. The copper ports then
+	 * linked, negotiated, reported the right speed, sat in STP forwarding
+	 * with the CPU in their VLAN and an L3 interface built -- and passed not
+	 * one frame in either direction.
+	 *
+	 * The mechanism is in the SDK and it is silent by design. A port with no
+	 * mode is not in the link bitmap linkscan maintains; the transmit path
+	 * ANDs its port bitmap with that one (src/bcm/common/tx.c:5268), so the
+	 * descriptor set comes out empty; and _bcm_tx's dv_vcnt == 0 branch then
+	 * frees the descriptor, logs a warning and RETURNS BCM_E_NONE. Success,
+	 * with nothing sent. Every counter above the MAC agrees the frame left.
+	 *
+	 * The warning it logs is "Could not send pkt with dv_vcnt = 0", and it
+	 * was in our own log 51 times while this was being diagnosed from first
+	 * principles. Grep the SDK's own output before theorising about it.
+	 *
+	 * HW for every port, including the copper ones behind external PHYs --
+	 * that is what the predecessor does on this exact board, and its copper
+	 * ports carried traffic.
+	 */
+	{
+		int lrv = bcm_linkscan_mode_set_pbm(unit, cfg.port,
+						    BCM_LINKSCAN_MODE_HW);
+
+		if (lrv < 0)
+			fprintf(stderr, "nosd-td2: bcm_linkscan_mode_set_pbm returned "
+				"%d (%s); ports without a mode transmit nothing and "
+				"report success doing it\n", lrv, bcm_errmsg(lrv));
+	}
+
+	/*
+	 * ⚠ AND OUT OF VLAN 1 BEFORE THEY CAN CARRY ANYTHING.
+	 *
+	 * The taps take each port out of the default VLAN when they build its
+	 * own, but that happens minutes later -- the PHY firmware download sits
+	 * in between. Until then every port the loop above enabled is a member
+	 * of one chip-wide broadcast domain, and on this board two copper ports
+	 * are patched to each other for link testing, which closes a loop.
+	 *
+	 * Measured, on the boot that first fixed copper transmit but still left
+	 * this window open: 23 million frames each way across the patch and 47
+	 * million flooded out of a 40G port, all before the taps existed. It
+	 * stopped the instant the taps removed the ports from VLAN 1, which is
+	 * what identified the window.
+	 *
+	 * A port in no VLAN drops what arrives on it, and that is the right
+	 * behaviour for a port nothing has configured yet.
+	 */
+	{
+		int vrv = bcm_vlan_port_remove(unit, 1, cfg.port);
+
+		if (vrv < 0)
+			fprintf(stderr, "nosd-td2: bcm_vlan_port_remove(vlan 1) returned "
+				"%d (%s); ports share one broadcast domain until their "
+				"taps are built\n", vrv, bcm_errmsg(vrv));
 	}
 
 	/* Give the PHYs time to negotiate. A cage with a cable in it does not
