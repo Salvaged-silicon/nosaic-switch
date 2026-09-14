@@ -642,12 +642,44 @@ void nosaic_tap_stats(void)
 		 */
 		{
 			int lb = -1, fmax = -1;
+			bcm_port_if_t intf = 0;
+			bcm_port_ability_t ab;
+			uint32 fd = 0;
 
 			bcm_port_loopback_get(tap_unit, taps[i].port, &lb);
 			bcm_port_frame_max_get(tap_unit, taps[i].port, &fmax);
+
+			/*
+			 * What the PHY says it can do, and how the MAC is
+			 * currently wired to it.
+			 *
+			 * ⚠ THIS IS THE ONLY THING HERE THAT PROVES A PHY IS
+			 * ALIVE ON A PORT WITH NO CARRIER.
+			 *
+			 * Every other field on this line looks identical on a
+			 * board whose external PHY is dead or was never bound:
+			 * the VLAN is still built, the tap still exists, frames
+			 * still leave the MAC, and the counters still read zero
+			 * in. bcm_port_ability_local_get cannot be answered
+			 * from the switch chip alone -- for a port behind an
+			 * external PHY the SDK has to reach the part over MDIO
+			 * -- so a copper ability mask on a dark port is
+			 * evidence that the whole path to the PHY works and is
+			 * merely waiting for a neighbour.
+			 *
+			 * A 10GBASE-T port reports the copper speeds it can
+			 * negotiate. A bare SerDes port reports its one speed.
+			 * The difference is the diagnosis.
+			 */
+			bcm_port_interface_get(tap_unit, taps[i].port, &intf);
+			memset(&ab, 0, sizeof(ab));
+			if (bcm_port_ability_local_get(tap_unit, taps[i].port, &ab) == BCM_E_NONE)
+				fd = (uint32)ab.speed_full_duplex;
+
 			printf("port: %s (port %d) link=%d lb=%d fmax=%d "
-			       "tx-ok=%lu tx-err=%lu",
+			       "intf=%d ability=%#x tx-ok=%lu tx-err=%lu",
 			       taps[i].name, taps[i].port, link, lb, fmax,
+			       (int)intf, (unsigned)fd,
 			       taps[i].tx_ok, taps[i].tx_err);
 		}
 		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {

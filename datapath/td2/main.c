@@ -419,6 +419,21 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	 */
 	nosaic_props_report_unused();
 
+	/*
+	 * ⚠ THE EXTERNAL PHYs BEFORE THE PORTS, NOT AFTER.
+	 *
+	 * Binding a PHY driver re-initialises the port it belongs to: the
+	 * enable goes away and the frame size returns to the chip default. So
+	 * doing it after the ports are up and the taps are built silently
+	 * undoes both -- the ports read `admin down` with a 9412-byte frame
+	 * size, having been enabled at 1522 a moment earlier, and nothing
+	 * reports an error.
+	 *
+	 * This is the order the working predecessor uses, and the reason is the
+	 * same one: probe, then configure, then enable.
+	 */
+	nosaic_phy_bind(unit);
+
 	nosaic_sdk_ports(unit);
 
 	/*
@@ -498,7 +513,8 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 		 * panel still forwards, and a board with no SCD has no panel. */
 		nosaic_led_start(unit);
 		/* After the ports are enabled: a port that is not enabled cannot
-		 * report a link, and this has nothing to match until one does. */
+		 * report a link, and this has nothing to match until one does.
+		 * The PHYs themselves were bound earlier, before the enable. */
 		nosaic_phy_start(unit);
 
 		/*

@@ -104,6 +104,109 @@ static const char *phy_if_name(bcm_port_if_t i)
 	}
 }
 
+/*
+ * Bind the external PHY drivers and enable autonegotiation.
+ *
+ * Separate from nosaic_phy_start and called BEFORE the ports are enabled,
+ * because binding a driver re-initialises its port: see the note at the call
+ * site in main.c.
+ */
+int nosaic_phy_bind(int unit)
+{
+	int p, n = 0;
+
+	phy_unit = unit;
+	memset(phy_copper, 0, sizeof(phy_copper));
+	memset(phy_matched, 0, sizeof(phy_matched));
+	phy_any = 0;
+
+	phy_scan_properties();
+	if (!phy_any)
+		return 0;   /* Not an error. Every other board is like this. */
+
+	/*
+	 * ⚠ BIND THE EXTERNAL PHY DRIVER FIRST, OR EVERY SETTING BELOW GOES TO
+	 * THE WRONG PART.
+	 *
+	 * The chip comes up with every port bound to its INTERNAL SerDes, even
+	 * on a board whose front panel is 10GBASE-T behind external PHYs.
+	 * bcm_port_probe is what walks the configured addresses --
+	 * port_phy_addr_<n> and port_phy_clause_<n> from the port map -- and
+	 * binds the real driver to each one.
+	 *
+	 * Without it the SDK answers every question from the internal SerDes
+	 * and accepts every setting there too, which is the worst possible
+	 * failure: enabling autonegotiation "works", the port reports a speed,
+	 * the MAC reconfigures itself to match, nothing returns an error, and
+	 * the BCM84848 that actually terminates the wire was never spoken to at
+	 * all. Two of this board's own ports, patched to each other, stayed
+	 * dark through exactly that.
+	 *
+	 * Probed as one bitmap rather than per port: the SDK reports back which
+	 * ones succeeded, and a port that did not bind is a port whose copper
+	 * side is unreachable no matter what else is configured.
+	 */
+	{
+		bcm_pbmp_t want, okay;
+		int probed = 0;
+
+		BCM_PBMP_CLEAR(want);
+		BCM_PBMP_CLEAR(okay);
+		for (p = 1; p <= PHY_MAX_PORT; p++)
+			if (phy_copper[p])
+				BCM_PBMP_PORT_ADD(want, p);
+
+		if (bcm_port_probe(phy_unit, want, &okay) != BCM_E_NONE) {
+			printf("phy: bcm_port_probe failed; the external PHYs are not "
+			       "bound and no copper port can link\n");
+		} else {
+			for (p = 1; p <= PHY_MAX_PORT; p++)
+				if (phy_copper[p] && BCM_PBMP_MEMBER(okay, p))
+					probed++;
+			printf("phy: %d external PHY(s) bound by probe\n", probed);
+		}
+		fflush(stdout);
+	}
+
+	/*
+	 * ⚠ AUTONEGOTIATION IS NOT OPTIONAL ON 10GBASE-T. IT IS THE STANDARD.
+	 *
+	 * Copper here does not "prefer" to negotiate the way a 1000BASE-T port
+	 * does -- 10GBASE-T has no way to bring a link up without it. A port
+	 * left with autoneg off is a port that will never link, to anything,
+	 * for ever, and it presents as a dead cable: no carrier, no speed, no
+	 * error, and every status the SDK offers saying the port is enabled and
+	 * fine.
+	 *
+	 * Proved on this board with a patch cable joining two of its own
+	 * front-panel ports, which is as controlled as a link test gets: two
+	 * BCM84848s, both ends ours, both configured, and no link at all until
+	 * this call was added.
+	 *
+	 * The MAC interface is deliberately NOT set here. It has to follow the
+	 * NEGOTIATED speed, which is unknown until something is plugged in --
+	 * forcing SGMII on an idle port would cap a 10GBASE-T neighbour at 1G.
+	 * nosaic_phy_poll does it once a port actually links.
+	 *
+	 * One MDIO write per port, once, at startup. That is not the budget the
+	 * warning above is about: what starved the bus was POLLING every port
+	 * on a timer, not configuring each of them a single time.
+	 */
+	for (p = 1; p <= PHY_MAX_PORT; p++) {
+		if (!phy_copper[p])
+			continue;
+		n++;
+		if (bcm_port_autoneg_set(unit, p, 1) != BCM_E_NONE) {
+			printf("phy: port %d would not take autoneg; 10GBASE-T cannot "
+			       "link without it and this port will stay down\n", p);
+			fflush(stdout);
+		}
+	}
+	printf("phy: %d port(s) behind external PHYs; autonegotiation enabled\n", n);
+	fflush(stdout);
+	return 0;
+}
+
 int nosaic_phy_start(int unit)
 {
 	int p, n = 0;
