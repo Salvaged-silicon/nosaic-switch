@@ -25,6 +25,10 @@ struct nosaic_mdio {
 	unsigned           req;  /* rolling request id */
 };
 
+/* Take the accelerator out of reset. Call once, before any transfer: without
+ * it every read returns 0xffff and no error. */
+void nosaic_mdio_init(struct nosaic_mdio *m);
+
 /* Clause-45 read and write. Returns 0 on success, negative on failure;
  * a read stores the 16-bit value in *out. */
 int nosaic_mdio_read(struct nosaic_mdio *m, int bus, int prtad, int devad,

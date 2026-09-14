@@ -198,12 +198,37 @@ int nosaic_phybus_install(int unit, const char *scd_bdf)
 		/* 10 MHz, which is what the vendor's own software runs these at. */
 		phybus_accel[i].speed = 10;
 		phybus_accel[i].req = 0;
+		nosaic_mdio_init(&phybus_accel[i]);
 	}
 
 	if (phy_i2c_bus_func_hook_set(unit, phybus_rd, phybus_wr) < 0) {
 		printf("phybus: the SDK refused the PHY bus hook\n");
 		return -1;
 	}
+	/*
+	 * ⚠ PROVE THE PATH BEFORE HANDING IT TO THE SDK.
+	 *
+	 * "No failures" is not "right values": a clause-45 read that lands on
+	 * the wrong register returns a clean, plausible number, and the SDK
+	 * then quietly decides these are not parts it drives and never writes
+	 * to them again. The identifier is the one register whose correct value
+	 * is known in advance, so reading it is the difference between a bus
+	 * that works and a bus that merely answers.
+	 *
+	 * Port 1 is phy_id 0x001; the PMA/PMD identifier is MMD 1 registers 2
+	 * and 3, and a BCM84848 reads 0x600d there.
+	 */
+	{
+		uint16 hi = 0, lo = 0;
+
+		phybus_rd(unit, 0x001, (1u << 16) | 2, &hi);
+		phybus_rd(unit, 0x001, (1u << 16) | 3, &lo);
+		printf("phybus: port 1 PMA/PMD id %#06x %#06x%s\n", hi, lo,
+		       hi == 0x600d ? "  (BCM84848 -- the path is good)"
+				    : "  ** EXPECTED 0x600d: this bus answers "
+				      "but returns the wrong register");
+	}
+
 	printf("phybus: copper PHY bus installed over the board controller at %s\n",
 	       scd_bdf);
 	fflush(stdout);
