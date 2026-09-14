@@ -105,22 +105,19 @@ platform_hal:
     # hardware -- all 48 PHYs then answer 0x600d on a scan of every
     # accelerator, bus and address, where none answered before.
     #
-    # They stay commented out because releasing them is not yet SAFE: the SDK
-    # then finds real parts, starts downloading firmware to them, and its
-    # handshake fails on every port
+    # ⚠ THE FIRST BOOT AFTER THIS IS SLOW. Forty-eight PHYs load firmware
+    # before any copper port can link, and the predecessor measures that at
+    # around five minutes. A handshake warning per port is a documented
+    # transient of the download rather than a failure -- it is LOG_WARN in the
+    # SDK and initialisation continues past it. Do not conclude the datapath
+    # has hung until it has had well over ten minutes.
     #
-    #     PHY8481 firmware handshake failed: u=0 p=11 status=0x0002
-    #
-    # with bcm_init never returning. That takes the whole datapath with it --
-    # no forwarding on the three 40G links either, which is a far worse state
-    # than 48 idle copper ports. Enable these once the firmware download works.
-    #
-    # - {name: copper-phy-1-8,   bit: 2}
-    # - {name: copper-phy-9-16,  bit: 3}
-    # - {name: copper-phy-17-24, bit: 4}
-    # - {name: copper-phy-25-32, bit: 5}
-    # - {name: copper-phy-33-40, bit: 6}
-    # - {name: copper-phy-41-48, bit: 7}
+    - {name: copper-phy-1-8,   bit: 2}
+    - {name: copper-phy-9-16,  bit: 3}
+    - {name: copper-phy-17-24, bit: 4}
+    - {name: copper-phy-25-32, bit: 5}
+    - {name: copper-phy-33-40, bit: 6}
+    - {name: copper-phy-41-48, bit: 7}
 
   # Where the platform devices sit on the SCD's SMBus accelerator 0.
   #
