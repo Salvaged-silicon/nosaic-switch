@@ -145,6 +145,12 @@ type Board struct {
 
 	// KernelParams are appended to the kernel command line by the board's
 	// installer. Board data because they describe this box's memory map.
+	//
+	// ⚠ ONLY THE ABOOT BACKEND READS THIS. Aboot takes a boot-config file and
+	// this is what goes in it. A U-Boot board is told its own command line by
+	// its boot command, so its parameters belong in u_boot_nos_bootcmd; a
+	// board that puts them here instead states something nothing reads, which
+	// Validate refuses rather than leaving to be discovered on the hardware.
 	KernelParams string `yaml:"kernel_params"`
 
 	// Console is the serial device and speed a login is offered on. Board data
@@ -305,8 +311,22 @@ func (b *Board) Validate(root string) []string {
 	if err := b.PlatformHAL.Cages.Validate(); err != nil {
 		bad("platform_hal.%s", err)
 	}
+	if err := b.PlatformHAL.I2C.Validate(); err != nil {
+		bad("platform_hal.i2c: %s", err)
+	}
 	if err := platformhal.ValidateResets(b.PlatformHAL.Resets); err != nil {
 		bad("platform_hal.resets: %s", err)
+	}
+
+	// A parameter nothing will read is worse than no parameter: it looks like
+	// the box was configured. Only aboot renders kernel_params, so anything
+	// else stating it is asking for a command line it will not get -- and the
+	// symptom is a kernel booting without a setting somebody is certain they
+	// applied.
+	if b.KernelParams != "" && b.Boot != "aboot" && b.Boot != "" {
+		bad("kernel_params is read only by the aboot backend, and this board "+
+			"boots with %q. Put them where that bootloader gets its command "+
+			"line -- for uboot and onie-sfx that is u_boot_nos_bootcmd", b.Boot)
 	}
 
 	// Checked here rather than at build time: a U-Boot board with no load
@@ -387,6 +407,10 @@ type PlatformHAL struct {
 	// Resets are board reset lines released during bring-up beyond the switch
 	// chip's own -- a retimer in front of some cages, for instance.
 	Resets []platformhal.ResetLine `yaml:"resets"`
+	// I2C is the same idea as SMBus for a board whose platform devices are on
+	// ordinary Linux i2c buses rather than behind an SCD's accelerators. The
+	// two are alternatives, not layers: a board has one kind of controller.
+	I2C *platformhal.I2CMap `yaml:"i2c"`
 }
 
 // Thermal is a board's cooling curve.

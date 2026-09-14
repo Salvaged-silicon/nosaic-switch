@@ -23,6 +23,11 @@ type Config struct {
 	// Resets are board reset lines released during bring-up, beyond the
 	// switch chip's own.
 	Resets []ResetLine
+	// I2C is where the board's platform devices sit on its Linux i2c buses,
+	// for boards whose controller is not an SCD. Optional and mutually
+	// exclusive with SMBus in practice, though nothing enforces that: a
+	// driver asks for the one it needs and says so when it is absent.
+	I2C *I2CMap
 }
 
 // Opener constructs a board's HAL from its configuration.
@@ -52,6 +57,9 @@ func Open(driver string, cfg Config) (HAL, error) {
 	}
 	if err := ValidateResets(cfg.Resets); err != nil {
 		return nil, fmt.Errorf("this board's reset lines: %w", err)
+	}
+	if err := cfg.I2C.Validate(); err != nil {
+		return nil, fmt.Errorf("this board's i2c map: %w", err)
 	}
 	return o(cfg)
 }
