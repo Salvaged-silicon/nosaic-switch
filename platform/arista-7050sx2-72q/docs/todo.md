@@ -440,6 +440,73 @@ is unobserved rather than known-good.
   `et1` and `et2` were also carrying addresses and OSPF networks for links
   whose far ends had never answered; those were removed on 2026-09-11.
 
+- **~~Two taps with the same name crash-loop the daemon~~ — fixed.**
+  `/etc/nosaic/asic.conf` and `/mnt/data/config/asic.conf` are layers where the
+  second overrides the first *per key*. Lookups always worked that way --
+  `nosaic_props_get()` searches the table backwards -- but the table was
+  append-only, so every caller that ENUMERATES it walked forwards and saw both
+  copies. The same `tap_et52=` in each file therefore created the tap twice,
+  the second `TUNSETIFF` returned `EBUSY`, the daemon exited, and s6 restarted
+  it into the same wall eleven times.
+
+  It bit because a persistent override was written for a tap the image did not
+  yet ship, and the next image *did* ship it -- the ordinary lifecycle of an
+  override, not a mistake anyone would notice making.
+
+  Fixed in `datapath/common/props.c`: a redefined name now replaces the earlier
+  entry at load time rather than being appended beside it, so every consumer
+  gets last-wins for free and a new enumerator cannot reintroduce the bug by
+  forgetting. `datapath/common/props_test.c` covers it and was checked against
+  the unfixed file first -- three of its five assertions fail there.
+
+  ⚠ Worth remembering how it presented, because none of it pointed at config:
+  the log ends mid-startup with no error line, every cycle looks like a normal
+  boot, and `nosaic show ports` reports only that `/run/nosd.sock` is missing --
+  which reads as the chip failing to come up. `grep TUNSETIFF` was the only
+  thing that said otherwise.
+
+- **~~`upgrade install` writes the slot where the bootloader cannot find it~~ —
+  already fixed; this board was running an old CLI.** With no `--disk` it wrote
+  `/mnt/data/nosaic-slot-b.sqsh`, while the initramfs looks for a partition
+  label, then `$FLASH/<slot>.sqsh`, and only then `/mnt/data`. With a stale slot
+  file already on flash the new image is silently ignored and the box boots the
+  old one.
+
+  This was **fixed in `0b7b105` on 2026-09-12** -- `Local()` now asks where the
+  slot it is RUNNING FROM lives and installs beside it. The failure was seen
+  here only because the switch was running the CLI from slot a's image, built
+  2026-09-11, one day earlier. The image now in slot b carries the fix.
+
+  No code change. Recorded because the workaround is worth knowing if an old
+  CLI is ever in play again: compare the install's output path against
+  `slotdev=` in `/mnt/data/boot/log` before rebooting, and copy the image to
+  `/mnt/flash/nosaic-slot-<x>.sqsh` if they disagree.
+
+- **~~A datapath restart leaves the switch with no interface addresses~~ —
+  fixed.** The taps belong to `nosd`; when it restarts they are destroyed and
+  recreated **bare**, and `lo`'s own address goes with them.
+
+  `network-config` is ordered `after nosd` precisely so s6-rc stops and re-runs
+  it with the datapath -- and that works, for an `s6-rc` transition. It does
+  nothing for the case that actually happens unattended: `nosd` is supervised
+  with `restart: always`, so after a crash the **supervisor** restarts it
+  directly and s6-rc is never involved. The oneshot stays marked done from boot
+  while every address it configured has gone.
+
+  A switch in that state boots correctly, runs for days, and silently stops
+  routing at a moment nothing logged. Observed twice, read as something else
+  both times -- once as expected behaviour, because
+  [the walkthrough](walkthrough.md) describes the manual case as though it were
+  the whole story.
+
+  Fixed with a `network-reconcile` longrun: `apply-network.sh` gained a
+  `NOSAIC_NET_RECONCILE` mode that keeps asking what the state IS and puts back
+  whatever is missing, rather than waiting for an event that the supervisor
+  never emits. Same conclusion the 7050TX-64's port hotplug reached --
+  level-triggered, and reconcile on a timer, because an event can be missed
+  entirely and the state cannot. A pass with nothing to do prints nothing, so a
+  healthy switch shows no periodic noise.
+
 ## Features — what this board could do and does not yet
 
 Shared with the AS5610 where marked *(shared)*: both run `datapath/common`, so
