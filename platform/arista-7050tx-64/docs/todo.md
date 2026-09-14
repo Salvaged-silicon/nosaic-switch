@@ -155,6 +155,43 @@ A deliberate pass over the claims this board had not been asked to prove.
 
 ## Found by testing, and not yet fixed
 
+- ⚠ **The copper ports link and carry nothing, in either direction.** `et3` and
+  `et4` are patched to each other, were given `10.101.103.1/29` and `.2/29`, and
+  `arping` was run five times each way. Both taps counted the frames out; neither
+  counted one in. Every chip counter on both ports stayed at zero -- `in-uc`,
+  `in-nuc`, `out-uc`, `out-nuc`, `in-err`, `out-err`, `in-disc`, `out-disc` --
+  while `et52` alongside kept climbing on both sides.
+
+  `bcm_tx` reports success and `tx-ok` increments, so the frames reach the SDK
+  and are accepted. They are not reaching the wire.
+
+  **Ruled out, each by reading the chip rather than reasoning about it:** the
+  VLAN (`et3 vid 1003 members 0 3 untagged 3 cpu-member=1`, the same shape as
+  the working 40G ports), spanning tree (`stp=4`, forwarding, in both the
+  default group and the port's own VLAN group), the port enable (`enable=1`),
+  and the L3 interface (`l3: et3 interface 5 (port 3, vlan 1003, mtu 1500),
+  my_station 8`). Two theories died on the way: `phy.c` never called
+  `bcm_port_interface_set` on these ports -- there is not one `phy: port N
+  negotiated` line in the log, the SDK's own linkscan moved the MAC to XFI -- so
+  the MAC-reset trap is not it; and the linkscan bitmap is not it either,
+  because `_bcm_link_get` returns `lc_pbm_link`, the same bitmap the transmit
+  path ANDs with, and it reports link up.
+
+  **What is left, and it is a hypothesis rather than a finding:** the link that
+  is up is the PHY's LINE side, PHY to PHY over the cable. The SYSTEM side --
+  the XFI SerDes between the Trident2 and each BCM84848 -- is a separate link,
+  and nothing configures it. `tools/mkserdes.sh` hard-codes `PORT=61`, so all 48
+  copper ports run with no `serdes_preemphasis`, no `serdes_driver_current` and
+  no `serdes_firmware_mode`, where port 61 has all three. `phy_long_xfi_3=0x1`
+  says these are the long traces, which is where tuning stops being optional.
+  The vendor's own board description programs per-port `preTap`/`mainTap`/
+  `postTap` AND external-PHY `phyPreEmphasis`/`phyDriverCurrent`/
+  `phyPreDriverCurrent`; we emit none of them for copper.
+
+  Proving it needs the system-side link state read out of the PHY over MDIO,
+  which nothing on the switch can do at runtime yet -- there is no way to issue
+  an MDIO read without a rebuild, and that is probably the first thing to fix.
+
 - ⚠ **`nosaic platform tx <n> off` does not gate the laser on this board.** It
   writes the bit, reads it back changed (`0x108 -> 0x140`) and reports success,
   and the neighbour keeps receiving us: an adjacency held Full with an uptime of
