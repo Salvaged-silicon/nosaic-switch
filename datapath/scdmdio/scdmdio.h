@@ -23,6 +23,14 @@ struct nosaic_mdio {
 	unsigned long      base; /* byte offset of this accelerator */
 	unsigned           speed;/* MHz code for the control/status word */
 	unsigned           req;  /* rolling request id */
+
+	/* How each transaction's completion was observed. A large sleeps count
+	 * against spins is the bring-up spending its time in the scheduler
+	 * rather than on the wire -- which is what made the PHY firmware
+	 * download take 13 minutes. */
+	unsigned long      spins;   /* extra reads beyond the first, summed */
+	unsigned long      sleeps;  /* back-off sleeps taken */
+	unsigned long      polls;   /* transactions completed */
 };
 
 /* Take the accelerator out of reset. Call once, before any transfer: without
