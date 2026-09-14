@@ -38,13 +38,43 @@
  * pings and every one arrived as all-zero MACs and "802.3, length 0". Allocate
  * with bcm_pkt_alloc and copy into pkt_data[0].data.
  *
- * ALLOCATE THAT BUFFER ONCE. The BDE's salloc is a bump allocator with no
+ * ALLOCATE THOSE BUFFERS ONCE. The BDE's salloc is a bump allocator with no
  * free, so bcm_pkt_free returns nothing to it. EdgeNOS allocated per frame and
  * after ~2400 transmits the 64 MB pool was exhausted, transmit stopped, and an
  * OSPF adjacency fell back to Init -- the far end stopped hearing our Hellos
- * while we still heard its. bcm_tx is synchronous here (no async flag, NULL
- * cookie) and the pump loop is single threaded, so one buffer is safe to reuse
- * across every port.
+ * while we still heard its. So the ring below is allocated at startup and
+ * reused for ever; nothing here ever calls bcm_pkt_free.
+ *
+ * ⚠ TRANSMIT ASYNCHRONOUSLY, OR ONE LOST COMPLETION KILLS THE CONTROL PLANE.
+ *
+ * This used to hold a single packet and call bcm_tx with no callback, which is
+ * safe only while every transmit completes. It is the pump thread -- the ONLY
+ * thread that drains the taps -- that makes the call, so a transmit that never
+ * finishes takes the whole Linux-to-wire direction with it, permanently.
+ *
+ * That is not hypothetical. The sibling 7050SX2 sat in exactly that state for
+ * nearly two days: the pump parked in an untimed wait, tx_packets frozen on
+ * every tap while tx_dropped climbed at the Hello rate, and all three OSPF
+ * neighbours stuck in Init -- it heard everyone and nobody heard it.
+ *
+ * What makes it so hard to see is that NOTHING ELSE FAILS. Receive keeps
+ * punting, the counters keep updating, the query socket keeps answering, the
+ * DMA pool reads 12% used with zero failed allocations, and `show ports`
+ * reports every port up at full speed. Every local health check passes while
+ * the switch is mute. It presents as a receive fault at the FAR end, and that
+ * is where the investigation goes.
+ *
+ * The SDK decides synchronous versus asynchronous from the packet itself --
+ * `async = pkt->call_back != NULL` in src/bcm/common/tx.c:2680. With no
+ * callback it takes the sync branch of _bcm_tx_chain_send and lands in
+ * soc_dma_wait, which is soc_dma_wait_timeout(..., sal_sem_FOREVER) at
+ * src/soc/common/dma.c:4048. There is no timeout and no way to pass one.
+ * With a callback set it calls soc_dma_start instead and returns immediately.
+ *
+ * So every packet here carries a callback. The cost is that a packet belongs
+ * to the DMA engine until that callback fires, so one buffer is no longer
+ * enough -- hence a ring, and a frame dropped and counted when the ring is
+ * empty. Dropping a Hello is recoverable; parking the pump is not.
  *
  * THE FRAME HANDED TO bcm_tx MUST CARRY A VLAN TAG. The transmit path assumes
  * a tag at offset 12, and because tx_upbmp marks the egress port untagged it
@@ -66,6 +96,8 @@
 #include <net/if_arp.h>
 #include <sys/socket.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -101,12 +133,96 @@ struct tap {
 	unsigned char mac[6];
 	unsigned long tx_ok;
 	unsigned long tx_err;
+	unsigned long tx_nobuf;   /* dropped: no free packet in the ring */
 };
 
 static struct tap taps[MAX_TAPS];
 static int ntaps;
 static int tap_unit;
-static bcm_pkt_t *tx_pkt;   /* allocated once; see the header comment */
+
+/*
+ * The transmit ring. See the header comment for why this is not one buffer.
+ *
+ * Depth is for a control plane, not a data plane: nothing here forwards, it
+ * carries Hellos, ARP, and the odd ping. Sixty-four in flight is far more than
+ * FRR can produce between one DMA completion and the next, and it costs about
+ * 590 KB of a 64 MB pool that otherwise runs at 12%.
+ *
+ * Free slots are a stack rather than a queue on purpose: reusing the most
+ * recently completed packet keeps the working set small and, more usefully,
+ * means a slot whose callback never fires simply sinks out of rotation instead
+ * of being retried in order.
+ */
+#define TX_RING 64
+
+static bcm_pkt_t *tx_ring[TX_RING];
+static int        tx_free[TX_RING];       /* stack of free slot indices */
+static int        tx_nfree;
+static char       tx_busy[TX_RING];       /* slot is with the DMA engine */
+static pthread_mutex_t tx_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* How many packets are with the DMA engine right now. Reported because a
+ * count pinned at TX_RING is the signature this ring exists to survive:
+ * completions have stopped arriving and transmit is being dropped rather
+ * than blocking the pump. */
+static int tap_tx_inflight(void)
+{
+	int n;
+
+	pthread_mutex_lock(&tx_lock);
+	n = TX_RING - tx_nfree;
+	pthread_mutex_unlock(&tx_lock);
+	return n;
+}
+
+/*
+ * A transmit finished; give the slot back.
+ *
+ * Runs on the SDK's own completion thread, not the pump, which is why the
+ * free stack is locked. Guarded against a double return: the dv_vcnt == 0
+ * path in _bcm_tx invokes the callback inline and still reports success, so
+ * this can run before bcm_tx has returned to the caller.
+ */
+static void tap_tx_done(int unit, bcm_pkt_t *pkt, void *cookie)
+{
+	int slot = (int)(intptr_t)cookie;
+
+	(void)unit;
+	(void)pkt;
+	if (slot < 0 || slot >= TX_RING)
+		return;
+	pthread_mutex_lock(&tx_lock);
+	if (tx_busy[slot]) {
+		tx_busy[slot] = 0;
+		tx_free[tx_nfree++] = slot;
+	}
+	pthread_mutex_unlock(&tx_lock);
+}
+
+/* Take a free slot, or -1 when every packet is still with the engine. */
+static int tap_tx_slot(void)
+{
+	int slot = -1;
+
+	pthread_mutex_lock(&tx_lock);
+	if (tx_nfree > 0) {
+		slot = tx_free[--tx_nfree];
+		tx_busy[slot] = 1;
+	}
+	pthread_mutex_unlock(&tx_lock);
+	return slot;
+}
+
+/* Hand a slot back that was never given to the engine. */
+static void tap_tx_unslot(int slot)
+{
+	pthread_mutex_lock(&tx_lock);
+	if (slot >= 0 && slot < TX_RING && tx_busy[slot]) {
+		tx_busy[slot] = 0;
+		tx_free[tx_nfree++] = slot;
+	}
+	pthread_mutex_unlock(&tx_lock);
+}
 
 /*
  * wire -> Linux.
@@ -257,10 +373,23 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 {
 	unsigned char *frame;
-	int rv;
+	bcm_pkt_t *tx_pkt;
+	int slot, rv;
 
-	if (tx_pkt == NULL || len < 12 || len + 4 > TAP_MTU)
+	if (tx_ring[0] == NULL || len < 12 || len + 4 > TAP_MTU)
 		return -1;
+
+	/*
+	 * A full ring means every packet is still with the DMA engine. Drop
+	 * this frame and say so: the alternative is to wait, and waiting here
+	 * is the failure this whole arrangement exists to prevent.
+	 */
+	slot = tap_tx_slot();
+	if (slot < 0) {
+		t->tx_nobuf++;
+		return -1;
+	}
+	tx_pkt = tx_ring[slot];
 
 	frame = tx_pkt->pkt_data[0].data;
 	memcpy(frame, buf, 12);                     /* destination + source MAC */
@@ -288,8 +417,15 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 	BCM_PBMP_CLEAR(tx_pkt->tx_upbmp);
 	BCM_PBMP_PORT_ADD(tx_pkt->tx_upbmp, t->port);  /* leave the wire untagged */
 
-	rv = bcm_tx(tap_unit, tx_pkt, NULL);
+	/*
+	 * The cookie is the slot, and pkt->call_back -- set once at allocation
+	 * -- is what makes this asynchronous. On success the packet belongs to
+	 * the engine until tap_tx_done runs; on failure the callback is never
+	 * invoked, so the slot has to come back here.
+	 */
+	rv = bcm_tx(tap_unit, tx_pkt, (void *)(intptr_t)slot);
 	if (rv != BCM_E_NONE) {
+		tap_tx_unslot(slot);
 		t->tx_err++;
 		return -1;
 	}
@@ -502,11 +638,25 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 	}
 	tap_unit = unit;
 
-	rv = bcm_pkt_alloc(unit, TAP_MTU + 8, BCM_TX_CRC_APPEND, &tx_pkt);
-	if (rv != BCM_E_NONE || tx_pkt == NULL) {
-		fprintf(stderr, "tap: bcm_pkt_alloc: %d\n", rv);
-		return -1;
+	/*
+	 * The whole transmit ring, up front and never freed. The callback is
+	 * set here rather than per frame because it is what selects the SDK's
+	 * asynchronous path, and a packet that lost it would silently park the
+	 * pump thread again.
+	 */
+	for (i = 0; i < TX_RING; i++) {
+		rv = bcm_pkt_alloc(unit, TAP_MTU + 8, BCM_TX_CRC_APPEND,
+				   &tx_ring[i]);
+		if (rv != BCM_E_NONE || tx_ring[i] == NULL) {
+			fprintf(stderr, "tap: bcm_pkt_alloc %d of %d: %d\n",
+				i + 1, TX_RING, rv);
+			return -1;
+		}
+		tx_ring[i]->call_back = tap_tx_done;
+		tx_busy[i] = 0;
+		tx_free[i] = i;
 	}
+	tx_nfree = TX_RING;
 
 	for (i = 0; i < n; i++) {
 		if (tap_open(&taps[ntaps], specs[i].name, specs[i].port, ntaps,
@@ -677,10 +827,11 @@ void nosaic_tap_stats(void)
 				fd = (uint32)ab.speed_full_duplex;
 
 			printf("port: %s (port %d) link=%d lb=%d fmax=%d "
-			       "intf=%d ability=%#x tx-ok=%lu tx-err=%lu",
+			       "intf=%d ability=%#x tx-ok=%lu tx-err=%lu "
+			       "tx-nobuf=%lu",
 			       taps[i].name, taps[i].port, link, lb, fmax,
 			       (int)intf, (unsigned)fd,
-			       taps[i].tx_ok, taps[i].tx_err);
+			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf);
 		}
 		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {
 			uint64 v;
@@ -700,6 +851,25 @@ void nosaic_tap_stats(void)
 			       ((unsigned long long)COMPILER_64_HI(v) << 32));
 		}
 		printf("\n");
+	}
+
+	/*
+	 * Say it out loud when the ring is exhausted.
+	 *
+	 * This is the one condition that used to be invisible: before the ring
+	 * existed the pump simply stopped, every other diagnostic kept
+	 * answering normally, and the switch looked healthy while it was mute.
+	 * Now transmit degrades instead of stopping, which is only an
+	 * improvement if somebody is told.
+	 */
+	{
+		int inflight = tap_tx_inflight();
+
+		if (inflight >= TX_RING)
+			printf("tap: transmit ring full (%d/%d in flight) -- the "
+			       "SDK has stopped completing transmits; frames are "
+			       "being dropped rather than blocking the pump\n",
+			       inflight, TX_RING);
 	}
 
 	printf("tap: %lu punted frame(s) matched no tap\n", rx_unmatched);
