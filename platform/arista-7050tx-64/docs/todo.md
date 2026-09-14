@@ -100,6 +100,30 @@ the box could make.
 
 ## Fixed on the hardware, 2026-09-14
 
+- **The copper ports carry traffic.** Three faults, found by asking the
+  predecessor what it did rather than by reasoning about ours.
+
+  **Every port needs a linkscan mode.** `bcm_linkscan_mode_set_pbm` was called
+  from the 40G bring-up only, so the four QSFP cages had one and the 48 copper
+  ports did not. A port with no mode is missing from the link bitmap linkscan
+  maintains, the transmit path ANDs its port bitmap with that one
+  (`src/bcm/common/tx.c:5268`), and `_bcm_tx`'s `dv_vcnt == 0` branch frees the
+  descriptor, logs a warning and returns `BCM_E_NONE`. Success, nothing sent.
+  ⚠ That warning -- "Could not send pkt with dv_vcnt = 0" -- was in our own log
+  51 times while this was being diagnosed from first principles.
+
+  **The MAC interface must be written, not just matched.** `phy.c` read it back
+  and wrote only on a mismatch. A 10G copper port wants XFI, XFI is the default,
+  linkscan moves the MAC there on link-up, so nothing was ever written and the
+  file produced no output at all. The predecessor writes it unconditionally.
+
+  **Ports were never removed from VLAN 1**, so all 52 shared one broadcast
+  domain. Invisible until copper could transmit, at which point the `et3`/`et4`
+  patch closed a loop: 320 million frames each way and 1.2 billion flooded at an
+  uninvolved 40G neighbour. Removed both when a tap builds its VLAN and,
+  because the PHY download sits in between and that window alone leaked 23
+  million frames, across the whole port bitmap the moment ports are enabled.
+
 - **A lost DMA completion could mute the switch for ever, and every diagnostic
   would still say it was healthy.** The tap pump ran `bcm_tx` with no callback,
   which is the SDK's synchronous path: `async = pkt->call_back != NULL`
@@ -155,43 +179,6 @@ A deliberate pass over the claims this board had not been asked to prove.
 
 ## Found by testing, and not yet fixed
 
-- ⚠ **The copper ports link and carry nothing, in either direction.** `et3` and
-  `et4` are patched to each other, were given `10.101.103.1/29` and `.2/29`, and
-  `arping` was run five times each way. Both taps counted the frames out; neither
-  counted one in. Every chip counter on both ports stayed at zero -- `in-uc`,
-  `in-nuc`, `out-uc`, `out-nuc`, `in-err`, `out-err`, `in-disc`, `out-disc` --
-  while `et52` alongside kept climbing on both sides.
-
-  `bcm_tx` reports success and `tx-ok` increments, so the frames reach the SDK
-  and are accepted. They are not reaching the wire.
-
-  **Ruled out, each by reading the chip rather than reasoning about it:** the
-  VLAN (`et3 vid 1003 members 0 3 untagged 3 cpu-member=1`, the same shape as
-  the working 40G ports), spanning tree (`stp=4`, forwarding, in both the
-  default group and the port's own VLAN group), the port enable (`enable=1`),
-  and the L3 interface (`l3: et3 interface 5 (port 3, vlan 1003, mtu 1500),
-  my_station 8`). Two theories died on the way: `phy.c` never called
-  `bcm_port_interface_set` on these ports -- there is not one `phy: port N
-  negotiated` line in the log, the SDK's own linkscan moved the MAC to XFI -- so
-  the MAC-reset trap is not it; and the linkscan bitmap is not it either,
-  because `_bcm_link_get` returns `lc_pbm_link`, the same bitmap the transmit
-  path ANDs with, and it reports link up.
-
-  **What is left, and it is a hypothesis rather than a finding:** the link that
-  is up is the PHY's LINE side, PHY to PHY over the cable. The SYSTEM side --
-  the XFI SerDes between the Trident2 and each BCM84848 -- is a separate link,
-  and nothing configures it. `tools/mkserdes.sh` hard-codes `PORT=61`, so all 48
-  copper ports run with no `serdes_preemphasis`, no `serdes_driver_current` and
-  no `serdes_firmware_mode`, where port 61 has all three. `phy_long_xfi_3=0x1`
-  says these are the long traces, which is where tuning stops being optional.
-  The vendor's own board description programs per-port `preTap`/`mainTap`/
-  `postTap` AND external-PHY `phyPreEmphasis`/`phyDriverCurrent`/
-  `phyPreDriverCurrent`; we emit none of them for copper.
-
-  Proving it needs the system-side link state read out of the PHY over MDIO,
-  which nothing on the switch can do at runtime yet -- there is no way to issue
-  an MDIO read without a rebuild, and that is probably the first thing to fix.
-
 - ⚠ **`nosaic platform tx <n> off` does not gate the laser on this board.** It
   writes the bit, reads it back changed (`0x108 -> 0x140`) and reports success,
   and the neighbour keeps receiving us: an adjacency held Full with an uptime of
@@ -213,15 +200,14 @@ A deliberate pass over the claims this board had not been asked to prove.
 
 ## Blocking — the board is not at parity with the predecessor without these
 
-- **No traffic has crossed a copper port.** Four of the 48 are cabled and all
-  four link — `et1`/`et2` at 1000 on SGMII, `et3`/`et4` at 10000 on XFI, with
-  `et3` and `et4` patched to each other so both ends are this board's own PHYs.
-  What that proves is the PHY path and the MAC-interface matching. What it does
-  not prove is forwarding: none of the four has an address, so every frame
-  counter on them reads zero in both directions. **Give one a `10.x/29` in
-  `config/network.conf`, put a neighbour on the other end, and the copper
-  datapath can be proven the way the 40G links were** — blocked on configuration
-  and a neighbour, not on code.
+- **Nothing has been ROUTED over a copper port.** Frames cross them now, both
+  ways, but the proof used `et3` and `et4` patched to each other — and both ends
+  being the same host is exactly what stops it going further: Linux answers no
+  ARP for a request that arrives carrying its own address. So the datapath is
+  proven and the protocol above it is not. **Either put a real neighbour on
+  `et1`/`et2` and give it an address in `config/network.conf`, or put one end of
+  the patch in a network namespace** — blocked on a neighbour or a namespace,
+  not on code.
 
 - **44 of the 48 copper ports are still untried.** All 48 answer `0x600d` and
   bind, so there is no reason to expect the rest to differ, but that is an
