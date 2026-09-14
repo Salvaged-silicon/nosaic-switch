@@ -163,32 +163,62 @@ int nosaic_phybus_install(int unit, const char *scd_bdf)
 	if (scd_bdf == NULL || *scd_bdf == '\0')
 		return 0;   /* No controller stated: nothing to install. */
 
-	snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/resource0", scd_bdf);
-	fd = open(path, O_RDWR | O_SYNC);
-	if (fd < 0) {
-		printf("phybus: cannot open %s; the copper PHYs are unreachable "
-		       "and no copper port will link\n", path);
-		return -1;
-	}
+	/*
+	 * ⚠ /dev/mem AT THE BAR'S PHYSICAL ADDRESS, NOT THE sysfs resource FILE.
+	 *
+	 * Both nominally map the same memory and only one of them works here.
+	 * Through sysfs the MDIO accelerators answer every transaction, report
+	 * success, and return 0xffff -- an idle bus -- so the PHYs look absent
+	 * on a board where they are fine. Mapped through /dev/mem at the same
+	 * address they answer properly. The predecessor reaches the controller
+	 * this way and its path is the one proven against this hardware.
+	 *
+	 * The address is read from the device rather than written down: a BAR
+	 * is assigned by firmware and a board that moves it would otherwise get
+	 * a confident map of somebody else's memory.
+	 *
+	 * This needs iomem=relaxed on the kernel command line, which this board
+	 * already sets for the datapath's DMA pool.
+	 */
 	{
-		struct stat st;
+		unsigned long long start = 0, end = 0;
+		FILE *rf;
 
-		if (fstat(fd, &st) != 0 || (size_t)st.st_size < SCD_MDIO_END) {
-			printf("phybus: %s is %lld bytes, too small for the MDIO "
-			       "accelerators at %#x\n", path,
-			       (long long)(fstat(fd, &st) == 0 ? st.st_size : 0),
-			       MDIO_ACCEL_BASE);
-			close(fd);
+		snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/resource", scd_bdf);
+		rf = fopen(path, "r");
+		if (rf == NULL) {
+			printf("phybus: cannot read %s; the copper PHYs are unreachable\n",
+			       path);
 			return -1;
 		}
-		map = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE,
-			   MAP_SHARED, fd, 0);
-	}
-	close(fd);
-	if (map == MAP_FAILED) {
-		printf("phybus: cannot map %s (%s); the copper PHYs are unreachable\n",
-		       path, strerror(errno));
-		return -1;
+		if (fscanf(rf, "%llx %llx", &start, &end) != 2 || end <= start) {
+			fclose(rf);
+			printf("phybus: %s does not name a first BAR\n", path);
+			return -1;
+		}
+		fclose(rf);
+
+		if ((end - start + 1) < SCD_MDIO_END) {
+			printf("phybus: the controller's first BAR is %llu bytes, too "
+			       "small for the MDIO accelerators at %#x\n",
+			       end - start + 1, MDIO_ACCEL_BASE);
+			return -1;
+		}
+
+		fd = open("/dev/mem", O_RDWR | O_SYNC);
+		if (fd < 0) {
+			printf("phybus: cannot open /dev/mem (%s); the copper PHYs are "
+			       "unreachable\n", strerror(errno));
+			return -1;
+		}
+		map = mmap(NULL, (size_t)(end - start + 1), PROT_READ | PROT_WRITE,
+			   MAP_SHARED, fd, (off_t)start);
+		close(fd);
+		if (map == MAP_FAILED) {
+			printf("phybus: cannot map the controller at %#llx (%s); "
+			       "iomem=relaxed is required\n", start, strerror(errno));
+			return -1;
+		}
 	}
 	phybus_bar = (volatile uint32_t *)map;
 
@@ -219,14 +249,39 @@ int nosaic_phybus_install(int unit, const char *scd_bdf)
 	 * and 3, and a BCM84848 reads 0x600d there.
 	 */
 	{
-		uint16 hi = 0, lo = 0;
+		int accel, bus, addr, found = 0;
 
-		phybus_rd(unit, 0x001, (1u << 16) | 2, &hi);
-		phybus_rd(unit, 0x001, (1u << 16) | 3, &lo);
-		printf("phybus: port 1 PMA/PMD id %#06x %#06x%s\n", hi, lo,
-		       hi == 0x600d ? "  (BCM84848 -- the path is good)"
-				    : "  ** EXPECTED 0x600d: this bus answers "
-				      "but returns the wrong register");
+		/*
+		 * Every accelerator, both of its buses, all eight addresses.
+		 *
+		 * One address answering nothing says almost nothing: it could
+		 * be the address, the bus, the decode, the protocol or the
+		 * mapping. Scanning the whole space separates those. If some
+		 * answer, the transport is right and the addressing is wrong;
+		 * if none do anywhere, the transport is wrong and no amount of
+		 * address arithmetic will help.
+		 */
+		for (accel = 0; accel < MDIO_ACCELS; accel++) {
+			for (bus = 0; bus < 2; bus++) {
+				for (addr = 0; addr < 8; addr++) {
+					uint16 id = 0;
+
+					if (nosaic_mdio_read(&phybus_accel[accel], bus,
+							     addr, 1, 2, &id) != 0)
+						continue;
+					if (id == 0xffff || id == 0x0000)
+						continue;
+					printf("phybus: a%d b%d addr %d -> id %#06x%s\n",
+					       accel, bus, addr, id,
+					       id == 0x600d ? "  (BCM84848)" : "");
+					found++;
+				}
+			}
+		}
+		printf("phybus: %d PHY(s) answered a scan of every accelerator, "
+		       "bus and address%s\n", found,
+		       found == 0 ? " -- the transport reaches nothing, so this is "
+				    "not an addressing problem" : "");
 	}
 
 	printf("phybus: copper PHY bus installed over the board controller at %s\n",
