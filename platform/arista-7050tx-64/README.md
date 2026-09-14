@@ -13,7 +13,7 @@ second in the tree rather than first — see
 | Management | RJ45, `tg3` |
 | Bootloader | Aboot 4.0.7, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots, forwards and routes on all three 40G links; copper links but has carried no traffic |
+| Status | **bringup** — boots, forwards and routes on all three 40G links; copper carries frames, nothing routed over it yet |
 
 - **[Hardware reference](docs/hardware.md)** — diagrams, port map, registers, quirks
 - **[Build](docs/build.md)** — building an image for it
@@ -50,9 +50,11 @@ cabled 40G links. Measured on the hardware:
   bind to Broadcom's driver; four ports have been cabled and all four came up —
   `et1`/`et2` at 1000 with the MAC on SGMII, `et3`/`et4` at 10000 on XFI. The
   MAC-interface matching is the whole reason [phy.c](../../datapath/td2/phy.c)
-  exists, and those two pairs are the first evidence it works. ⚠ **Link is all
-  that is proven.** No copper port has an address, so nothing has been routed
-  over one and every frame counter on them is zero.
+  exists, and those two pairs are the first evidence it works. Frames cross:
+  `et3` and `et4` are patched together and four ARP frames sent each way were
+  received each way. ⚠ **The datapath is what is proven, not routing.** Both
+  ends of that patch are the same host, so Linux answers no ARP — a real
+  neighbour or a network namespace is what the next step needs.
 
 **It is still `bringup`, and the reasons are specific.** The copper ports link
 but have carried nothing: four of the 48 have been cabled, none has an address,
