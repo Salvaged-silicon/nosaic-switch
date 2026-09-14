@@ -29,6 +29,7 @@
 #include "l3sync.h"
 #include "led.h"
 #include "phy.h"
+#include "phybus.h"
 #include "query.h"
 #include "tapbridge.h"
 
@@ -400,6 +401,20 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 		return 1;
 	if (nosaic_sdk_soc_init(unit) != 0)
 		return 1;
+
+	/*
+	 * ⚠ THE COPPER PHY BUS GOES IN BEFORE bcm_init, NOT AFTER.
+	 *
+	 * bcm_init is where the SDK first probes for external PHYs. Installing
+	 * the bus afterwards is too late: that probe has already run with no
+	 * way to reach the parts, bound every copper port to the chip's
+	 * internal SerDes, and cached the result. A later bcm_port_probe then
+	 * reports success and changes nothing -- the port's reported ability
+	 * stays byte for byte what the internal SerDes said, which is how this
+	 * was spotted.
+	 */
+	nosaic_phybus_install(unit, nosaic_props_get("scd_pci"));
+
 	if (nosaic_sdk_bcm_init(unit) != 0)
 		return 1;
 
@@ -433,6 +448,7 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	 * same one: probe, then configure, then enable.
 	 */
 	nosaic_phy_bind(unit);
+	nosaic_phybus_report();
 
 	nosaic_sdk_ports(unit);
 
