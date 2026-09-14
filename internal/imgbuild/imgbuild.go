@@ -823,6 +823,40 @@ poweroff -f
 			After:   netAfter,
 			Restart: "never",
 		})
+
+		/*
+		 * And a reconciler, because the edge above is not enough.
+		 *
+		 * The `after nosd` edge works when s6-rc drives the transition --
+		 * `s6-rc -u change default` stops network-config with the datapath
+		 * and re-runs it after. It does nothing for the case that actually
+		 * happens unattended: nosd is supervised with restart:always, so
+		 * when it crashes the SUPERVISOR restarts it directly and s6-rc is
+		 * never involved. The taps are destroyed and recreated bare, the
+		 * loopback address goes with them, and the oneshot that would put
+		 * them back is still marked done from boot.
+		 *
+		 * A switch in that state boots correctly, runs for days, and then
+		 * silently stops routing at a moment nothing logged -- which is how
+		 * it was found: twice, both times read as something else.
+		 *
+		 * So this asks what the state IS on a timer rather than waiting for
+		 * an event, which is the same conclusion the 7050TX-64's port
+		 * hotplug reached: an event can be missed entirely, and reacting to
+		 * one is not enough on its own.
+		 *
+		 * NOSAIC_NET_WAIT=0 because the waiting was the boot-time job and
+		 * is already over; this converges in one pass and then reconciles.
+		 * A pass with nothing to do prints nothing, so a healthy switch
+		 * shows no periodic noise in its log.
+		 */
+		services = append(services, svcgen.Service{
+			Name: "network-reconcile",
+			Exec: "/bin/sh -c \"NOSAIC_NET_RECONCILE=30 NOSAIC_NET_WAIT=0 " +
+				"/etc/nosaic/apply-network.sh\"",
+			After:   []string{"network-config"},
+			Restart: "always",
+		})
 	}
 
 	// Confirming a trial boot, which is what makes a bad upgrade roll back
