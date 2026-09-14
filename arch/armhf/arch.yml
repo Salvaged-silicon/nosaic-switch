@@ -1,0 +1,151 @@
+# NOSaic CPU architecture: 32-bit little-endian ARM, hard-float (ARMv7-A).
+#
+# The Edgecore AS4610-54T's CPU, which is not so much on the board as inside
+# the switch chip: two Cortex-A9 cores in the iProc block of a BCM56340, with
+# no PCI bus between them and the forwarding silicon. That is a different shape
+# of machine from every board NOSaic has ported so far, and it starts here,
+# because the toolchain has to exist before anything can be said about it.
+#
+# Why the Cortex-A9 sample rather than a generic ARMv7 one:
+#
+#   arm-unknown-linux-gnueabi     soft-float, and this CPU has an FPU
+#   armv7-rpi2-linux-gnueabihf    Cortex-A7 with NEON, tuned for a Pi
+#   arm-cortex_a15-linux-gnueabihf  A15 is ARMv7 too, and has hardware integer
+#                                 divide and NEON, neither of which is here
+#
+# crosstool-NG's own Cortex-A9 hard-float sample is the closest thing to this
+# CPU that upstream tests, so it is what the defconfig is seeded from -- with
+# one deliberate change, below, which is the whole reason this comment is long.
+#
+# ── THE FPU IS VFPv3 AND THERE IS NO NEON ────────────────────────────────────
+#
+# Read off the switch rather than assumed. /proc/cpuinfo on the AS4610 reports
+#
+#   CPU part : 0xc09                          (Cortex-A9)
+#   Features : half thumb fastmult vfp edsp vfpv3 tls vfpd32
+#
+# and that list is what the CPU's own ID registers say. Two things are absent
+# and both are optional on a Cortex-A9:
+#
+#   neon          -- no Advanced SIMD unit at all
+#   idiva/idivt   -- no hardware integer divide, so sdiv and udiv trap
+#
+# The upstream sample is named `..._neon_...` and sets CT_ARCH_FPU="neon".
+# Building with it produces a libc full of instructions this part cannot
+# execute. So bootstrap/build.sh overrides the FPU to vfpv3 for this
+# architecture -- vfpv3 rather than vfpv3-d16 because `vfpd32` in that feature
+# list means all 32 double registers are present.
+#
+# This is the ARM version of the e500v2 hard-float trap that arch/powerpc
+# documents: the wrong build compiles, links, disassembles and runs under an
+# emulator, and only dies on the hardware.
+id: armhf
+name: ARM 32-bit little-endian hard-float (ARMv7-A, Cortex-A9, VFPv3-D32)
+triple: arm-nosaic-linux-gnueabihf
+endian: little
+bits: 32
+
+# GOARCH for NOSaic's own Go binaries. Unlike PowerPC, the gc toolchain does
+# have this target, so this architecture runs the Go CLI and not the C one.
+#
+# GOARM is not stated here and does not need to be: Go's ARM backend emits VFP
+# and never Advanced SIMD, so both 6 and 7 produce binaries this CPU can run.
+# 7 is the better one -- it uses the CPU's own barriers and load-exclusive
+# instead of the kernel's atomic helper page -- and is what a build on an
+# ARMv7 target selects.
+go_arch: arm
+
+kernel_arch: arm
+ctng_sample: arm-cortexa9_neon-linux-gnueabihf
+
+qemu: qemu-arm-static
+
+# Instruction classes this CPU cannot execute, audited on every toolchain test.
+#
+# Two groups. `sdiv` and `udiv` are the integer divides a Cortex-A9 does not
+# have, and they are unambiguous by name. The rest are Advanced SIMD mnemonics
+# that exist only in NEON -- the vector loads and stores, the logical ops
+# (VFP has none), the saturating and pairwise forms, and the integer-typed
+# variants of names VFP also uses, where the `.i32`/`.s16`/`.u8` suffix is what
+# makes it a NEON instruction.
+#
+# ⚠ WHAT THIS CANNOT CATCH, stated because relying on it otherwise would be
+# worse than not having it. NEON's *float* forms share both mnemonic and suffix
+# with the VFP scalar ones -- `vadd.f32` is either, depending on whether its
+# operands are Q registers -- and this audit reads mnemonics, not operands. So
+# the audit is the backstop and CT_ARCH_FPU="vfpv3" in the defconfig is the
+# actual defence; if this ever fires, the toolchain was configured wrong rather
+# than merely unlucky.
+#
+# ⚠ AND THE CASE THAT PROVES THE PREVIOUS PARAGRAPH, measured rather than
+# predicted. A runtime-dispatched instruction this CPU lacks is a normal thing
+# for a correct binary to contain, and the first example turned up before any
+# of this had been through a compiler.
+#
+# The Go CLI cross-built for this board contains a UDIV -- the hardware
+# unsigned divide, which a Cortex-A9 does not have. It is guarded:
+# runtime/vlop_arm.s reads internal/cpu.ARM.HasIDIVA and branches to the
+# software loop when it is clear, which on this part it is. So the instruction
+# is present, is never executed, and the binary is correct.
+#
+# glibc does the same thing with memcpy and friends through ifunc on
+# HWCAP_NEON. So a clean build may well *contain* NEON in a variant this CPU
+# never dispatches to. If the audit fires on glibc's string routines, or on a
+# Go binary, and on nothing else, that is this -- narrow the audit to the
+# objects we compile rather than turning the FPU back up. The audit is aimed at
+# what the compiler emits unconditionally, and that is the only thing it can
+# honestly speak for.
+forbidden_insn_re: "^(sdiv|udiv|vld[1-4]\\..+|vst[1-4]\\..+|v(and|bic|bif|bit|bsl|eor|mvn|orn|orr)(\\..+)?|v(acge|acgt|ceq|cge|cgt|cle|clt|tst)\\..+|v(hadd|hsub|rhadd|max|min|pmax|pmin|padd|paddl|padal|q[a-z]+)\\..+|v(shl|shr|sra|sri|sli|shrn|movl|movn|rev16|rev32|rev64|ext|zip|uzp|trn|dup|cnt|cls|clz|swp|tbl|tbx|recpe|recps|rsqrte|rsqrts)(\\..+)?|v(abal|abdl|addl|addw|subl|subw|mlal|mlsl|mull|aba|abd)\\..+|v(add|sub|mul|mla|mls|abs|neg|mov)\\.[ipsu](8|16|32|64))$"
+
+# Ceiling on the glibc minimum-kernel ABI floor. Generous enough for any
+# architecture's own glibc default, strict enough to catch a toolchain that
+# silently pinned itself to the kernel-headers version instead.
+abi_kernel_max: "4.0.0"
+
+qemu_system: qemu-system-arm
+qemu_console: ttyAMA0
+
+# ⚠ The emulated CPU is not this CPU, and the difference is the one that
+# matters. QEMU's `virt` machine takes cortex-a7 or cortex-a15, both of which
+# have NEON and hardware divide; there is no `virt` variant with a Cortex-A9's
+# feature set, and the machines that do model an A9 (vexpress-a9) are boards
+# with their own device trees. So a binary that would SIGILL on the AS4610 runs
+# perfectly well here. That is exactly the gap the instruction audit exists to
+# cover, and it is why booting under QEMU is not evidence about this CPU.
+qemu_machine: "virt"
+qemu_cpu: cortex-a15
+
+# meson's own name for the family, which is not the id: meson knows `arm`,
+# and `armhf` is a Debian port name that means nothing to it.
+meson_cpu: arm
+
+# multi_v7_defconfig, not a board defconfig. 32-bit ARM has no per-SoC
+# defconfigs of the kind PowerPC uses; the whole ARMv7 world builds from one
+# multiplatform config and selects boards by device tree. It already carries
+# CONFIG_ARCH_BCM_HR2, which is the iProc family this board's SoC belongs to.
+#
+# It does not carry everything this board needs -- the platform bgmac for its
+# management port, for one -- and those go in the board's own defconfig
+# fragment rather than here, because they are facts about a switch and not
+# about the CPU.
+kernel_defconfig: multi_v7_defconfig
+
+# zImage, not uImage. ARM's boot wrapper is self-decompressing and U-Boot
+# starts it directly, and a FIT wants the payload rather than a legacy uImage
+# around it -- which the FIT builder would only have to unwrap again.
+kernel_image: arch/arm/boot/zImage
+elf_machine: "EM_ARM"
+
+status: planned
+notes: >
+  Declared, not yet built. Nothing here has been through a compiler: the
+  toolchain has not been seeded, the AS4610-54T has not been booted on it, and
+  every claim on this page is either read off the running switch (the CPU
+  features, which are measured) or read out of upstream (the sample and the
+  defconfig, which are not yet proven to combine).
+
+  The first thing that will settle it is `make toolchain-seed ARCH=armhf`
+  followed by `make toolchain ARCH=armhf` and `make toolchain-test ARCH=armhf`
+  -- the same spike arch/powerpc went through as S1, and the same two questions:
+  does a current gcc/glibc build for this target at all, and does the
+  instruction audit come back clean.

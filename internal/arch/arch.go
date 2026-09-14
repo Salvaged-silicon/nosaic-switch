@@ -170,8 +170,25 @@ func (a *Arch) Validate() []string {
 		if !strings.Contains(a.Triple, "-nosaic-") {
 			bad("triple %q should carry the nosaic vendor field (<cpu>-nosaic-linux-gnu)", a.Triple)
 		}
-		if a.ID != "" && !strings.HasPrefix(a.Triple, a.ID+"-") {
-			bad("triple %q does not start with the arch id %q", a.Triple, a.ID)
+		// The triple's CPU field and the arch id have to be the same
+		// architecture, and the check is deliberately not an equality.
+		//
+		// An id may be a port name that adds a suffix to the CPU name --
+		// armhf is arm plus an ABI, and armel would be the same arm with a
+		// different one. The compiler has no idea what "armhf" is; the triple
+		// is arm-nosaic-linux-gnueabihf and the float ABI lives in the
+		// environment field where the toolchain expects it.
+		//
+		// So either direction of prefix is accepted, which still catches the
+		// error this exists for -- an id and a triple naming different
+		// architectures, which is a toolchain built for the wrong CPU and
+		// then used with a straight face.
+		if a.ID != "" {
+			cpu, _, _ := strings.Cut(a.Triple, "-")
+			if !strings.HasPrefix(a.Triple, a.ID+"-") && !strings.HasPrefix(a.ID, cpu) {
+				bad("triple %q is not for the arch id %q: its cpu field is %q",
+					a.Triple, a.ID, cpu)
+			}
 		}
 	}
 
