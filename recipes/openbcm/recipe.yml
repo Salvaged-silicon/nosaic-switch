@@ -130,6 +130,60 @@ build:
           | sort -u > sdk-defines.txt
         - "echo \"    captured $(wc -l < sdk-defines.txt) SDK defines\""
 
+    # ARM is a different platform definition again, and this one names the
+    # host block rather than the CPU: IPROC_CMICD is Broadcom's target for
+    # parts whose CMIC is on the die with the CPU, which is what a BCM56340 is.
+    #
+    # iproc-4_14 (make/Makefile.linux-iproc-4_14) sets
+    #
+    #   CFGFLAGS += -DSYS_BE_PIO=0 -DSYS_BE_PACKET=0 -DSYS_BE_OTHER=0
+    #   CFGFLAGS += -DLE_HOST=1 -DIPROC_CMICD
+    #   CFGFLAGS += -DBCM_PLATFORM_STRING="IPROC_CMICD"
+    #
+    # -- little-endian throughout, which is the opposite of the PowerPC target
+    # above and the reason the two blocks exist rather than one parameterised
+    # one. IPROC_CMICD is the part that matters beyond endianness: it is how
+    # the SDK is told the chip is not behind a PCI bus.
+    #
+    # 4_14 rather than 2_6 or 3_14: they differ only in which kernel headers
+    # the *kernel-module* half of the build would use, and this build is
+    # user_libs plus bcm, so targetplat is user and that half never runs. The
+    # newest of them has the fewest legacy branches.
+    #
+    # ⚠ CROSS_GCC_VER IS SET HERE ON PURPOSE, AND THE BUILD IS WRONG WITHOUT IT.
+    #
+    # Makefile.linux-iproc derives it by running a compiler out of Broadcom's
+    # own internal toolchain path:
+    #
+    #   TOOLCHAIN_BASE_DIR ?= /projects/ntsw-tools/linux/iproc_ldks/...
+    #   CROSS_GCC_VER ?= $(shell $(TOOLCHAIN_BIN_DIR)/$(CROSS_COMPILE)gcc -dumpversion)
+    #
+    # which does not exist here, so the shell-out returns nothing and every
+    # version test after it becomes `expr >= 8` with a missing operand. Those
+    # tests are what add -Wno-stringop-overflow, -Wno-address-of-packed-member
+    # and the rest for a modern compiler; they silently do not fire, and a
+    # decade-old codebase meets gcc 15 with its guards off. Stating the version
+    # is enough -- CROSS_GCC_VER is ?=-assigned, so the environment wins, and
+    # nothing else in that path is consulted for a userspace build.
+    armhf:
+      targets:
+        - platform=iproc-4_14
+        - LINUX_MAKE_USER=1
+        - LINUX_MAKE_SHARED_LIB=0
+        - SHAREDLIBVER=1
+        - user_libs
+        - bcm
+      env:
+        CROSS_GCC_VER: "15.2.0"
+      after:
+        - >-
+          make platform=iproc-4_14 -n 2>/dev/null
+          | grep -m1 BCM_ALL_CHIPS
+          | tr ' ' '\n' | grep '^-D'
+          | grep -vE '^-D(__KERNEL__|USE_LINUX_BDE_MMAP|"?KBUILD)'
+          | sort -u > sdk-defines.txt
+        - "echo \"    captured $(wc -l < sdk-defines.txt) SDK defines\""
+
   mkdirs:
     - sdk-6.5.24/build/linux/user/common
 
