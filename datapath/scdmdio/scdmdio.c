@@ -69,6 +69,23 @@ static int wait_response(struct nosaic_mdio *m)
 	return -2;
 }
 
+/*
+ * Take the accelerator through reset before its first transaction.
+ *
+ * ⚠ WITHOUT THIS THE BUS ANSWERS AND THE PHYs DO NOT. Transactions complete
+ * with no error reported and every read returns 0xffff -- an idle MDIO bus,
+ * which is indistinguishable from a board whose PHYs are absent.
+ */
+void nosaic_mdio_init(struct nosaic_mdio *m)
+{
+	struct timespec ts = { 0, 20000000 };  /* 20 ms */
+
+	wr(m, MDIO_CTRL_STATUS, cs_default(m) | (1u << 31));
+	nanosleep(&ts, NULL);
+	wr(m, MDIO_CTRL_STATUS, cs_default(m));
+	nanosleep(&ts, NULL);
+}
+
 static int mdio_request(struct nosaic_mdio *m, int bus, int clause, int prtad,
 			int devad, int op, uint16_t data, uint16_t *out)
 {
