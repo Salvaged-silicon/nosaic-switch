@@ -98,6 +98,39 @@ the box could make.
   at 40000 and the far end reported it down. Programming it brought Et52 up,
   confirmed from both ends, with an OSPF adjacency and 1.8 ms round trip.
 
+## Fixed on the hardware, 2026-09-14
+
+- **A lost DMA completion could mute the switch for ever, and every diagnostic
+  would still say it was healthy.** The tap pump ran `bcm_tx` with no callback,
+  which is the SDK's synchronous path: `async = pkt->call_back != NULL`
+  (`src/bcm/common/tx.c:2680`) into `soc_dma_wait`, which is
+  `soc_dma_wait_timeout(..., sal_sem_FOREVER)` (`src/soc/common/dma.c:4048`).
+  The pump is the only thread that drains the taps, so one transmit that never
+  completed parked the whole Linux-to-wire direction permanently.
+
+  It happened to the sibling 7050SX2, which spent nearly two days hearing every
+  neighbour and being heard by none while **this** board's `et49`/`et50` showed
+  `link=1` and received nothing — so the fault presented here, on the wrong
+  switch, and most of a day went into looking for it here.
+
+  ⚠ **Nothing else failed.** Receive kept punting, counters updated, the query
+  socket answered, `show ports` reported every port up at 40000, and `show dma`
+  read 12% used with zero failed allocations — so the pool, the usual suspect,
+  was demonstrably innocent. The one place the truth showed was the tap devices:
+  `tx_packets` frozen while `tx_dropped` climbed at the Hello rate, which is
+  what a TAP does when nobody reads the fd.
+
+  Every packet now carries a callback, so the SDK takes `soc_dma_start` and
+  `bcm_tx` returns without waiting for the wire. The single transmit buffer
+  becomes a ring of 64 — a packet belongs to the DMA engine until its callback
+  fires — allocated once, never freed, because the bump allocator still cannot
+  free. A full ring drops and counts the frame rather than waiting. `tx-nobuf`
+  on the port line and an explicit warning when the ring is exhausted exist so
+  that degrading instead of stopping is something somebody is told about.
+
+  Not fixed: why the completion went missing. The interrupt thread was alive
+  and receive never faltered, so it is a lost wakeup rather than a dead IRQ.
+
 ## Tested on the hardware, 2026-09-13
 
 A deliberate pass over the claims this board had not been asked to prove.
@@ -143,13 +176,19 @@ A deliberate pass over the claims this board had not been asked to prove.
 
 ## Blocking — the board is not at parity with the predecessor without these
 
-- **The 48 copper ports have never been exercised.** Nothing has been cabled to
-  one, so `phy.c` has found its 48 and matched none: the survey reports
-  `3 of 52 ports have link`, all of them QSFP. The predecessor runs copper here
-  at 1G and 100M, and the MAC-interface matching that `phy.c` exists for is
-  exactly what those speeds need. **Plug anything into a front copper port,
-  declare a `tap_etN` for it in `config/asic.conf`, and the whole path can be
-  proven** — blocked on a cable, not on code.
+- **No traffic has crossed a copper port.** Four of the 48 are cabled and all
+  four link — `et1`/`et2` at 1000 on SGMII, `et3`/`et4` at 10000 on XFI, with
+  `et3` and `et4` patched to each other so both ends are this board's own PHYs.
+  What that proves is the PHY path and the MAC-interface matching. What it does
+  not prove is forwarding: none of the four has an address, so every frame
+  counter on them reads zero in both directions. **Give one a `10.x/29` in
+  `config/network.conf`, put a neighbour on the other end, and the copper
+  datapath can be proven the way the 40G links were** — blocked on configuration
+  and a neighbour, not on code.
+
+- **44 of the 48 copper ports are still untried.** All 48 answer `0x600d` and
+  bind, so there is no reason to expect the rest to differ, but that is an
+  inference and the other four are a measurement.
 
 - **The watchdog is not armed, and arming it alone would be worse than leaving
   it.** Its action is a power cycle, so it needs a petting service to exist
