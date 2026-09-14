@@ -94,6 +94,34 @@ platform_hal:
   resets:
     - {name: qsfp-retimer, bit: 8}
 
+    # ⚠ THE 48 COPPER PHY RESETS ARE BITS 2-7, AND THEY ARE DELIBERATELY NOT
+    # RELEASED HERE YET.
+    #
+    # The board's description file names only three bits in this block -- the
+    # switch chip, the security chip and the retimer -- and leaves 2 to 7
+    # unexplained. They are the BCM84848 resets, grouped eight ports to a bit:
+    # six bits for forty-eight ports, which is exactly what this register
+    # implements and nothing else claims. Releasing them was proved on the
+    # hardware -- all 48 PHYs then answer 0x600d on a scan of every
+    # accelerator, bus and address, where none answered before.
+    #
+    # They stay commented out because releasing them is not yet SAFE: the SDK
+    # then finds real parts, starts downloading firmware to them, and its
+    # handshake fails on every port
+    #
+    #     PHY8481 firmware handshake failed: u=0 p=11 status=0x0002
+    #
+    # with bcm_init never returning. That takes the whole datapath with it --
+    # no forwarding on the three 40G links either, which is a far worse state
+    # than 48 idle copper ports. Enable these once the firmware download works.
+    #
+    # - {name: copper-phy-1-8,   bit: 2}
+    # - {name: copper-phy-9-16,  bit: 3}
+    # - {name: copper-phy-17-24, bit: 4}
+    # - {name: copper-phy-25-32, bit: 5}
+    # - {name: copper-phy-33-40, bit: 6}
+    # - {name: copper-phy-41-48, bit: 7}
+
   # Where the platform devices sit on the SCD's SMBus accelerator 0.
   #
   # ⚠ THIS IS NOT THE SAME LAYOUT AS THE SIBLING BOARD, AND THE DIFFERENCE IS
