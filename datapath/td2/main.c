@@ -25,6 +25,7 @@
 
 #include "bde.h"
 #include "props.h"
+#include "portmode.h"
 #include "sdk.h"
 #include "l3sync.h"
 #include "led.h"
@@ -149,6 +150,7 @@ static const char *const datapath_conf[] = {
 	"portmap.conf",   /* generated: which lane reaches which cage */
 	"polarity.conf",  /* generated: which lanes the PCB inverts */
 	"serdes.conf",    /* generated: this board's transmit equalisation */
+	"portmode.conf",  /* shipped: which QSFP cages run as 4x10G */
 };
 
 /* Where the switch chip appears once the board controller releases it. */
@@ -279,6 +281,16 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
 			"  attach without a port map, and this board's is generated rather\n"
 			"  than shipped -- see platform/<board>/tools/mkportmap.sh\n");
 
+	/*
+	 * Break out any QSFP cage the board asks for, BEFORE the attach that
+	 * reads the map. There is no runtime switch for this on this chip, so
+	 * doing it later would do nothing and say it had worked.
+	 */
+	if (nosaic_portmode_apply(0) < 0) {
+		nosaic_bde_close(b);
+		return 1;
+	}
+
 	unit = nosaic_sdk_attach(b, TD2_DEVICE, TD2_REVISION);
 	if (unit < 0) {
 		nosaic_bde_close(b);
@@ -395,6 +407,14 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 			PERSIST_CONF_DIR, PERSIST_CONF_DIR);
 		return 1;
 	}
+
+	/*
+	 * Break out any QSFP cage the board asks for, BEFORE the attach that
+	 * reads the map. There is no runtime switch for this on this chip, so
+	 * doing it later would do nothing and say it had worked.
+	 */
+	if (nosaic_portmode_apply(0) < 0)
+		return 1;
 
 	unit = nosaic_sdk_attach(b, TD2_DEVICE, TD2_REVISION);
 	if (unit < 0)

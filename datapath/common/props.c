@@ -103,6 +103,51 @@ int nosaic_props_load(const char *path)
  * the first match instead would mean a later file could be loaded, counted,
  * and quietly ignored.
  */
+int nosaic_props_set(const char *name, const char *value)
+{
+	int i;
+
+	for (i = 0; i < nprops; i++) {
+		if (strcmp(props[i].name, name) == 0) {
+			char *v = strdup(value);
+
+			if (v == NULL)
+				return -1;
+			free(props[i].value);
+			props[i].value = v;
+			return 0;
+		}
+	}
+	if (nprops >= MAX_PROPS)
+		return -1;
+	props[nprops].name  = strdup(name);
+	props[nprops].value = strdup(value);
+	if (props[nprops].name == NULL || props[nprops].value == NULL) {
+		free(props[nprops].name);
+		free(props[nprops].value);
+		return -1;
+	}
+	props[nprops].used = 0;
+	nprops++;
+	return 0;
+}
+
+int nosaic_props_unset(const char *name)
+{
+	int i;
+
+	for (i = 0; i < nprops; i++) {
+		if (strcmp(props[i].name, name) == 0) {
+			free(props[i].name);
+			free(props[i].value);
+			props[i] = props[nprops - 1];
+			nprops--;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 const char *nosaic_props_get(const char *name)
 {
 	int i;

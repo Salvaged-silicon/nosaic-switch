@@ -28,7 +28,7 @@ LDLIBS  += -lpthread
 
 # dmapool is always built: see the note in ../tdp/Makefile. It takes a mutex,
 # so pthread is a base dependency rather than an SDK one.
-OBJS = main.o bde.o ../common/props.o ../common/dmapool.o
+OBJS = main.o bde.o ../common/props.o ../common/portmode.o ../common/dmapool.o
 
 # SDK_DIR points at the staged prefix. The openbcm package puts its headers in
 # include/openbcm and its archives in lib/openbcm, so both get that suffix --
@@ -85,7 +85,8 @@ strip: nosd-td2
 	$(CROSS_COMPILE)strip $<
 	@echo "    stripped to $$(stat -c%s nosd-td2) bytes"
 
-main.o: main.c bde.h sdk.h ../common/props.h
+main.o: main.c bde.h sdk.h ../common/props.h ../common/portmode.h
+../common/portmode.o: ../common/portmode.c ../common/portmode.h ../common/props.h
 bde.o: bde.c bde.h
 sdk.o: sdk.c bde.h sdk.h ../common/props.h
 phy.o: phy.c phy.h ../common/props.h
