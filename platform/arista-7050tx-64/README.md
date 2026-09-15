@@ -25,8 +25,10 @@ second in the tree rather than first — see
 NOSaic boots this switch, drives the Trident2, and routes over all three of its
 cabled 40G links. Measured on the hardware:
 
-- **Boots from Aboot into its own userland**, into an A/B slot with a persistent
-  data image, and answers on its management address and over ssh.
+- **Boots itself.** `boot-config` names NOSaic, so a reboot needs no console and
+  no Aboot prompt: measured at 100 seconds from `reboot` to ssh, into an A/B
+  slot with a persistent data image. The vendor OS stays on flash and Aboot
+  still boots it on demand, which is the way back.
 - **A/B upgrade works in both directions, unattended.** A rootfs streamed to the
   switch, installed into the inactive slot by the running CLI, and booted; an
   image the health check declined was left to roll back, and a healthy one
@@ -61,10 +63,7 @@ but have carried nothing: four of the 48 have been cabled, none has an address,
 and no frame has crossed one in either direction. The watchdog is not armed,
 because arming it without a petting service is a timer that power-cycles the
 switch. `prefdl` is unread, so the board cannot say what
-it is and the management MAC lives in a config file. And `boot-config` still
-points at the vendor OS, so every NOSaic boot is a one-shot from the Aboot
-prompt — a power cycle returns to EOS. Until that changes it is a demo rather
-than an installation.
+it is and the management MAC lives in a config file.
 
 Everything left is in [todo](docs/todo.md).
 

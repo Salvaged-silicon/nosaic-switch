@@ -98,6 +98,46 @@ the box could make.
   at 40000 and the far end reported it down. Programming it brought Et52 up,
   confirmed from both ends, with an OSPF adjacency and 1.8 ms round trip.
 
+## Fixed on the hardware, 2026-09-15
+
+- **It boots itself.** `boot-config` on the switch names NOSaic instead of the
+  vendor OS, so a reboot needs no console and no Aboot prompt -- measured at 100
+  seconds from `reboot` to ssh, and every reboot since has been hands-off. The
+  EOS images stay on flash and Aboot still boots them on demand, so the way back
+  is unchanged; only the default moved.
+
+  ⚠ It is still short of the bar this file set for it, which was "unattended
+  from its own disk after a COLD POWER CUT". Every boot measured has been a warm
+  reboot. The PDU test has not been run.
+
+- **The PHY firmware download was 13 minutes of sleeping, and is now 8.**
+  `wait_response()` slept a flat 100 us before re-checking a transaction that
+  completes in about 109 us, 3.66 million times. Spinning on the status word
+  instead took boot-to-datapath from ~15.6 min to 487 s, reproduced twice.
+  ⚠ The predecessor's own exponential back-off, ported exactly, measured SLOWER
+  here (699 s) -- its `sal_usleep` and our `nanosleep` are not the same
+  primitive at single-digit microseconds. Do not re-adopt it on authority.
+
+- **A QSFP cage can be run as four 10G ports.** `config/portmode.conf`, applied
+  before `bcm_attach` because there is no runtime switch for it on this chip.
+  Proven against the empty cage so nothing cabled was at risk.
+
+## Found by testing, and not yet fixed
+
+- ⚠ **`tools/mkserdes.sh` tunes exactly one port, and the board has four cages.**
+  It takes the FIRST tap profile it finds in the description file (`head -1`) and
+  emits it for `PORT="${SERDES_PORT:-61}"`, so Et52 has transmit equalisation and
+  Et49/Et50/Et51 have none at all -- no `serdes_preemphasis`, no
+  `serdes_driver_current`. It was written during the Et52 bring-up and never
+  generalised.
+
+  It is recorded here rather than fixed because the obvious fix is unproven:
+  applying port 61's profile to 49 and 53 by hand changed nothing, and the taps
+  are per-PCB-trace tuning, so copying one cage's profile to another is an
+  assumption. The description file does carry per-port descriptors; reading them
+  properly needs the data file `/etc/prefdl` names, which is inside the vendor
+  OS rather than beside it.
+
 ## Fixed on the hardware, 2026-09-14
 
 - **The copper ports carry traffic.** Three faults, found by asking the
@@ -217,13 +257,6 @@ A deliberate pass over the claims this board had not been asked to prove.
   it.** Its action is a power cycle, so it needs a petting service to exist
   first; that service is the actual work. `nosaic platform watchdog arm <ms>`
   is there for a human who is watching.
-
-- **It does not boot standalone.** `boot-config` still names the vendor OS, so
-  every NOSaic boot is a one-shot from the Aboot prompt and a power cycle
-  returns to EOS. That is the safety property and it is deliberate, but until
-  it changes this is a demo rather than an installation. ⚠ Do not change it
-  while the console is unreliable: with no console and a bad image there is no
-  way back in.
 
 - **No OSPFv3 adjacency with the 7050SX2.** There is one with the Edgecore on
   `et52`, and this end is configured and running on all three — `ospf6d`
