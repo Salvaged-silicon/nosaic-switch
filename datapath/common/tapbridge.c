@@ -134,6 +134,10 @@ struct tap {
 	unsigned long tx_ok;
 	unsigned long tx_err;
 	unsigned long tx_nobuf;   /* dropped: no free packet in the ring */
+	/* Consecutive stats intervals with link and no traffic either way.
+	 * Counted so a port that has just come up is not accused of being
+	 * dead for the first moment it is legitimately quiet. */
+	int silent;
 };
 
 static struct tap taps[MAX_TAPS];
@@ -153,6 +157,12 @@ static int tap_unit;
  * means a slot whose callback never fires simply sinks out of rotation instead
  * of being retried in order.
  */
+/* How many stats intervals a port may have link and carry nothing before
+ * it is worth saying so. The table is printed about once a minute, so
+ * this is a few minutes of genuine silence rather than a port that has
+ * just linked and not yet been spoken to. */
+#define TAP_SILENT_INTERVALS 3
+
 #define TX_RING 64
 
 static bcm_pkt_t *tx_ring[TX_RING];
@@ -795,7 +805,7 @@ void nosaic_tap_stats(void)
 		{ "in-err",   snmpIfInErrors },
 		{ "out-err",  snmpIfOutErrors },
 	};
-	int i, j;
+	int i, j, traffic;
 
 	bcm_stat_sync(tap_unit);
 	for (i = 0; i < ntaps; i++) {
@@ -863,8 +873,10 @@ void nosaic_tap_stats(void)
 			       (int)intf, (unsigned)fd,
 			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf);
 		}
+		traffic = 0;
 		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {
 			uint64 v;
+			unsigned long long n;
 			int rv;
 
 			/* A counter this chip does not keep is reported, not skipped.
@@ -874,13 +886,69 @@ void nosaic_tap_stats(void)
 			rv = bcm_stat_get(tap_unit, taps[i].port, want[j].val, &v);
 			if (rv != BCM_E_NONE) {
 				printf("  %s=?(%d)", want[j].name, rv);
+				/* Unreadable is not the same as zero. A port whose
+				 * counters cannot be read must not be accused of
+				 * carrying nothing. */
+				traffic = -1;
 				continue;
 			}
-			printf("  %s=%llu", want[j].name,
-			       (unsigned long long)COMPILER_64_LO(v) |
-			       ((unsigned long long)COMPILER_64_HI(v) << 32));
+			n = (unsigned long long)COMPILER_64_LO(v) |
+			    ((unsigned long long)COMPILER_64_HI(v) << 32);
+			printf("  %s=%llu", want[j].name, n);
+			if (traffic >= 0 && n != 0 && want[j].val != snmpIfInDiscards &&
+			    want[j].val != snmpIfOutDiscards &&
+			    want[j].val != snmpIfInErrors &&
+			    want[j].val != snmpIfOutErrors)
+				traffic = 1;
 		}
 		printf("\n");
+
+		/*
+		 * A port with link and nothing on it, in either direction.
+		 *
+		 * This is a real state and it has cost two days on this fleet. The
+		 * port reports link, the tap is bound, the VLAN and STP state are
+		 * right, the per-port bring-up ran with the same values as a port
+		 * that works, and not one frame moves either way -- with no errors
+		 * and no discards, because nothing was ever attempted badly enough
+		 * to count. Every diagnostic says the port is healthy.
+		 *
+		 * It is distinguishable from the ordinary cases, which is why it is
+		 * worth saying:
+		 *
+		 *   link down            obvious, and reported by OPER already
+		 *   far end dark         we still transmit, so out-nuc climbs
+		 *   wrong polarity       frames arrive and fail to decode; errors
+		 *   nothing to talk to   a routed port still sends its own hellos
+		 *
+		 * All of those move a counter. Only this one leaves every counter
+		 * at zero while the link is up.
+		 *
+		 * Not fatal, and deliberately not acted on: the cause is not yet
+		 * known -- reproducing it needs the far end to go away while this
+		 * daemon restarts, which has not been reproducible on demand -- and
+		 * a remedy for a fault nobody understands is how a switch acquires
+		 * behaviour nobody can explain. This says what it sees and leaves
+		 * the decision to a person.
+		 *
+		 * Counted rather than announced every interval: a port that has
+		 * only just come up is legitimately silent for a moment, and a
+		 * warning that fires on every fresh link is one nobody reads.
+		 */
+		if (link == 1 && traffic == 0) {
+			if (++taps[i].silent == TAP_SILENT_INTERVALS)
+				printf("tap: %s (port %d) has link and has carried NOTHING "
+				       "in either direction for %d intervals -- not a "
+				       "counter that failed to read, and not a far end "
+				       "that is merely quiet, because this port's own "
+				       "transmits are not reaching the wire either. "
+				       "Restarting the datapath has cleared this before; "
+				       "the cause is not understood, so capture "
+				       "`nosaic show ports` and this log before doing so.\n",
+				       taps[i].name, taps[i].port, TAP_SILENT_INTERVALS);
+		} else {
+			taps[i].silent = 0;
+		}
 	}
 
 	/*
