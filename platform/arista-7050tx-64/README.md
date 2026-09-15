@@ -25,9 +25,10 @@ second in the tree rather than first — see
 NOSaic boots this switch, drives the Trident2, and routes over all three of its
 cabled 40G links. Measured on the hardware:
 
-- **Boots itself.** `boot-config` names NOSaic, so a reboot needs no console and
-  no Aboot prompt: measured at 100 seconds from `reboot` to ssh, into an A/B
-  slot with a persistent data image. The vendor OS stays on flash and Aboot
+- **Boots itself from a cold power cut.** `boot-config` names NOSaic, so nothing
+  needs a console or an Aboot prompt. Measured with the PDU outlet pulled and
+  the box confirmed dark: ssh at 79 seconds, the datapath at 532, and every port
+  and adjacency back with nothing typed. The vendor OS stays on flash and Aboot
   still boots it on demand, which is the way back.
 - **A/B upgrade works in both directions, unattended.** A rootfs streamed to the
   switch, installed into the inactive slot by the running CLI, and booted; an

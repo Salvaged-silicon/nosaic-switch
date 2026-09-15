@@ -106,9 +106,14 @@ the box could make.
   EOS images stay on flash and Aboot still boots them on demand, so the way back
   is unchanged; only the default moved.
 
-  ⚠ It is still short of the bar this file set for it, which was "unattended
-  from its own disk after a COLD POWER CUT". Every boot measured has been a warm
-  reboot. The PDU test has not been run.
+  ⚠⚠ AND IT SURVIVES A COLD POWER CUT, which is the bar this file set.
+
+  PDU outlet 4 off, confirmed dark by ping and by the PDU, held 60 s, back on:
+  ssh at 79 s and the datapath at 532 s, with no console, no Aboot prompt and
+  nothing typed. Slot a still active, `boot-config` still NOSaic, all seven
+  ports up, all three OSPFv2 adjacencies Full and 12 prefixes back in DEFIP.
+  532 s against the 487 s of a warm reboot is PSU and firmware time, so nothing
+  regressed. This board is now an installation rather than a demo.
 
 - **The PHY firmware download was 13 minutes of sleeping, and is now 8.**
   `wait_response()` slept a flat 100 us before re-checking a transaction that
@@ -274,6 +279,14 @@ A deliberate pass over the claims this board had not been asked to prove.
   `nosaic platform status` cannot say what the board is and
   `config/network.conf` is the only thing that knows the address — correct for
   exactly one switch.
+
+- **The PSU decode is the sibling's, and presence is not power.** Through the
+  whole cold-cut test above -- outlet off, box dark, not answering ping -- this
+  board's driver went on reporting `psu1? present` and `psu2? present` from
+  register `0x00000003`. Those are presence bits for a module in a bay, and
+  nothing here reads whether a supply is energised. A board fed from one outlet
+  with two supplies fitted therefore looks fully redundant and is not, which is
+  the wrong way round for a field to be wrong.
 
 - **The cage-word decode table is the sibling's.**
   `internal/platformhal/scd/transceiver.go` knows `0x47`, `0x1c0` and `0x180`;
