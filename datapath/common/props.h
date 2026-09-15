@@ -46,6 +46,19 @@ const char *nosaic_props_get(const char *name);
  */
 const char *nosaic_props_get_unit(const char *name, int unit);
 
+/*
+ * Set or replace one property, as if it had been read from a file.
+ *
+ * For configuration this daemon derives rather than reads -- the QSFP port
+ * mode below rewrites the port map before the SDK ever asks for it. Returns 0,
+ * or -1 if the store is full.
+ */
+int nosaic_props_set(const char *name, const char *value);
+
+/* Remove one property, so the SDK falls back to the chip's default. Returns
+ * 1 if something was removed. */
+int nosaic_props_unset(const char *name);
+
 /* Load every *.conf in a directory, in name order. Returns how many
  * properties were read, or -1 if the directory is not there. */
 int nosaic_props_load_dir(const char *dir);
