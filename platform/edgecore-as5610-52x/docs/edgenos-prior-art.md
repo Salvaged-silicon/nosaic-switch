@@ -52,13 +52,21 @@ DMA, TSLAM DMA, counter DMA and packet DMA all work, and full bring-up takes 13
 seconds. Do not port that knob across. If DMA appears to fail here again, check
 every bridge between the chip and memory before disabling anything.
 
-## Ahead of us, not yet our problem
+## Their open blocker, closed here
 
-Their open blocker is that an IFP ACL sits correctly in the TCAM and never
+Their open blocker was that an IFP ACL sits correctly in the TCAM and never
 matches live traffic -- proven not to be the TCAM contents, the selcodes, the
-slice map or the enables. Their recommended next step is a register diff against
-a live Cumulus that does drop correctly. NOSaic has not reached ACLs, and when
-it does, that is the first thing to read.
+slice map or the enables. Their recommended next step was a register diff
+against a live Cumulus that does drop correctly.
+
+It never needed the diff. Under NOSaic's bring-up -- a real reset, `soc_init`
+and `bcm_init` whole, no `soc_skip_reset` -- the lookup fires, and
+[ACLs work](../README.md#acls). What their capture of Cumulus did give was the
+semantics worth copying: a deny is DROP paired with SwitchToCpuCancel, so a
+denied packet is not punted either, and every rule carries a counter. Both are
+in `datapath/common/acl.c`. Their other finding, that the port bitmap gate must
+be written per pipe, turned out to be the same fault seen from the other side;
+see the [todo](todo.md#the-ingress-port-gate-reaches-one-pipeline).
 
 ## One to watch: endianness
 

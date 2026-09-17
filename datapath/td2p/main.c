@@ -27,6 +27,7 @@
 #include "props.h"
 #include "sdk.h"
 #include "l3sync.h"
+#include "acl.h"
 #include "led.h"
 #include "query.h"
 #include "tapbridge.h"
@@ -74,6 +75,7 @@ static void datapath_tick(void)
 	if (elapsed_ms(&last_l3, &now) >= 1000) {
 		last_l3 = now;
 		nosaic_l3_poll();
+		nosaic_acl_poll();
 	}
 	/* The panel, at a rate a person would notice rather than a machine.
 	 * Two seconds is well inside how long anybody takes to walk to a rack,
@@ -477,6 +479,12 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 			}
 			nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
 		}
+
+		/* After the taps, because a rule may name a port; after the
+		 * router interfaces, because the punt groups they create must
+		 * exist before this one claims a priority above them. Not fatal
+		 * if it fails: the capability is reported absent. */
+		nosaic_acl_start(unit);
 
 		/* The front panel. Not fatal if it fails: a switch with a dark
 		 * panel still forwards, and a board with no SCD has no panel. */

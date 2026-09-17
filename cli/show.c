@@ -102,6 +102,12 @@ int nosaic_show_caps(void)
 	put(&t, r, 0, "ports");    put(&t, r++, 1, s);
 	put(&t, r, 0, "vlans");    put(&t, r++, 1, nosaic_jbool(resp, "VLANs", 0) ? "true" : "false");
 	put(&t, r, 0, "l3");       put(&t, r++, 1, nosaic_jbool(resp, "L3", 0) ? "true" : "false");
+	if (nosaic_jbool(resp, "ACL", 0)) {
+		snprintf(s, sizeof(s), "yes, %d rules", nosaic_jint(resp, "ACLEntries", 0));
+		put(&t, r, 0, "acl"); put(&t, r++, 1, s);
+	} else {
+		put(&t, r, 0, "acl"); put(&t, r++, 1, "no");
+	}
 
 	/* Stated even when absent, because an operator planning multipath needs to
 	 * know before configuring it rather than after a route is refused. */
@@ -298,5 +304,85 @@ int nosaic_show_dma(void)
 		}
 	}
 	free(resp);
+	return 0;
+}
+
+/* A hit count is a 64-bit number and nosaic_jint is not; a counter past two
+ * billion would read as garbage, and a busy port gets there in an afternoon. */
+static unsigned long long jcount(const char *rec, const char *key)
+{
+	char pat[48];
+	const char *p;
+
+	snprintf(pat, sizeof(pat), "\"%s\":", key);
+	p = strstr(rec, pat);
+	return p ? strtoull(p + strlen(pat), NULL, 10) : 0;
+}
+
+int nosaic_show_acl(void)
+{
+	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"acl\"}");
+	struct table t;
+	const char *p;
+	int r = 1;
+
+	if (resp == NULL) {
+		no_datapath();
+		return 1;
+	}
+	if (refused(resp)) {
+		free(resp);
+		return 1;
+	}
+	if (!nosaic_jbool(resp, "Available", 0)) {
+		/* Stated as a fact about the silicon, because it is one: the
+		 * datapath asked for a field group and was refused. */
+		fprintf(stderr, "nosaic: this switch's datapath has no field group "
+			"for access lists\n");
+		free(resp);
+		return 1;
+	}
+	memset(&t, 0, sizeof(t));
+	put(&t, 0, 0, "SEQ"); put(&t, 0, 1, "ACTION"); put(&t, 0, 2, "MATCH");
+	put(&t, 0, 3, "PACKETS"); put(&t, 0, 4, "STATUS");
+
+	p = strstr(resp, "\"Rules\":[");
+	p = p ? p + strlen("\"Rules\":[") : resp;
+	while ((p = strchr(p, '{')) != NULL && r < NOSAIC_TABLE_ROWS) {
+		char rule[160], err[80], s[40], *sp;
+
+		nosaic_jstr(p, "Rule", rule, sizeof(rule));
+		nosaic_jstr(p, "Error", err, sizeof(err));
+		snprintf(s, sizeof(s), "%d", nosaic_jint(p, "Seq", 0));
+		put(&t, r, 0, s);
+		/* "deny in swp6 proto icmp" is an action and a match, and they
+		 * read better apart. A rule that failed to parse may have
+		 * neither, in which case the text is shown as it was written. */
+		sp = strchr(rule, ' ');
+		if (sp != NULL) {
+			*sp = '\0';
+			put(&t, r, 1, rule);
+			put(&t, r, 2, sp + 1);
+		} else {
+			put(&t, r, 1, rule);
+			put(&t, r, 2, "any");
+		}
+		snprintf(s, sizeof(s), "%llu", jcount(p, "Packets"));
+		put(&t, r, 3, s);
+		if (nosaic_jbool(p, "Installed", 0))
+			put(&t, r, 4, err[0] ? err : "in chip");
+		else
+			put(&t, r, 4, err[0] ? err : "not installed");
+		r++;
+		p++;
+	}
+	free(resp);
+	if (r == 1) {
+		printf("no rules; set one with: nosaic config set acl_<seq> "
+		       "\"deny|permit [in <port>] [proto <p>] [src <cidr>] "
+		       "[dst <cidr>] [sport <n>] [dport <n>]\"\n");
+		return 0;
+	}
+	emit(&t);
 	return 0;
 }

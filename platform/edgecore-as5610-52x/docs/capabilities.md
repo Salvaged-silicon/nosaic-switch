@@ -60,7 +60,7 @@ starts lying.
 | Cut-through | 860 ns | — | not measured here |
 | Jumbo frames | 9216 | **no** | taps come up at 1500; nothing plumbs an MTU |
 | ECMP | yes | **yes** | 150 transit packets split 80/70 across a pair |
-| ACLs / field processor | yes | **no** | **see the blocker below** |
+| ACLs / field processor | yes | **yes** | ingress IPv4: port, protocol, addresses, L4 ports; permit and deny, with counters. 1792 rules. See [docs/acl.md](../../../docs/acl.md) and [below](#the-blocker-that-was-never-the-silicon) |
 | VLANs (user-facing) | 4K | **no** | per-port service VLANs only; no VLAN model |
 | Link aggregation | yes | **no** | no LACP, no static bonds |
 | Storm control / policers | yes | **no** | nothing rate-limits flooding |
@@ -77,15 +77,26 @@ routing and bridging are on the Trident2+ and absent here, which is why the
 CLI has to run on both boards and refuse what this one cannot do, rather than
 silently doing less.
 
-## The blocker that is not ours
+## The blocker that was never the silicon
 
 EdgeNOS got an ACL installed in this chip's TCAM, reading back correctly, that
 **never matched a packet** — 2000 injected packets flooded through with the
 field-processor statistic at zero. It ruled out the bypass enable, the slice
 map, the port field select, entry validity and the arming registers, and did
-not find the cause.
+not find the cause. Its last recommendation was a register diff against a
+Cumulus that drops correctly.
 
-It is recorded on the [todo](todo.md) because the 7050SX2's punt path is built
-on field-processor rules. If the FP cannot be armed on this silicon, the
-control plane needs a different mechanism here — and that is worth establishing
-early rather than discovering once a datapath otherwise works.
+**Resolved 2026-09-16, without the diff.** The field processor evaluates live
+traffic here under NOSaic's bring-up: the first check was the control plane's
+own punt rule for this box's address, which counted exactly the twenty echo
+replies sent through it. What EdgeNOS lacked was not a register but the SDK's
+own initialisation -- it programmed the TCAM by hand over a minimal init, and
+later ran the SDK with `soc_skip_reset=1` over a chip its own code had already
+touched. NOSaic resets the chip and runs `soc_init` and `bcm_init` whole, and
+`bcm_field` works on top of that with no patch to the SDK. Access lists are
+built on it: [docs/acl.md](../../../docs/acl.md) says what they do, and the
+[README](../README.md#acls) has the measurements.
+
+One thing on this board is still wrong under the SDK and is worked around
+rather than fixed: the ingress-port bitmap gate reaches only one of the chip's
+two pipelines. It is on the [todo](todo.md#the-ingress-port-gate-reaches-one-pipeline).

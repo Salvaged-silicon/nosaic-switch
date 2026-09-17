@@ -448,10 +448,12 @@ one fix lands on both. The AS5610's list is
 
 ### Forwarding
 
-- **ACLs and CoPP.** *(shared)* This board's punt path is built on
-  field-processor rules, so it has FP working where the AS5610 does not -- which
-  makes it the right box to build the ACL model on, and the AS5610 the one that
-  proves it portable.
+- **ACLs and CoPP.** *(shared)* It went the other way round: the ACL model was
+  built and proven on the AS5610 on 2026-09-16 (its field processor worked all
+  along, see its todo), and this board is the one that has to prove it
+  portable. `nosd-td2p` links `datapath/common/acl.c`; nobody has run
+  [the test](../../../docs/acl.md#what-was-measured) here yet. CoPP is then a
+  meter per rule and a CPU queue per class on top of it.
 - **VLANs as a user-facing feature.** *(shared)* No way to say "these ports are
   VLAN 100, tagged on the uplink". The datapath has the calls.
 - **Link aggregation.** *(shared)* No LACP, no static bonds, on a box with six

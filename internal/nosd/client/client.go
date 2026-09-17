@@ -231,3 +231,27 @@ func dialError(path string, err error) error {
 		return fmt.Errorf("cannot reach nosd at %s: %w", path, err)
 	}
 }
+
+// ACLRule is one access-list rule as the datapath holds it: the text it was
+// configured with, whether it made it into the chip, and what it has matched.
+type ACLRule struct {
+	Seq       int
+	Rule      string
+	Installed bool
+	Packets   uint64
+	Error     string
+}
+
+// ACLs is the rule set and its room. Not part of the switchapi contract yet:
+// rules are configuration, and only the Broadcom datapaths hold them.
+type ACLs struct {
+	Available   bool
+	Total, Free int
+	Rules       []ACLRule
+}
+
+func (c *Client) ACLs() (ACLs, error) {
+	var out ACLs
+	err := c.call(proto.OpACL, nil, &out)
+	return out, err
+}

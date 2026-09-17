@@ -103,6 +103,7 @@ const (
 	OpAddRoute     = "l3.route.add"
 	OpDelRoute     = "l3.route.del"
 	OpRoutes       = "l3.routes"
+	OpACL          = "acl"
 )
 
 // Argument shapes.

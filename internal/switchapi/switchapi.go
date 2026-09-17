@@ -82,6 +82,10 @@ type Capabilities struct {
 
 	ACL       bool
 	ACLSlices int
+	// ACLEntries is how many rules the chip's field group can hold in
+	// total, which is what an operator sizing an access list needs; slices
+	// are how the silicon is organised, not how many rules fit.
+	ACLEntries int
 
 	Counters bool
 	SFP      bool

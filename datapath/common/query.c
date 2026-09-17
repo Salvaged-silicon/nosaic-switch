@@ -41,6 +41,7 @@
 
 #include "dmapool.h"
 #include "tapbridge.h"
+#include "acl.h"
 #include "query.h"
 
 static int query_unit;
@@ -251,18 +252,29 @@ static void handle(FILE *out, const char *req)
 	 */
 	if (strstr(req, "\"capabilities\"") != NULL) {
 		bcm_l3_info_t info;
-		int maxv4 = 0;
+		int maxv4 = 0, acl = 0, acl_total = 0, acl_free = 0;
 
 		bcm_l3_info_t_init(&info);
 		if (bcm_l3_info(query_unit, &info) == BCM_E_NONE)
 			maxv4 = info.l3info_max_route;
+		nosaic_acl_capability(&acl, &acl_total, &acl_free);
 
 		fprintf(out,
 			"{\"ok\":true,\"result\":{\"Contract\":\"1\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"L2Learning\":true,\"L3\":true,"
-			"\"MaxV4\":%d}}\n",
-			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4);
+			"\"MaxV4\":%d,\"ACL\":%s,\"ACLEntries\":%d}}\n",
+			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
+			acl ? "true" : "false", acl_total);
+		return;
+	}
+
+	/* The rules and what each has matched, straight from the chip's
+	 * counters. Read-only like everything else here: rules are set through
+	 * configuration, so that what the chip holds and what the switch was
+	 * told to hold cannot be two different things. */
+	if (strstr(req, "\"acl\"") != NULL) {
+		nosaic_acl_query(out);
 		return;
 	}
 

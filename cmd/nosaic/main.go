@@ -708,7 +708,7 @@ func switchCmd(args []string) error {
 	switch args[0] {
 	case "show":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: nosaic show <ports|routes|caps>")
+			return fmt.Errorf("usage: nosaic show <ports|routes|acl|caps>")
 		}
 		return showCmd(c, args[1])
 
@@ -752,6 +752,11 @@ func showCmd(c *nosdclient.Client, what string) error {
 		fmt.Fprintf(w, "ports\t%d max\n", caps.MaxPorts)
 		fmt.Fprintf(w, "vlans\t%v\n", caps.VLANs)
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
+		if caps.ACL {
+			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)
+		} else {
+			fmt.Fprintf(w, "acl\tno\n")
+		}
 		// Reported explicitly because an operator planning multipath needs to
 		// know before configuring it, not after a route is refused.
 		if caps.ECMP {
@@ -798,6 +803,35 @@ func showCmd(c *nosdclient.Client, what string) error {
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\n",
 				st.Name, updown(st.AdminUp), updown(st.OperUp), st.SpeedMbps, st.MTU)
+		}
+		return nil
+
+	case "acl":
+		a, err := c.ACLs()
+		if err != nil {
+			return err
+		}
+		if !a.Available {
+			return fmt.Errorf("this switch's datapath has no field group for access lists")
+		}
+		if len(a.Rules) == 0 {
+			fmt.Fprintln(w, "no rules; set one with: nosaic config set acl_<seq> \"deny|permit [in <port>] [proto <p>] [src <cidr>] [dst <cidr>] [sport <n>] [dport <n>]\"")
+			return nil
+		}
+		fmt.Fprintln(w, "SEQ\tACTION\tMATCH\tPACKETS\tSTATUS")
+		for _, r := range a.Rules {
+			action, match, _ := strings.Cut(r.Rule, " ")
+			if match == "" {
+				match = "any"
+			}
+			status := r.Error
+			if status == "" {
+				status = "not installed"
+				if r.Installed {
+					status = "in chip"
+				}
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\n", r.Seq, action, match, r.Packets, status)
 		}
 		return nil
 
