@@ -46,7 +46,10 @@ static const char usage[] =
 "  show ports              the ports, as the datapath reports them\n"
 "  show routes             the chip's forwarding table\n"
 "  show acl                the access-list rules and what each has matched\n"
-"                          (a rule is a setting: config set acl_<seq> \"<rule>\")\n"
+"\n"
+"  acl add <seq> <rule>    add or replace an access-list rule; it is persisted\n"
+"                          as the setting acl_<seq> and applied at once\n"
+"  acl del <seq>           remove it\n"
 "  show caps               what this switch's silicon can do\n"
 "\n"
 "  verify ports            what Linux believes and what the chip actually\n"
@@ -394,6 +397,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "usage: nosaic show <ports|routes|acl|caps>\n");
 		return 2;
 	}
+	if (strcmp(argv[1], "acl") == 0)
+		return nosaic_acl_cmd(argc, argv);
 	if (strcmp(argv[1], "upgrade") == 0)
 		return nosaic_upgrade(argc, argv);
 	if (strcmp(argv[1], "platform") != 0) {

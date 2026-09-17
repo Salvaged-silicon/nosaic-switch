@@ -68,6 +68,8 @@ func Check(sw Switch) []error {
 	probs = append(probs, checkVLANs(sw, caps, p0)...)
 	probs = append(probs, checkL3(sw, caps, p0)...)
 
+	probs = append(probs, checkACLs(sw, caps, p0)...)
+
 	_, err = sw.PortCounters(p0)
 	probs = append(probs, wantSupport(caps.Counters, err, "PortCounters", "Capabilities.Counters")...)
 
@@ -142,6 +144,103 @@ func checkL3(sw Switch, caps Capabilities, p0 string) []error {
 	return append(probs, wantSupport(false, err,
 		"AddRoute with two next-hops",
 		"Capabilities says ECMP is unavailable")...)
+}
+
+func checkACLs(sw Switch, caps Capabilities, p0 string) []error {
+	v4, _ := ParseACLRule(10, "deny in "+p0+" proto icmp src 192.0.2.0/24")
+	err := sw.SetACL(v4)
+	if probs := wantSupport(caps.ACL, err, "SetACL", "Capabilities.ACL"); len(probs) > 0 || !caps.ACL {
+		return probs
+	}
+	var probs []error
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	defer sw.DelACL(10)
+
+	// What was set must be listed, installed, as the same rule.
+	entries, err := sw.ACLs()
+	if err != nil {
+		bad("ACLs: %v", err)
+	} else if e, ok := findACL(entries, 10); !ok {
+		bad("rule 10 was set but is not listed")
+	} else {
+		if !e.Installed {
+			bad("rule 10 was accepted but is listed as not installed: %s", e.Error)
+		}
+		if e.Parsed && e.Rule.String() != v4.String() {
+			bad("rule 10 came back as %q, was set as %q", e.Rule.String(), v4.String())
+		}
+	}
+
+	// Setting the same sequence again replaces, never duplicates.
+	again, _ := ParseACLRule(10, "permit in "+p0+" proto icmp src 192.0.2.0/24")
+	if err := sw.SetACL(again); err != nil {
+		bad("SetACL replacing a rule: %v", err)
+	} else if entries, err := sw.ACLs(); err == nil {
+		n := 0
+		for _, e := range entries {
+			if e.Seq == 10 {
+				n++
+				if e.Parsed && e.Rule.Action != ACLPermit {
+					bad("rule 10 was replaced but still reads as the old rule")
+				}
+			}
+		}
+		if n != 1 {
+			bad("setting sequence 10 twice left %d rules with that sequence", n)
+		}
+	}
+
+	// The refusals every implementation owes, with an ordinary error, so a
+	// caller can tell "you asked for something wrong" from "cannot".
+	noPort, _ := ParseACLRule(11, "deny in swp-nonexistent proto icmp")
+	if err := sw.SetACL(noPort); err == nil {
+		bad("SetACL accepted a rule on a port the switch does not have")
+		_ = sw.DelACL(11)
+	} else if errors.Is(err, ErrUnsupported) {
+		bad("SetACL refused an unknown port with ErrUnsupported; that is a bad rule, not a missing capability")
+	}
+	noL4 := ACLRule{Seq: 12, Family: 4, Action: ACLDeny, Proto: ACLAny, SrcPort: ACLAny, DstPort: 22}
+	if err := sw.SetACL(noL4); err == nil {
+		bad("SetACL accepted an L4 port match without TCP or UDP")
+		_ = sw.DelACL(12)
+	}
+
+	// Deleting removes it; deleting again is an error, not a no-op.
+	if err := sw.DelACL(10); err != nil {
+		bad("DelACL: %v", err)
+	} else if entries, _ := sw.ACLs(); hasACL(entries, 10) {
+		bad("rule 10 was deleted but is still listed")
+	}
+	if err := sw.DelACL(10); err == nil {
+		bad("DelACL of a rule that does not exist succeeded")
+	}
+
+	// IPv6 is its own capability, because it is its own field group on
+	// every chip so far.
+	v6, _ := ParseACLRule(13, "deny in "+p0+" ipv6 proto icmpv6 src 2001:db8::/32")
+	err = sw.SetACL(v6)
+	probs = append(probs, wantSupport(caps.ACL6, err, "SetACL with an IPv6 rule", "Capabilities.ACL6")...)
+	if err == nil {
+		if entries, _ := sw.ACLs(); !hasACL(entries, 13) {
+			bad("IPv6 rule 13 was set but is not listed")
+		}
+		_ = sw.DelACL(13)
+	}
+	return probs
+}
+
+func findACL(entries []ACLEntry, seq int) (ACLEntry, bool) {
+	for _, e := range entries {
+		if e.Seq == seq {
+			return e, true
+		}
+	}
+	return ACLEntry{}, false
+}
+
+func hasACL(entries []ACLEntry, seq int) bool {
+	_, ok := findACL(entries, seq)
+	return ok
 }
 
 // wantSupport reconciles a declared capability with what actually happened.

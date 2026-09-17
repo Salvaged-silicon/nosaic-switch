@@ -208,6 +208,37 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 			return proto.ErrorResponse(err)
 		}
 		return ok(encodeRoutes(routes))
+
+	case proto.OpACL:
+		entries, err := s.sw.ACLs()
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(encodeACLs(s.sw.Capabilities(), entries))
+
+	case proto.OpSetACL:
+		var a proto.ACLSetArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		r, err := switchapi.ParseACLRule(a.Seq, a.Rule)
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		if err := s.sw.SetACL(r); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(nil)
+
+	case proto.OpDelACL:
+		var a proto.ACLDelArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		if err := s.sw.DelACL(a.Seq); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(nil)
 	}
 	return proto.ErrorResponse(fmt.Errorf("unknown operation %q", req.Op))
 }
@@ -236,6 +267,33 @@ func encodeRoutes(routes []switchapi.Route) []proto.RouteArgs {
 			ra.NextHops = append(ra.NextHops, proto.NextHopArgs{Via: nh.Via.String(), Port: nh.Port})
 		}
 		out = append(out, ra)
+	}
+	return out
+}
+
+func encodeACLs(caps switchapi.Capabilities, entries []switchapi.ACLEntry) proto.ACLList {
+	out := proto.ACLList{
+		Available: caps.ACL, Total: caps.ACLEntries,
+		Available6: caps.ACL6, Total6: caps.ACL6Entries,
+		Rules: []proto.ACLEntry{},
+	}
+	out.Free = out.Total
+	out.Free6 = out.Total6
+	for _, e := range entries {
+		w := proto.ACLEntry{
+			Seq: e.Seq, Rule: e.Text, Parsed: e.Parsed,
+			Installed: e.Installed, Packets: e.Packets, Error: e.Error,
+		}
+		if e.Parsed {
+			w.Rule = e.Rule.String()
+			w.Family = e.Rule.Family
+			if e.Rule.Family == 6 {
+				out.Free6--
+			} else {
+				out.Free--
+			}
+		}
+		out.Rules = append(out.Rules, w)
 	}
 	return out
 }

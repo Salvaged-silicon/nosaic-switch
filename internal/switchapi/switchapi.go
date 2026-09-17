@@ -44,7 +44,10 @@ import (
 // meaning of an existing call is a major one, and requires updating every
 // implementation in the same commit — including the virtual one, which is what
 // keeps that honest.
-const Version = "1.0"
+//
+// 1.1 added access lists: ACLs, SetACL and DelACL, gated by Capabilities.ACL
+// and ACL6.
+const Version = "1.1"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -178,6 +181,13 @@ type Switch interface {
 	AddVLAN(vid int) error
 	DelVLAN(vid int) error
 	SetPortVLAN(name string, vid int, tagged bool) error
+
+	// Access lists. See acl.go. SetACL adds the rule or replaces the one with
+	// the same sequence number; DelACL removes it; ACLs lists every rule the
+	// datapath holds, installed or not, with its hit count.
+	ACLs() ([]ACLEntry, error)
+	SetACL(r ACLRule) error
+	DelACL(seq int) error
 
 	// L2.
 	FDB() ([]FDBEntry, error)

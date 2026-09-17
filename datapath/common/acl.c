@@ -68,11 +68,14 @@
  */
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <pthread.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 
 #include <sal/types.h>
@@ -110,6 +113,7 @@ struct rule {
 
 	bcm_field_entry_t ent;
 	int      stat;
+	int      parsed;            /* the text made sense */
 	int      installed;
 	char     err[MAX_ERR];      /* why not, when not installed */
 };
@@ -484,11 +488,181 @@ static int parse_rule(struct rule *r, int seq, const char *text)
 	}
 	if (r->family == 0)
 		r->family = 4;
+	r->parsed = 1;
 	if ((r->sport >= 0 || r->dport >= 0) && r->proto != 6 && r->proto != 17) {
 		/* The chip reads L4 ports out of whatever follows the IP header.
 		 * Without a protocol to say it is TCP or UDP, that is a match on
 		 * bytes of something else. */
 		snprintf(r->err, sizeof(r->err), "sport/dport need proto tcp or udp");
+		return -1;
+	}
+	return 0;
+}
+
+static const char *proto_name(int n)
+{
+	switch (n) {
+	case 1: return "icmp";
+	case 2: return "igmp";
+	case 6: return "tcp";
+	case 17: return "udp";
+	case 47: return "gre";
+	case 50: return "esp";
+	case 51: return "ah";
+	case 58: return "icmpv6";
+	case 89: return "ospf";
+	case 112: return "vrrp";
+	case 132: return "sctp";
+	default: return NULL;
+	}
+}
+
+static const char *port_name(int port)
+{
+	int i;
+
+	for (i = 0; i < nosaic_tap_count(); i++) {
+		const char *n = NULL;
+		unsigned char mac[6];
+		int p, vlan, mtu;
+
+		if (nosaic_tap_info(i, &n, &p, &vlan, &mtu, mac) == 0 && p == port)
+			return n;
+	}
+	return "?";
+}
+
+static int prefix_len4(uint32_t mask)
+{
+	int n = 0;
+
+	while (mask & 0x80000000u) {
+		n++;
+		mask <<= 1;
+	}
+	return n;
+}
+
+static int prefix_len6(const bcm_ip6_t mask)
+{
+	int i, n = 0;
+
+	for (i = 0; i < 16; i++) {
+		uint8_t b = mask[i];
+
+		while (b & 0x80) {
+			n++;
+			b <<= 1;
+		}
+	}
+	return n;
+}
+
+/*
+ * The rule in its canonical form: the same words in a fixed order, the same
+ * form switchapi.ACLRule.String produces in Go, so a rule reads the same on
+ * every board and in every file that holds it.
+ */
+static void rule_text(const struct rule *r, char *out, size_t len)
+{
+	char a[INET6_ADDRSTRLEN];
+	int n;
+
+	n = snprintf(out, len, "%s%s", r->action == ACT_DENY ? "deny" : "permit",
+		     r->family == 6 ? " ipv6" : "");
+	if (r->in_port >= 0)
+		n += snprintf(out + n, len - n, " in %s", port_name(r->in_port));
+	if (r->proto >= 0) {
+		const char *pn = proto_name(r->proto);
+
+		if (pn != NULL)
+			n += snprintf(out + n, len - n, " proto %s", pn);
+		else
+			n += snprintf(out + n, len - n, " proto %d", r->proto);
+	}
+	if (r->have_src) {
+		if (r->family == 6) {
+			inet_ntop(AF_INET6, r->src6, a, sizeof(a));
+			n += snprintf(out + n, len - n, " src %s/%d", a, prefix_len6(r->src6_mask));
+		} else {
+			n += snprintf(out + n, len - n, " src %u.%u.%u.%u/%d",
+				      r->src >> 24, (r->src >> 16) & 0xff, (r->src >> 8) & 0xff,
+				      r->src & 0xff, prefix_len4(r->src_mask));
+		}
+	}
+	if (r->have_dst) {
+		if (r->family == 6) {
+			inet_ntop(AF_INET6, r->dst6, a, sizeof(a));
+			n += snprintf(out + n, len - n, " dst %s/%d", a, prefix_len6(r->dst6_mask));
+		} else {
+			n += snprintf(out + n, len - n, " dst %u.%u.%u.%u/%d",
+				      r->dst >> 24, (r->dst >> 16) & 0xff, (r->dst >> 8) & 0xff,
+				      r->dst & 0xff, prefix_len4(r->dst_mask));
+		}
+	}
+	if (r->sport >= 0)
+		n += snprintf(out + n, len - n, " sport %d", r->sport);
+	if (r->dport >= 0)
+		n += snprintf(out + n, len - n, " dport %d", r->dport);
+	(void)n;
+}
+
+/* --------------------------------------------------- the switch's own file */
+
+/*
+ * A rule set through the contract is persisted as the acl_<seq> setting in
+ * the switch's own configuration -- the same file `nosaic config set` writes,
+ * in the same form -- and then read back by the same reload every other
+ * change goes through. That is what keeps one source of truth on a board:
+ * what the chip holds is what the configuration says, whether it arrived by
+ * `acl add` or by `config set acl_10`, and `config show` lists both alike.
+ *
+ * The write mirrors cli/config.c: rewrite whole, into a temporary, rename.
+ * Not shared with it because the CLI and the datapath are built apart; if
+ * the format there changes, this is the other copy.
+ */
+#define SITE_FILE NOSAIC_CONFIG_DIR "/local.conf"
+
+static int site_write(const char *name, const char *value, char *err, size_t errlen)
+{
+	char tmp[sizeof(SITE_FILE) + 8], line[1024];
+	FILE *in, *out;
+	size_t nlen = strlen(name);
+
+	if (mkdir(NOSAIC_CONFIG_DIR, 0755) != 0 && errno != EEXIST) {
+		snprintf(err, errlen, "%s: %s", NOSAIC_CONFIG_DIR, strerror(errno));
+		return -1;
+	}
+	snprintf(tmp, sizeof(tmp), "%s.new", SITE_FILE);
+	if ((out = fopen(tmp, "w")) == NULL) {
+		snprintf(err, errlen, "%s: %s", tmp, strerror(errno));
+		return -1;
+	}
+	fprintf(out, "# This switch's own configuration. Written by `nosaic config set`.\n"
+		     "# Overrides the image's defaults in /etc/nosaic.\n");
+	if ((in = fopen(SITE_FILE, "r")) != NULL) {
+		while (fgets(line, sizeof(line), in) != NULL) {
+			char *eq = strchr(line, '=');
+
+			if (line[0] == '#')
+				continue;
+			if (eq != NULL && (size_t)(eq - line) == nlen &&
+			    strncmp(line, name, nlen) == 0)
+				continue;
+			fputs(line, out);
+		}
+		fclose(in);
+	}
+	if (value != NULL)
+		fprintf(out, "%s=%s\n", name, value);
+	if (fflush(out) != 0 || fsync(fileno(out)) != 0) {
+		snprintf(err, errlen, "%s: %s", tmp, strerror(errno));
+		fclose(out);
+		return -1;
+	}
+	fclose(out);
+	if (rename(tmp, SITE_FILE) != 0) {
+		snprintf(err, errlen, "%s: %s", SITE_FILE, strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -840,6 +1014,88 @@ static void jput(FILE *out, const char *s)
 	}
 }
 
+/* The rule with this sequence, or NULL. Caller holds the lock. */
+static struct rule *rule_by_seq(int seq)
+{
+	int i;
+
+	for (i = 0; i < nrules; i++)
+		if (rules[i].seq == seq)
+			return &rules[i];
+	return NULL;
+}
+
+int nosaic_acl_set(int seq, const char *text, char *err, size_t errlen)
+{
+	struct rule probe;
+	char canon[MAX_TEXT], key[24];
+	struct rule *r;
+	int rv = 0;
+
+	if (seq < 1 || seq > MAX_SEQ) {
+		snprintf(err, errlen, "sequence %d is outside 1..%d", seq, MAX_SEQ);
+		return -1;
+	}
+	if (parse_rule(&probe, seq, text) != 0) {
+		snprintf(err, errlen, "%s", probe.err);
+		return -1;
+	}
+	if ((probe.family == 6 && !acl6_ready) || (probe.family == 4 && !acl_ready)) {
+		snprintf(err, errlen, "no IPv%d field group on this chip", probe.family);
+		return -2;
+	}
+	rule_text(&probe, canon, sizeof(canon));
+	snprintf(key, sizeof(key), "acl_%d", seq);
+	if (site_write(key, canon, err, errlen) != 0)
+		return -1;
+	reload(1);
+	pthread_mutex_lock(&acl_lock);
+	r = rule_by_seq(seq);
+	if (r == NULL) {
+		snprintf(err, errlen, "written, but not read back: is %s the file the "
+			 "datapath reads?", SITE_FILE);
+		rv = -1;
+	} else if (!r->installed) {
+		snprintf(err, errlen, "%s", r->err);
+		rv = -1;
+	}
+	pthread_mutex_unlock(&acl_lock);
+	return rv;
+}
+
+int nosaic_acl_del(int seq, char *err, size_t errlen)
+{
+	char key[24];
+	int had;
+
+	if (!acl_ready && !acl6_ready) {
+		snprintf(err, errlen, "no field group on this chip");
+		return -2;
+	}
+	pthread_mutex_lock(&acl_lock);
+	had = rule_by_seq(seq) != NULL;
+	pthread_mutex_unlock(&acl_lock);
+	if (!had) {
+		snprintf(err, errlen, "no rule with sequence %d", seq);
+		return -1;
+	}
+	snprintf(key, sizeof(key), "acl_%d", seq);
+	if (site_write(key, NULL, err, errlen) != 0)
+		return -1;
+	reload(1);
+	pthread_mutex_lock(&acl_lock);
+	had = rule_by_seq(seq) != NULL;
+	pthread_mutex_unlock(&acl_lock);
+	if (had) {
+		/* It came from the image, not from this switch's own file, so
+		 * removing the line did nothing. An empty value overrides it. */
+		if (site_write(key, "", err, errlen) != 0)
+			return -1;
+		reload(1);
+	}
+	return 0;
+}
+
 void nosaic_acl_query(FILE *out)
 {
 	struct nosaic_acl_caps c;
@@ -861,9 +1117,16 @@ void nosaic_acl_query(FILE *out)
 		    bcm_field_stat_get(acl_unit, r->stat, bcmFieldStatPackets, &v) == BCM_E_NONE)
 			pkts = (unsigned long long)COMPILER_64_LO(v) |
 			       ((unsigned long long)COMPILER_64_HI(v) << 32);
-		fprintf(out, "%s{\"Seq\":%d,\"Family\":%d,\"Rule\":\"",
-			i ? "," : "", r->seq, r->family);
-		jput(out, r->text);
+		fprintf(out, "%s{\"Seq\":%d,\"Family\":%d,\"Parsed\":%s,\"Rule\":\"",
+			i ? "," : "", r->seq, r->family, r->parsed ? "true" : "false");
+		if (r->parsed) {
+			char canon[MAX_TEXT];
+
+			rule_text(r, canon, sizeof(canon));
+			jput(out, canon);
+		} else {
+			jput(out, r->text);
+		}
 		fprintf(out, "\",\"Installed\":%s,\"Packets\":%llu,\"Error\":\"",
 			r->installed ? "true" : "false", pkts);
 		jput(out, r->err);

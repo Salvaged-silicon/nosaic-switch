@@ -16,7 +16,7 @@ CFLAGS += -D_FILE_OFFSET_BITS=64
 LDFLAGS ?=
 LDLIBS  += -lm   # optics.c: log10 for dBm
 
-OBJS = nosaic.o hal_as5610.o config.o asic.o query.o show.o upgrade.o optics.o
+OBJS = nosaic.o hal_as5610.o config.o asic.o query.o show.o upgrade.o optics.o acl.o
 
 all: nosaic
 
@@ -29,6 +29,7 @@ nosaic: $(OBJS)
 nosaic.o:      nosaic.c hal.h show.h upgrade.h
 query.o:       query.c query.h
 show.o:        show.c show.h query.h
+acl.o:         acl.c show.h query.h
 upgrade.o:     upgrade.c upgrade.h query.h
 asic.o:        asic.c asic.h query.h
 hal_as5610.o:  hal_as5610.c hal.h

@@ -39,4 +39,14 @@ void nosaic_acl_capability(struct nosaic_acl_caps *c);
 /* The "acl" query: every rule with its hit count, as one JSON response line. */
 void nosaic_acl_query(FILE *out);
 
+/*
+ * The contract's SetACL and DelACL. The rule is persisted as the acl_<seq>
+ * setting in the switch's own configuration and then installed by the same
+ * reload every change goes through. Returns 0; -1 with err saying what was
+ * wrong with the rule or why the chip refused it; -2 when this datapath has
+ * no field group for that family, which the socket reports as unsupported.
+ */
+int nosaic_acl_set(int seq, const char *text, char *err, size_t errlen);
+int nosaic_acl_del(int seq, char *err, size_t errlen);
+
 #endif

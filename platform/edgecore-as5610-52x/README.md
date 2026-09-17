@@ -214,7 +214,7 @@ here for a commit.
 
 ## ACLs
 
-    nosaic config set acl_10 "deny in swp6 proto icmp src 10.101.101.26/32"
+    nosaic acl add 10 deny in swp6 proto icmp src 10.101.101.26/32
     nosaic show acl
 
 Ingress access lists, IPv4 and IPv6, by port, protocol, addresses and L4

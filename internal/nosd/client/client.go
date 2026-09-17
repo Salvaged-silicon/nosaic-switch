@@ -232,29 +232,43 @@ func dialError(path string, err error) error {
 	}
 }
 
-// ACLRule is one access-list rule as the datapath holds it: the text it was
-// configured with, whether it made it into the chip, and what it has matched.
-type ACLRule struct {
-	Seq       int
-	Family    int // 4 or 6
-	Rule      string
-	Installed bool
-	Packets   uint64
-	Error     string
-}
-
-// ACLs is the rule set and its room. Not part of the switchapi contract yet:
-// rules are configuration, and only the Broadcom datapaths hold them.
-type ACLs struct {
-	Available     bool
-	Total, Free   int
-	Available6    bool
-	Total6, Free6 int
-	Rules         []ACLRule
-}
-
-func (c *Client) ACLs() (ACLs, error) {
-	var out ACLs
+// ACLList is the acl operation's whole answer: the rules and each family's
+// room. ACLs, the contract method, is the rules alone; the room is on
+// Capabilities, and this exists for `show acl` to print both from one call.
+func (c *Client) ACLList() (proto.ACLList, error) {
+	var out proto.ACLList
 	err := c.call(proto.OpACL, nil, &out)
 	return out, err
+}
+
+func (c *Client) ACLs() ([]switchapi.ACLEntry, error) {
+	l, err := c.ACLList()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]switchapi.ACLEntry, 0, len(l.Rules))
+	for _, w := range l.Rules {
+		e := switchapi.ACLEntry{
+			Seq: w.Seq, Text: w.Rule, Installed: w.Installed,
+			Packets: w.Packets, Error: w.Error,
+		}
+		if w.Parsed {
+			if r, perr := switchapi.ParseACLRule(w.Seq, w.Rule); perr == nil {
+				e.Rule = r
+				e.Parsed = true
+			}
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// SetACL sends the rule in its text form; the far side parses it with the
+// same grammar, so what is installed is what String says.
+func (c *Client) SetACL(r switchapi.ACLRule) error {
+	return c.call(proto.OpSetACL, proto.ACLSetArgs{Seq: r.Seq, Rule: r.String()}, nil)
+}
+
+func (c *Client) DelACL(seq int) error {
+	return c.call(proto.OpDelACL, proto.ACLDelArgs{Seq: seq}, nil)
 }

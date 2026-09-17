@@ -76,6 +76,39 @@ static void json_str(FILE *out, const char *s)
 }
 
 /*
+ * A request's arguments. The protocol is flat enough that finding a key and
+ * reading what follows it is a parser: the CLI writes the JSON and nothing
+ * here needs more than a number or a string out of it.
+ */
+static int req_int(const char *req, const char *key, int missing)
+{
+	char pat[40];
+	const char *p;
+
+	snprintf(pat, sizeof(pat), "\"%s\":", key);
+	p = strstr(req, pat);
+	return p ? atoi(p + strlen(pat)) : missing;
+}
+
+static void req_str(const char *req, const char *key, char *out, size_t len)
+{
+	char pat[40];
+	const char *p;
+	size_t n = 0;
+
+	out[0] = '\0';
+	snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+	if ((p = strstr(req, pat)) == NULL)
+		return;
+	for (p += strlen(pat); *p != '\0' && *p != '"' && n + 1 < len; p++) {
+		if (*p == '\\' && p[1] != '\0')
+			p++;
+		out[n++] = *p;
+	}
+	out[n] = '\0';
+}
+
+/*
  * What the chip holds for one port.
  *
  * Every field is READ BACK from the hardware rather than remembered from what
@@ -261,7 +294,7 @@ static void handle(FILE *out, const char *req)
 		nosaic_acl_capability(&acl);
 
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.1\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"L2Learning\":true,\"L3\":true,"
 			"\"MaxV4\":%d,\"ACL\":%s,\"ACLEntries\":%d,"
@@ -276,6 +309,26 @@ static void handle(FILE *out, const char *req)
 	 * counters. Read-only like everything else here: rules are set through
 	 * configuration, so that what the chip holds and what the switch was
 	 * told to hold cannot be two different things. */
+	if (strstr(req, "\"acl.set\"") != NULL || strstr(req, "\"acl.del\"") != NULL) {
+		char rule[256], err[128];
+		int seq = req_int(req, "seq", 0), rv;
+
+		if (strstr(req, "\"acl.set\"") != NULL) {
+			req_str(req, "rule", rule, sizeof(rule));
+			rv = nosaic_acl_set(seq, rule, err, sizeof(err));
+		} else {
+			rv = nosaic_acl_del(seq, err, sizeof(err));
+		}
+		if (rv == 0) {
+			fprintf(out, "{\"ok\":true}\n");
+		} else {
+			fprintf(out, "{\"ok\":false,\"error\":");
+			json_str(out, err);
+			fprintf(out, "%s}\n", rv == -2 ? ",\"unsupported\":true" : "");
+		}
+		return;
+	}
+
 	if (strstr(req, "\"acl\"") != NULL) {
 		nosaic_acl_query(out);
 		return;

@@ -384,9 +384,9 @@ int nosaic_show_acl(void)
 	}
 	free(resp);
 	if (r == 1) {
-		printf("no rules; set one with: nosaic config set acl_<seq> "
-		       "\"deny|permit [ipv4|ipv6] [in <port>] [proto <p>] "
-		       "[src <prefix>] [dst <prefix>] [sport <n>] [dport <n>]\"\n");
+		printf("no rules; add one with: nosaic acl add <seq> deny|permit "
+		       "[ipv4|ipv6] [in <port>] [proto <p>] [src <prefix>] "
+		       "[dst <prefix>] [sport <n>] [dport <n>]\n");
 		return 0;
 	}
 	emit(&t);

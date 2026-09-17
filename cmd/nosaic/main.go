@@ -182,7 +182,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route":
+	case "show", "interface", "route", "acl":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -736,6 +736,9 @@ func switchCmd(args []string) error {
 
 	case "route":
 		return routeCmd(c, args[1:])
+
+	case "acl":
+		return aclCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -812,7 +815,7 @@ func showCmd(c *nosdclient.Client, what string) error {
 		return nil
 
 	case "acl":
-		a, err := c.ACLs()
+		a, err := c.ACLList()
 		if err != nil {
 			return err
 		}
@@ -820,7 +823,7 @@ func showCmd(c *nosdclient.Client, what string) error {
 			return fmt.Errorf("this switch's datapath has no field group for access lists")
 		}
 		if len(a.Rules) == 0 {
-			fmt.Fprintln(w, "no rules; set one with: nosaic config set acl_<seq> \"deny|permit [ipv4|ipv6] [in <port>] [proto <p>] [src <prefix>] [dst <prefix>] [sport <n>] [dport <n>]\"")
+			fmt.Fprintln(w, "no rules; add one with: nosaic acl add <seq> deny|permit [ipv4|ipv6] [in <port>] [proto <p>] [src <prefix>] [dst <prefix>] [sport <n>] [dport <n>]")
 			return nil
 		}
 		fmt.Fprintln(w, "SEQ\tACTION\tMATCH\tPACKETS\tSTATUS")
@@ -860,6 +863,46 @@ func showCmd(c *nosdclient.Client, what string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown show target %q", what)
+}
+
+// aclCmd is `nosaic acl add <seq> <rule words>` and `nosaic acl del <seq>`.
+//
+// The rule is sent as text: the datapath parses it, refuses it with a reason
+// if it is wrong, and on a switch persists it as the acl_<seq> setting, so
+// `config show` lists it and it survives an upgrade. On a datapath that
+// cannot hold rules the add is refused as unsupported, which is the
+// capability model doing its job rather than a setting quietly ignored.
+func aclCmd(c *nosdclient.Client, args []string) error {
+	usage := fmt.Errorf("usage: nosaic acl add <seq> deny|permit [ipv4|ipv6] [in <port>] [proto <p>] [src <prefix>] [dst <prefix>] [sport <n>] [dport <n>] | acl del <seq>")
+	if len(args) < 2 {
+		return usage
+	}
+	seq, err := strconv.Atoi(args[1])
+	if err != nil {
+		return fmt.Errorf("sequence %q is not a number", args[1])
+	}
+	switch args[0] {
+	case "add":
+		if len(args) < 3 {
+			return usage
+		}
+		r, err := switchapi.ParseACLRule(seq, strings.Join(args[2:], " "))
+		if err != nil {
+			return err
+		}
+		if err := c.SetACL(r); err != nil {
+			return err
+		}
+		fmt.Printf("acl_%d=%s\n", seq, r)
+		return nil
+	case "del":
+		if err := c.DelACL(seq); err != nil {
+			return err
+		}
+		fmt.Printf("acl_%d removed\n", seq)
+		return nil
+	}
+	return usage
 }
 
 func routeCmd(c *nosdclient.Client, args []string) error {

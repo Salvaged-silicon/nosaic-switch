@@ -104,6 +104,8 @@ const (
 	OpDelRoute     = "l3.route.del"
 	OpRoutes       = "l3.routes"
 	OpACL          = "acl"
+	OpSetACL       = "acl.set"
+	OpDelACL       = "acl.del"
 )
 
 // Argument shapes.
@@ -133,4 +135,41 @@ type RouteArgs struct {
 type NextHopArgs struct {
 	Via  string `json:"via"`
 	Port string `json:"port"`
+}
+
+// ACLSetArgs carries a rule in its text form. Text rather than fields,
+// because the text is the form operators type and configuration files hold,
+// and every datapath already parses it for itself; a second, structured
+// encoding would be a second grammar to keep in step.
+type ACLSetArgs struct {
+	Seq  int    `json:"seq"`
+	Rule string `json:"rule"`
+}
+
+type ACLDelArgs struct {
+	Seq int `json:"seq"`
+}
+
+// ACLEntry is one rule as listed. Rule is the canonical text when Parsed,
+// and the text as configured when not.
+type ACLEntry struct {
+	Seq       int    `json:"Seq"`
+	Family    int    `json:"Family"`
+	Rule      string `json:"Rule"`
+	Parsed    bool   `json:"Parsed"`
+	Installed bool   `json:"Installed"`
+	Packets   uint64 `json:"Packets"`
+	Error     string `json:"Error"`
+}
+
+// ACLList is the acl operation's result: the rules and the room each family
+// has, which is what tells an operator sizing a list whether it will fit.
+type ACLList struct {
+	Available  bool       `json:"Available"`
+	Total      int        `json:"Total"`
+	Free       int        `json:"Free"`
+	Available6 bool       `json:"Available6"`
+	Total6     int        `json:"Total6"`
+	Free6      int        `json:"Free6"`
+	Rules      []ACLEntry `json:"Rules"`
 }

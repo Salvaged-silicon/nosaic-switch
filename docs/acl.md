@@ -8,17 +8,20 @@ yet tested there.
 
 ## A rule is a setting
 
-    nosaic config set acl_10 "deny in swp6 proto icmp src 10.101.101.26/32"
-    nosaic config set acl_20 "permit in swp6 proto tcp dst 10.101.101.25/32 dport 22"
-    nosaic config set acl_30 "deny in swp6 ipv6 proto ospf"
-    nosaic config unset acl_10
+    nosaic acl add 10 deny in swp6 proto icmp src 10.101.101.26/32
+    nosaic acl add 20 permit in swp6 proto tcp dst 10.101.101.25/32 dport 22
+    nosaic acl add 30 deny in swp6 ipv6 proto ospf
+    nosaic acl del 10
 
-Rules are ordinary configuration: they live in `/mnt/data/config/local.conf`
-with everything else `config set` writes, survive an upgrade and a rollback, and
-can be read with `cat`, diffed between two switches and restored by copying a
-file. The datapath re-reads them about once a second and reprograms the chip
-when they change, so a rule takes effect without restarting anything and
-without a link flapping.
+`acl add` sends the rule to the datapath, which parses it, refuses it with a
+reason if it is wrong, installs it, and on a switch persists it as the
+setting `acl_<seq>` in `/mnt/data/config/local.conf` -- the same file
+`config set` writes, in the same form. So `nosaic config set acl_10 "..."`
+and `config unset` do the same thing a second slower, `config show acl_`
+lists every rule beside every other setting, and rules survive an upgrade and
+a rollback, can be read with `cat`, diffed between two switches and restored
+by copying a file. The datapath re-reads its settings about once a second and
+reprograms the chip when they change, so nothing restarts and no link flaps.
 
 The grammar:
 
@@ -137,17 +140,42 @@ And the day after, for IPv6 and for L4 ports:
 - `deny ipv4 src 2001:db8::/32` and `deny ipv6 src 10.0.0.0/8` were refused,
   each naming the prefix and the family it does not belong to.
 
-## Where it is
+## The contract, and where each piece is
 
-`datapath/common/acl.c` is the whole thing: written against the SDK's
-`bcm_field` API alone, so it is shared by every Broadcom datapath, and the
-per-chip differences -- how many slices, which qualifiers fit one, single- or
-double-wide -- are the SDK's decision and are reported rather than chosen.
+Access lists are part of `switch-api`, contract 1.1: three methods on the
+`Switch` interface, `ACLs`, `SetACL` and `DelACL`, over a typed `ACLRule`,
+gated by `Capabilities.ACL` and `ACL6`. Every datapath implements them and
+the conformance suite (`internal/switchapi/conformance.go`) checks each one
+the same way: a rule set is listed and installed, setting a sequence again
+replaces rather than duplicates, an unknown port and an L4 port without TCP
+or UDP are refused with an ordinary error, deletion removes, a second
+deletion fails, and an IPv6 rule is accepted exactly when `ACL6` is claimed.
+An implementation that claims the capability and refuses, or lacks it and
+accepts, fails the suite -- the same rule that keeps ECMP honest.
+
+The grammar has one parser per side: `switchapi.ParseACLRule` in Go, with
+`ACLRule.String` as its inverse and a test that round-trips every form, and
+`parse_rule` in `datapath/common/acl.c` for the C datapaths, which read the
+same text out of their settings. The two refuse the same rules with the same
+words. Over the socket a rule travels as text (`acl.set`, `acl.del`, `acl`),
+because text is what operators type and files hold, and a second, structured
+encoding would be a second grammar to keep in step.
+
+| datapath | holds rules in | drops with | tested by |
+|---|---|---|---|
+| `mem` (the reference) | memory | nothing; it forwards nothing | the conformance suite, in `go test` |
+| `virt` (veth) | one nftables chain on the prerouting hook, rewritten atomically on each change | `drop`; `accept` for a permit ends the chain so a later deny is shadowed | `boot/virt/dataplane-test.sh` in CI: pings from a neighbour namespace, dropped, counted, restored |
+| `nosd-tdp`, `nosd-td2p` (Broadcom) | the configuration file, then the ingress field processor | the FP entry's drop, paired with cancel-copy-to-CPU | the measurements above, on the AS5610 |
+
+`datapath/common/acl.c` is the whole Broadcom side: written against the
+SDK's `bcm_field` API alone, so it is shared by every Broadcom datapath, and
+the per-chip differences -- how many slices, which qualifiers fit one, single-
+or double-wide -- are the SDK's decision and are reported rather than chosen.
 Its file comment records the one decision that was not obvious: the ingress
 port is qualified as a source port inside the key rather than through the
 SDK's port bitmap, because on the AS5610 that bitmap reaches only one of the
 chip's two ingress pipelines and a rule scoped to one port matched every other.
 The IPv6 group is asked for with L4 ports first and without them if the chip
 refuses, and reports which it got.
-`nosaic show acl` is served by the `acl` query on the datapath socket, in both
-CLIs.
+`nosaic show acl`, `acl add` and `acl del` are the `acl`, `acl.set` and
+`acl.del` operations on the datapath socket, in both CLIs.
