@@ -125,69 +125,149 @@ will hand you a stale `loader>` from a previous boot that matches instantly and
 fires your command into a running NX-OS. Match only a prompt that arrives
 *after* this boot's BIOS banner.
 
-## Test it over the network first
+## ⚠ Do not run `ipxe` at the loader prompt
 
-⚠ **Do this before the install, not after it.** Installing replaces the
-vendor's partition table and the only NX-OS image on the chassis. A netboot
-touches neither: the root filesystem travels inside the initramfs, nothing is
-read from or written to the disk, and a power cycle returns the switch to
-NX-OS.
+Read this before anything else on this page, because it is the one command here
+that leaves the switch unable to boot and it looks harmless.
 
-Build the bundle:
+`loader> ipxe` is **not** a one-shot chainload, whatever its help text ("On
+Reboot boot ipxe") suggests. It sets the **persistent boot mode to "PXE boot
+only"**, and in that mode the firmware skips the Cisco loader entirely — so
+there is no `loader>` prompt left to change it back with, and the box boots
+into a failing iPXE loop for ever. Confirmed by the loader itself when it was
+put right:
+
+```
+loader> bootmode -g
+Current Boot Mode is: PXE boot only
+Set Boot Mode to: GRUB boot only
+```
+
+**The way out is the BIOS boot menu, which overrides the boot mode.** Press
+**TAB** during POST — the BIOS says `Press TAB in 5 seconds to list all boot
+options` — and you get:
+
+```
+Boot Options :
+ -------------------------
+  [ 1 ] - EFI Payload          <- the Cisco loader
+  [ 2 ] - EFI Internal Shell
+  [ 3 ] - EFI USB Device
+  [ 4 ] - EFI Network          <- the embedded iPXE
+ -------------------------
+    Boot from ...
+```
+
+Choose `1`, catch `loader>` with Ctrl-L, and run `bootmode -g`. Then boot the
+vendor OS explicitly:
+
+```
+loader> boot bootflash:/n3100-compact.7.0.3.I7.9.bin
+```
+
+That menu is the most useful thing on this board's firmware and it is worth
+knowing before you need it: it reaches any of the four boot options regardless
+of what the loader's boot mode says.
+
+## Netbooting does not work on this board
+
+⚠ **Measured on the hardware, not assumed.** It is documented here because the
+idea is the obvious one, the infrastructure for it exists, and every part of it
+works except the last.
+
+`make netboot BOARD=cisco-n3172tq` builds a correct bundle, and the embedded
+iPXE fetches all of it:
+
+```
+iPXE> chain tftp://10.22.1.5/nosaic.ipxe
+tftp://10.22.1.5/nosaic.ipxe... ok
+NOSaic 0.1.0 netboot for cisco-n3172tq
+/vmlinuz... ok
+Could not select: Exec format error (http://ipxe.org/2e008081)
+Could not boot: Exec format error (http://ipxe.org/2e008081)
+```
+
+The kernel is in memory and nothing will execute it. `imgstat` lists it **with
+no type at all** and `imgselect vmlinuz` fails identically, so the format probe
+matched nothing:
+
+```
+Cisco iPXE
+iPXE 1.0.0+ (ffd9) -- Open Source Network Boot Firmware
+Features: HTTP DNS TFTP NBI Menu
+
+iPXE> imgstat
+vmlinuz : 14246912 bytes
+iPXE> imgselect vmlinuz
+Could not select: Exec format error
+```
+
+That build has **no bzImage loader and no EFI image loader**. NBI is in its
+feature list, and NBI is a legacy real-mode format an iPXE running as a UEFI
+application cannot execute either.
+
+**And there is no second network path.** The firmware's `Boot0001 "EFI Network"`
+*is* this iPXE, launched out of the firmware volume —
+
+```
+Booting from EFI Network [MemoryMapped(...)/FvFile(ACC9491E-C102-B14D-AAA2-4186D2BE6629)]
+```
+
+— not a generic PXE client that could be handed a different boot program. So
+there is no way to get a modern iPXE, or anything else of our choosing, onto
+the box over the network.
+
+What did work, and is worth keeping:
+
+| | |
+|---|---|
+| TFTP from `10.22.1.5` | the whole bundle, including a 64 MiB initrd, and the relative URIs in `nosaic.ipxe` resolved correctly |
+| `mgmt0` identified | `net0: b4:de:31:3f:a5:c0 using dh8900cc on PCI01:00.1` — iPXE names the driver `dh8900cc` |
+| the second port | `net1: b4:de:31:3f:a5:c1 ... on PCI01:00.2 [Link:down]` — a real port that goes nowhere, exactly as predicted |
+| only two NICs | so the two `8086:0436` functions really are not network devices |
+| no DHCP | `Configuring (net0 ...) Error 0x040ee186`, as expected on this subnet |
+
+## Test it from a USB stick instead
+
+This is the substitute for a netboot: it touches no disk, leaves NX-OS intact,
+and a power cycle returns to the vendor OS. It needs somebody at the rack.
+
+`Boot0003 "EFI USB Device"` is already an enabled boot option and is `[ 3 ]` in
+the TAB menu, and the firmware executes EFI applications perfectly well — it is
+how it starts its own loader and its own shell.
+
+Build a RAM-boot image, which carries its root filesystem in the initramfs and
+so needs no disk of ours:
 
 ```sh
 make netboot BOARD=cisco-n3172tq
 ```
 
-Three files land in `out/images/cisco-n3172tq/netboot/` — `vmlinuz`,
-`initrd.img` and `nosaic.ipxe`, with a README beside them. Drop all three into
-one directory on a TFTP server the switch can reach.
-
-Set the loader's IP configuration. It keeps this in CMOS, independent of
-anything NX-OS or NOSaic configures, so it may already be right:
+Then put the three files on a FAT-formatted stick at these exact paths:
 
 ```
-loader> show ip
-loader> show gw
-loader> set ip 10.10.39.2 255.255.255.0
-loader> set gw 10.10.39.1
+\EFI\BOOT\BOOTX64.EFI     <- vmlinuz from the bundle, renamed
+\EFI\BOOT\initrd.img      <- initrd.img
+\startup.nsh               <- the same startup.nsh the disk image gets
 ```
 
-Then start the iPXE that is already in this board's BIOS flash. ⚠ Like
-`efi_shell`, this command arms the *next* boot rather than chainloading
-immediately — its own help text is "On Reboot boot ipxe":
+`\EFI\BOOT\BOOTX64.EFI` is UEFI's removable-media path and is the one name
+the firmware will boot without being told to. Copy `startup.nsh` off the built
+disk image if you want the exact one:
 
-```
-loader> ipxe
-loader> reboot
-```
-
-iPXE will DHCP, fetch `nosaic.ipxe`, and boot the kernel with a full command
-line. If your DHCP server does not hand out a `filename`, give iPXE the script
-directly at its prompt:
-
-```
-iPXE> dhcp
-iPXE> chain tftp://10.22.1.5/nosaic/nosaic.ipxe
+```sh
+mcopy -i out/images/cisco-n3172tq/disk.img@@1048576 ::/startup.nsh .
 ```
 
-⚠ **Why iPXE and not `boot tftp://`.** The loader's own TFTP client works — it
-is the fastest transfer on this box — but it boots only an `mknbi-linux` NBI
-container, and our kernel in one resets the board. iPXE speaks the ordinary
-Linux boot protocol and takes a command line and a separate initrd, which is
-what the firmware's own boot entries cannot give us.
-
-If the loader prompt cannot be caught, `Boot0001 "EFI Network"` is already
-active and reaches the same place: point DHCP's `filename` at `nosaic.ipxe`.
+Boot it with TAB → `[ 3 ] - EFI USB Device`, or TAB → `[ 2 ] - EFI Internal
+Shell` and run `fs0:\startup.nsh` by hand, which is the more diagnosable of
+the two because the shell tells you what it found.
 
 ### What to check while it is up
 
 ⚠ **NOTHING HERE SURVIVES THE REBOOT.** There is no persistent data partition
 on a RAM boot, so treat the session as read-only: anything configured is gone
 when it restarts. That is the point — it is safe to try and useless to keep.
-
-This is the cheapest opportunity to settle the things that are still open on
-this board, and several of them are much harder to answer once NX-OS is gone:
 
 ```sh
 # 1. The disk is behind USB, not SATA. This is the single most likely first
@@ -204,7 +284,6 @@ ls /sys/bus/pci/devices/0000:01:00.1/net/
 #    vendor OS this chassis idles at fan zone duty 0x28 with the ASIC die at
 #    56 C. NOSaic drives the fans not at all, so what they do here is whatever
 #    the hardware leaves them at -- and that has never been observed.
-#    Listen to it, and watch the die temperature climb or not.
 
 # 4. The platform i2c bus, which no NOSaic board has reached on this hardware
 #    and which cannot be probed from NX-OS -- it has i2cdetect but no
@@ -215,11 +294,10 @@ mki2cmap.sh --yaml             # walk the mux at 0x70, channel by channel
 ```
 
 That last one is worth the session on its own: the mux channel-to-device map is
-what a platform HAL for this board needs, and a netboot is the only time the
-bus is both reachable and not in use by somebody else's driver.
-`tools/mki2cmap.sh` ships in the board directory and the `i2c*` applets ship in
-the image for exactly this. Keep its output — see
-[todo.md](todo.md#7-a-platform-hal).
+what a platform HAL for this board needs, and this is the only time the bus is
+both reachable and not in use by somebody else's driver. `tools/mki2cmap.sh`
+ships in the board directory and the `i2c*` applets ship in the image for
+exactly this. Keep its output — see [todo.md](todo.md#7-a-platform-hal).
 
 ## Getting the image onto the box
 

@@ -84,19 +84,20 @@ graph LR
 ```
 
 And the path for trying an image without touching the disk, which is where a
-bring-up on this board should start:
+bring-up on this board should start — ⚠ **not** over the network, for the
+reason in [Netbooting is not possible here](#netbooting-is-not-possible-here):
 
 ```mermaid
 graph LR
-    A["loader> ipxe<br/>then reboot"] --> B["iPXE<br/>embedded in the BIOS flash"]
-    B --> C["TFTP: nosaic.ipxe"]
-    C --> D["vmlinuz + initrd.img<br/>root filesystem inside the initramfs"]
+    A["BIOS: press TAB"] --> B["[ 3 ] EFI USB Device"]
+    B --> C["FAT stick<br/>EFI/BOOT/BOOTX64.EFI"]
+    C --> D["kernel + initrd.img<br/>root filesystem inside the initramfs"]
     D --> E["RAM boot<br/>nothing read or written on disk"]
 ```
 
-See [Netbooting it first](#netbooting-it-first).
+See [install.md](install.md#test-it-from-a-usb-stick-instead).
 
-What the vendor does instead, and why we do not:
+What the vendor does instead, and why we do not:What the vendor does instead, and why we do not:
 
 ```
 BdsDxe → Boot0000 "EFI Payload" → Cisco loader (GRUB in the BIOS flash)
@@ -228,55 +229,96 @@ This is an unusual arrangement and it is temporary. The tidy ending is a real
 with `efibootmgr` from the running switch — which is why `CONFIG_EFIVAR_FS` is
 in the x86_64 kernel fragment. [todo.md](todo.md) carries it.
 
-## Netbooting it first
+## Netbooting is not possible here
 
-Installing on this board replaces the vendor's MBR layout and with it the only
-NX-OS image on the chassis. So the image should be proved before that happens,
-and there are three ways to load one over the network here. Only one of them
-works today.
+⚠ **Measured on the hardware on 2026-09-17, not assumed.** It is written up
+because netbooting is the obvious way to try an image on a board where
+installing is destructive, every piece of the infrastructure for it exists, and
+the last step fails.
 
-**1. The vendor loader's own TFTP — proven transport, dead end.** `boot
-tftp://<server>/<file>` works and is fast: 5.3 MB across a subnet boundary at
-3.7 MB/s, measured. But the loader boots only an NBI container, and our kernel
-in one resets the board after `CardIndex`. Covered above.
+**The vendor loader's TFTP works and boots only NBI.** `boot tftp://...` moves
+data fast — 5.3 MB across a subnet boundary at 3.7 MB/s — and refuses anything
+that is not an `mknbi-linux` container. Our kernel wrapped in one resets the
+board after `CardIndex`. Covered above.
 
-**2. iPXE, chainloaded from the loader — the path NOSaic uses.** The loader
-embeds iPXE (`grub_load_ipxe`) and has a command to start it on the next
-reboot:
+**The embedded iPXE fetches everything and executes nothing.** It is reached
+with `loader> ipxe` (⚠ see the warning below) or as boot option 4:
 
 ```
-loader> ipxe
-loader> reboot
+Cisco iPXE
+iPXE 1.0.0+ (ffd9) -- Open Source Network Boot Firmware
+Features: HTTP DNS TFTP NBI Menu
 ```
 
-⚠ It arms the next boot rather than chainloading immediately — the command's
-own help text is "On Reboot boot ipxe", the same shape as `efi_shell`.
+Given a static address, it fetched the boot script, resolved its relative URIs
+and pulled the kernel — and then:
 
-iPXE speaks the ordinary Linux boot protocol, so the NBI gate is not in the
-path at all, and it takes a full command line and a separate initrd — which is
-the thing the firmware's own boot entries cannot give us. `make netboot
-BOARD=cisco-n3172tq` builds the bundle to serve.
+```
+iPXE> imgstat
+vmlinuz : 14246912 bytes
+iPXE> imgselect vmlinuz
+Could not select: Exec format error (http://ipxe.org/2e008081)
+```
 
-**3. The firmware's own PXE — same destination, more server-side setup.**
-`Boot0001 "EFI Network"` is active and backed by Cisco's `NetBoot` DXE module
-over the stock `UefiPxeBcDxe` stack. Point DHCP's `filename` at `nosaic.ipxe`
-and it lands in the same place. Useful if the loader prompt cannot be caught.
+`imgstat` lists the image with **no type at all**, so the format probe matched
+nothing: that build has no bzImage loader and no EFI image loader. NBI is in
+the feature list and is a legacy real-mode format, which an iPXE running as a
+UEFI application cannot execute either.
 
-⚠ **A NETBOOT HERE IS A RAM BOOT, AND IT HAS TO BE.** There is no partition of
-ours on the disk, so the root filesystem travels inside the initramfs. Two
-consequences that are both load-bearing:
+**And there is no second network path.** `Boot0001 "EFI Network"` *is* this
+iPXE, launched from the firmware volume:
 
-- **Nothing is read from or written to the switch's disk.** The vendor OS is
-  untouched and a reboot returns to it. That is what makes this safe to try.
-- **Nothing survives the reboot.** No persistent data partition means a
-  password, a port map or a route set on the running switch is gone. The build
-  refuses to produce an installer from a RAM-boot image for exactly this
-  reason, and refuses to produce a netboot bundle from a non-RAM-boot one
-  because that stops in a rescue shell hunting for a disk slot.
+```
+Booting from EFI Network [MemoryMapped(...)/FvFile(ACC9491E-C102-B14D-AAA2-4186D2BE6629)]
+```
 
-The loader keeps its own IP configuration in CMOS, independent of anything the
-OS sets — `show ip`, `show gw`, `set ip`, `set gw`. See
-[install.md](install.md#test-it-over-the-network-first).
+That GUID is Cisco's own `NetBoot` DXE module. It is not a generic UEFI PXE
+client that could be handed `ipxe.efi` or any other boot program of ours, so
+there is no way to get better netboot firmware onto the box over the network.
+
+What the exercise did settle, all of it useful:
+
+| | |
+|---|---|
+| `mgmt0` | `net0: b4:de:31:3f:a5:c0 using dh8900cc on PCI01:00.1` — iPXE's own name for the driver is `dh8900cc` |
+| the second port | `net1: b4:de:31:3f:a5:c1 ... on PCI01:00.2 [Link:down]` — a real `8086:0438` that goes nowhere |
+| the null devices | iPXE enumerates **two** NICs, so the two `8086:0436` functions really are not network devices |
+| DHCP | none on this subnet: `Configuring (net0 ...) Error 0x040ee186` |
+| TFTP | fine for a 64 MiB file, at 512- and 1432-byte blocks |
+
+### ⚠ `loader> ipxe` is a persistent boot-mode change, and it has no undo
+
+Its help text says "On Reboot boot ipxe". What it actually does is set the
+boot mode to **PXE boot only** — and in that mode the firmware **skips the
+loader entirely**, so there is no `loader>` prompt left to change it back with.
+The box boots to a failing iPXE loop indefinitely. Proven by the loader when
+it was put right:
+
+```
+loader> bootmode -g
+Current Boot Mode is: PXE boot only
+Set Boot Mode to: GRUB boot only
+```
+
+### The BIOS boot menu is the escape hatch, and it overrides the boot mode
+
+The single most useful thing in this board's firmware. During POST the BIOS
+prints `Press TAB in 5 seconds to list all boot options`, and TAB gives:
+
+```
+Boot Options :
+ -------------------------
+  [ 1 ] - EFI Payload          <- the Cisco loader
+  [ 2 ] - EFI Internal Shell
+  [ 3 ] - EFI USB Device
+  [ 4 ] - EFI Network
+ -------------------------
+```
+
+It reaches any of the four regardless of what the boot mode says, which is what
+recovered the box above: TAB → `1` → Ctrl-L → `bootmode -g`. Worth knowing
+before it is needed, and it is also the route to a USB boot without changing
+any boot variable at all.
 
 ## Port map
 

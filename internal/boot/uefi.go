@@ -251,11 +251,12 @@ const ipxeScript = `#!ipxe
 #
 # Serve this directory over TFTP or HTTP and boot it with either of:
 #
-#   loader> ipxe ; reboot        start the iPXE embedded in the BIOS flash.
-#                                The command arms the NEXT boot rather than
-#                                chainloading on the spot.
-#   DHCP filename                point it at this file for the firmware's own
-#                                "EFI Network" boot entry
+#   DHCP filename                point it at this file, for a PXE client that
+#                                can execute a bzImage or an EFI application
+#
+# ⚠ NOT with the iPXE embedded in a Cisco Nexus 3172TQ's BIOS flash. See the
+# warning in the bundle README: that build fetches this script and both images
+# perfectly and then cannot execute either of them.
 #
 # Paths are relative to this script's own URI. To be explicit instead, use:
 #   set base tftp://${next-server}/nosaic
@@ -298,25 +299,58 @@ when it restarts. That is what makes this safe to try and useless to keep.
 
 To serve it
 -----------
-Drop all three files in one directory on a TFTP server the switch can reach,
-then either:
+Drop all three files in one directory on a TFTP or HTTP server, and point a
+PXE client at nosaic.ipxe. Paths inside the script are relative to it, so the
+directory can be anywhere.
 
-  * catch the loader prompt, run ipxe and then reboot -- that starts the iPXE
-    already in this board's BIOS flash, on the next boot rather than at once;
-    or
-  * point the DHCP filename option at nosaic.ipxe and let the firmware's own
-    "EFI Network" boot entry fetch it.
+⚠ CISCO NEXUS 3172TQ: THE iPXE IN THIS BOARD'S FIRMWARE CANNOT BOOT THIS.
+   MEASURED ON THE HARDWARE, NOT GUESSED.
 
-The loader keeps its own IP configuration in CMOS, independent of anything the
-OS sets:
+Its own banner reads
 
-  loader> show ip
-  loader> show gw
-  loader> set ip <addr> <mask>
-  loader> set gw <addr>
+    Cisco iPXE
+    iPXE 1.0.0+ (ffd9) -- Open Source Network Boot Firmware
+    Features: HTTP DNS TFTP NBI Menu
 
-⚠ The loader autoboots about two seconds after its prompt appears. Catching the
-prompt and sending the command have to happen on one connection.
+and every transfer works: it fetched nosaic.ipxe, resolved the relative paths,
+and pulled the kernel. Then:
+
+    /vmlinuz... ok
+    Could not select: Exec format error (http://ipxe.org/2e008081)
+
+The image is in memory and no format driver will run it -- "imgstat" lists it
+with no type at all, and "imgselect vmlinuz" fails the same way. That build has
+no bzImage loader and no EFI image loader. NBI is in its feature list and is a
+legacy real-mode format, which an iPXE running as a UEFI application cannot
+execute either.
+
+There is no second network path. The firmware's "EFI Network" boot option IS
+this iPXE, launched from the firmware volume -- not a generic PXE client that
+could be handed a different boot program.
+
+So on that board, boot from a USB stick instead: the same three files on a FAT
+stick as \EFI\BOOT\BOOTX64.EFI, \EFI\BOOT\initrd.img and \startup.nsh.
+"EFI USB Device" is already an enabled boot option, and the firmware executes
+EFI applications perfectly -- it is how it starts its own loader and shell.
+
+⚠⚠ AND DO NOT RUN "ipxe" AT THAT BOARD'S loader> PROMPT.
+
+It is not a one-shot chainload, whatever its help text says. It sets the
+PERSISTENT boot mode to "PXE boot only", and in that mode the firmware skips
+the loader entirely -- so there is no loader prompt left to change it back
+with, and the box boots to a failing iPXE loop for ever.
+
+The way out is the BIOS boot menu, which overrides the boot mode: press TAB
+during POST (it says "Press TAB in 5 seconds to list all boot options") and
+choose
+
+      [ 1 ] - EFI Payload          <- the loader
+      [ 2 ] - EFI Internal Shell
+      [ 3 ] - EFI USB Device
+      [ 4 ] - EFI Network
+
+then at loader> run "bootmode -g" to restore GRUB-only boot. Recovered exactly
+that way on 2026-09-17, after doing it the wrong way round first.
 `
 
 // Netboot writes the bundle an operator serves over TFTP.

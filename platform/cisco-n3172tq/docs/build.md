@@ -40,8 +40,16 @@ Same build, plus `--ram-boot`, and it produces a different artifact:
 `nosaic.ipxe` and a README to serve over TFTP.
 
 This is the one to build first. Installing on this board replaces the vendor's
-partition table and the only NX-OS image on the chassis; a netboot touches
-neither. See [install.md](install.md#test-it-over-the-network-first).
+partition table and the only NX-OS image on the chassis; a RAM boot touches
+neither.
+
+⚠ **But not over the network on this board.** The bundle is correct and the
+embedded iPXE cannot execute it — `imgstat` shows the fetched kernel with no
+type, `imgselect` gives `Exec format error`, and that iPXE *is* the firmware's
+only network boot option. Measured on the hardware; see
+[hardware.md](hardware.md#netbooting-is-not-possible-here). Put the same three
+files on a FAT USB stick instead:
+[install.md](install.md#test-it-from-a-usb-stick-instead).
 
 ⚠ **`--ram-boot` is not optional for a netboot and the build enforces it.** A
 netbooted image has no disk of ours to mount, so the root filesystem has to be
@@ -57,7 +65,7 @@ Build without `--ram-boot` when you mean to install.
 
 | you want to | build | you get |
 |---|---|---|
-| try it on hardware, disk untouched | `make netboot BOARD=cisco-n3172tq` | `netboot/` to serve over TFTP |
+| try it on hardware, disk untouched | `make netboot BOARD=cisco-n3172tq` | `netboot/` — on **this** board, copy it to a FAT USB stick rather than a TFTP server |
 | install it | `make image BOARD=cisco-n3172tq` | `NOSaic-<ver>-cisco-n3172tq.sh` |
 
 ## What this board needs that the generic build does not

@@ -33,7 +33,7 @@ than guessed, and a boot path that steps around the thing that failed.
 | Disk | **1944 MiB internal eUSB flash**, behind EHCI — not SATA |
 | Front panel | **48 × 10GBASE-T + 6 × 40G QSFP+** — 54 ports, 72 ASIC logical ports |
 | Management | `mgmt0` at PCI `01:00.1` (`8086:0438`, `igb`), MAC `b4:de:31:3f:a5:c0` |
-| Boot | **UEFI firmware directly** → EDK2 shell → our `BOOTX64.EFI`, or iPXE over TFTP. No vendor bootloader in the path |
+| Boot | **UEFI firmware directly** → EDK2 shell → our `BOOTX64.EFI`, from disk or a USB stick. No vendor bootloader in the path, and ⚠ no netboot: see below |
 | Console | `ttyS0` @ **9600** |
 | Board codename | **`quickzinc2`** (`qz2`) — Cisco's, and it is how the firmware refers to this board throughout |
 | Vendor OS | NX-OS 7.0(3)I7(9) |
@@ -47,12 +47,18 @@ than guessed, and a boot path that steps around the thing that failed.
 - **[Todo](docs/todo.md)** — the ordered path from here, and it starts with the
   fans
 
-> **Start with a netboot, not an install.** `make netboot BOARD=cisco-n3172tq`
-> builds a RAM-boot bundle that iPXE loads over TFTP: nothing is read from or
-> written to the switch's disk, the vendor OS stays intact, and a power cycle
-> returns to it. Installing replaces the vendor's partition table and the only
-> NX-OS image on the chassis, so it should not be the first thing tried. See
-> [install.md](docs/install.md#test-it-over-the-network-first).
+> **Start with a USB boot, not an install — and not a netboot either.**
+> Netbooting was tried on the hardware and **cannot work**: the iPXE in this
+> board's firmware fetches our kernel and has no loader that will execute it,
+> and the firmware's "EFI Network" option *is* that iPXE rather than a generic
+> PXE client. A FAT stick with the same three files boots fine, touches no disk
+> and leaves NX-OS intact. See
+> [install.md](docs/install.md#test-it-from-a-usb-stick-instead).
+>
+> ⚠ **And do not run `ipxe` at the loader prompt.** It is a persistent
+> boot-mode change with no undo from the loader; the escape is the BIOS TAB
+> boot menu. That cost a recovery on 2026-09-17 and is written up in
+> [install.md](docs/install.md#-do-not-run-ipxe-at-the-loader-prompt).
 >
 > **And read [todo.md](docs/todo.md) before walking away from it.** NOSaic
 > declares no platform HAL for this board, so it does not drive the fans.
@@ -131,27 +137,26 @@ So `boot: uefi`. `CONFIG_EFI_STUB` makes a bzImage a valid PE32+ application,
 the firmware launches it from an EFI system partition as
 `\EFI\BOOT\BOOTX64.EFI`, and the NBI reset stays somebody else's puzzle.
 
-## And it is tried over the network before the disk is spent
+## And it is tried before the disk is spent — from a stick, not the network
 
-The loader's TFTP client is the fastest transfer on this box and the NBI gate
-makes it useless to us. **iPXE gets around that**, and it is already on the
-board — the loader embeds it and has a command to chainload it:
+The plan was iPXE, and the hardware said no. Worth recording because every part
+of it works except the one that matters: the embedded iPXE fetched the boot
+script, resolved its relative URIs, pulled the kernel — and then
+`Could not select: Exec format error`. `imgstat` lists the image with **no
+type**, so that build has neither a bzImage loader nor an EFI image loader. And
+`Boot0001 "EFI Network"` is that same iPXE out of the firmware volume, not a
+PXE client that could be given better firmware. There is no network path.
+
+What does work is a USB stick, because the firmware executes EFI applications
+perfectly well — it is how it starts its own loader and its own shell:
 
 ```sh
 make netboot BOARD=cisco-n3172tq     # vmlinuz, initrd.img, nosaic.ipxe
 ```
 
-```
-loader> ipxe
-loader> reboot
-```
-
-(`ipxe` arms the next boot rather than chainloading on the spot — its help
-text is "On Reboot boot ipxe".)
-
-iPXE speaks the ordinary Linux boot protocol, so the container format is not in
-the path, and it takes a command line and a separate initrd — which is exactly
-what the firmware's own boot entries cannot give us.
+Put `vmlinuz` on a FAT stick as `\EFI\BOOT\BOOTX64.EFI` with `initrd.img`
+beside it and `startup.nsh` at the root, then press **TAB** during POST and
+choose `[ 3 ] - EFI USB Device`. No boot variable changes, no DHCP, no server.
 
 A netboot here is a **RAM boot**: the root filesystem travels inside the
 initramfs, because there is no partition of ours on the disk to mount. Two
