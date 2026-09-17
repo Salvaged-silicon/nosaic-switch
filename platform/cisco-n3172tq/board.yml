@@ -143,48 +143,91 @@ kernel: ""
 # thresholds. That is most of a bring-up's discovery and none of its proof.
 status: planned
 
+# ── Management ───────────────────────────────────────────────────────────────
+#
+# mgmt0 is PCI 01:00.1, an 8086:0438 DH8900CC Gigabit Network Connection, MAC
+# b4:de:31:3f:a5:c0. Read off the running switch: it is the only one of the
+# four functions at 01:00.x with a driver bound, and the driver is igb.
+#
+# ⚠ TWO OF THOSE FOUR ARE NOT PORTS. 01:00.3 and 01:00.4 are 8086:0436, which
+# is DH8900CC Null Device -- a placeholder the PCH exposes. They report class
+# 0x020000, Ethernet controller, which is what the EFI shell prints and what
+# made this look like four ports with two of them unsupported. No driver claims
+# them and none should.
+#
+# ⚠ AND NOSaic WILL BIND TWO igb INTERFACES WHERE NX-OS BINDS ONE. 01:00.2 is a
+# genuine second 8086:0438 that goes nowhere; the vendor leaves it unbound and
+# igb will not. Which kernel name each gets depends on probe order, so anything
+# naming the management interface must be confirmed against the MAC above
+# rather than assumed -- and `mgmt0` is the vendor's presentation name, not the
+# kernel's. Under NX-OS the kernel calls it eth1, inside a separate netns.
+
 # ── The board's own hardware ─────────────────────────────────────────────────
 #
 # Deliberately no platform_hal driver, and that is a statement rather than an
 # omission.
 #
 # Everything auxiliary on this board hangs off Cisco's own board controller --
-# CCTRL, their equivalent of the Arista SCD -- and it is reached through a
-# 2.4 MB kernel module we have neither the source nor the register map for.
-# The sensors, the fan zones, the PSU state and the SPROM carrying the thermal
-# thresholds are all behind it. A NOSaic HAL for this board is a real piece of
-# work and docs/todo.md carries it.
+# CCTRL, their equivalent of the Arista SCD -- and the vendor reaches it
+# through a 2.4 MB kernel module we have neither the source nor the register
+# map for.
 #
-# What is known: the platform bus is the PCH's Intel i801 SMBus at 00:1f.3,
-# exposed as a single adapter with everything else behind one PCA-style mux at
-# 0x70, selected per access. Only channels 2 and 4 have been observed, both as
-# NO_RESPONSE failures -- which is what an empty socket looks like on a chassis
-# with no optics fitted and a dead PSU 1. The channel-to-device table is not
-# established, and an i2c map stating it would be a guess that reads a device
-# that is not there.
+# ⚠ BUT CCTRL IS A SOFTWARE LAYER, NOT A CHIP WE CANNOT REACH. That is the
+# thing to get straight before concluding the board is closed. The four
+# sensors, the fan controller, both power supplies and the SPROM carrying the
+# thermal thresholds are ordinary i2c devices behind an ordinary mux on the
+# PCH's Intel i801 SMBus at 00:1f.3; CCTRL is the vendor's abstraction over
+# them, and Linux can address the same parts directly.
 #
-# ⚠ THE FANS ARE NOT OURS TO CONTROL YET, AND NOBODY HAS CHECKED WHAT THEY DO
-#   WITH NO SOFTWARE DRIVING THEM.
+# The kernel NOSaic builds now carries that path -- I2C_I801, I2C_MUX_PCA954x,
+# GPIOLIB (which the mux driver needs and no x86 defconfig sets), HWMON, a
+# shortlist of sensor drivers as modules -- and the image carries busybox's
+# i2c* applets. So the environmentals are buildable; what is missing is which
+# device sits behind which mux channel.
+#
+# That cannot be guessed and it cannot be read from the vendor's OS: NX-OS has
+# i2cdetect and deliberately no /dev/i2c-* nodes, because klm_cctrli owns the
+# bus. Only channels 2 and 4 have ever been observed, both as NO_RESPONSE
+# failures -- which is what an empty socket looks like on a chassis with no
+# optics fitted and a dead PSU 1 -- because successful selections are not
+# logged.
+#
+# tools/mki2cmap.sh walks the mux under a netboot, where the bus is idle and
+# ours. Until it has been run, no i2c map is declared here, because one would
+# be a guess that reads a device that is not there.
+#
+# ⚠ And the shape it will be declared in does not exist on this branch yet:
+# platform_hal.i2c and internal/platformhal/i2cmap.go were written for the
+# Edgecore AS4610 and live on board/edgecore-as4610-54t. Two boards now want
+# it, which is the argument for landing it on main.
+#
+# ⚠ THE FANS ARE NOT OURS TO CONTROL YET, AND THE UNMANAGED DUTY IS UNKNOWN.
 #
 # Declaring a platform HAL driver is what starts NOSaic's cooling loop, so
 # with none declared the fans stay wherever the hardware leaves them at
-# power-on. On this chassis that is unknown -- it may be full speed, which is
-# loud and safe, or it may be a CCTRL default that assumes a supervisor is
-# managing it, which is neither. Measure it before leaving this switch running
-# unattended. First item in docs/todo.md.
+# power-on. The vendor's managed idle is measured (below) and reassuring; what
+# the hardware does with NOBODY driving it has never been observed, and there
+# is only one place to observe it -- a netboot, where our code runs and NX-OS
+# does not. First item in docs/todo.md, and the reason a netboot comes before
+# an install.
 #
-# The thresholds the vendor uses, for whoever writes the HAL. Two-tier on this
-# platform: generic defaults compiled into the card-config library, per-board
-# actuals from the SPROM. These are the SPROM's, read off the running box --
-# note the three board sensors have three different minor trip points, which
-# is how we know they are not the compiled defaults (those are 50/60 for all
-# three).
+# The thresholds the vendor uses, and what the box actually idles at. Two-tier
+# on this platform: generic defaults compiled into the card-config library,
+# per-board actuals from the SPROM. These are the SPROM's, read off the running
+# box -- note the three board sensors have three different minor trip points,
+# which is how we know they are not the compiled defaults (those are 50/60 for
+# all three).
 #
-#   sensor              minor / major
-#   ASIC (die)            100 / 110     read through the BCM USD, not CCTRL
-#   Front-Left  (D1)       60 / 70
-#   Front-Right (D2)       56 / 70
-#   Back        (D3)       46 / 70
+#   sensor              minor / major   idle
+#   ASIC (die)            100 / 110      56    read through the BCM USD
+#   Front-Left  (D1)       60 / 70       38
+#   Front-Right (D2)       56 / 70       37
+#   Back        (D3)       46 / 70       31
+#
+# At that idle the fan zone duty is 0x28, so the vendor does NOT run these fans
+# flat out and the margin is large -- the tightest sensor is 15 C below its
+# minor threshold. Measured with no datapath running, though, and nosd will
+# make the die hotter.
 #
 # thermal: not set, because nothing reads it without a driver. When the HAL
 # exists, the band belongs below the Back sensor's 46 rather than at a number

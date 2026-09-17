@@ -68,6 +68,13 @@ Two ways in, and you want the first one.
 
 ### From NX-OS, if you have credentials
 
+⚠ **`feature bash-shell` is a running-config setting and does not survive a
+reload.** It was enabled during the reverse-engineering session and the lab
+unit lost it to a power cycle, so `run bash` comes back as
+`Syntax error while parsing 'run bash ...'` — which reads like a missing
+command rather than a disabled feature. Check with
+`show feature | include bash` and turn it back on:
+
 ```
 switch# configure terminal
 switch(config)# feature bash-shell
@@ -117,6 +124,102 @@ on one connection. And if your console server replays a backlog on connect, it
 will hand you a stale `loader>` from a previous boot that matches instantly and
 fires your command into a running NX-OS. Match only a prompt that arrives
 *after* this boot's BIOS banner.
+
+## Test it over the network first
+
+⚠ **Do this before the install, not after it.** Installing replaces the
+vendor's partition table and the only NX-OS image on the chassis. A netboot
+touches neither: the root filesystem travels inside the initramfs, nothing is
+read from or written to the disk, and a power cycle returns the switch to
+NX-OS.
+
+Build the bundle:
+
+```sh
+make netboot BOARD=cisco-n3172tq
+```
+
+Three files land in `out/images/cisco-n3172tq/netboot/` — `vmlinuz`,
+`initrd.img` and `nosaic.ipxe`, with a README beside them. Drop all three into
+one directory on a TFTP server the switch can reach.
+
+Set the loader's IP configuration. It keeps this in CMOS, independent of
+anything NX-OS or NOSaic configures, so it may already be right:
+
+```
+loader> show ip
+loader> show gw
+loader> set ip 10.10.39.2 255.255.255.0
+loader> set gw 10.10.39.1
+```
+
+Then start the iPXE that is already in this board's BIOS flash. ⚠ Like
+`efi_shell`, this command arms the *next* boot rather than chainloading
+immediately — its own help text is "On Reboot boot ipxe":
+
+```
+loader> ipxe
+loader> reboot
+```
+
+iPXE will DHCP, fetch `nosaic.ipxe`, and boot the kernel with a full command
+line. If your DHCP server does not hand out a `filename`, give iPXE the script
+directly at its prompt:
+
+```
+iPXE> dhcp
+iPXE> chain tftp://10.22.1.5/nosaic/nosaic.ipxe
+```
+
+⚠ **Why iPXE and not `boot tftp://`.** The loader's own TFTP client works — it
+is the fastest transfer on this box — but it boots only an `mknbi-linux` NBI
+container, and our kernel in one resets the board. iPXE speaks the ordinary
+Linux boot protocol and takes a command line and a separate initrd, which is
+what the firmware's own boot entries cannot give us.
+
+If the loader prompt cannot be caught, `Boot0001 "EFI Network"` is already
+active and reaches the same place: point DHCP's `filename` at `nosaic.ipxe`.
+
+### What to check while it is up
+
+⚠ **NOTHING HERE SURVIVES THE REBOOT.** There is no persistent data partition
+on a RAM boot, so treat the session as read-only: anything configured is gone
+when it restarts. That is the point — it is safe to try and useless to keep.
+
+This is the cheapest opportunity to settle the things that are still open on
+this board, and several of them are much harder to answer once NX-OS is gone:
+
+```sh
+# 1. The disk is behind USB, not SATA. This is the single most likely first
+#    failure and it is why USB_STORAGE is built in rather than a module.
+cat /proc/partitions           # expect sda, 1990656 blocks, with sda1..sda6
+                               # -- the VENDOR's layout, untouched
+
+# 2. The management port. igb should bind TWO 8086:0438 functions and only one
+#    is the front panel. Identify it by MAC, not by name.
+ip -o link | grep -i b4:de:31:3f:a5:c0
+ls /sys/bus/pci/devices/0000:01:00.1/net/
+
+# 3. The fans, which is the item that should stop you walking away. Under the
+#    vendor OS this chassis idles at fan zone duty 0x28 with the ASIC die at
+#    56 C. NOSaic drives the fans not at all, so what they do here is whatever
+#    the hardware leaves them at -- and that has never been observed.
+#    Listen to it, and watch the die temperature climb or not.
+
+# 4. The platform i2c bus, which no NOSaic board has reached on this hardware
+#    and which cannot be probed from NX-OS -- it has i2cdetect but no
+#    /dev/i2c-* nodes, and its own driver owns the bus. Here the bus is idle
+#    and ours.
+i2cdetect -l                   # expect the i801 SMBus adapter
+mki2cmap.sh --yaml             # walk the mux at 0x70, channel by channel
+```
+
+That last one is worth the session on its own: the mux channel-to-device map is
+what a platform HAL for this board needs, and a netboot is the only time the
+bus is both reachable and not in use by somebody else's driver.
+`tools/mki2cmap.sh` ships in the board directory and the `i2c*` applets ship in
+the image for exactly this. Keep its output — see
+[todo.md](todo.md#7-a-platform-hal).
 
 ## Getting the image onto the box
 
@@ -287,11 +390,25 @@ map generated from a switch running the vendor's OS, and until you have done
 that it reports itself unconfigured rather than guessing. See
 [build.md](build.md#the-port-map-you-have-to-generate).
 
-⚠ **Check the fans.** Nobody has established what this chassis does with its
-fans when no software is driving them, and NOSaic is not driving them — there
-is no platform HAL for this board yet. Listen to it, and read the ASIC die
-temperature if you can. If it is quiet, do not leave it running unattended.
-First item in [todo.md](todo.md).
+⚠ **Check the fans.** NOSaic does not drive them — there is no platform HAL
+for this board yet — so they sit at whatever the hardware leaves them at, and
+that has never been observed.
+
+For comparison, measured on this chassis under the vendor OS at idle:
+
+| | |
+|---|---|
+| Fan zone 1 duty | `0x28` |
+| ASIC die | 56 °C (minor 100, major 110) |
+| Front-Left (D1) | 38 °C (minor 60, major 70) |
+| Front-Right (D2) | 37 °C (minor 56, major 70) |
+| Back (D3) | 31 °C (minor 46, major 70) |
+
+So the vendor does **not** run these fans flat out, and the margin at idle is
+large. That is reassuring and it is not an answer: the die was at 56 °C with no
+datapath running, and under NOSaic with `nosd` up it will be hotter. Listen to
+it, keep the first sessions short and watched, and do not leave it running
+unattended until somebody has a curve. First item in [todo.md](todo.md).
 
 ## Going back to the vendor OS
 
@@ -394,11 +511,17 @@ disk is behind USB, not SATA. Check the kernel has `USB_STORAGE` and
 from a root that is not mounted.
 
 **No management interface, and nothing in `dmesg` about a network device.**
-Very likely the `0x0436` problem: two of this board's four PCH GbE ports have a
-PCI ID no mainline Intel driver claims, and which one is `mgmt0` is not
-established. See [The management
-port](hardware.md#the-management-port). The switch is still reachable on the
-console.
+`CONFIG_IGB=y` is missing. The DH8900CC GbE is not covered by
+`x86_64_defconfig` although `e1000e` and `tg3` are.
+
+**Two igb interfaces, and only one works.** Expected. `01:00.1` is the front
+panel and `01:00.2` is a second `8086:0438` that goes nowhere; `igb` binds
+both. Pick the one with MAC `b4:de:31:3f:a5:c0` — the kernel name depends on
+probe order and `mgmt0` is the vendor's name for it, not the kernel's.
+
+**A `dmesg` line about `8086:0436` with no driver.** Not a problem. Those two
+functions are `DH8900CC Null Device` — placeholders the PCH exposes that report
+an Ethernet class code and are not ports. Nothing should claim them.
 
 **Ports do not appear at all.** `nosd` has no port map. That is expected until
 you generate one; see [build.md](build.md#the-port-map-you-have-to-generate).

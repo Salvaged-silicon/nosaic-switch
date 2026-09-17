@@ -17,7 +17,7 @@ linked at the bottom; this page is the board as NOSaic understands it.
 | CPU / arch | Intel Pentium @ 2.00 GHz, **x86_64** — Ivy Bridge core with a **DH89xxCC "Cave Creek"** PCH |
 | RAM | 4 GB |
 | Front panel | **48 × 10GBASE-T** + **6 × 40G QSFP+** = 54 ports, **72 ASIC logical ports** |
-| Management | one of four PCH GbE ports (`mgmt0`, `b4:de:31:3f:a5:c0`) — see [The management port](#the-management-port) |
+| Management | `mgmt0` at PCI **`01:00.1`** (`8086:0438`, `igb`), MAC `b4:de:31:3f:a5:c0` |
 | Disk | **1944 MiB internal eUSB flash**, behind EHCI at `00:1d.0` |
 | Bootloader | **UEFI firmware directly.** BIOS 5.3.1, EDK2, no Secure Boot machinery |
 | Console | `ttyS0` @ **9600** |
@@ -82,6 +82,19 @@ graph LR
     F --> G["NOSaic initramfs<br/>slot select"]
     G --> H["overlay assembled<br/>→ /sbin/init"]
 ```
+
+And the path for trying an image without touching the disk, which is where a
+bring-up on this board should start:
+
+```mermaid
+graph LR
+    A["loader> ipxe<br/>then reboot"] --> B["iPXE<br/>embedded in the BIOS flash"]
+    B --> C["TFTP: nosaic.ipxe"]
+    C --> D["vmlinuz + initrd.img<br/>root filesystem inside the initramfs"]
+    D --> E["RAM boot<br/>nothing read or written on disk"]
+```
+
+See [Netbooting it first](#netbooting-it-first).
 
 What the vendor does instead, and why we do not:
 
@@ -214,6 +227,56 @@ This is an unusual arrangement and it is temporary. The tidy ending is a real
 `Boot####` entry whose optional data carries the command line as UCS-2, written
 with `efibootmgr` from the running switch — which is why `CONFIG_EFIVAR_FS` is
 in the x86_64 kernel fragment. [todo.md](todo.md) carries it.
+
+## Netbooting it first
+
+Installing on this board replaces the vendor's MBR layout and with it the only
+NX-OS image on the chassis. So the image should be proved before that happens,
+and there are three ways to load one over the network here. Only one of them
+works today.
+
+**1. The vendor loader's own TFTP — proven transport, dead end.** `boot
+tftp://<server>/<file>` works and is fast: 5.3 MB across a subnet boundary at
+3.7 MB/s, measured. But the loader boots only an NBI container, and our kernel
+in one resets the board after `CardIndex`. Covered above.
+
+**2. iPXE, chainloaded from the loader — the path NOSaic uses.** The loader
+embeds iPXE (`grub_load_ipxe`) and has a command to start it on the next
+reboot:
+
+```
+loader> ipxe
+loader> reboot
+```
+
+⚠ It arms the next boot rather than chainloading immediately — the command's
+own help text is "On Reboot boot ipxe", the same shape as `efi_shell`.
+
+iPXE speaks the ordinary Linux boot protocol, so the NBI gate is not in the
+path at all, and it takes a full command line and a separate initrd — which is
+the thing the firmware's own boot entries cannot give us. `make netboot
+BOARD=cisco-n3172tq` builds the bundle to serve.
+
+**3. The firmware's own PXE — same destination, more server-side setup.**
+`Boot0001 "EFI Network"` is active and backed by Cisco's `NetBoot` DXE module
+over the stock `UefiPxeBcDxe` stack. Point DHCP's `filename` at `nosaic.ipxe`
+and it lands in the same place. Useful if the loader prompt cannot be caught.
+
+⚠ **A NETBOOT HERE IS A RAM BOOT, AND IT HAS TO BE.** There is no partition of
+ours on the disk, so the root filesystem travels inside the initramfs. Two
+consequences that are both load-bearing:
+
+- **Nothing is read from or written to the switch's disk.** The vendor OS is
+  untouched and a reboot returns to it. That is what makes this safe to try.
+- **Nothing survives the reboot.** No persistent data partition means a
+  password, a port map or a route set on the running switch is gone. The build
+  refuses to produce an installer from a RAM-boot image for exactly this
+  reason, and refuses to produce a netboot bundle from a non-RAM-boot one
+  because that stops in a rescue shell hunting for a disk slot.
+
+The loader keeps its own IP configuration in CMOS, independent of anything the
+OS sets — `show ip`, `show gw`, `set ip`, `set gw`. See
+[install.md](install.md#test-it-over-the-network-first).
 
 ## Port map
 
@@ -417,10 +480,38 @@ in `datapath/common/acl.c` carries over.
 
 ## Platform HAL
 
-**There is none, and writing one is real work.** Everything auxiliary hangs off
-Cisco's board controller, **CCTRL** — their SCD — which is a 2.4 MB kernel
-module we have neither source nor register map for. What is known about the
-shape of it:
+**There is none yet, but the path to one is in the image.** Everything
+auxiliary hangs off Cisco's board controller, **CCTRL** — their SCD — and that
+is a 2.4 MB kernel module we have neither source nor register map for.
+
+⚠ **CCTRL is a software layer, not a chip we cannot reach.** This is the thing
+to get straight before concluding the board is closed. The sensors, the fan
+controller, the power supplies and the SPROM are ordinary i2c devices behind an
+ordinary mux on the PCH's i801 SMBus. CCTRL is the vendor's abstraction over
+them. Linux can address the same parts directly, and the kernel NOSaic builds
+now carries what that takes:
+
+```
+CONFIG_I2C_I801=y          the PCH's SMBus -- an i801, not the PIIX4 the
+                           Arista boards use
+CONFIG_I2C_MUX=y           the mux at 0x70, which everything is behind.
+CONFIG_I2C_MUX_PCA954x=y   ⚠ binds to nothing on its own here: x86 has no
+                           device tree and this board's ACPI does not
+                           describe a mux, so a HAL instantiates it through
+                           new_device. Probing needs no driver at all.
+CONFIG_GPIOLIB=y           ⚠ the mux driver needs it and no x86 defconfig
+                           sets it
+CONFIG_HWMON=y             so a bound sensor is readable
+CONFIG_SENSORS_*=m         a shortlist, as modules, pending identification
+CONFIG_PMBUS=m             how a PSU reports voltage, current and its own fan
+```
+
+and the image carries busybox's `i2cdetect`, `i2cget`, `i2cset`, `i2cdump` and
+`i2ctransfer`, with `tools/mki2cmap.sh` to walk the mux. What is missing is the
+channel-to-device table, and [the netboot](#netbooting-it-first) is the only
+time the bus is both reachable and not owned by somebody else's driver.
+
+What is known about the shape of it:
 
 | subsystem | transport | vendor owner | addressing |
 |---|---|---|---|
@@ -460,7 +551,8 @@ own fan* are modelled separately — the dead supply in the lab unit reports thr
 ways. Our equivalent on the Arista is a single GPIO word giving presence and
 nothing else.
 
-**Board identity.** The SPROM, behind the mux. `quickzinc2_sensor_specific` in
+**Board identity.** The SPROM, behind the mux, and one of the addresses
+`mki2cmap.sh` will find. `quickzinc2_sensor_specific` in
 `libcrdcfgdatan3k_qz2.so` is a plain `.rodata` record array — a 16-byte
 space-padded name, a threshold pair and an index — with a header carrying card
 type `0x31` (49) and the sensor count 4. Decoding the SPROM itself is the way
@@ -477,9 +569,15 @@ controllers are present on the PCH (`8086:2321`, `8086:2326`) and neither
 carries the boot disk. `x86_64_defconfig` builds in `USB_STORAGE` and
 `USB_EHCI_HCD`, which is the only reason this is not a kernel patch.
 
-**The management port needs `igb`, and `igb` is not in `x86_64_defconfig`.**
-See [The management port](#the-management-port) — this one is unresolved and it
-is the difference between a switch you can reach and a console cable.
+**The management port needs `igb`, and `igb` is not in `x86_64_defconfig`**
+although `e1000e` and `tg3` are. `CONFIG_IGB=y` is in the fragment. Without it
+the port comes up with no driver bound and nothing in `dmesg` mentioning a
+network device, which reads as dead hardware.
+
+**Two of the four PCH "Ethernet controllers" are not ports.** See [The
+management port](#the-management-port) — they report class `0x020000` and are
+`DH8900CC Null Device`. Believing the class code costs a search for a driver
+that does not exist and is not needed.
 
 **`kernel_params` must survive to the kernel, and on this board that means a
 shell script.** A `Boot####` entry made with `bcfg boot add` carries no optional
@@ -517,34 +615,49 @@ Recorded so that nobody discovers it by accident.
 
 ## The management port
 
-Unresolved, and it is the one open question that can cost a bring-up session.
+Resolved on the hardware. Four functions sit on the PCH at `01:00.1` through
+`01:00.4`, alongside a QuickAssist co-processor at `01:00.0`, and **only one of
+them is a management port**:
 
-Four GbE ports sit on the PCH at `01:00.1` through `01:00.4`, alongside a
-QuickAssist co-processor at `01:00.0`:
+| function | device ID | class | what it is | driver bound by NX-OS |
+|---|---|---|---|---|
+| **`01:00.1`** | `8086:0438` | `0x020000` | **DH8900CC Gigabit Network Connection — `mgmt0`** | **`igb`** |
+| `01:00.2` | `8086:0438` | `0x020000` | a second GbE, no connector | none |
+| `01:00.3` | `8086:0436` | `0x020000` | **`DH8900CC Null Device`** | none |
+| `01:00.4` | `8086:0436` | `0x020000` | **`DH8900CC Null Device`** | none |
 
-| function | device ID | in mainline `igb` 6.12? |
-|---|---|---|
-| `01:00.1` | `8086:0438` | **yes** — `E1000_DEV_ID_DH89XXCC_SGMII` |
-| `01:00.2` | `8086:0438` | **yes** |
-| `01:00.3` | `8086:0436` | **no** |
-| `01:00.4` | `8086:0436` | **no** |
+⚠ **THE CLASS CODE LIES ON TWO OF THEM.** All four report class `0x020000`,
+Ethernet controller, which is what the EFI shell's `pci` command prints and
+what made this look like four network ports with two of them unsupported.
+`8086:0436` is `DH8900CC Null Device` in the PCI ID database — a placeholder
+function the PCH exposes for GbE that the board does not populate. It is not a
+port, no driver claims it, and none should. Chasing the missing PCI ID is a
+search for a driver that cannot exist.
 
-`igb`'s table carries `0x0438` (SGMII), `0x043A` (SERDES), `0x043C`
-(BACKPLANE) and `0x0440` (SFP). **`0x0436` is in no Intel driver's table**, and
-grepping the whole `drivers/net/ethernet/intel/` tree for it returns nothing.
+So the kernel needs exactly one thing, and it is already in the fragment:
 
-**Which of the four is `mgmt0` is not established.** Its MAC is
-`b4:de:31:3f:a5:c0`, so it can be identified from a running NX-OS by matching
-that against each function — and that has not been done. Two outcomes:
+```
+CONFIG_IGB=y
+```
 
-- If `mgmt0` is one of the `0x0438` pair, `CONFIG_IGB=y` is enough and it is
-  already in the x86_64 fragment.
-- If it is one of the `0x0436` pair, the port comes up with no driver bound and
-  nothing in `dmesg` mentioning a network device, which reads as dead hardware.
-  The fix is a one-line PCI ID addition to `igb`, and finding it out on the
-  hardware costs a session.
+⚠ **NOSaic WILL SEE TWO igb INTERFACES AND ONLY ONE IS THE FRONT PANEL.**
+`01:00.2` is a genuine `8086:0438`, so `igb` will claim it as well — NX-OS
+leaves it unbound because it goes nowhere. Which of the two gets which kernel
+name depends on probe order, so **identify the management port by its MAC**:
 
-First item after the fans in [todo.md](todo.md).
+```
+b4:de:31:3f:a5:c0
+```
+
+For reference, the front-panel ports start at `…:a5:c8` and run up; the six
+QSFP cages step by **four** (`…:a5:f8`, `fc`, `…:a6:00`, `04`, `08`, `0c`),
+which is the cage-owns-four-logical-ports fact showing up again in the MAC
+allocation.
+
+⚠ **`mgmt0` IS NOT THE KERNEL'S NAME FOR IT.** Under NX-OS the interface is
+`eth1` inside the `management` network namespace — `mgmt0` is the vendor's
+presentation name. NOSaic renames nothing, so do not transcribe `mgmt0` out of
+the vendor OS into `network.conf`.
 
 ## Reverse engineering
 

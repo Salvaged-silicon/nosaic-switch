@@ -4,10 +4,9 @@ Only what is specific to this board. The general build — toolchain, packages,
 image, VM — is in [docs/BUILDING.md](../../../docs/BUILDING.md), and repeating
 it here means it will drift.
 
-> **These commands have not been run for this board.** The steps are the same
+> **These commands have not been run against hardware.** The steps are the same
 > ones that build the Arista 7050TX-64 — same architecture, same profile, same
-> datapath package — plus one new boot backend. Nothing here is expected to be
-> surprising, and nothing here is confirmed.
+> datapath package — plus one new boot backend.
 
 ## The short version
 
@@ -29,6 +28,37 @@ a self-extracting installer — a shell script with a gzipped disk image appende
 The toolchain and the base packages are shared with both Arista boards (same
 architecture, same profile), so on a machine that has already built for either
 of those, only the image step is new.
+
+## Build the netboot bundle first
+
+```sh
+make netboot BOARD=cisco-n3172tq
+```
+
+Same build, plus `--ram-boot`, and it produces a different artifact:
+`out/images/cisco-n3172tq/netboot/` with `vmlinuz`, `initrd.img`,
+`nosaic.ipxe` and a README to serve over TFTP.
+
+This is the one to build first. Installing on this board replaces the vendor's
+partition table and the only NX-OS image on the chassis; a netboot touches
+neither. See [install.md](install.md#test-it-over-the-network-first).
+
+⚠ **`--ram-boot` is not optional for a netboot and the build enforces it.** A
+netbooted image has no disk of ours to mount, so the root filesystem has to be
+inside the initramfs. Without it the transfer succeeds, the kernel starts, and
+the initramfs stops in a rescue shell looking for an A/B slot on a disk that
+has none — on a switch in a rack. `nosaic build` refuses rather than letting
+that be discovered there.
+
+⚠ **And the reverse.** A RAM-boot image is refused as an *installer* payload,
+because that installer would work: it would boot, answer ssh, and lose every
+password, port map and route at the next reboot with nothing reporting it.
+Build without `--ram-boot` when you mean to install.
+
+| you want to | build | you get |
+|---|---|---|
+| try it on hardware, disk untouched | `make netboot BOARD=cisco-n3172tq` | `netboot/` to serve over TFTP |
+| install it | `make image BOARD=cisco-n3172tq` | `NOSaic-<ver>-cisco-n3172tq.sh` |
 
 ## What this board needs that the generic build does not
 
@@ -79,11 +109,59 @@ missing kernel symbol.
 |---|---|
 | `CONFIG_EFI_STUB` | the kernel is not a PE32+ application, and the firmware reports it as not a valid image — which reads as a corrupt file |
 | `CONFIG_USB_STORAGE`, `CONFIG_USB_EHCI_HCD` (**built in, not modules**) | the disk is an internal eUSB flash, so there is no root filesystem at all; a module cannot be loaded from a root that is not mounted |
-| `CONFIG_IGB` | no management interface, and nothing in `dmesg` about a network device — see [the management port](hardware.md#the-management-port), which is not fully resolved |
+| `CONFIG_IGB` | no management interface, and nothing in `dmesg` about a network device. Not in `x86_64_defconfig` although `e1000e` and `tg3` are — see [the management port](hardware.md#the-management-port) |
 
 `CONFIG_EFIVAR_FS` is also built in. Nothing needs it to boot; it is what will
 let the switch write its own firmware boot entry instead of doing it from a
 console session.
+
+### The environmental path, which is built in rather than deferred
+
+A switch that cannot read its own temperature is a switch nobody should leave
+running, so the path to this board's sensors ships in the image even though the
+platform HAL that will use it does not exist yet.
+
+| symbol | why |
+|---|---|
+| `CONFIG_I2C_I801=y` | ⚠ the PCH here is an **i801**, not the PIIX4 the Arista boards use. Different driver. Without it there is no platform bus at all |
+| `CONFIG_I2C_MUX=y`, `CONFIG_I2C_MUX_PCA954x=y` | everything — sensors, fans, both PSUs, the SPROM — is behind one mux at `0x70`. ⚠ On x86 this driver binds to nothing by itself: there is no device tree and this board's ACPI does not mention a mux, so a HAL has to instantiate it through `new_device`. Probing needs no driver — it writes the channel select over `i2c-dev` |
+| `CONFIG_GPIOLIB=y` | ⚠ **the mux driver needs it and no x86 defconfig sets it.** Found by the fragment check, not on hardware |
+| `CONFIG_HWMON=y` | so a bound sensor is something to read rather than a bare address |
+| `CONFIG_SENSORS_*=m`, `CONFIG_PMBUS=m` | a shortlist, as modules, because the parts are **not identified** — see below |
+| busybox `i2cdetect`/`i2cget`/`i2cset`/`i2cdump`/`i2ctransfer` | the bring-up tools, in the image because there is no second chance to use them |
+
+⚠ **The sensor drivers are a shortlist, not an identification.** This board's
+four sensors are enumerated by Cisco's board controller rather than probed, so
+the vendor's software never names the parts and neither does anything else we
+have. They are modules precisely so that identification can proceed by binding
+one and checking the reading is sane, rather than by a kernel rebuild per
+guess.
+
+### Finding out what is actually on the bus
+
+```sh
+# on the switch, under a netboot
+platform/cisco-n3172tq/tools/mki2cmap.sh --yaml
+```
+
+⚠ **Under a netboot, and nowhere else.** This is the opposite of the port-map
+generator: there the vendor's OS is the source, here it is the obstacle. NX-OS
+*has* `i2cdetect` and deliberately no `/dev/i2c-*` nodes, because its own
+board-controller module owns the bus — probing it there means two masters on
+one bus while the switch is managing a failed power supply, for a table that is
+free once our own kernel is running.
+
+It writes one byte to the mux, repeatedly: the channel select, which is what a
+mux is for. It scans with SMBus read-byte rather than quick-write, because a
+quick-write probe is a write to every address on a bus carrying a fan
+controller and two power supplies. And it leaves the mux deselected on exit
+even if interrupted.
+
+⚠ **The result is not yet something `board.yml` accepts.** `platform_hal.i2c`
+and the Linux-i2c HAL behind it were written for the Edgecore AS4610 and live
+on `board/edgecore-as4610-54t`. Two boards now want it, which is the argument
+for landing it on `main`. Until then `--yaml` prints the block as a record of
+what was measured.
 
 ### The Broadcom SDK is a build dependency and is never shipped
 
@@ -185,12 +263,29 @@ is one the firmware will not look inside — the disk mounts perfectly under
 Linux and offers the firmware nothing.
 
 **The kernel really is a PE32+ application.** If it is not, the firmware's
-complaint is indistinguishable from a corrupt file:
+complaint is indistinguishable from a corrupt file.
+
+⚠ **`file` is the wrong tool for this and says so confidently.** It reports
+
+```
+Linux kernel x86 boot executable bzImage, version 6.12.105 ...
+```
+
+on a kernel that *is* a valid EFI application, because the bzImage signature
+matches before the PE one. Read the header instead:
 
 ```sh
-file out/images/cisco-n3172tq/vmlinuz
-# expect: ... PE32+ executable (EFI application) x86-64
+K=out/images/cisco-n3172tq/vmlinuz
+head -c2 "$K"                       # expect: MZ
+python3 -c 'import sys
+d=open(sys.argv[1],"rb").read()
+o=int.from_bytes(d[0x3c:0x40],"little")
+print(d[:2], hex(o), d[o:o+4], hex(int.from_bytes(d[o+4:o+6],"little")))' "$K"
+# expect: b'MZ' 0x40 b'PE\x00\x00' 0x8664
 ```
+
+`MZ` at zero, `PE\0\0` at the offset `e_lfanew` names, and machine `0x8664`
+for x86-64. Measured on the built kernel: all three present.
 
 **The EFI system partition has the three files on it**, at the exact paths the
 firmware and the shell look for:
