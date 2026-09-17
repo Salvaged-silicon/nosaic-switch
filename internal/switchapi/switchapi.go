@@ -86,6 +86,11 @@ type Capabilities struct {
 	// total, which is what an operator sizing an access list needs; slices
 	// are how the silicon is organised, not how many rules fit.
 	ACLEntries int
+	// ACL6 and ACL6Entries are the same for IPv6, which is a separate group
+	// on every chip so far: a 128-bit address does not share a key with a
+	// 32-bit one, and a chip can have room for one family and not the other.
+	ACL6        bool
+	ACL6Entries int
 
 	Counters bool
 	SFP      bool

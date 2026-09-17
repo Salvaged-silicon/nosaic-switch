@@ -20,7 +20,9 @@ datapath -- `datapath/common` -- so a fix in one often lands in both.
   what EdgeNOS hit and why NOSaic did not; [docs/acl.md](../../../docs/acl.md)
   for what the feature is; the [README](../README.md#acls) for the numbers.
   The whole of it is `datapath/common/acl.c` over `bcm_field`, shared with the
-  7050SX2, plus `nosaic show acl` in both CLIs.
+  7050SX2, plus `nosaic show acl` in both CLIs. IPv6 followed on 2026-09-17 as
+  a second, double-wide group -- 768 rules beside 1280 for v4 -- with L4 ports
+  in the key and proven by traffic the same way.
 
 ### The ingress-port gate reaches one pipeline
 
@@ -1159,10 +1161,10 @@ are marked *(shared)*.
 
 ### Forwarding
 
-- ~~**ACLs.**~~ *(shared)* Done, 2026-09-16: ingress IPv4 permit/deny by port,
-  protocol, addresses and L4 ports, with counters, proven on this board. See
-  *Fixed on 2026-09-16* above. Not yet: IPv6, layer 2, ranges, policing,
-  egress, and an atomic swap on change.
+- ~~**ACLs.**~~ *(shared)* Done, 2026-09-16 and 17: ingress IPv4 and IPv6
+  permit/deny by port, protocol, addresses and L4 ports, with counters, proven
+  on this board. See *Fixed on 2026-09-16* above. Not yet: layer 2, ranges,
+  policing, egress, and an atomic swap on change.
 - **VLANs as a user-facing feature.** Ports sit in per-port service VLANs and
   `--bridge` throws every port into one. Neither is a VLAN *model*: there is no
   way to say "these six ports are VLAN 100, tagged on the uplink". This is the

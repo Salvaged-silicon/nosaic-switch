@@ -757,6 +757,11 @@ func showCmd(c *nosdclient.Client, what string) error {
 		} else {
 			fmt.Fprintf(w, "acl\tno\n")
 		}
+		if caps.ACL6 {
+			fmt.Fprintf(w, "acl ipv6\tyes, %d rules\n", caps.ACL6Entries)
+		} else {
+			fmt.Fprintf(w, "acl ipv6\tno\n")
+		}
 		// Reported explicitly because an operator planning multipath needs to
 		// know before configuring it, not after a route is refused.
 		if caps.ECMP {
@@ -811,11 +816,11 @@ func showCmd(c *nosdclient.Client, what string) error {
 		if err != nil {
 			return err
 		}
-		if !a.Available {
+		if !a.Available && !a.Available6 {
 			return fmt.Errorf("this switch's datapath has no field group for access lists")
 		}
 		if len(a.Rules) == 0 {
-			fmt.Fprintln(w, "no rules; set one with: nosaic config set acl_<seq> \"deny|permit [in <port>] [proto <p>] [src <cidr>] [dst <cidr>] [sport <n>] [dport <n>]\"")
+			fmt.Fprintln(w, "no rules; set one with: nosaic config set acl_<seq> \"deny|permit [ipv4|ipv6] [in <port>] [proto <p>] [src <prefix>] [dst <prefix>] [sport <n>] [dport <n>]\"")
 			return nil
 		}
 		fmt.Fprintln(w, "SEQ\tACTION\tMATCH\tPACKETS\tSTATUS")

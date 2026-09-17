@@ -5,8 +5,8 @@
  *
  * A rule is one property:
  *
- *     acl_<seq>=<permit|deny> [in <port>] [proto <name|number>]
- *                             [src <a.b.c.d[/len]>] [dst <a.b.c.d[/len]>]
+ *     acl_<seq>=<permit|deny> [ipv4|ipv6] [in <port>] [proto <name|number>]
+ *                             [src <prefix>] [dst <prefix>]
  *                             [sport <n>] [dport <n>]
  *
  * Rules are evaluated lowest sequence number first, the first match decides,
@@ -58,8 +58,13 @@
  * standby copy to avoid that window and pays for it in capacity. This does
  * not, yet, and says so rather than pretending otherwise.
  *
- * IPv4 only. A second group carries the v6 keys -- DstIp6 is 128 bits and does
- * not share a key with DstIp -- and it is not written until something needs it.
+ * IPv6 IS A SECOND GROUP, AND A RULE BELONGS TO ONE FAMILY. A 128-bit
+ * address does not share a key with a 32-bit one, so the v6 rules go in a
+ * group of their own with the v6 qualifiers; on the AS5610 that group came out
+ * double-wide, with the two addresses in the two halves. A rule is v6 if it
+ * says `ipv6` or names a v6 prefix, v4 otherwise, and a rule that says both is
+ * refused. "deny proto ospf" therefore drops OSPFv2 and leaves OSPFv3 alone,
+ * which is what an operator reading it expects once it is said once.
  */
 #include <ctype.h>
 #include <dirent.h>
@@ -97,8 +102,10 @@ struct rule {
 	int      action;
 	int      in_port;           /* logical port, or -1 for any */
 	int      proto;             /* IP protocol, or -1 for any */
+	int      family;            /* 4 or 6 */
 	int      have_src, have_dst;
 	uint32_t src, src_mask, dst, dst_mask;
+	bcm_ip6_t src6, src6_mask, dst6, dst6_mask;
 	int      sport, dport;      /* L4 ports, or -1 for any */
 
 	bcm_field_entry_t ent;
@@ -108,8 +115,11 @@ struct rule {
 };
 
 static int acl_unit;
-static bcm_field_group_t acl_grp = -1;
+static bcm_field_group_t acl_grp = -1;   /* IPv4 */
 static int acl_ready;
+static bcm_field_group_t acl_grp6 = -1;  /* IPv6 */
+static int acl6_ready;
+static int acl6_l4;                      /* the v6 group carries L4 ports */
 static bcm_module_t acl_modid;   /* this switch, for the source-port key */
 
 static struct rule rules[MAX_RULES];
@@ -269,8 +279,8 @@ static int proto_number(const char *s)
 {
 	static const struct { const char *name; int n; } known[] = {
 		{ "icmp", 1 }, { "igmp", 2 }, { "tcp", 6 }, { "udp", 17 },
-		{ "gre", 47 }, { "esp", 50 }, { "ah", 51 }, { "ospf", 89 },
-		{ "vrrp", 112 }, { "sctp", 132 },
+		{ "gre", 47 }, { "esp", 50 }, { "ah", 51 }, { "icmpv6", 58 },
+		{ "icmp6", 58 }, { "ospf", 89 }, { "vrrp", 112 }, { "sctp", 132 },
 	};
 	char *end;
 	long n;
@@ -303,6 +313,49 @@ static int parse_prefix(const char *s, uint32_t *addr, uint32_t *mask)
 	*mask = len == 0 ? 0 : 0xffffffffu << (32 - len);
 	*addr = ntohl(a.s_addr) & *mask;
 	return 0;
+}
+
+static int parse_prefix6(const char *s, bcm_ip6_t addr, bcm_ip6_t mask)
+{
+	char buf[64], *slash, *end;
+	struct in6_addr a;
+	long len = 128;
+	int i;
+
+	snprintf(buf, sizeof(buf), "%s", s);
+	if ((slash = strchr(buf, '/')) != NULL) {
+		*slash = '\0';
+		len = strtol(slash + 1, &end, 10);
+		if (*end != '\0' || len < 0 || len > 128)
+			return -1;
+	}
+	if (inet_pton(AF_INET6, buf, &a) != 1)
+		return -1;
+	for (i = 0; i < 16; i++) {
+		int bits = len - i * 8;
+
+		mask[i] = bits >= 8 ? 0xff : bits <= 0 ? 0 : (uint8)(0xff << (8 - bits));
+		addr[i] = a.s6_addr[i] & mask[i];
+	}
+	return 0;
+}
+
+/* Which family a prefix is written in, from its spelling: a colon is v6. */
+static int prefix_family(const char *s)
+{
+	return strchr(s, ':') != NULL ? 6 : 4;
+}
+
+/* Set the rule's family, or refuse a rule that says two. */
+static int set_family(struct rule *r, int fam, const char *why)
+{
+	if (r->family == 0 || r->family == fam) {
+		r->family = fam;
+		return 0;
+	}
+	snprintf(r->err, sizeof(r->err), "'%s' is IPv%d in an IPv%d rule",
+		 why, fam, r->family);
+	return -1;
 }
 
 static int port_number(const char *s)
@@ -363,8 +416,19 @@ static int parse_rule(struct rule *r, int seq, const char *text)
 	}
 
 	while ((tok = strtok_r(NULL, " \t", &save)) != NULL) {
-		char *arg = strtok_r(NULL, " \t", &save);
+		char *arg;
 
+		if (strcmp(tok, "ipv4") == 0 || strcmp(tok, "ip") == 0) {
+			if (set_family(r, 4, tok) != 0)
+				return -1;
+			continue;
+		}
+		if (strcmp(tok, "ipv6") == 0 || strcmp(tok, "ip6") == 0) {
+			if (set_family(r, 6, tok) != 0)
+				return -1;
+			continue;
+		}
+		arg = strtok_r(NULL, " \t", &save);
 		if (arg == NULL) {
 			snprintf(r->err, sizeof(r->err), "'%s' needs a value", tok);
 			return -1;
@@ -381,20 +445,26 @@ static int parse_rule(struct rule *r, int seq, const char *text)
 					 "'%s' is not an IP protocol", arg);
 				return -1;
 			}
-		} else if (strcmp(tok, "src") == 0) {
-			if (parse_prefix(arg, &r->src, &r->src_mask) != 0) {
+		} else if (strcmp(tok, "src") == 0 || strcmp(tok, "dst") == 0) {
+			int fam = prefix_family(arg), bad;
+
+			if (set_family(r, fam, arg) != 0)
+				return -1;
+			if (fam == 6)
+				bad = parse_prefix6(arg, tok[0] == 's' ? r->src6 : r->dst6,
+						    tok[0] == 's' ? r->src6_mask : r->dst6_mask);
+			else
+				bad = parse_prefix(arg, tok[0] == 's' ? &r->src : &r->dst,
+						   tok[0] == 's' ? &r->src_mask : &r->dst_mask);
+			if (bad) {
 				snprintf(r->err, sizeof(r->err),
-					 "'%s' is not an IPv4 prefix", arg);
+					 "'%s' is not an IPv%d prefix", arg, fam);
 				return -1;
 			}
-			r->have_src = 1;
-		} else if (strcmp(tok, "dst") == 0) {
-			if (parse_prefix(arg, &r->dst, &r->dst_mask) != 0) {
-				snprintf(r->err, sizeof(r->err),
-					 "'%s' is not an IPv4 prefix", arg);
-				return -1;
-			}
-			r->have_dst = 1;
+			if (tok[0] == 's')
+				r->have_src = 1;
+			else
+				r->have_dst = 1;
 		} else if (strcmp(tok, "sport") == 0) {
 			if ((r->sport = port_number(arg)) < 0) {
 				snprintf(r->err, sizeof(r->err),
@@ -412,6 +482,8 @@ static int parse_rule(struct rule *r, int seq, const char *text)
 			return -1;
 		}
 	}
+	if (r->family == 0)
+		r->family = 4;
 	if ((r->sport >= 0 || r->dport >= 0) && r->proto != 6 && r->proto != 17) {
 		/* The chip reads L4 ports out of whatever follows the IP header.
 		 * Without a protocol to say it is TCP or UDP, that is a match on
@@ -449,7 +521,18 @@ static int install(struct rule *r)
 	bcm_field_stat_t st[1] = { bcmFieldStatPackets };
 	int rv;
 
-	rv = bcm_field_entry_create(acl_unit, acl_grp, &r->ent);
+	bcm_field_group_t grp = r->family == 6 ? acl_grp6 : acl_grp;
+
+	if (r->family == 6 && !acl6_ready) {
+		snprintf(r->err, sizeof(r->err), "no IPv6 field group on this chip");
+		return -1;
+	}
+	if (r->family == 6 && !acl6_l4 && (r->sport >= 0 || r->dport >= 0)) {
+		snprintf(r->err, sizeof(r->err),
+			 "this chip's IPv6 group carries no L4 ports");
+		return -1;
+	}
+	rv = bcm_field_entry_create(acl_unit, grp, &r->ent);
 	if (rv != BCM_E_NONE) {
 		r->ent = -1;
 		snprintf(r->err, sizeof(r->err), "entry_create: %s", bcm_err(rv));
@@ -466,7 +549,8 @@ static int install(struct rule *r)
 	 * key, and without this a non-IP frame whose bytes happen to line up
 	 * would match an address it does not carry. Cumulus qualifies every
 	 * rule on IpType for the same reason. */
-	rv = bcm_field_qualify_IpType(acl_unit, r->ent, bcmFieldIpTypeIpv4Any);
+	rv = bcm_field_qualify_IpType(acl_unit, r->ent, r->family == 6 ?
+				      bcmFieldIpTypeIpv6 : bcmFieldIpTypeIpv4Any);
 	if (rv != BCM_E_NONE) {
 		snprintf(r->err, sizeof(r->err), "IpType: %s", bcm_err(rv));
 		goto fail;
@@ -482,23 +566,32 @@ static int install(struct rule *r)
 		}
 	}
 	if (r->proto >= 0) {
-		rv = bcm_field_qualify_IpProtocol(acl_unit, r->ent, (uint8)r->proto, 0xff);
+		/* The same byte, under two names: the v6 group's key is selected
+		 * for the next-header field and the SDK checks the name against
+		 * the group. */
+		rv = r->family == 6
+			? bcm_field_qualify_Ip6NextHeader(acl_unit, r->ent, (uint8)r->proto, 0xff)
+			: bcm_field_qualify_IpProtocol(acl_unit, r->ent, (uint8)r->proto, 0xff);
 		if (rv != BCM_E_NONE) {
 			snprintf(r->err, sizeof(r->err), "IpProtocol: %s", bcm_err(rv));
 			goto fail;
 		}
 	}
 	if (r->have_src) {
-		rv = bcm_field_qualify_SrcIp(acl_unit, r->ent, (bcm_ip_t)r->src,
-					     (bcm_ip_t)r->src_mask);
+		rv = r->family == 6
+			? bcm_field_qualify_SrcIp6(acl_unit, r->ent, r->src6, r->src6_mask)
+			: bcm_field_qualify_SrcIp(acl_unit, r->ent, (bcm_ip_t)r->src,
+						  (bcm_ip_t)r->src_mask);
 		if (rv != BCM_E_NONE) {
 			snprintf(r->err, sizeof(r->err), "SrcIp: %s", bcm_err(rv));
 			goto fail;
 		}
 	}
 	if (r->have_dst) {
-		rv = bcm_field_qualify_DstIp(acl_unit, r->ent, (bcm_ip_t)r->dst,
-					     (bcm_ip_t)r->dst_mask);
+		rv = r->family == 6
+			? bcm_field_qualify_DstIp6(acl_unit, r->ent, r->dst6, r->dst6_mask)
+			: bcm_field_qualify_DstIp(acl_unit, r->ent, (bcm_ip_t)r->dst,
+						  (bcm_ip_t)r->dst_mask);
 		if (rv != BCM_E_NONE) {
 			snprintf(r->err, sizeof(r->err), "DstIp: %s", bcm_err(rv));
 			goto fail;
@@ -538,7 +631,7 @@ static int install(struct rule *r)
 	/* A permit has no action. It is still the match that wins, which is what
 	 * stops a later deny from applying -- and it still counts. */
 
-	rv = bcm_field_stat_create(acl_unit, acl_grp, 1, st, &r->stat);
+	rv = bcm_field_stat_create(acl_unit, grp, 1, st, &r->stat);
 	if (rv != BCM_E_NONE) {
 		/* Not fatal: a rule that works and does not count is still a
 		 * rule. Say so in the status rather than refusing it. */
@@ -582,7 +675,7 @@ static void program(const struct line *lines, int n)
 				r->seq, r->err);
 			continue;
 		}
-		if (!acl_ready) {
+		if (!acl_ready && r->family == 4) {
 			snprintf(r->err, sizeof(r->err), "no field group on this chip");
 			continue;
 		}
@@ -619,6 +712,16 @@ static void reload(int force)
 }
 
 /* --------------------------------------------------------------- interface */
+
+static const char *mode_name(bcm_field_group_mode_t mode)
+{
+	switch (mode) {
+	case bcmFieldGroupModeSingle: return "single-wide";
+	case bcmFieldGroupModeDouble: return "double-wide";
+	case bcmFieldGroupModeTriple: return "triple-wide";
+	default: return "unknown width";
+	}
+}
 
 int nosaic_acl_start(int unit)
 {
@@ -657,10 +760,42 @@ int nosaic_acl_start(int unit)
 	}
 	acl_ready = 1;
 	bcm_field_group_mode_get(unit, acl_grp, &mode);
-	printf("acl: field group %d, %s-wide\n", acl_grp,
-	       mode == bcmFieldGroupModeDouble ? "double" :
-	       mode == bcmFieldGroupModeTriple ? "triple" :
-	       mode == bcmFieldGroupModeSingle ? "single" : "?");
+	printf("acl: ipv4 field group %d, %s\n", acl_grp, mode_name(mode));
+
+	/*
+	 * The v6 group. Asked for with L4 ports first; if the chip cannot put
+	 * two 128-bit addresses, a port and two L4 ports in one key, asked for
+	 * again without the L4 ports and the difference is reported, per rule,
+	 * rather than every v6 rule failing for the sake of the few that name
+	 * a port number.
+	 */
+	BCM_FIELD_QSET_INIT(q);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyStageIngress);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyIpType);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifySrcPort);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyIp6NextHeader);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifySrcIp6);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyDstIp6);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyL4SrcPort);
+	BCM_FIELD_QSET_ADD(q, bcmFieldQualifyL4DstPort);
+	rv = bcm_field_group_create(unit, q, 101, &acl_grp6);
+	acl6_l4 = rv == BCM_E_NONE;
+	if (rv != BCM_E_NONE) {
+		BCM_FIELD_QSET_REMOVE(q, bcmFieldQualifyL4SrcPort);
+		BCM_FIELD_QSET_REMOVE(q, bcmFieldQualifyL4DstPort);
+		rv = bcm_field_group_create(unit, q, 101, &acl_grp6);
+	}
+	if (rv != BCM_E_NONE) {
+		fprintf(stderr, "acl: ipv6 group_create: %s -- no IPv6 ACLs on this chip\n",
+			bcm_err(rv));
+		acl_grp6 = -1;
+		acl6_ready = 0;
+	} else {
+		acl6_ready = 1;
+		bcm_field_group_mode_get(unit, acl_grp6, &mode);
+		printf("acl: ipv6 field group %d, %s%s\n", acl_grp6, mode_name(mode),
+		       acl6_l4 ? "" : ", without L4 ports");
+	}
 	fflush(stdout);
 	reload(1);
 	return 0;
@@ -671,18 +806,25 @@ void nosaic_acl_poll(void)
 	reload(0);
 }
 
-void nosaic_acl_capability(int *available, int *entries_total, int *entries_free)
+static void group_room(int ready, bcm_field_group_t grp, int *total, int *freen)
 {
 	bcm_field_group_status_t st;
 
-	*available = acl_ready;
-	*entries_total = *entries_free = 0;
-	if (!acl_ready)
-		return;
-	if (bcm_field_group_status_get(acl_unit, acl_grp, &st) == BCM_E_NONE) {
-		*entries_total = st.entries_total;
-		*entries_free = st.entries_free;
+	*total = *freen = 0;
+	if (ready && bcm_field_group_status_get(acl_unit, grp, &st) == BCM_E_NONE) {
+		*total = st.entries_total;
+		*freen = st.entries_free;
 	}
+}
+
+void nosaic_acl_capability(struct nosaic_acl_caps *c)
+{
+	memset(c, 0, sizeof(*c));
+	c->v4 = acl_ready;
+	c->v6 = acl6_ready;
+	c->v6_l4 = acl6_l4;
+	group_room(acl_ready, acl_grp, &c->v4_total, &c->v4_free);
+	group_room(acl6_ready, acl_grp6, &c->v6_total, &c->v6_free);
 }
 
 /* The text is an operator's, and a quote in it would end the JSON string
@@ -700,13 +842,16 @@ static void jput(FILE *out, const char *s)
 
 void nosaic_acl_query(FILE *out)
 {
-	int total, freen, avail, i;
+	struct nosaic_acl_caps c;
+	int i;
 
-	nosaic_acl_capability(&avail, &total, &freen);
+	nosaic_acl_capability(&c);
 	pthread_mutex_lock(&acl_lock);
 	fprintf(out, "{\"ok\":true,\"result\":{\"Available\":%s,"
-		"\"Total\":%d,\"Free\":%d,\"Rules\":[",
-		avail ? "true" : "false", total, freen);
+		"\"Total\":%d,\"Free\":%d,"
+		"\"Available6\":%s,\"Total6\":%d,\"Free6\":%d,\"Rules\":[",
+		c.v4 ? "true" : "false", c.v4_total, c.v4_free,
+		c.v6 ? "true" : "false", c.v6_total, c.v6_free);
 	for (i = 0; i < nrules; i++) {
 		struct rule *r = &rules[i];
 		unsigned long long pkts = 0;
@@ -716,7 +861,8 @@ void nosaic_acl_query(FILE *out)
 		    bcm_field_stat_get(acl_unit, r->stat, bcmFieldStatPackets, &v) == BCM_E_NONE)
 			pkts = (unsigned long long)COMPILER_64_LO(v) |
 			       ((unsigned long long)COMPILER_64_HI(v) << 32);
-		fprintf(out, "%s{\"Seq\":%d,\"Rule\":\"", i ? "," : "", r->seq);
+		fprintf(out, "%s{\"Seq\":%d,\"Family\":%d,\"Rule\":\"",
+			i ? "," : "", r->seq, r->family);
 		jput(out, r->text);
 		fprintf(out, "\",\"Installed\":%s,\"Packets\":%llu,\"Error\":\"",
 			r->installed ? "true" : "false", pkts);

@@ -217,10 +217,11 @@ here for a commit.
     nosaic config set acl_10 "deny in swp6 proto icmp src 10.101.101.26/32"
     nosaic show acl
 
-Ingress IPv4 access lists, by port, protocol, addresses and L4 ports, permit
-or deny, each with a hit counter, applied while the switch runs. What they
-are and how to read them is [docs/acl.md](../../docs/acl.md); this is what the
-board did on 2026-09-16, with its OSPF adjacencies up throughout.
+Ingress access lists, IPv4 and IPv6, by port, protocol, addresses and L4
+ports, permit or deny, each with a hit counter, applied while the switch runs.
+What they are and how to read them is [docs/acl.md](../../docs/acl.md); this
+is what the board did on 2026-09-16 and 17, with its OSPF adjacencies up
+throughout.
 
 A deny of ICMP from the swp6 neighbour took 10 of 10 echo replies and counted
 10. A permit of the same at a lower sequence let 10 of 10 through, counted on
@@ -228,7 +229,12 @@ the permit and not the deny. One counting permit per neighbour counted only its
 own port's hellos, 13, 9 and 10 in 45 seconds. A deny of OSPF on swp6 alone
 took that adjacency down and left swp51 and swp52 Full, and unsetting it
 brought swp6 back in 32 seconds. Three malformed rules showed their reasons in
-`show acl` while the good ones installed around them.
+`show acl` while the good ones installed around them. The next day, IPv6: a
+deny on ICMPv6 from the swp6 neighbour lost 10 of 10 pings while IPv4 pings
+kept working, a deny of OSPFv3 on swp6 took that adjacency down and left the
+OSPFv2 one on the same port Full, and in both families a rule on TCP source
+port 22 counted the neighbour's replies while one on port 23 counted nothing.
+The chip holds 1280 IPv4 and 768 IPv6 rules.
 
 Two things had to be found out on the way and both are recorded in the
 [todo](docs/todo.md#fixed-on-2026-09-16). The field processor that EdgeNOS
@@ -247,7 +253,8 @@ service VLANs; CPU punt on taps; hardware L3 with routes in DEFIP; ECMP across
 swp1 and swp2 with traffic on both; OSPFv2 with four adjacencies and OSPFv3 with
 one; forwarding enabled; cooling and environmentals through `nosaic platform`;
 an unattended boot to all of it, 1.7 ms punt latency to a hardware responder,
-and ingress access lists that drop in silicon and count what they matched.
+and ingress access lists, IPv4 and IPv6, that drop in silicon and count what
+they matched.
 
 **Small gaps.** LED writes: both registers are known and their bits are not.
 Per-tray fan status: the register is read and reported raw, because EdgeNOS does

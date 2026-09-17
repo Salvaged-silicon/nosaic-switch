@@ -108,6 +108,12 @@ int nosaic_show_caps(void)
 	} else {
 		put(&t, r, 0, "acl"); put(&t, r++, 1, "no");
 	}
+	if (nosaic_jbool(resp, "ACL6", 0)) {
+		snprintf(s, sizeof(s), "yes, %d rules", nosaic_jint(resp, "ACL6Entries", 0));
+		put(&t, r, 0, "acl ipv6"); put(&t, r++, 1, s);
+	} else {
+		put(&t, r, 0, "acl ipv6"); put(&t, r++, 1, "no");
+	}
 
 	/* Stated even when absent, because an operator planning multipath needs to
 	 * know before configuring it rather than after a route is refused. */
@@ -379,8 +385,8 @@ int nosaic_show_acl(void)
 	free(resp);
 	if (r == 1) {
 		printf("no rules; set one with: nosaic config set acl_<seq> "
-		       "\"deny|permit [in <port>] [proto <p>] [src <cidr>] "
-		       "[dst <cidr>] [sport <n>] [dport <n>]\"\n");
+		       "\"deny|permit [ipv4|ipv6] [in <port>] [proto <p>] "
+		       "[src <prefix>] [dst <prefix>] [sport <n>] [dport <n>]\"\n");
 		return 0;
 	}
 	emit(&t);

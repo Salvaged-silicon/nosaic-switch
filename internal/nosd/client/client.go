@@ -236,6 +236,7 @@ func dialError(path string, err error) error {
 // configured with, whether it made it into the chip, and what it has matched.
 type ACLRule struct {
 	Seq       int
+	Family    int // 4 or 6
 	Rule      string
 	Installed bool
 	Packets   uint64
@@ -245,9 +246,11 @@ type ACLRule struct {
 // ACLs is the rule set and its room. Not part of the switchapi contract yet:
 // rules are configuration, and only the Broadcom datapaths hold them.
 type ACLs struct {
-	Available   bool
-	Total, Free int
-	Rules       []ACLRule
+	Available     bool
+	Total, Free   int
+	Available6    bool
+	Total6, Free6 int
+	Rules         []ACLRule
 }
 
 func (c *Client) ACLs() (ACLs, error) {

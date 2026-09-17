@@ -60,7 +60,7 @@ starts lying.
 | Cut-through | 860 ns | — | not measured here |
 | Jumbo frames | 9216 | **no** | taps come up at 1500; nothing plumbs an MTU |
 | ECMP | yes | **yes** | 150 transit packets split 80/70 across a pair |
-| ACLs / field processor | yes | **yes** | ingress IPv4: port, protocol, addresses, L4 ports; permit and deny, with counters. 1792 rules. See [docs/acl.md](../../../docs/acl.md) and [below](#the-blocker-that-was-never-the-silicon) |
+| ACLs / field processor | yes | **yes** | ingress IPv4 and IPv6: port, protocol, addresses, L4 ports; permit and deny, with counters. 1280 v4 and 768 v6 rules. See [docs/acl.md](../../../docs/acl.md) and [below](#the-blocker-that-was-never-the-silicon) |
 | VLANs (user-facing) | 4K | **no** | per-port service VLANs only; no VLAN model |
 | Link aggregation | yes | **no** | no LACP, no static bonds |
 | Storm control / policers | yes | **no** | nothing rate-limits flooding |

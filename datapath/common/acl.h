@@ -27,9 +27,14 @@ int nosaic_acl_start(int unit);
  * have not; call it about once a second from the periodic thread. */
 void nosaic_acl_poll(void);
 
-/* Whether ACLs are available, and how much room the group has. Both zero when
- * nosaic_acl_start failed or was never called. */
-void nosaic_acl_capability(int *available, int *entries_total, int *entries_free);
+/* Whether ACLs are available, per address family, and how much room each
+ * group has. All zero when nosaic_acl_start failed or was never called. */
+struct nosaic_acl_caps {
+	int v4, v4_total, v4_free;
+	int v6, v6_total, v6_free;
+	int v6_l4;   /* the v6 group can match L4 ports */
+};
+void nosaic_acl_capability(struct nosaic_acl_caps *c);
 
 /* The "acl" query: every rule with its hit count, as one JSON response line. */
 void nosaic_acl_query(FILE *out);

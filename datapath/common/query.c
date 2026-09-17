@@ -252,20 +252,23 @@ static void handle(FILE *out, const char *req)
 	 */
 	if (strstr(req, "\"capabilities\"") != NULL) {
 		bcm_l3_info_t info;
-		int maxv4 = 0, acl = 0, acl_total = 0, acl_free = 0;
+		struct nosaic_acl_caps acl;
+		int maxv4 = 0;
 
 		bcm_l3_info_t_init(&info);
 		if (bcm_l3_info(query_unit, &info) == BCM_E_NONE)
 			maxv4 = info.l3info_max_route;
-		nosaic_acl_capability(&acl, &acl_total, &acl_free);
+		nosaic_acl_capability(&acl);
 
 		fprintf(out,
 			"{\"ok\":true,\"result\":{\"Contract\":\"1\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"L2Learning\":true,\"L3\":true,"
-			"\"MaxV4\":%d,\"ACL\":%s,\"ACLEntries\":%d}}\n",
+			"\"MaxV4\":%d,\"ACL\":%s,\"ACLEntries\":%d,"
+			"\"ACL6\":%s,\"ACL6Entries\":%d}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
-			acl ? "true" : "false", acl_total);
+			acl.v4 ? "true" : "false", acl.v4_total,
+			acl.v6 ? "true" : "false", acl.v6_total);
 		return;
 	}
 
