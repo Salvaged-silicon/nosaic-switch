@@ -2,6 +2,7 @@ package boot
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -178,7 +179,7 @@ func TestAbootWritesBootConfig(t *testing.T) {
 
 func TestBackendsRefuseIncompleteImages(t *testing.T) {
 	dir := t.TempDir()
-	for _, id := range []string{"onie-sfx", "aboot", "virt", "uboot"} {
+	for _, id := range []string{"onie-sfx", "aboot", "virt", "uboot", "uefi"} {
 		b, _ := For(id)
 		if _, err := b.Wrap(Image{Board: "b", Version: "1"}, dir, io.Discard); err == nil {
 			t.Errorf("%s accepted an image with no artifacts", id)
@@ -577,5 +578,66 @@ func TestLoadAddressIsOptional(t *testing.T) {
 	}
 	if got := loadLine("0x03000000"); !strings.Contains(got, "load = <0x03000000>;") {
 		t.Errorf("got %q", got)
+	}
+}
+
+// The uefi installer is shell living inside a Go string, so the Go compiler
+// cannot see a syntax error in it. Unlike the ONIE one it runs on a switch
+// whose vendor OS has already been overwritten by the time anybody notices --
+// there is no installer environment to fall back into on this class of
+// hardware, so a broken installer is a console session with a TFTP server.
+func TestUEFIInstallerIsValidPOSIXShell(t *testing.T) {
+	sh, err := exec.LookPath("dash")
+	if err != nil {
+		if sh, err = exec.LookPath("sh"); err != nil {
+			t.Skip("no POSIX shell available to check with")
+		}
+	}
+	// Rendered rather than checked as a template: the format verbs land inside
+	// shell syntax, and a misplaced one is exactly the kind of error this
+	// catches.
+	script := fmt.Sprintf(installerUEFI, "1.0", "board", "x86_64", int64(1048576))
+	cmd := exec.Command(sh, "-n")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the uefi installer is not valid shell: %v\n%s", err, out)
+	}
+}
+
+// ⚠ THE INSTALLER MUST REFUSE A PARTITION.
+//
+// /dev/sda3 is a plausible typo for /dev/sda, and on the first board using
+// this backend it is the vendor's bootflash -- the filesystem holding the only
+// image anybody would recover with. dd writes a partition table into it
+// without comment.
+//
+// Checked as text because the guard cannot be exercised here: running it needs
+// a block device and the power to destroy it.
+func TestUEFIInstallerRefusesAPartitionAndAsksBeforeErasing(t *testing.T) {
+	script := fmt.Sprintf(installerUEFI, "1.0", "board", "x86_64", int64(1048576))
+
+	for _, want := range []string{
+		// Refuses a device name ending in a digit.
+		`*[0-9]) echo "error: $DISK looks like a partition`,
+		// Will not erase a disk without being told to, and the confirmation is
+		// a word rather than a keypress: a stray newline must not install.
+		`Type ERASE to continue`,
+		`[ "$answer" = "ERASE" ]`,
+		// Verifies the write rather than trusting dd's exit status.
+		`ESP_OFFSET=`,
+		// Does not reboot. The firmware has no boot entry for our partition
+		// yet, so a reboot here lands at the vendor loader with nothing to
+		// boot -- and says so instead.
+		`THE FIRMWARE DOES NOT KNOW ABOUT IT YET`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the uefi installer is missing %q", want)
+		}
+	}
+
+	// A non-interactive escape hatch, because a scripted install that blocks
+	// on a read is an install that hangs with no output.
+	if !strings.Contains(script, `"${NOSAIC_YES:-}" != "1"`) {
+		t.Error("the uefi installer has no non-interactive path")
 	}
 }

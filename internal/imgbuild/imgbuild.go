@@ -177,7 +177,11 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 
-	disk, fitOff, err := BuildDisk(o, sqsh)
+	// The kernel and the initramfs go to BuildDisk as well as to the output
+	// directory. On a board whose firmware is the bootloader they are not
+	// deployed beside the image -- they are files inside its first partition,
+	// because that partition is what UEFI reads.
+	disk, fitOff, err := BuildDisk(o, sqsh, kernel, initramfs)
 	if err != nil {
 		return nil, err
 	}

@@ -34,3 +34,44 @@ CONFIG_EEPROM_AT24=y
 # configuration check is what caught it -- a symbol asked for and not set
 # produces a kernel that boots and cannot do the thing you configured.
 CONFIG_MMC_SDHCI_ACPI=y
+
+# --- booting as an EFI application ---------------------------------------
+#
+# Asked for explicitly although x86_64_defconfig already sets both, because on
+# a board with no vendor bootloader these are not a convenience: they are the
+# whole boot path. CONFIG_EFI_STUB is what makes a bzImage a valid PE32+
+# application, so the firmware can launch the kernel itself and there is no
+# bootloader on the disk to install, configure or corrupt.
+#
+# A symbol that silently stops being set is exactly what the fragment check
+# exists to catch. Without the stub the image builds, the disk lays out, the
+# EFI system partition is populated -- and the firmware reports the kernel as
+# not a valid image, which reads as a corrupt file rather than as a kernel
+# built without a feature.
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+
+# The variable store, writable, so the switch can name itself in the firmware's
+# boot order once it is running.
+#
+# On a board installed over a vendor OS there was no EFI system partition
+# before ours, so there is no boot entry pointing at one: the first boot goes
+# through the firmware's own shell. Creating a permanent entry from a console
+# session is fiddly and has to be redone after a firmware reset; doing it from
+# the running switch is a command. Without this there is no /sys/firmware/efi/
+# efivars and nothing can be written at all.
+CONFIG_EFIVAR_FS=y
+
+# Intel igb, for the DH89xxCC "Cave Creek" integrated GbE.
+#
+# ⚠ NOT IN x86_64_defconfig, unlike e1000e and tg3. A board whose management
+# port is one of these comes up with no management interface at all, and
+# nothing in dmesg mentions a network device -- so the obvious reading is a
+# dead port.
+#
+# The Cisco Nexus 3172TQ has four of them on the PCH at 01:00.1-.4. Two are
+# 8086:0438, which is E1000_DEV_ID_DH89XXCC_SGMII and is in igb's table. Two
+# are 8086:0436, which is in no Intel driver's table in 6.12 -- see
+# platform/cisco-n3172tq/docs/hardware.md, because which of the four is the
+# management port is not yet established.
+CONFIG_IGB=y
