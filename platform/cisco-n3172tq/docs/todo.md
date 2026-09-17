@@ -61,23 +61,29 @@ one), `setup_sects` (the vendor's kernel has the same situation), and KASLR
 (`nokaslr` fails identically). See
 [hardware.md](hardware.md#three-hypotheses-tested-and-eliminated).
 
-- [ ] **Build a kernel that needs nothing above setup-header offset 0x200.**
-      The loader reads only 512 bytes as the parameter block, and a 6.12 setup
-      header runs to 0x268 — so `init_size`, `xloadflags`, `kernel_alignment`,
-      `relocatable_kernel` and `handover_offset` are all in bytes it never
-      reads. `CONFIG_RELOCATABLE=n` with `CONFIG_PHYSICAL_START=0x100000` links
-      the kernel for exactly where the loader puts it and removes self-
-      relocation from the question. Our protocol is 2.15; the vendor's is 2.11.
-- [ ] **Which needs per-board kernel fragments first.**
-      `recipes/linux/recipe.yml` takes `config/common.fragment` and
-      `config/${ARCH}.fragment` and nothing else, so turning off relocation
-      here turns it off for both Arista boards. **This is a core change and a
-      design decision, not a board tweak** — and it is the prerequisite for the
-      experiment above.
-- [ ] If that does not do it, instrument the other side: the loader's
-      `big_linux_boot` is GRUB's, and `cisco-loader-4.0.0i.efi` is extracted
-      and disassemblable. What it writes into `boot_params` before jumping is
-      readable.
+- [x] ~~Build a kernel with `CONFIG_RELOCATABLE=n` and
+      `CONFIG_PHYSICAL_START=0x100000`~~ — **ruled out without building it.**
+      The vendor kernel's own config, extracted from its `IKCFG_ST` blob, is
+      `CONFIG_RELOCATABLE=y`, `CONFIG_PHYSICAL_START=0x1000000`,
+      `CONFIG_EFI_STUB=y` — the same as ours in every field that decides where
+      a kernel may be loaded. The kernel this loader *does* boot is
+      relocatable and linked for 16 MB, exactly like ours.
+- [x] ~~Which needs per-board kernel fragments first~~ — **no longer needed
+      for this.** Worth having eventually, but it is not the prerequisite for
+      anything on this list any more.
+- [ ] **Disassemble `big_linux_boot`.** This is the next step, and
+      black-box bisection has gone as far as it can: six hypotheses eliminated
+      and the failure unchanged. The symbol is in the loader's table,
+      `cisco-loader-4.0.0i.efi` is extracted, and it is GRUB's legacy
+      `loader/i386/linux.c` with `grub_relocator16_*` — so what it writes into
+      `boot_params` and where it far-jumps is readable. The question to answer
+      is how much of the real-mode setup it copies and to where: ours is
+      20,480 bytes against the vendor's 15,872, and the NBI header sits at
+      `0x94400`, only 1 KiB above the boot sector at `0x94000`.
+- [ ] **Or sidestep it: the USB/EFI-stub path does not use `boot_params` at
+      all.** Both kernels have `CONFIG_EFI_STUB=y`, and the firmware executes
+      EFI applications — so that route tests "does our kernel run on this
+      board" independently of the loader. See item 1b.
 
 ## 1b. A USB stick — the other way to reach the same question
 

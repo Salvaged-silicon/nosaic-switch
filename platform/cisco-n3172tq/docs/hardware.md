@@ -280,45 +280,78 @@ with header `exec addr 0x92800000`, `location 0x94400000` and vendor string
 four segment descriptors**, and a load-address floor between `0x82800` and
 `0x92800`.
 
-### Three hypotheses tested and eliminated
+### Six hypotheses tested and eliminated
 
-Worth recording, because each looked like the answer:
+Each looked like the answer. All of this was settled by reading the vendor's
+own kernel out of its NBI and booting ours with the variables removed, which is
+cheaper than guessing and is why none of it cost a kernel rebuild.
 
 **The exec address is not it.** `0x92800` is mknbi's `first32pm` stub address
 and nothing in our image loads there — but the **vendor's own image has the
 identical exec address** (`0x92800000`) and boots, so the loader does not jump
 there.
 
-**`setup_sects` is not it.** Our kernel has `setup_sects = 39`, so
-`bzImage[512:]` begins with setup code rather than the kernel, and the loader
-puts that at `0x100000`. That looked decisive until the vendor's kernel was
-read: **`setup_sects = 30`**, the same situation, and it boots. The loader
-handles the layout.
+**`setup_sects` is not it.** Ours is **39**, so `bzImage[512:]` begins with
+setup code rather than the kernel, and the loader puts that at `0x100000`.
+Decisive-looking until the vendor's kernel was read: **`setup_sects = 30`**,
+the same situation, and it boots.
 
-**KASLR is not it.** Our kernel is `CONFIG_RANDOMIZE_BASE=y` and the loader
-carries a `Too many e820 memory map entries` string, so a bad memory map
-leading KASLR to relocate onto something was a good theory. Booting with
-`nokaslr` fails identically — same `big_linux_boot`, same reset.
+**KASLR is not it.** `nokaslr` fails identically — same `big_linux_boot`, same
+reset. (And the vendor's config has no `CONFIG_RANDOMIZE_BASE` at all, so it
+was a real difference; just not this one.)
+
+**The EFI handover protocol is not it.** Our `xloadflags` is `0x7f` with
+`XLF_EFI_HANDOVER_32/64` set and the vendor's is `0x0`, so "the loader takes
+the handover path for ours and the legacy path for theirs" was a good theory.
+The loader's own symbols kill it: it is built from **`loader/i386/linux.c`** —
+GRUB's *legacy* i386 Linux loader — and carries `grub_relocator16_boot`,
+`grub_relocator16_cs/ip/ds/es/fs/gs`, and `big_linux_boot: ASM code execute >>`.
+It drops to **16-bit real mode**. There is no handover path and `xloadflags` is
+never consulted.
+
+**Relocation and load address are not it.** The vendor kernel's own config,
+extracted from its `IKCFG_ST` blob, is the same as ours in every field that
+decides where a kernel may be loaded:
+
+| | vendor 3.4.91 | ours 6.12.105 |
+|---|---|---|
+| `CONFIG_RELOCATABLE` | **y** | y |
+| `CONFIG_PHYSICAL_START` | **0x1000000** | 0x1000000 |
+| `CONFIG_EFI_STUB` | **y** | y |
+| `CONFIG_PHYSICAL_ALIGN` | 0x1000000 | 0x200000 (looser) |
+| `CONFIG_RANDOMIZE_BASE` | not set | y (ruled out above) |
+| `relocatable_kernel` (header) | 1 | 1 |
+
+So `CONFIG_RELOCATABLE=n` with `CONFIG_PHYSICAL_START=0x100000` — which was the
+queued next experiment, and would have needed per-board kernel fragments that
+do not exist — is pointless: the kernel this loader **does** boot is
+relocatable and linked for 16 MB, exactly like ours.
+
+**The initramfs is not it.** Booting a **two-segment** NBI with no ramdisk
+segment at all fails identically: `Kernel loaded successfully`,
+`big_linux_boot`, reset. So nothing about the ramdisk — its size, its address,
+its format — is implicated.
 
 ### What is left
 
-The handoff itself. The most likely remaining cause is that the loader's
-`boot_params` is built for a 3.4-era kernel: it reads **only 512 bytes** as the
-parameter block (`Reading data for kernel param. Len 512`), and the modern
-setup header extends to `0x268` — so `init_size`, `xloadflags`,
-`kernel_alignment`, `relocatable_kernel` and `handover_offset` all live in
-bytes the loader never reads. Our kernel is boot protocol **2.15**; the
-vendor's is **2.11**.
+The handoff itself, and the difference is the kernel's own vintage rather than
+anything about how it is packaged. Our boot protocol is **2.15**; the vendor's
+is **2.11**. The loader reads **only 512 bytes** as the parameter block
+(`Reading data for kernel param. Len 512`), and a modern setup header runs to
+`0x268` — so everything from `initrd_addr_max` upwards is in bytes it never
+copies. Our real-mode setup is 20,480 bytes against the vendor's 15,872, and
+the loader's own real-mode window is small: the NBI header lives at `0x94400`,
+only 1 KiB above where the boot sector is placed at `0x94000`.
 
-The cheapest experiment against that is a kernel that needs none of it:
-`CONFIG_RELOCATABLE=n` with `CONFIG_PHYSICAL_START=0x100000`, so the kernel is
-linked for exactly where the loader puts it and does no self-relocation.
+**The next step is disassembly, not another boot.** `big_linux_boot` is in the
+loader's symbol table, `cisco-loader-4.0.0i.efi` is extracted, and what it
+writes into `boot_params` and where it far-jumps is readable. Black-box
+bisection has taken this as far as it goes.
 
-⚠ **That is not a board-local change today.** `recipes/linux/recipe.yml` takes
-`config/common.fragment` and `config/${ARCH}.fragment` and nothing else, so
-there is no per-board kernel fragment — turning off relocation for this board
-turns it off for both Arista boards too. Adding per-board fragments is the
-prerequisite, and it is in [todo.md](todo.md).
+**And the USB path is now the better test of the kernel itself**, because the
+EFI stub does not involve the loader's `boot_params` at all — see
+[install.md](install.md#test-it-from-a-usb-stick-instead). Both kernels have
+`CONFIG_EFI_STUB=y`, so that route is known to be viable on this firmware.
 
 ### The embedded iPXE — a dead end, and not the same thing
 
@@ -397,6 +430,32 @@ way at all.
 The loader also names the image type it decided on — `ImageType IMG_INSIEME`
 for ours — and stages the download at `memptr=0x20000000` with
 `memptr_initrd=0x5000000` before parsing it.
+
+## The vendor's kernel and ramdisk, for comparison
+
+Both were extracted from the NBI in `cisco-firmware/nexus3172tq/`, since the
+segment payloads are contiguous in the file behind the 1024-byte header.
+
+**The kernel is Wind River Linux**: `3.4.91-WR5.0.1.13_standard+`, 5.5 MiB,
+gzip-compressed payload at protected-mode offset `0x2cd`. It has
+`CONFIG_IKCONFIG` enabled, so its **full 977-symbol configuration is
+recoverable** — saved in the RE repository at
+`analysis/kernel/nxos-3.4.91-WR5.0.1.13.config`. That is what made the
+relocation question answerable without guessing.
+
+**The ramdisk is not a Linux initramfs.** 445 MiB, 7.99 bits/byte of entropy
+from the first byte, no `070701` cpio magic and no filesystem superblock at the
+front — Cisco's own packed system image. Which is itself worth knowing: the
+loader treats the vtag-21 segment as an **opaque ramdisk**, placing it and
+setting `ramdisk_image`/`ramdisk_size` without caring what is in it. So an
+ordinary `cpio.gz` initramfs is a valid thing to hand it, and ours is:
+
+```
+16 entries
+  bin/busybox            2,282,760    with the i2c applets
+  init                      20,635    the slot-select and overlay script
+  nosaic-rootfs.sqsh    66,408,448    the root filesystem, for a RAM boot
+```
 
 ## Port map
 ## Port map
