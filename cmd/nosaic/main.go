@@ -454,7 +454,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 		}
 	}
 
-	artifact, err := backend.Wrap(boot.Image{
+	img := boot.Image{
 		Kernel: res.Kernel, Initramfs: res.Initramfs,
 		Squashfs: res.Squashfs, Disk: res.Disk,
 		FIT: netboot, FITOffset: res.FITOffset, NOSBootCmd: b.UBootNOSBootCmd,
@@ -466,9 +466,34 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 		FITHash:         b.UBootFITHash,
 		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
 		KernelParams:    b.KernelParams,
-	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
-	if err != nil {
-		return err
+		RAMBoot:         ramBoot,
+	}
+	outDir := filepath.Join(root, "out", "images", boardID)
+
+	// A bootloader that can fetch an image over the network gets a bundle for
+	// it, so the image can be tried on the switch before its disk is replaced.
+	//
+	// Built for every such board rather than only on --ram-boot, because the
+	// bundle is how somebody discovers the option exists -- but it refuses to
+	// build without an embedded root filesystem, since a netbooted image has
+	// no disk slot to find.
+	netbootDir := ""
+	if nb, ok := backend.(boot.Netbooter); ok && ramBoot {
+		netbootDir, err = nb.Netboot(img, outDir, os.Stdout)
+		if err != nil {
+			return err
+		}
+	}
+
+	// And a RAM-boot image is not installed. The backend refuses it -- what
+	// would be produced is an installer that works and loses every setting at
+	// the next reboot -- so do not ask for one.
+	artifact := ""
+	if !ramBoot {
+		artifact, err = backend.Wrap(img, outDir, os.Stdout)
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("\nimage for %s (%s profile)\n", b.ID, pr.Name)
@@ -480,9 +505,17 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 			fmt.Printf("  %-42s %6.1f MiB\n", f, float64(fi.Size())/(1<<20))
 		}
 	}
-	fmt.Printf("\ninstall with %s\n  %s\n", backend.ID(), backend.Describe())
-	if fi, err := os.Stat(artifact); err == nil {
-		fmt.Printf("  %-42s %6.1f MiB\n", artifact, float64(fi.Size())/(1<<20))
+	if artifact != "" {
+		fmt.Printf("\ninstall with %s\n  %s\n", backend.ID(), backend.Describe())
+		if fi, err := os.Stat(artifact); err == nil {
+			fmt.Printf("  %-42s %6.1f MiB\n", artifact, float64(fi.Size())/(1<<20))
+		}
+	}
+	if netbootDir != "" {
+		fmt.Printf("\nor try it without installing, over the network\n")
+		fmt.Printf("  serve this directory over TFTP, then catch the loader and run `ipxe`\n")
+		fmt.Printf("  %s\n", netbootDir)
+		fmt.Printf("  nothing is written to the switch, and nothing survives the reboot\n")
 	}
 	if netboot != "" {
 		fmt.Printf("\nor try it without installing, from the U-Boot prompt\n")

@@ -315,6 +315,59 @@ func buildESP(o Options, size int64, kernel, initramfs string) (string, error) {
 		return "", fmt.Errorf("an EFI system partition needs a kernel and an initramfs")
 	}
 	dir := filepath.Join(o.Root, ".cache", "image", o.Board.ID)
+
+	// ⚠ A RAM-BOOT IMAGE'S BOOT FILES DO NOT GO ON THE DISK.
+	//
+	// On a RAM boot the initramfs carries the whole root filesystem -- 64 MiB
+	// where the installable one is a few -- and the disk it would be written
+	// to is a disk nobody may install: the uefi backend refuses to wrap a
+	// RAM-boot image into an installer, because that installer would work and
+	// lose every setting at the next reboot.
+	//
+	// So the ESP gets the partition and none of the contents. Found by an ESP
+	// sized for the real case failing with "Disk full" on the RAM-boot one,
+	// which is the right failure for the wrong reason: the fix is not a bigger
+	// boot partition, it is not putting a netboot image on a disk.
+	if o.RAMBoot {
+		img := filepath.Join(dir, "esp.vfat")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+		if err := truncate(img, size); err != nil {
+			return "", err
+		}
+		cmd := exec.Command("mkfs.vfat", "-F", "16", "-n", "NOSAIC-BOOT", img)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("mkfs.vfat: %v\n%s", err, b)
+		}
+		fmt.Fprintf(o.Log, "    EFI system partition: %d MiB, left empty -- "+
+			"a RAM-boot image is netbooted, not installed\n", size/(1<<20))
+		return img, nil
+	}
+
+	// ⚠ CHECKED BEFORE mkfs, BECAUSE THE FAILURE AFTERWARDS IS "Disk full".
+	//
+	// mcopy's message says nothing about which partition, which file, or which
+	// board.yml field decides the size -- and the answer is boot_mib, which is
+	// three files away from the error. A board whose kernel grows past its boot
+	// partition should be told that in those words.
+	var total int64
+	for _, f := range []string{kernel, initramfs} {
+		fi, err := os.Stat(f)
+		if err != nil {
+			return "", err
+		}
+		total += fi.Size()
+	}
+	// FAT's own overhead plus slack for startup.nsh and the slot pointer. Ten
+	// per cent rather than a computed figure: the point is to fail early with
+	// a useful sentence, not to predict cluster allocation exactly.
+	if want := total + total/10; want > size {
+		return "", fmt.Errorf("the kernel and initramfs are %.1f MiB and the EFI system "+
+			"partition is %d MiB.\n       Raise boot_mib in platform/%s/board.yml to at "+
+			"least %d",
+			float64(total)/(1<<20), size/(1<<20), o.Board.ID, (want>>20)+1)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

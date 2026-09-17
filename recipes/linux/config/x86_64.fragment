@@ -75,3 +75,103 @@ CONFIG_EFIVAR_FS=y
 # platform/cisco-n3172tq/docs/hardware.md, because which of the four is the
 # management port is not yet established.
 CONFIG_IGB=y
+
+# --- environmentals: reaching the board's sensors, fans and PSUs -----------
+#
+# ⚠ THE SMBus CONTROLLER ON A CISCO NEXUS IS THE i801, NOT THE PIIX4.
+#
+# Both are Intel and they are different drivers. I2C_PIIX4 above is for the
+# AMD FCH on the Arista boards; the DH89xxCC "Cave Creek" PCH on the Nexus
+# 3172TQ is an i801 at 00:1f.3, and the vendor's own kernel says so:
+#
+#     i801_smbus 0000:00:1f.3: enabling device (0001 -> 0003)
+#
+# x86_64_defconfig happens to set this, which is the only reason the board was
+# not found to have no platform bus at all. Stated here because it is the
+# entire environmental path on that switch: without it there is no adapter, no
+# mux behind it, and nothing to read a temperature from.
+CONFIG_I2C_I801=y
+
+# ⚠ AND EVERYTHING IS BEHIND ONE MUX, SO THE MUX IS NOT OPTIONAL.
+#
+# The Nexus exposes a single i2c adapter and puts the sensors, the fan
+# controller, the PSUs and the board SPROM behind a mux at 0x70, selected per
+# access. Caught in the vendor's own log:
+#
+#     pfmclnt - failed to set mux addr 0x70 ch 2 err I2C_ERR_NO_RESPONSE
+#
+# ⚠ AND ON x86 THE DRIVER WILL NOT BIND BY ITSELF, WHICH IS NOT WHAT THE
+#   POWERPC FRAGMENT'S COPY OF THIS PAIR IMPLIES.
+#
+# A PowerPC or ARM board describes its i2c devices in the device tree, so the
+# mux is instantiated at boot and its channels appear as further adapters. x86
+# describes itself through ACPI, and nothing in this board's ACPI mentions an
+# i2c mux -- so the driver is present, matches nothing, and no per-channel
+# adapter is created.
+#
+# That is fine for both things we need:
+#
+#   * probing is done over i2c-dev by writing the channel select to 0x70 by
+#     hand, which needs no mux driver at all -- see
+#     platform/cisco-n3172tq/tools/mki2cmap.sh;
+#   * a platform HAL instantiates the mux explicitly, through
+#     /sys/bus/i2c/devices/i2c-0/new_device, and THEN it needs this driver.
+#
+# So the driver ships for the second, and its absence would be discovered at
+# exactly the wrong moment -- when the HAL exists and the channels do not
+# appear.
+CONFIG_I2C_MUX=y
+CONFIG_I2C_MUX_PCA954x=y
+
+# ⚠ AND THE MUX DRIVER NEEDS GPIOLIB ON x86, WHICH NO x86 DEFCONFIG SETS.
+#
+# i2c-mux-pca954x depends on GPIOLIB -- it can drive a reset line -- and so
+# does the pca953x expander below. On an embedded architecture GPIOLIB comes
+# with the defconfig and the dependency is invisible; x86_64_defconfig does not
+# set it, and the powerpc fragment beside this one gets away with asking for
+# the same two drivers for exactly that reason.
+#
+# Found by the fragment check rather than on hardware, which is the whole
+# argument for that check: without it both drivers are dropped silently,
+# nothing binds to the mux, and the board presents as having one i2c device on
+# it -- the mux itself -- and no sensors behind it. That is indistinguishable
+# from a board whose sensors are somewhere else entirely, and it is the
+# conclusion a bring-up would have reached.
+CONFIG_GPIOLIB=y
+
+# The hwmon core, so a bound sensor appears as something to read rather than
+# as a bare i2c address.
+CONFIG_HWMON=y
+
+# ⚠ A SHORTLIST, NOT AN IDENTIFICATION, AND AS MODULES FOR THAT REASON.
+#
+# The Nexus's four sensors are enumerated by Cisco's own board controller
+# rather than probed, so the vendor's software never names the parts and
+# neither does anything else we have. What the chips actually are has to be
+# read off the bus, and the only time that bus is both reachable and not owned
+# by somebody else's driver is a netboot -- see
+# platform/cisco-n3172tq/docs/todo.md.
+#
+# These are the families that turn up on this class of board, including the
+# two the sibling PowerPC board actually has. As modules they cost nothing in
+# the image and let identification proceed by binding one and seeing whether
+# the readings are sane, instead of by guessing in a kernel rebuild each time.
+CONFIG_SENSORS_LM75=m
+CONFIG_SENSORS_LM90=m
+CONFIG_SENSORS_LM77=m
+CONFIG_SENSORS_MAX6697=m
+CONFIG_SENSORS_TMP102=m
+CONFIG_SENSORS_TMP401=m
+CONFIG_SENSORS_TMP421=m
+
+# PMBus, which is how a modern hot-swap PSU reports voltage, current and its
+# own fan. The Nexus models PSU presence, health, redundancy mode AND the
+# PSU's own fan separately, and that detail has to come from the supply
+# itself; presence alone is a GPIO bit.
+CONFIG_PMBUS=m
+CONFIG_SENSORS_PMBUS=m
+
+# GPIO expanders, which is where PSU presence and board control lines sit on a
+# board that has no FPGA -- and this one has none: no IOFPGA, no MIFPGA, all
+# three FPGA BAR parameters read 0.
+CONFIG_GPIO_PCA953X=m

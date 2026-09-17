@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -94,20 +95,24 @@ if [ -z "$DISK" ]; then
     echo "This writes a whole partition table. Name the disk, not a partition." >&2
     exit 2
 fi
-if [ ! -b "$DISK" ]; then
-    echo "error: $DISK is not a block device" >&2
-    exit 1
-fi
-
-# ⚠ REFUSE A PARTITION.
+# ⚠ REFUSE A PARTITION, AND DO IT BEFORE ANYTHING ELSE.
 #
 # /dev/sda3 is a plausible typo for /dev/sda and it is the vendor's bootflash
 # on the first board using this backend. Writing a partition table into a
 # partition destroys the filesystem holding the image somebody would recover
 # with, and dd will do it without comment.
+#
+# Checked ahead of the block-device test on purpose: a mistyped partition that
+# does not exist should still be told it is a partition, rather than getting
+# "not a block device" and sending somebody to look for the node.
 case "$DISK" in
     *[0-9]) echo "error: $DISK looks like a partition. Name the whole disk." >&2; exit 1 ;;
 esac
+
+if [ ! -b "$DISK" ]; then
+    echo "error: $DISK is not a block device" >&2
+    exit 1
+fi
 
 # What is about to be destroyed, and a chance to stop. Non-interactive callers
 # set NOSAIC_YES=1; there is no default yes, because the default here is
@@ -164,6 +169,21 @@ func (u uefi) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	if img.Disk == "" {
 		return "", fmt.Errorf("uefi needs a disk image")
 	}
+	// ⚠ REFUSED RATHER THAN BUILT, because the installer would work.
+	//
+	// A RAM-boot image carries its root filesystem in the initramfs and has no
+	// persistent data partition. Written to a disk it boots, answers ssh and
+	// looks entirely correct -- and every password, port map and route set on
+	// it is gone at the next reboot, with nothing reporting that. An operator
+	// would find out weeks later.
+	//
+	// The same image netbooted is exactly the right thing, so say so.
+	if img.RAMBoot {
+		return "", fmt.Errorf("a RAM-boot image has no persistent data partition and must "+
+			"not be installed: nothing configured on it would survive a reboot.\n"+
+			"       Netboot it instead -- the bundle is in %s/netboot/ -- or rebuild "+
+			"without --ram-boot to install", outDir)
+	}
 	out := filepath.Join(outDir,
 		fmt.Sprintf("NOSaic-%s-%s.sh", img.Version, img.Board))
 
@@ -202,4 +222,189 @@ func (u uefi) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// ipxeScript is what iPXE runs. It is the whole reason this bundle is a
+// directory rather than two files.
+//
+// # Why iPXE and not the vendor loader's own TFTP
+//
+// Cisco's loader has a TFTP client and it works -- 5.3 MB across a subnet
+// boundary at 3.7 MB/s, measured on this hardware. What it will not do is boot
+// anything but an `mknbi-linux` NBI container, and our kernel in that container
+// resets the board after the loader prints CardIndex.
+//
+// iPXE is already on the box. The loader embeds it (`grub_load_ipxe`) and has
+// an `ipxe` command to chainload it on the next reboot, and the firmware's own
+// `Boot0001 "EFI Network"` PXE path can load it too. It speaks the ordinary
+// Linux boot protocol, so the NBI gate is not in the path at all.
+//
+// # Why the paths are relative
+//
+// iPXE resolves a relative URI against the URI of the script it is running, so
+// a bundle works from whatever directory it was dropped into on whatever
+// server -- no path baked in at build time, and no second place to edit when
+// the server changes. The ${next-server} form is in the comment for anyone
+// who needs to be explicit.
+const ipxeScript = `#!ipxe
+# NOSaic %s for %s. Generated -- do not edit.
+#
+# Serve this directory over TFTP or HTTP and boot it with either of:
+#
+#   loader> ipxe ; reboot        start the iPXE embedded in the BIOS flash.
+#                                The command arms the NEXT boot rather than
+#                                chainloading on the spot.
+#   DHCP filename                point it at this file for the firmware's own
+#                                "EFI Network" boot entry
+#
+# Paths are relative to this script's own URI. To be explicit instead, use:
+#   set base tftp://${next-server}/nosaic
+#   kernel ${base}/vmlinuz ...
+
+echo NOSaic %s netboot for %s
+echo .
+
+# ⚠ initrd= ON THE KERNEL LINE AS WELL AS THE initrd COMMAND.
+#
+# The command loads the file; the parameter tells the kernel which loaded
+# image is its initramfs. Without it a kernel with more than one loaded file
+# picks wrong, and with exactly one it is merely redundant -- so it is always
+# written.
+kernel vmlinuz initrd=initrd.img console=%s,%dn8 %s
+initrd initrd.img
+boot || goto failed
+
+:failed
+echo NOSaic: iPXE could not boot the image. Check that vmlinuz and initrd.img
+echo are in the same directory as this script and are readable over TFTP.
+shell
+`
+
+// netbootREADME travels with the bundle because the bundle travels: it is
+// copied onto a TFTP server, usually not by whoever built it.
+const netbootREADME = `NOSaic %s netboot bundle for %s
+================================================================
+
+  vmlinuz      the kernel. Also a valid PE32+ EFI application.
+  initrd.img   the initramfs, WITH THE ROOT FILESYSTEM INSIDE IT.
+  nosaic.ipxe  the iPXE script: what to load, and the command line.
+
+This is a RAM boot. The root filesystem is inside initrd.img, so nothing is
+read from or written to the switch's disk and the vendor OS is untouched.
+
+⚠ NOTHING SURVIVES THE REBOOT. There is no persistent data partition on a RAM
+boot, so a password, a port map or a route set on the running switch is gone
+when it restarts. That is what makes this safe to try and useless to keep.
+
+To serve it
+-----------
+Drop all three files in one directory on a TFTP server the switch can reach,
+then either:
+
+  * catch the loader prompt, run ipxe and then reboot -- that starts the iPXE
+    already in this board's BIOS flash, on the next boot rather than at once;
+    or
+  * point the DHCP filename option at nosaic.ipxe and let the firmware's own
+    "EFI Network" boot entry fetch it.
+
+The loader keeps its own IP configuration in CMOS, independent of anything the
+OS sets:
+
+  loader> show ip
+  loader> show gw
+  loader> set ip <addr> <mask>
+  loader> set gw <addr>
+
+⚠ The loader autoboots about two seconds after its prompt appears. Catching the
+prompt and sending the command have to happen on one connection.
+`
+
+// Netboot writes the bundle an operator serves over TFTP.
+//
+// Separate from Wrap because it answers a different question. Wrap produces the
+// thing that replaces the switch's disk; this produces the thing that proves
+// the image first, on a board where the first of those is not reversible
+// without the vendor image.
+func (u uefi) Netboot(img Image, outDir string, log io.Writer) (string, error) {
+	if img.Kernel == "" || img.Initramfs == "" {
+		return "", fmt.Errorf("a netboot bundle needs a kernel and an initramfs")
+	}
+	// ⚠ REFUSED WITHOUT --ram-boot, AND THIS IS THE GUARD THAT EARNS ITS KEEP.
+	//
+	// A netbooted image has no disk of ours to mount. Built without an
+	// embedded root filesystem, the initramfs comes up, looks for an A/B slot
+	// on a disk that has none, and stops in a rescue shell with "unknown
+	// slot" -- on a switch in a rack, after a transfer that appeared to
+	// succeed. The Makefile carries a comment about exactly this having
+	// happened once, which is reason enough to make it impossible rather than
+	// documented.
+	if !img.RAMBoot {
+		return "", fmt.Errorf("a netboot image must carry its root filesystem in the " +
+			"initramfs, or it will boot to a rescue shell looking for a disk slot " +
+			"that does not exist.\n       Rebuild with --ram-boot")
+	}
+
+	dir := filepath.Join(outDir, "netboot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	fmt.Fprintf(log, "==> building the netboot bundle\n")
+
+	for _, f := range [][2]string{
+		{img.Kernel, "vmlinuz"},
+		{img.Initramfs, "initrd.img"},
+	} {
+		if err := copyFileTo(f[0], filepath.Join(dir, f[1])); err != nil {
+			return "", err
+		}
+	}
+
+	consoleDev, consoleBaud := "ttyS0", 115200
+	if img.Console != "" {
+		// Console arrives as the kernel spells it, "ttyS0,9600".
+		if dev, baud, ok := splitConsole(img.Console); ok {
+			consoleDev, consoleBaud = dev, baud
+		}
+	}
+	script := fmt.Sprintf(ipxeScript, img.Version, img.Board, img.Version, img.Board,
+		consoleDev, consoleBaud, img.KernelParams)
+	if err := os.WriteFile(filepath.Join(dir, "nosaic.ipxe"), []byte(script), 0o644); err != nil {
+		return "", err
+	}
+	readme := fmt.Sprintf(netbootREADME, img.Version, img.Board)
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte(readme), 0o644); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// splitConsole takes "ttyS0,9600" apart. The kernel's spelling is one string
+// and iPXE wants it rebuilt with the 8N1 suffix, so it has to come apart.
+func splitConsole(s string) (dev string, baud int, ok bool) {
+	i := strings.IndexByte(s, ',')
+	if i < 0 {
+		return s, 115200, true
+	}
+	n, err := strconv.Atoi(s[i+1:])
+	if err != nil {
+		return "", 0, false
+	}
+	return s[:i], n, true
+}
+
+func copyFileTo(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
 }

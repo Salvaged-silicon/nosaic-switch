@@ -239,3 +239,66 @@ func assertFAT16At54(t *testing.T, img string) {
 			"agree on FAT16", got)
 	}
 }
+
+// ⚠ A RAM-BOOT IMAGE'S INITRAMFS CARRIES THE WHOLE ROOT FILESYSTEM, AND IT
+//
+//	MUST NOT BE WRITTEN TO THE ESP.
+//
+// Sixty-odd megabytes where the installable initramfs is a few, onto a disk
+// that the uefi backend refuses to let anybody install. The first version of
+// buildESP tried, and failed with mcopy's "Disk full" -- the right failure for
+// the wrong reason, since the fix is not a bigger boot partition.
+func TestESPIsLeftEmptyForARAMBootImage(t *testing.T) {
+	espTools(t)
+	root := t.TempDir()
+	kernel := filepath.Join(root, "vmlinuz")
+	initramfs := filepath.Join(root, "initramfs.cpio.gz")
+	if err := os.WriteFile(kernel, make([]byte, 4<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Larger than the partition, as a real RAM-boot initramfs is.
+	if err := os.WriteFile(initramfs, make([]byte, 40<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	o := Options{Root: root, Board: espBoard(), Version: "0.0.0-test",
+		Log: io.Discard, RAMBoot: true}
+	img, err := buildESP(o, 32<<20, kernel, initramfs)
+	if err != nil {
+		t.Fatalf("a RAM-boot ESP should be built empty, not refused: %v", err)
+	}
+
+	// Formatted, so the partition is a valid ESP and the installer's FAT check
+	// would still pass -- but carrying no boot image.
+	assertFAT16At54(t, img)
+	cmd := exec.Command("mtype", "-i", img, "::/EFI/BOOT/BOOTX64.EFI")
+	cmd.Env = append(os.Environ(), "MTOOLS_SKIP_CHECK=1")
+	if err := cmd.Run(); err == nil {
+		t.Error("a RAM-boot ESP must not carry a kernel: that disk is not installable")
+	}
+}
+
+// And for the installable case, the size is checked before mkfs rather than
+// discovered by mcopy. "Disk full" names no partition, no file and no
+// board.yml field, and the field is boot_mib.
+func TestESPRefusesAKernelTooBigForBootMiB(t *testing.T) {
+	root := t.TempDir()
+	kernel := filepath.Join(root, "vmlinuz")
+	initramfs := filepath.Join(root, "initramfs.cpio.gz")
+	if err := os.WriteFile(kernel, make([]byte, 14<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(initramfs, make([]byte, 64<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := Options{Root: root, Board: espBoard(), Version: "0.0.0-test", Log: io.Discard}
+
+	_, err := buildESP(o, 64<<20, kernel, initramfs)
+	if err == nil {
+		t.Fatal("78 MiB of boot files must not be accepted into a 64 MiB partition")
+	}
+	// The message has to name the field somebody would change.
+	if !strings.Contains(err.Error(), "boot_mib") {
+		t.Errorf("the refusal should name boot_mib, got: %v", err)
+	}
+}

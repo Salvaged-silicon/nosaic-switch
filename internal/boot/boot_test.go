@@ -641,3 +641,92 @@ func TestUEFIInstallerRefusesAPartitionAndAsksBeforeErasing(t *testing.T) {
 		t.Error("the uefi installer has no non-interactive path")
 	}
 }
+
+// ⚠ A RAM-BOOT IMAGE MUST NOT BE INSTALLABLE, AND THE REASON IS THAT IT WORKS.
+//
+// Written to a disk it boots, answers ssh and looks entirely correct. Its root
+// filesystem is in the initramfs and it has no persistent data partition, so
+// the password, port map and routes set on it are gone at the next reboot with
+// nothing reporting it. That is discovered weeks later, by somebody else.
+func TestUEFIRefusesToInstallARAMBootImage(t *testing.T) {
+	b, err := For("uefi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := Image{Board: "b", Version: "1", Arch: "x86_64", Disk: "/dev/null", RAMBoot: true}
+	_, err = b.Wrap(img, t.TempDir(), io.Discard)
+	if err == nil {
+		t.Fatal("a RAM-boot image must not be wrapped into an installer")
+	}
+	if !strings.Contains(err.Error(), "survive a reboot") {
+		t.Errorf("the refusal should say what goes wrong, got: %v", err)
+	}
+}
+
+// And the mirror of it: a netboot bundle without an embedded root filesystem
+// boots to a rescue shell hunting for an A/B slot on a disk it was never given.
+// On a switch in a rack, after a transfer that appeared to succeed.
+func TestUEFINetbootRequiresAnEmbeddedRootFilesystem(t *testing.T) {
+	nb, ok := backends["uefi"].(Netbooter)
+	if !ok {
+		t.Fatal("the uefi backend should be able to netboot; that is the point of it")
+	}
+	dir := t.TempDir()
+	kernel := filepath.Join(dir, "vmlinuz")
+	initramfs := filepath.Join(dir, "initrd")
+	for _, f := range []string{kernel, initramfs} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	img := Image{Board: "b", Version: "1", Kernel: kernel, Initramfs: initramfs}
+
+	if _, err := nb.Netboot(img, dir, io.Discard); err == nil {
+		t.Fatal("a netboot bundle without --ram-boot must be refused")
+	}
+
+	img.RAMBoot = true
+	img.Console = "ttyS0,9600"
+	img.KernelParams = "ignore_loglevel"
+	out, err := nb.Netboot(img, dir, io.Discard)
+	if err != nil {
+		t.Fatalf("Netboot: %v", err)
+	}
+
+	for _, f := range []string{"vmlinuz", "initrd.img", "nosaic.ipxe", "README"} {
+		if _, err := os.Stat(filepath.Join(out, f)); err != nil {
+			t.Errorf("the bundle has no %s: %v", f, err)
+		}
+	}
+
+	script, err := os.ReadFile(filepath.Join(out, "nosaic.ipxe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(script)
+	for _, want := range []string{
+		"#!ipxe",
+		// The console the board actually runs, rebuilt with the 8N1 suffix.
+		// A wrong baud here is a boot nobody can read.
+		"console=ttyS0,9600n8",
+		"ignore_loglevel",
+		// initrd= on the kernel line as well as the initrd command.
+		"kernel vmlinuz initrd=initrd.img",
+		"initrd initrd.img",
+		"boot",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("nosaic.ipxe does not carry %q:\n%s", want, s)
+		}
+	}
+
+	// ⚠ RELATIVE PATHS, NOT A SERVER OR DIRECTORY BAKED IN AT BUILD TIME.
+	//
+	// iPXE resolves a relative URI against the script's own URI, so the bundle
+	// works from wherever it is dropped. An absolute path from the build host
+	// is a bundle that only boots on one server, and the failure is a file-not-
+	// found at the switch rather than at the build.
+	if strings.Contains(s, "kernel tftp://") || strings.Contains(s, "kernel /") {
+		t.Errorf("nosaic.ipxe hardcodes a location; the paths must stay relative:\n%s", s)
+	}
+}
