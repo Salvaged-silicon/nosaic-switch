@@ -12,15 +12,30 @@
  * obvious alternatives, came out of the reverse-engineering work on this board
  * and was established by writing values and having somebody look at the panel:
  *
- *   0x6100 + 0x10*n            SFP+ port n+1,  n = 0..47   (Ethernet1..48)
- *   0x6400 + 0x10*(i*4 + j)    QSFP cage i, lane j         (Ethernet49..54)
+ *   0xA000 + 0x10*(i*4 + j)    QSFP cage i, lane j         (Ethernet49..52)
  *
  *   bit 28  green      bit 27  amber, and amber wins when both are set
  *
- * Note the port numbering here is this board's 54-port map, not the 72-port
- * one: a QSFP cage is a single 40G logical port at 49, 53, 57, 61, 65 or 69,
- * and all four of its lane lamps are driven together because the cage has one
- * physical light.
+ * A QSFP cage is a single 40G logical port at 49, 53, 57 or 61, and all four of
+ * its lane lamps are driven together because the cage has one physical light.
+ *
+ * ⚠ THIS FILE USED TO DRIVE PORTS 1-48 FROM THE SCD, AND THAT WAS THE SIBLING'S
+ * MAP, NOT THIS BOARD'S.
+ *
+ * It wrote 0x6100 + 0x10*n for "SFP+ port n+1" and put the QSFP lamps at
+ * 0x6400, over six cages -- which is the 7050SX2-72Q exactly: 48 SFP+ cages,
+ * six QSFP, 72 ports. This board has 48 ports of 10GBASE-T and four QSFP, and
+ * its board description file creates LED blocks only for status, fan, both
+ * PSUs and sixteen QSFP lanes at 0xA000. There is no SCD lamp for a copper port
+ * here at all, so every write to 0x6100+ addressed nothing and returned
+ * happily, and the copper half of the panel stayed dark.
+ *
+ * The copper LEDs are on the PHYs and are driven from phy.c, which is where the
+ * link-with-a-real-speed test already lives. This file is QSFP only.
+ *
+ * ⚠ And the QSFP base was wrong too -- 0x6400 rather than 0xA000 -- so the
+ * blocks it wrote were not lamps on this board either. Writing unknown SCD
+ * offsets is not free here: blind register access has wedged this box before.
  */
 #include <stdio.h>
 #include <string.h>
@@ -40,14 +55,12 @@
 #define SCD_VENDOR   0x3475
 #define SCD_MAP_LEN  0x80000u
 
-#define SFP_BASE     0x6100u
-#define QSFP_BASE    0x6400u
+#define QSFP_BASE    0xA000u
 #define LED_STRIDE   0x10u
 #define LED_GREEN    0x10000000u
 #define LED_AMBER    0x08000000u
 
-#define SFP_PORTS    48
-#define QSFP_CAGES   6
+#define QSFP_CAGES   4
 #define QSFP_LANES   4
 #define FIRST_QSFP   49        /* logical port of Ethernet49/1 */
 #define QSFP_STRIDE  4         /* logical ports per cage in this port map */
@@ -110,10 +123,7 @@ static int led_regs(int port, uint32_t *out)
 {
 	int cage, i;
 
-	if (port >= 1 && port <= SFP_PORTS) {
-		out[0] = SFP_BASE + LED_STRIDE * (uint32_t)(port - 1);
-		return 1;
-	}
+	/* Copper ports have no SCD lamp on this board; phy.c drives theirs. */
 	if (port < FIRST_QSFP || port >= MAX_LED_PORT)
 		return 0;
 	if ((port - FIRST_QSFP) % QSFP_STRIDE != 0)
