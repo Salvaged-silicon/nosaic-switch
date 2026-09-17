@@ -129,6 +129,23 @@ the box could make.
 
 ## Found by testing, and not yet fixed
 
+- ⚠ **The fan curve has no headroom left, now that the copper PHYs run.** The
+  band is 25-40 °C and the board sits above it: over one boot the hottest sensor
+  read 42 °C on 1975 samples and 43 °C on 884, against 40 °C on 35 and 41 °C on
+  68. The only duties ever produced were 95% and 100%, so the loop is working
+  correctly and is pinned at the top, with nothing left for a real thermal event.
+
+  This board's README predicted the mechanism before anyone measured it: "48
+  copper PHYs dissipate considerably more than 48 SFP+ cages, and this board
+  starts ramping ten degrees sooner". Until this week those PHYs were in reset.
+
+  ⚠ It is NOT established whether the band is wrong or the board is genuinely
+  this warm, and the difference matters. The band was carried from the
+  predecessor rather than measured here, and the predecessor's own thresholds
+  (25, 31.66, 36.66, 40) would peg at 42 °C too -- so "EdgeNOS ran the fans flat
+  out as well" would not settle it. What would: EOS on this board with copper
+  up. Full fans is the safe direction, so this is loud rather than dangerous.
+
 - ⚠ **`tools/mkserdes.sh` tunes exactly one port, and the board has four cages.**
   It takes the FIRST tap profile it finds in the description file (`head -1`) and
   emits it for `PORT="${SERDES_PORT:-61}"`, so Et52 has transmit equalisation and
@@ -221,8 +238,6 @@ A deliberate pass over the claims this board had not been asked to prove.
   with no loss, so the MTU is real and not just configured.
 - **IPv6 forwarding.** Eight OSPFv3 routes learned over `et52` and programmed
   into the chip.
-
-## Found by testing, and not yet fixed
 
 - ⚠ **`nosaic platform tx <n> off` does not gate the laser on this board.** It
   writes the bit, reads it back changed (`0x108 -> 0x140`) and reports success,
