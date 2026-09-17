@@ -38,65 +38,74 @@ nothing to hide it — and it has already happened once: the box power-cycled on
 2026-09-17 for "possible power loss", which is also how it lost
 `feature bash-shell`.
 
-## 1. ~~Netboot it~~ — tried on 2026-09-17, and it cannot work
+## 1. Get the loader's handoff to work — the one thing between here and a boot
 
-⚠ **The embedded iPXE fetches our kernel and will not execute it.** `imgstat`
-lists the image with no type; `imgselect` gives `Exec format error`. That build
-has no bzImage loader and no EFI image loader, and `Boot0001 "EFI Network"` *is*
-that iPXE rather than a generic PXE client, so better netboot firmware cannot be
-delivered over the network either. Full detail in
-[hardware.md](hardware.md#netbooting-is-not-possible-here).
+⚠ **This is the whole remaining blocker, and it is now narrow.**
 
-⚠ **And `loader> ipxe` cost a recovery.** It is a persistent boot-mode change to
-"PXE boot only", in which the firmware skips the loader and there is no prompt
-left to undo it from. The escape is the BIOS **TAB** boot menu, which overrides
-the boot mode. Both are written up in
-[install.md](install.md#-do-not-run-ipxe-at-the-loader-prompt) — read that
-before touching the loader.
-
-## 1b. Boot it from a USB stick — this is the substitute, and it needs hands
-
-⚠ **The next real step, and the only remaining way to run our own code on this
-board without writing its disk.**
-
-`Boot0003 "EFI USB Device"` is already enabled and is `[ 3 ]` in the TAB menu,
-and the firmware executes EFI applications perfectly — it is how it starts its
-own loader and shell. So a FAT stick carrying
+Netbooting through the **loader's own TFTP** works as far as it possibly can
+without executing: the NBI container is accepted, the kernel loads, the
+initramfs loads, our command line reaches the kernel parameters, and the loader
+calls `big_linux_boot`. Then the board resets with no kernel output, not even
+`earlyprintk`.
 
 ```
-\EFI\BOOT\BOOTX64.EFI     <- vmlinuz from `make netboot`
-\EFI\BOOT\initrd.img
-\startup.nsh
+Loading kernel length 14246400
+Kernel loaded successfully
+Loading intird 67579836
+big_linux_boot
+(c) Copyright 2018, Cisco Systems.     <- reset
 ```
 
-boots with no change to any boot variable. Procedure in
+Three causes are eliminated — the exec address (the vendor's image has the same
+one), `setup_sects` (the vendor's kernel has the same situation), and KASLR
+(`nokaslr` fails identically). See
+[hardware.md](hardware.md#three-hypotheses-tested-and-eliminated).
+
+- [ ] **Build a kernel that needs nothing above setup-header offset 0x200.**
+      The loader reads only 512 bytes as the parameter block, and a 6.12 setup
+      header runs to 0x268 — so `init_size`, `xloadflags`, `kernel_alignment`,
+      `relocatable_kernel` and `handover_offset` are all in bytes it never
+      reads. `CONFIG_RELOCATABLE=n` with `CONFIG_PHYSICAL_START=0x100000` links
+      the kernel for exactly where the loader puts it and removes self-
+      relocation from the question. Our protocol is 2.15; the vendor's is 2.11.
+- [ ] **Which needs per-board kernel fragments first.**
+      `recipes/linux/recipe.yml` takes `config/common.fragment` and
+      `config/${ARCH}.fragment` and nothing else, so turning off relocation
+      here turns it off for both Arista boards. **This is a core change and a
+      design decision, not a board tweak** — and it is the prerequisite for the
+      experiment above.
+- [ ] If that does not do it, instrument the other side: the loader's
+      `big_linux_boot` is GRUB's, and `cisco-loader-4.0.0i.efi` is extracted
+      and disassemblable. What it writes into `boot_params` before jumping is
+      readable.
+
+## 1b. A USB stick — the other way to reach the same question
+
+`Boot0003 "EFI USB Device"` is enabled and is `[ 3 ]` in the TAB menu, and the
+firmware executes EFI applications perfectly — it is how it starts its own
+loader and shell. So a FAT stick with `\EFI\BOOT\BOOTX64.EFI`,
+`\EFI\BOOT\initrd.img` and `\startup.nsh` boots with no boot-variable
+change at all, and **the EFI stub path does not involve the loader's
+`boot_params` at all** — which makes it an independent test of whether our
+kernel runs on this board.
+
+It needs somebody at the rack. Procedure in
 [install.md](install.md#test-it-from-a-usb-stick-instead).
 
-What it settles, in order of what it would cost to learn later:
+What either path settles:
 
-- [ ] **Does the firmware launch our kernel at all?** Still the single biggest
-      open question about this board, and still unanswered — the netboot
-      attempt never got as far as executing anything, so it did not test this.
-      The NBI attempt died between `CardIndex` and the kernel printing
-      anything, and which side of that line the problem is on is not known.
-- [ ] **The fans.** The only place the unmanaged duty can be observed, because
-      it is the only time our code runs and NX-OS does not.
-- [ ] **The platform i2c bus.** `tools/mki2cmap.sh --yaml`. Cannot be done from
-      NX-OS: the box *has* `i2cdetect` and `i2cget` but no `/dev/i2c-*` nodes,
-      and `klm_cctrli` owns the bus. **This is what a platform HAL needs and
-      there is no other way to get it.**
-- [ ] **The disk, read-only.** `cat /proc/partitions` should show `sda` at
-      1990656 blocks with the vendor's `sda1..sda6` intact. Proves
-      `usb-storage` binds the eUSB flash.
-- [ ] **The management port**, by MAC rather than by name — see item 2.
-- [ ] Console at 9600 with `ignore_loglevel`, and how long the boot takes.
-
-⚠ One sizing note. A USB boot has no size limit worth worrying about, which
-matters because the RAM-boot initramfs is **64 MiB** — it carries the whole
-root filesystem. The vendor's empty `sda1` is 24 MiB, so the tempting
-"reformat the unused partition as an ESP and leave NX-OS alone" trick does
-**not** fit a RAM-boot image, and the installable image it would fit expects a
-disk root that does not exist yet.
+- [ ] **Does our kernel execute on this board at all?** Still unanswered. The
+      loader path dies at the handoff and the USB path has not been tried.
+- [ ] **The fans** — the only place the unmanaged duty can be observed.
+- [ ] **The platform i2c bus** — `tools/mki2cmap.sh --yaml`. ⚠ Partly answered
+      already, for free: the loader's own `debug 3` output shows it selecting
+      **two** muxes, `0x73` and `0x70`, and reading the board EEPROM at
+      **`0x52`**, which is where `CardIndex = 11091` comes from. Three
+      addresses the HAL needs, and `debug 3` is a way to watch platform i2c
+      with no OS in the way.
+- [ ] **The disk, read-only** — `cat /proc/partitions` should show the vendor's
+      `sda1..sda6` intact.
+- [ ] **The management port**, by MAC — see item 2.
 
 ## 2. ~~Which of the four PCH GbE ports is `mgmt0`~~ — answered
 

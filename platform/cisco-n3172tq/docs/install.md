@@ -118,9 +118,23 @@ here, because since 7.0(3)I2(1) the N3000 family uses a single image binary.
 command line, and NX-OS's own init interprets the flag later. Which is useful
 to know: **any** kernel parameter can be passed that way.
 
-⚠ **The loader autoboots about two seconds after the prompt appears.** If you
-are scripting this, catching the prompt and sending the command have to happen
-on one connection. And if your console server replays a backlog on connect, it
+⚠ **The loader autoboots about two seconds after the prompt appears.** That is
+too short for a person, so it is scripted: `tools/nxcon.py` connects once,
+spams a key while watching for a prompt, and sends commands when it matches.
+
+```sh
+tools/nxcon.py expect --from-now --want 'loader>' --spam 0c \
+    --send 'debug 3' --send 'boot tftp://10.22.1.5/nosaic.nbi'
+```
+
+`--spam 0c` is Ctrl-L for the loader, `02` is Ctrl-B for iPXE, `09` is TAB for
+the BIOS boot menu. `--from-now` is not optional: the terminal server replays a
+backlog on connect, and a stale `loader>` in it matches instantly and fires the
+command into a running NX-OS.
+
+⚠ **One telnet session per console port.** A lingering one silently starves the
+next — a second connection simply receives nothing, which reads as a dead
+console. And if your console server replays a backlog on connect, it
 will hand you a stale `loader>` from a previous boot that matches instantly and
 fires your command into a running NX-OS. Match only a prompt that arrives
 *after* this boot's BIOS banner.
@@ -169,63 +183,61 @@ That menu is the most useful thing on this board's firmware and it is worth
 knowing before you need it: it reaches any of the four boot options regardless
 of what the loader's boot mode says.
 
-## Netbooting does not work on this board
+## Netbooting: use the loader's TFTP, not iPXE
 
-⚠ **Measured on the hardware, not assumed.** It is documented here because the
-idea is the obvious one, the infrastructure for it exists, and every part of it
-works except the last.
+⚠ **Two different network paths, and only one of them can execute our kernel.**
+Tested on the hardware 2026-09-17.
 
-`make netboot BOARD=cisco-n3172tq` builds a correct bundle, and the embedded
-iPXE fetches all of it:
+### The loader's own TFTP — this is the one
 
-```
-iPXE> chain tftp://10.22.1.5/nosaic.ipxe
-tftp://10.22.1.5/nosaic.ipxe... ok
-NOSaic 0.1.0 netboot for cisco-n3172tq
-/vmlinuz... ok
-Could not select: Exec format error (http://ipxe.org/2e008081)
-Could not boot: Exec format error (http://ipxe.org/2e008081)
+```sh
+make netboot BOARD=cisco-n3172tq      # vmlinuz + initrd.img
+python3 ~/projects/cisco-re/tools/nbi_build.py \
+        out/images/cisco-n3172tq/netboot/vmlinuz nosaic.nbi \
+        out/images/cisco-n3172tq/netboot/initrd.img --rdaddr 0x4000000
+sudo cp nosaic.nbi /srv/tftp/
 ```
 
-The kernel is in memory and nothing will execute it. `imgstat` lists it **with
-no type at all** and `imgselect vmlinuz` fails identically, so the format probe
-matched nothing:
+The loader boots only an `mknbi-linux` NBI container, and that builder makes
+one in the shape it accepts. Then, at the loader prompt:
 
 ```
-Cisco iPXE
-iPXE 1.0.0+ (ffd9) -- Open Source Network Boot Firmware
-Features: HTTP DNS TFTP NBI Menu
-
-iPXE> imgstat
-vmlinuz : 14246912 bytes
-iPXE> imgselect vmlinuz
-Could not select: Exec format error
+loader> debug 3
+loader> cmdline console=ttyS0,9600n8 earlyprintk=serial,ttyS0,9600
+loader> boot tftp://10.22.1.5/nosaic.nbi
 ```
 
-That build has **no bzImage loader and no EFI image loader**. NBI is in its
-feature list, and NBI is a legacy real-mode format an iPXE running as a UEFI
-application cannot execute either.
+⚠ **Set `debug 3` first.** Without it the loader prints `CardIndex` and, on a
+failure, resets with nothing else — which reads as the transfer having failed.
+With it you get the image classification, every segment header, both load
+confirmations and the handoff.
 
-**And there is no second network path.** The firmware's `Boot0001 "EFI Network"`
-*is* this iPXE, launched out of the firmware volume —
+**How far this gets today:** kernel loaded, initrd loaded, our command line
+accepted, `big_linux_boot` — and then the board resets with no kernel output at
+all. That is a real and narrow remaining bug, not a transport problem, and it
+is analysed in
+[hardware.md](hardware.md#netbooting-the-loader-does-it-ipxe-cannot) with three
+eliminated causes (the exec address, `setup_sects`, and KASLR) and the
+prerequisite for the next experiment.
+
+The loader keeps its own IP configuration in CMOS, independent of anything the
+OS sets, and it survived everything done here:
 
 ```
-Booting from EFI Network [MemoryMapped(...)/FvFile(ACC9491E-C102-B14D-AAA2-4186D2BE6629)]
+loader> show ip
+loader> show gw
+loader> set ip 10.10.39.2 255.255.255.0
+loader> set gw 10.10.39.1
 ```
 
-— not a generic PXE client that could be handed a different boot program. So
-there is no way to get a modern iPXE, or anything else of our choosing, onto
-the box over the network.
+### The embedded iPXE — cannot execute anything of ours
 
-What did work, and is worth keeping:
-
-| | |
-|---|---|
-| TFTP from `10.22.1.5` | the whole bundle, including a 64 MiB initrd, and the relative URIs in `nosaic.ipxe` resolved correctly |
-| `mgmt0` identified | `net0: b4:de:31:3f:a5:c0 using dh8900cc on PCI01:00.1` — iPXE names the driver `dh8900cc` |
-| the second port | `net1: b4:de:31:3f:a5:c1 ... on PCI01:00.2 [Link:down]` — a real port that goes nowhere, exactly as predicted |
-| only two NICs | so the two `8086:0436` functions really are not network devices |
-| no DHCP | `Configuring (net0 ...) Error 0x040ee186`, as expected on this subnet |
+`imgstat` lists the fetched kernel with **no type** and `imgselect` gives
+`Exec format error`: that build has no bzImage loader and no EFI image loader.
+`Boot0001 "EFI Network"` *is* that iPXE out of the firmware volume rather than
+a PXE client that could be handed better firmware, so it cannot be fixed from
+our side. Detail in
+[hardware.md](hardware.md#the-embedded-ipxe--a-dead-end-and-not-the-same-thing).
 
 ## Test it from a USB stick instead
 

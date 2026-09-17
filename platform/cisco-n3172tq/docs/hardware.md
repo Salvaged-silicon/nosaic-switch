@@ -229,70 +229,125 @@ This is an unusual arrangement and it is temporary. The tidy ending is a real
 with `efibootmgr` from the running switch — which is why `CONFIG_EFIVAR_FS` is
 in the x86_64 kernel fragment. [todo.md](todo.md) carries it.
 
-## Netbooting is not possible here
+## Netbooting: the loader does it, iPXE cannot
 
-⚠ **Measured on the hardware on 2026-09-17, not assumed.** It is written up
-because netbooting is the obvious way to try an image on a board where
-installing is destructive, every piece of the infrastructure for it exists, and
-the last step fails.
+Two independent network paths, tested on the hardware on 2026-09-17. One is
+alive and one is a dead end, and it is worth being precise about which.
 
-**The vendor loader's TFTP works and boots only NBI.** `boot tftp://...` moves
-data fast — 5.3 MB across a subnet boundary at 3.7 MB/s — and refuses anything
-that is not an `mknbi-linux` container. Our kernel wrapped in one resets the
-board after `CardIndex`. Covered above.
+### The vendor loader's own TFTP — alive, and it loads our kernel
 
-**The embedded iPXE fetches everything and executes nothing.** It is reached
-with `loader> ipxe` (⚠ see the warning below) or as boot option 4:
+This is the path. `boot tftp://<server>/<file>` moves data fast (5.3 MB across
+a subnet boundary at 3.7 MB/s) and accepts only an `mknbi-linux` NBI container.
+**Wrapping our image in one now works**, and the loader gets further than
+anything before it:
 
 ```
-Cisco iPXE
-iPXE 1.0.0+ (ffd9) -- Open Source Network Boot Firmware
+loader> debug 3
+loader> cmdline console=ttyS0,9600n8 earlyprintk=serial,ttyS0,9600
+loader> boot tftp://10.22.1.5/nosaic.nbi
+
+NBI header
+magic: 1b031336, len: 54, location: 94400000, exec addr: 92800000
+segment header  vendor: 0x11  loadaddr: 0x94000    image len: 512
+    Reading data for kernel param. Len 512
+segment header  vendor: 0x14  loadaddr: 0x100000   image len: 14246400
+    Loading kernel length 14246400
+    Kernel loaded successfully
+segment header  vendor: 0x15  loadaddr: 0x4000000  image len: 67579836
+    Loading intird 67579836
+big_linux_boot
+Image length: 81827260 bytes
+(c) Copyright 2018, Cisco Systems.          <- the board resets here
+```
+
+So: **the container is accepted, the kernel loads, the initrd loads, and our
+command line reaches the kernel parameters.** The board then resets at the
+handoff, with no kernel output at all — not even `earlyprintk`, which would
+speak from the decompressor if it ran.
+
+**The container recipe that gets this far**, built by
+`cisco-re/tools/nbi_build.py` and matching the vendor's own image
+byte-for-byte in shape:
+
+| segment | vtag | load | contents |
+|---|---|---|---|
+| 0 | **17** | `0x94000` | `bzImage[0:512]` — the loader reads this as the kernel parameter block |
+| 1 | **20** | `0x100000` | `bzImage[512:]`, memory length = the setup header's `init_size` |
+| 2 | **21** | `0x4000000` | the initramfs |
+
+with header `exec addr 0x92800000`, `location 0x94400000` and vendor string
+`mknbi-linux-1.2-6`. Two constraints from earlier work still hold: **at most
+four segment descriptors**, and a load-address floor between `0x82800` and
+`0x92800`.
+
+### Three hypotheses tested and eliminated
+
+Worth recording, because each looked like the answer:
+
+**The exec address is not it.** `0x92800` is mknbi's `first32pm` stub address
+and nothing in our image loads there — but the **vendor's own image has the
+identical exec address** (`0x92800000`) and boots, so the loader does not jump
+there.
+
+**`setup_sects` is not it.** Our kernel has `setup_sects = 39`, so
+`bzImage[512:]` begins with setup code rather than the kernel, and the loader
+puts that at `0x100000`. That looked decisive until the vendor's kernel was
+read: **`setup_sects = 30`**, the same situation, and it boots. The loader
+handles the layout.
+
+**KASLR is not it.** Our kernel is `CONFIG_RANDOMIZE_BASE=y` and the loader
+carries a `Too many e820 memory map entries` string, so a bad memory map
+leading KASLR to relocate onto something was a good theory. Booting with
+`nokaslr` fails identically — same `big_linux_boot`, same reset.
+
+### What is left
+
+The handoff itself. The most likely remaining cause is that the loader's
+`boot_params` is built for a 3.4-era kernel: it reads **only 512 bytes** as the
+parameter block (`Reading data for kernel param. Len 512`), and the modern
+setup header extends to `0x268` — so `init_size`, `xloadflags`,
+`kernel_alignment`, `relocatable_kernel` and `handover_offset` all live in
+bytes the loader never reads. Our kernel is boot protocol **2.15**; the
+vendor's is **2.11**.
+
+The cheapest experiment against that is a kernel that needs none of it:
+`CONFIG_RELOCATABLE=n` with `CONFIG_PHYSICAL_START=0x100000`, so the kernel is
+linked for exactly where the loader puts it and does no self-relocation.
+
+⚠ **That is not a board-local change today.** `recipes/linux/recipe.yml` takes
+`config/common.fragment` and `config/${ARCH}.fragment` and nothing else, so
+there is no per-board kernel fragment — turning off relocation for this board
+turns it off for both Arista boards too. Adding per-board fragments is the
+prerequisite, and it is in [todo.md](todo.md).
+
+### The embedded iPXE — a dead end, and not the same thing
+
+Reached with `loader> ipxe` (⚠ see below) or boot option 4. It fetches
+perfectly and executes nothing:
+
+```
+Cisco iPXE / iPXE 1.0.0+ (ffd9)
 Features: HTTP DNS TFTP NBI Menu
-```
 
-Given a static address, it fetched the boot script, resolved its relative URIs
-and pulled the kernel — and then:
-
-```
 iPXE> imgstat
 vmlinuz : 14246912 bytes
 iPXE> imgselect vmlinuz
 Could not select: Exec format error (http://ipxe.org/2e008081)
 ```
 
-`imgstat` lists the image with **no type at all**, so the format probe matched
-nothing: that build has no bzImage loader and no EFI image loader. NBI is in
-the feature list and is a legacy real-mode format, which an iPXE running as a
-UEFI application cannot execute either.
-
-**And there is no second network path.** `Boot0001 "EFI Network"` *is* this
-iPXE, launched from the firmware volume:
-
-```
-Booting from EFI Network [MemoryMapped(...)/FvFile(ACC9491E-C102-B14D-AAA2-4186D2BE6629)]
-```
-
-That GUID is Cisco's own `NetBoot` DXE module. It is not a generic UEFI PXE
-client that could be handed `ipxe.efi` or any other boot program of ours, so
-there is no way to get better netboot firmware onto the box over the network.
-
-What the exercise did settle, all of it useful:
-
-| | |
-|---|---|
-| `mgmt0` | `net0: b4:de:31:3f:a5:c0 using dh8900cc on PCI01:00.1` — iPXE's own name for the driver is `dh8900cc` |
-| the second port | `net1: b4:de:31:3f:a5:c1 ... on PCI01:00.2 [Link:down]` — a real `8086:0438` that goes nowhere |
-| the null devices | iPXE enumerates **two** NICs, so the two `8086:0436` functions really are not network devices |
-| DHCP | none on this subnet: `Configuring (net0 ...) Error 0x040ee186` |
-| TFTP | fine for a 64 MiB file, at 512- and 1432-byte blocks |
+`imgstat` lists the image with **no type**, so the format probe matched
+nothing: no bzImage loader and no EFI image loader. NBI is in the feature list
+and is a legacy real-mode format an iPXE running as a UEFI application cannot
+execute either. And `Boot0001 "EFI Network"` *is* this iPXE out of the firmware
+volume — Cisco's `NetBoot` DXE module — not a generic PXE client that could be
+handed better firmware. So this path cannot be fixed from our side.
 
 ### ⚠ `loader> ipxe` is a persistent boot-mode change, and it has no undo
 
-Its help text says "On Reboot boot ipxe". What it actually does is set the
-boot mode to **PXE boot only** — and in that mode the firmware **skips the
-loader entirely**, so there is no `loader>` prompt left to change it back with.
-The box boots to a failing iPXE loop indefinitely. Proven by the loader when
-it was put right:
+Its help text says "On Reboot boot ipxe". What it does is set the boot mode to
+**PXE boot only** — and in that mode the firmware **skips the loader entirely**,
+so there is no `loader>` prompt left to change it back with. The box boots a
+failing iPXE loop indefinitely. Proven by the loader on the way back out:
 
 ```
 loader> bootmode -g
@@ -302,24 +357,48 @@ Set Boot Mode to: GRUB boot only
 
 ### The BIOS boot menu is the escape hatch, and it overrides the boot mode
 
-The single most useful thing in this board's firmware. During POST the BIOS
-prints `Press TAB in 5 seconds to list all boot options`, and TAB gives:
+The most useful thing in this firmware. During POST the BIOS prints `Press TAB
+in 5 seconds to list all boot options`, and TAB gives:
 
 ```
 Boot Options :
- -------------------------
   [ 1 ] - EFI Payload          <- the Cisco loader
   [ 2 ] - EFI Internal Shell
   [ 3 ] - EFI USB Device
   [ 4 ] - EFI Network
- -------------------------
 ```
 
-It reaches any of the four regardless of what the boot mode says, which is what
-recovered the box above: TAB → `1` → Ctrl-L → `bootmode -g`. Worth knowing
-before it is needed, and it is also the route to a USB boot without changing
-any boot variable at all.
+It reaches any of the four regardless of the boot mode, which is what recovered
+the box: TAB → `1` → Ctrl-L → `bootmode -g`.
 
+### A platform finding that fell out of `debug 3`
+
+The loader probes the platform bus before classifying the image, and it prints
+every transaction — which is free information about the i2c topology that the
+running OS hides:
+
+```
+Using PCI Interrupt for SMBus.   SMBus BAR = efa0
+selecting mux addr 1
+smbus access: addr 0x73 ... WRITE cmd 1 data 1
+smbus access: addr 0x70 ... WRITE cmd 1 data 1
+smbus access: addr 0x52 ... READ  -> 0x2b, 0x53 ...
+CardIndex = 11091
+```
+
+⚠ **There are two muxes, not one.** `0x73` as well as the `0x70` the running
+system's logs show, both written with channel select `1`. And the board
+identity EEPROM answers at **`0x52`** — which is where `CardIndex = 11091`
+comes from. That is three addresses the platform HAL needs and
+[`tools/mki2cmap.sh`](../tools/mki2cmap.sh) should expect to find. It also
+means `debug 3` at the loader is a way to watch platform i2c with no OS in the
+way at all.
+
+The loader also names the image type it decided on — `ImageType IMG_INSIEME`
+for ours — and stages the download at `memptr=0x20000000` with
+`memptr_initrd=0x5000000` before parsing it.
+
+## Port map
 ## Port map
 
 **The translation is defined in exactly one place: `config/portmap.conf`, and

@@ -33,7 +33,7 @@ than guessed, and a boot path that steps around the thing that failed.
 | Disk | **1944 MiB internal eUSB flash**, behind EHCI — not SATA |
 | Front panel | **48 × 10GBASE-T + 6 × 40G QSFP+** — 54 ports, 72 ASIC logical ports |
 | Management | `mgmt0` at PCI `01:00.1` (`8086:0438`, `igb`), MAC `b4:de:31:3f:a5:c0` |
-| Boot | **UEFI firmware directly** → EDK2 shell → our `BOOTX64.EFI`, from disk or a USB stick. No vendor bootloader in the path, and ⚠ no netboot: see below |
+| Boot | **UEFI firmware directly** → EDK2 shell → our `BOOTX64.EFI`, from disk or USB; or the vendor loader's TFTP + NBI, which loads but does not yet hand off |
 | Console | `ttyS0` @ **9600** |
 | Board codename | **`quickzinc2`** (`qz2`) — Cisco's, and it is how the firmware refers to this board throughout |
 | Vendor OS | NX-OS 7.0(3)I7(9) |
@@ -47,13 +47,20 @@ than guessed, and a boot path that steps around the thing that failed.
 - **[Todo](docs/todo.md)** — the ordered path from here, and it starts with the
   fans
 
-> **Start with a USB boot, not an install — and not a netboot either.**
-> Netbooting was tried on the hardware and **cannot work**: the iPXE in this
-> board's firmware fetches our kernel and has no loader that will execute it,
-> and the firmware's "EFI Network" option *is* that iPXE rather than a generic
-> PXE client. A FAT stick with the same three files boots fine, touches no disk
-> and leaves NX-OS intact. See
-> [install.md](docs/install.md#test-it-from-a-usb-stick-instead).
+> **Start over the network, not with an install.** The vendor loader's own TFTP
+> boots an `mknbi-linux` NBI container, and ours now gets all the way through:
+> kernel loaded, initramfs loaded, command line accepted, `big_linux_boot` —
+> and then the board resets at the handoff with no kernel output. That is the
+> one remaining blocker and it is narrow; three causes are already eliminated.
+> See [install.md](docs/install.md#netbooting-use-the-loaders-tftp-not-ipxe).
+>
+> ⚠ **Not the embedded iPXE**, which is a different path and a dead end: it
+> fetches our kernel and has no loader that will execute it.
+>
+> ⚠ **And do not run `ipxe` at the loader prompt.** It is a persistent
+> boot-mode change with no undo from the loader; the escape is the BIOS TAB
+> boot menu. That cost a recovery on 2026-09-17 and is written up in
+> [install.md](docs/install.md#-do-not-run-ipxe-at-the-loader-prompt).
 >
 > ⚠ **And do not run `ipxe` at the loader prompt.** It is a persistent
 > boot-mode change with no undo from the loader; the escape is the BIOS TAB
@@ -137,26 +144,47 @@ So `boot: uefi`. `CONFIG_EFI_STUB` makes a bzImage a valid PE32+ application,
 the firmware launches it from an EFI system partition as
 `\EFI\BOOT\BOOTX64.EFI`, and the NBI reset stays somebody else's puzzle.
 
-## And it is tried before the disk is spent — from a stick, not the network
+## And it is tried before the disk is spent
 
-The plan was iPXE, and the hardware said no. Worth recording because every part
-of it works except the one that matters: the embedded iPXE fetched the boot
-script, resolved its relative URIs, pulled the kernel — and then
-`Could not select: Exec format error`. `imgstat` lists the image with **no
-type**, so that build has neither a bzImage loader nor an EFI image loader. And
-`Boot0001 "EFI Network"` is that same iPXE out of the firmware volume, not a
-PXE client that could be given better firmware. There is no network path.
+The vendor loader's TFTP is the way in, and the NBI container it demands is a
+packaging step rather than a format to reverse — `mknbi` is a real,
+still-archived tool, and `cisco-re/tools/nbi_build.py` emits the exact
+three-segment shape the loader accepts:
 
-What does work is a USB stick, because the firmware executes EFI applications
-perfectly well — it is how it starts its own loader and its own shell:
+| segment | vtag | load | contents |
+|---|---|---|---|
+| 0 | 17 | `0x94000` | `bzImage[0:512]` — read as the kernel parameter block |
+| 1 | 20 | `0x100000` | `bzImage[512:]` |
+| 2 | 21 | `0x4000000` | the initramfs |
 
-```sh
-make netboot BOARD=cisco-n3172tq     # vmlinuz, initrd.img, nosaic.ipxe
+On the hardware that gets to:
+
+```
+Kernel loaded successfully
+Loading intird 67579836
+big_linux_boot
+(c) Copyright 2018, Cisco Systems.     <- reset
 ```
 
-Put `vmlinuz` on a FAT stick as `\EFI\BOOT\BOOTX64.EFI` with `initrd.img`
-beside it and `startup.nsh` at the root, then press **TAB** during POST and
-choose `[ 3 ] - EFI USB Device`. No boot variable changes, no DHCP, no server.
+Kernel in, initramfs in, our command line through, and a reset at the handoff
+with no kernel output — not even `earlyprintk`. Three theories are already
+dead: the exec address (the vendor's image has the same one), `setup_sects`
+(the vendor's kernel has the same layout), and KASLR (`nokaslr` fails
+identically). What is left is that the loader builds a 3.4-era `boot_params`:
+it reads **only 512 bytes** as the parameter block, and a 6.12 setup header
+runs to `0x268`.
+
+⚠ **The embedded iPXE is a separate path and a dead end.** It fetched the boot
+script, resolved its relative URIs and pulled the kernel — then
+`Could not select: Exec format error`, with `imgstat` showing the image with
+**no type**. No bzImage loader, no EFI image loader, and `Boot0001 "EFI
+Network"` is that same iPXE out of the firmware volume rather than a PXE client
+that could be given better firmware.
+
+A FAT USB stick is the independent second route, and it bypasses the loader's
+`boot_params` entirely: `vmlinuz` as `\EFI\BOOT\BOOTX64.EFI`, `initrd.img`
+beside it, `startup.nsh` at the root, then **TAB** during POST → `[ 3 ] - EFI
+USB Device`.
 
 A netboot here is a **RAM boot**: the root filesystem travels inside the
 initramfs, because there is no partition of ours on the disk to mount. Two
