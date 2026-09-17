@@ -343,10 +343,56 @@ copies. Our real-mode setup is 20,480 bytes against the vendor's 15,872, and
 the loader's own real-mode window is small: the NBI header lives at `0x94400`,
 only 1 KiB above where the boot sector is placed at `0x94000`.
 
-**The next step is disassembly, not another boot.** `big_linux_boot` is in the
-loader's symbol table, `cisco-loader-4.0.0i.efi` is extracted, and what it
-writes into `boot_params` and where it far-jumps is readable. Black-box
-bisection has taken this as far as it goes.
+### The handoff, read out of the loader's own code
+
+Done, and it is worth summarising here because it settles what the interface
+actually is. Full write-up in the RE repository's
+`notes/loader_linux_handoff.md`.
+
+`cisco-loader-4.0.0i.efi`'s `mods` section is a GRUB module blob (`mimg`
+magic) holding **35 relocatable ELF objects, and they are not stripped** — so
+the Linux loader comes back with real symbol names. The path:
+
+```
+NBI loader           dispatches on segment vtag: 18, 20, 21
+  vtag 20  ->  grub_load_linux(file, 0, cmd_line, seg->imagelength, 0, 1)
+  ↓
+big_linux_boot
+  ↓
+switch_image         176 bytes memcpy'd to PHYSICAL 0x700, jumped to
+  ↓
+32-bit entry at boot_params->hdr.code32_start, %esi = boot_params
+```
+
+So it is the ordinary **32-bit Linux boot protocol**, which is what
+`loader/i386/linux.c` plus `grub_relocator16_*` implies.
+
+**Every gate our kernel has to pass is now known with its constant** — boot
+sector `0xaa55`, `HdrS`, `cmpw $0x202` for version ≥ 2.02, and a `zImage is
+not supported` rejection. **There is no upper version bound and no size limit
+on the kernel.** Our 2.15 passes all of them, and the failing boot prints
+`Kernel loaded successfully`, so allocation accepted our 14.2 MiB kernel and
+its 46.6 MiB `init_size`.
+
+What `big_linux_boot` writes into `boot_params`: the e820 table at `0x2d0`
+from the UEFI memory map, the entry count as a single byte at `0x1e8`, and the
+EFI info block at `0x1c0`–`0x1d4`. ⚠ It also **injects two hardcoded reserved
+e820 regions** that come from the loader rather than the firmware:
+`0xbf800000` + 8 MiB and `0x13ff00000` + 1 MiB, both type 2.
+
+⚠ **And it has a real defect**: `efi_systab` is filled with a **32-bit** load
+of the EFI system table pointer and `efi_systab_hi` is never written, while
+`efi_loader_signature` is set to `EL64` — the kernel is told this is a 64-bit
+EFI boot and handed half a pointer. Survivable on this board because the
+system table sits below 4 GiB, and the vendor's own kernel takes the identical
+branch, so it is not our blocker. Worth knowing before trusting that field.
+
+**The unread remainder is small and specific.** `grub_load_linux` can print
+`[Linux-EFI, setup=0x%x, size=0x%x]` and `dest at %x` — a direct readout of
+where the kernel was placed — but those are gated on a `debug` symbol in a
+different module from the one `debug 3` enables, which is why our captures
+show mod06's lines and none of mod05's. Getting that module verbose, and
+disassembling the 176-byte `switch_image` trampoline, are the two things left.
 
 **And the USB path is now the better test of the kernel itself**, because the
 EFI stub does not involve the loader's `boot_params` at all — see
