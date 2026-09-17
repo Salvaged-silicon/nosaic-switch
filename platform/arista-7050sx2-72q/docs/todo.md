@@ -448,12 +448,18 @@ one fix lands on both. The AS5610's list is
 
 ### Forwarding
 
-- **ACLs and CoPP.** *(shared)* It went the other way round: the ACL model was
-  built and proven on the AS5610 on 2026-09-16 (its field processor worked all
-  along, see its todo), and this board is the one that has to prove it
-  portable. `nosd-td2p` links `datapath/common/acl.c`; nobody has run
-  [the test](../../../docs/acl.md#what-was-measured) here yet. CoPP is then a
-  meter per rule and a CPU queue per class on top of it.
+- **~~ACLs~~ proven here, CoPP still to do.** *(shared)* The ACL model was
+  built and proven on the AS5610 on 2026-09-16, and this board proved it
+  portable on 2026-09-17: `nosd-td2p` links `datapath/common/acl.c`, and on
+  the running switch a `deny in et52 proto icmp src <neighbour>` dropped 5 of
+  5 pings and counted 5 in the chip, a permit above it restored them, a rule
+  scoped to et53 left et52 traffic untouched (the port is in the key as
+  SrcPort, so the AS5610's InPorts-pipeline quirk does not arise), and all
+  three OSPF adjacencies stayed Full throughout. The Trident2+ field groups
+  are far larger than the Trident+: `show caps` reports 10240 IPv4 and 4096
+  IPv6 rules. IPv6 is not yet traffic-tested here (no v6 neighbour on an et
+  port). CoPP is the next thing on top: a meter per rule and a CPU queue per
+  class.
 - **VLANs as a user-facing feature.** *(shared)* No way to say "these ports are
   VLAN 100, tagged on the uplink". The datapath has the calls.
 - **Link aggregation.** *(shared)* No LACP, no static bonds, on a box with six
