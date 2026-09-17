@@ -1,0 +1,230 @@
+# Cisco Nexus 3172TQ (N3K-C3172TQ-10GT) -- Broadcom BCM56854 (Trident II),
+# 48 x 10GBASE-T + 6 x 40G QSFP+, board codename `quickzinc2`.
+#
+# The first NOSaic board that is not a whitebox. There is no ONIE here, no
+# Aboot and no ODM heritage to lean on: the box shipped with NX-OS, and
+# everything in this file was recovered by reverse engineering the running
+# switch and its firmware. The repository holding that work is linked from
+# README.md.
+#
+# It is also the first board whose firmware is its own bootloader. See
+# `boot:` below, and docs/hardware.md for the boot chain.
+#
+# ⚠ SILICON SIBLING, NOT TWIN. The Arista 7050TX-64 is BCM56855 and this is
+# BCM56854 -- two bins of one part, same A2 stepping, same BCM56850_A0 driver,
+# and 48 ports of 10GBASE-T behind BCM84848 PHYs on both. That is why this
+# port exists at all: nearly everything datapath/td2 learned on the Arista
+# applies here. What differs is the 40G side (retimed through BCM84328 rather
+# than direct SerDes), the platform controller (Cisco CCTRL rather than an
+# Arista SCD) and the boot chain (UEFI rather than Aboot).
+
+id: cisco-n3172tq
+vendor: cisco
+model: n3172tq
+
+arch: x86_64
+asic: td2
+
+# ── The firmware is the bootloader, and the vendor loader is stepped around ──
+#
+# This box has a vendor loader -- Cisco's `loader>` is a customised GNU GRUB 2
+# built as a PE32+ EFI application and stored inside the BIOS flash, not on
+# the disk. It is deliberately not in NOSaic's path, for one measured reason:
+# it boots only an `mknbi-linux` NBI container, and an image built in its exact
+# four-descriptor shape transfers, passes the load-address check, prints
+# `CardIndex = 11091` and then resets the board. Nobody has established why.
+#
+# Underneath it the firmware will launch a kernel directly, and there is
+# nothing in the way: no Platform Key, no `db`/`dbx`, no TCG protocol, no
+# SecureBootDxe, and SecurityStubDxe -- EDK2's no-op policy -- is what is
+# shipped. UEFI Secure Boot is not switched off on this board, the machinery
+# was never built into the firmware, so it cannot be enabled. Checked four
+# independent ways rather than assumed; see docs/hardware.md.
+#
+# So: `boot: uefi`. The kernel is the boot image, CONFIG_EFI_STUB makes it a
+# valid PE32+ application, and it lives on an EFI system partition as
+# \EFI\BOOT\BOOTX64.EFI. Nothing of ours needs the NBI format, and the NBI
+# reset is somebody else's problem to finish.
+boot: uefi
+
+# The kernel command line, rendered into startup.nsh on the EFI system
+# partition. The console is stated here as well as in `console:` below because
+# these two are different consumers: this string is what the kernel is told,
+# and `console:` is what getty is handed afterwards.
+#
+# `ignore_loglevel` is not decoration. The one thing this board has never done
+# is boot our code, and the previous attempt died between the loader printing
+# CardIndex and the kernel printing anything at all -- so on the first boot the
+# only question that matters is whether the kernel started, and a quiet kernel
+# is indistinguishable from a kernel that never ran.
+kernel_params: "ignore_loglevel"
+
+# ── Console ──────────────────────────────────────────────────────────────────
+#
+# 9600, which is what this chassis runs and what the BIOS, the loader and
+# NX-OS all use. Read off the box, not assumed: the sibling AS4610 in this lab
+# runs 115200 and the two look identical from the front.
+#
+# The lab reaches it as front-panel port 31 on the console server --
+# `telnet 10.10.25.2 2030`.
+console: ttyS0
+console_baud: 9600
+
+# ── Disk ─────────────────────────────────────────────────────────────────────
+#
+# ⚠ THE DISK IS AN INTERNAL eUSB FLASH, AND IT IS SMALL.
+#
+# 1,990,656 KiB -- 1944 MiB, about 2.04 GB -- behind the PCH's EHCI controller
+# at 00:1d.0, not on the SATA/IDE ports. The EFI shell's device path says so
+# plainly: PciRoot(0x0)/Pci(0x1D,0x0)/USB(0x0,0x0)/USB(0x0,0x0). NX-OS's own
+# layout on it is MBR with `sda3` (1.6 GiB, ext3) as `bootflash:`.
+#
+# Two consequences. First, the kernel must have USB mass storage built in or
+# it has no root filesystem at all -- x86_64_defconfig does, which is the only
+# reason this is not a patch. Second, the layout below has to fit in 1944 MiB
+# rather than the tens of gigabytes the whitebox boards have.
+#
+# 64 + 2*512 + 512 + 8 GPT overhead = 1608 MiB, leaving 336 MiB spare. The
+# spare is deliberate: a slot that cannot be grown without repartitioning a
+# switch in somebody's rack is a slot that will be the wrong size one day.
+#
+# boot_mib is 64 rather than the default 32 because on this board the boot
+# partition is the EFI system partition: it carries the kernel and the
+# initramfs as files, not just the slot pointer.
+boot_mib: 64
+slot_mib: 512
+data_mib: 512
+
+# GPT, which is the default and is stated here only to record that it is a
+# decision rather than an inheritance. UEFI enumerates EFI system partitions
+# by GPT type GUID; the DOS-table path exists for firmware that cannot read a
+# GPT, and this firmware reads nothing else by preference.
+#
+# ⚠ It also means the vendor's MBR layout is gone after an install, and with
+# it `bootflash:`. Getting back to NX-OS is a network boot of the kickstart
+# image followed by the vendor installer rebuilding its own partitions. That
+# is the whole of docs/install.md's last section and it is not optional
+# reading.
+partition_table: gpt
+
+# x86 describes itself through ACPI, so there is no device tree.
+
+# How long the network service waits for interfaces named in network.conf.
+#
+# The front-panel interfaces come from nosd-td2, and nosd-td2 will not start
+# without a port map that has to be generated from a switch running the
+# vendor's OS (see tools/). Until that has been done on this board the wait is
+# for something that cannot appear, and the default 600 is ten minutes of it.
+net_wait_secs: 60
+
+# minimal, which is what the two boards that actually boot NOSaic run.
+#
+# Not a flash-size decision here -- 512 MiB slots have room for the full
+# profile. It is that `full` is systemd and `minimal` is s6, and the 7050SX2
+# demonstrated what happens when a board declares the tier it has never run:
+# an image that reached "Started ospf6d" and then came up with no management,
+# no datapath and no console prompt. The tier a board declares should be the
+# tier somebody has booted on it.
+profile: minimal
+kernel: ""
+
+# ── Status ───────────────────────────────────────────────────────────────────
+#
+# planned. Nothing here has been built or booted. NOSaic has never run on this
+# switch, and the one attempt at running *any* of our own code on it -- a
+# mainline 6.6 kernel with a busybox initramfs, wrapped in the vendor loader's
+# own container format -- reset the board instead of executing.
+#
+# What exists is a board directory whose facts were read off the running
+# machine and out of its firmware rather than guessed: the ASIC part and
+# stepping, the whole 72-entry SDK port map, the PHY inventory and MDIO
+# addressing, the PCI topology, the eUSB flash layout, the UEFI boot policy
+# and variable store, the four platform transports, and the thermal
+# thresholds. That is most of a bring-up's discovery and none of its proof.
+status: planned
+
+# ── The board's own hardware ─────────────────────────────────────────────────
+#
+# Deliberately no platform_hal driver, and that is a statement rather than an
+# omission.
+#
+# Everything auxiliary on this board hangs off Cisco's own board controller --
+# CCTRL, their equivalent of the Arista SCD -- and it is reached through a
+# 2.4 MB kernel module we have neither the source nor the register map for.
+# The sensors, the fan zones, the PSU state and the SPROM carrying the thermal
+# thresholds are all behind it. A NOSaic HAL for this board is a real piece of
+# work and docs/todo.md carries it.
+#
+# What is known: the platform bus is the PCH's Intel i801 SMBus at 00:1f.3,
+# exposed as a single adapter with everything else behind one PCA-style mux at
+# 0x70, selected per access. Only channels 2 and 4 have been observed, both as
+# NO_RESPONSE failures -- which is what an empty socket looks like on a chassis
+# with no optics fitted and a dead PSU 1. The channel-to-device table is not
+# established, and an i2c map stating it would be a guess that reads a device
+# that is not there.
+#
+# ⚠ THE FANS ARE NOT OURS TO CONTROL YET, AND NOBODY HAS CHECKED WHAT THEY DO
+#   WITH NO SOFTWARE DRIVING THEM.
+#
+# Declaring a platform HAL driver is what starts NOSaic's cooling loop, so
+# with none declared the fans stay wherever the hardware leaves them at
+# power-on. On this chassis that is unknown -- it may be full speed, which is
+# loud and safe, or it may be a CCTRL default that assumes a supervisor is
+# managing it, which is neither. Measure it before leaving this switch running
+# unattended. First item in docs/todo.md.
+#
+# The thresholds the vendor uses, for whoever writes the HAL. Two-tier on this
+# platform: generic defaults compiled into the card-config library, per-board
+# actuals from the SPROM. These are the SPROM's, read off the running box --
+# note the three board sensors have three different minor trip points, which
+# is how we know they are not the compiled defaults (those are 50/60 for all
+# three).
+#
+#   sensor              minor / major
+#   ASIC (die)            100 / 110     read through the BCM USD, not CCTRL
+#   Front-Left  (D1)       60 / 70
+#   Front-Right (D2)       56 / 70
+#   Back        (D3)       46 / 70
+#
+# thermal: not set, because nothing reads it without a driver. When the HAL
+# exists, the band belongs below the Back sensor's 46 rather than at a number
+# copied from another board.
+
+notes: >
+  Reverse engineered rather than ported. This is a vendor switch with a vendor
+  NOS, and the entire boot path, port map, PHY inventory and platform topology
+  in docs/hardware.md was recovered from the running machine and its firmware.
+  Read docs/hardware.md before touching anything, and the RE repository linked
+  from README.md before disagreeing with it.
+
+  ⚠ The vendor loader is not in our boot path and must not be put back in it
+  casually. It boots only an mknbi-linux NBI container, and our own image in
+  that container resets the board after the loader prints CardIndex. The
+  firmware underneath boots a CONFIG_EFI_STUB kernel with nothing in the way,
+  which is the path this port takes.
+
+  ⚠ There is no hardware root of trust on this board at all. No IOFPGA, no
+  MIFPGA, no ACT2 -- all three FPGA BAR module parameters read 0 -- and no
+  Secure Boot machinery in the firmware. Cisco's own trust anchor here is
+  software. That is why running our own code is a packaging problem rather
+  than a signing problem, and it is worth knowing it is a property of this
+  platform and not of the family: the N9K's IO FPGA is its secure-boot
+  enforcer.
+
+  ⚠ Every front-panel port has a PHY, including the QSFP cages. 1-48 are
+  BCM84848 10GBASE-T; 49-72 are BCM84328, one per cage on the first lane of
+  each group of four. So the 40G cages are retimed, not direct-attach -- which
+  is why no preemphasis or TX-FIR coefficients appear anywhere in the vendor's
+  configuration, and why this board ships no serdes.conf generator when its
+  Arista sibling needs one. The board buys its way out of SerDes tuning.
+
+  ⚠ MDIO addresses are swapped in pairs: xe0 answers at 1, xe1 at 0, xe2 at 3,
+  xe3 at 2. Physical lane numbering is not contiguous either -- the 48 copper
+  ports occupy lanes 13-16, 21-32 and 45-76, skipping 17-20 and 33-44, and the
+  six cage masters are 77, 81, 97, 101, 105 and 109, skipping 85-96. Both facts
+  are in the generated port map and neither is guessable.
+
+  PSU 1 in the lab unit is dead (NXA-PAC-500W, serial DCB2146L0KN), so that
+  chassis is single-supplied. It is a property of the unit, not the model, and
+  it means a power event during a bring-up session takes the box down with no
+  redundancy to hide it.

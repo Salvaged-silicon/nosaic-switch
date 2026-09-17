@@ -16,12 +16,14 @@ switch in a rack to one that forwards, and where to start if you have one.
 |---|---|---|---|---|---|
 | [arista-7050sx2-72q](../platform/arista-7050sx2-72q/README.md) | x86_64 | td2p | aboot | experimental | [walkthrough](../platform/arista-7050sx2-72q/docs/walkthrough.md) · [install](../platform/arista-7050sx2-72q/docs/install.md) · [running](../platform/arista-7050sx2-72q/docs/running.md) · [build](../platform/arista-7050sx2-72q/docs/build.md) · [architecture](../platform/arista-7050sx2-72q/docs/architecture.md) · [hardware](../platform/arista-7050sx2-72q/docs/hardware.md) · [todo](../platform/arista-7050sx2-72q/docs/todo.md) · [capabilities](../platform/arista-7050sx2-72q/docs/capabilities.md) |
 | [arista-7050tx-64](../platform/arista-7050tx-64/README.md) | x86_64 | td2 | aboot | bringup | [install](../platform/arista-7050tx-64/docs/install.md) · [build](../platform/arista-7050tx-64/docs/build.md) · [hardware](../platform/arista-7050tx-64/docs/hardware.md) · [todo](../platform/arista-7050tx-64/docs/todo.md) |
+| [cisco-n3172tq](../platform/cisco-n3172tq/README.md) | x86_64 | td2 | uefi | planned | [install](../platform/cisco-n3172tq/docs/install.md) · [build](../platform/cisco-n3172tq/docs/build.md) · [hardware](../platform/cisco-n3172tq/docs/hardware.md) · [todo](../platform/cisco-n3172tq/docs/todo.md) |
 | [edgecore-as5610-52x](../platform/edgecore-as5610-52x/README.md) | powerpc | tdp | onie-sfx | experimental | [install](../platform/edgecore-as5610-52x/docs/install.md) · [build](../platform/edgecore-as5610-52x/docs/build.md) · [hardware](../platform/edgecore-as5610-52x/docs/hardware.md) · [todo](../platform/edgecore-as5610-52x/docs/todo.md) · [capabilities](../platform/edgecore-as5610-52x/docs/capabilities.md) · [configuration](../platform/edgecore-as5610-52x/docs/configuration.md) · [edgenos-prior-art](../platform/edgecore-as5610-52x/docs/edgenos-prior-art.md) |
 | [virt-x86_64](../platform/virt-x86_64/README.md) | x86_64 | virt | virt | bringup | [install](../platform/virt-x86_64/docs/install.md) · [build](../platform/virt-x86_64/docs/build.md) · [hardware](../platform/virt-x86_64/docs/hardware.md) · [todo](../platform/virt-x86_64/docs/todo.md) |
 
 ## How each board installs
 
 - **aboot** — a SWI booted by Aboot: copy to flash and point boot-config at it
+- **uefi** — the firmware boots the kernel itself from an EFI system partition; installed by a self-extracting installer run from a root shell on the box
 - **onie-sfx** — a self-extracting installer run by ONIE: onie-nos-install <file>
 - **virt** — no installer: QEMU is given the kernel, initramfs and disk directly
 
@@ -41,4 +43,8 @@ switch:
 - **arista-7050tx-64** — [tools/](../platform/arista-7050tx-64/tools/): `mkpolarity.sh`, `mkportmap.sh`, `mkretimer.sh`, `mkserdes.sh`
   Run them once against a switch running the vendor's OS, drop the output
   in [config/](../platform/arista-7050tx-64/config/), and it ships in every image you build for that
+  board. Full instructions are in that board's README.
+- **cisco-n3172tq** — [tools/](../platform/cisco-n3172tq/tools/): `mkpolarity.sh`, `mkportmap.sh`
+  Run them once against a switch running the vendor's OS, drop the output
+  in [config/](../platform/cisco-n3172tq/config/), and it ships in every image you build for that
   board. Full instructions are in that board's README.
