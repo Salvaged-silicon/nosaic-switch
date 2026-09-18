@@ -17,6 +17,7 @@ import (
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
+	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/n3172tq"
 )
 
 // Status is how far a port has got, and it is stated rather than filtered on.
@@ -328,6 +329,13 @@ func (b *Board) Validate(root string) []string {
 		bad("platform_hal.resets: %s", err)
 	}
 
+	// This board's own platform data, for the same reason as the SMBus map
+	// above: a wrong address does not fail, it binds a driver onto nothing
+	// and the board boots with no sensors and no complaint.
+	if err := b.PlatformHAL.N3172TQ.Validate(); err != nil {
+		bad("platform_hal.n3172tq: %s", err)
+	}
+
 	// Checked here rather than at build time: a U-Boot board with no load
 	// address cannot produce a bootable image, and finding that out after a
 	// full build wastes an hour.
@@ -406,6 +414,10 @@ type PlatformHAL struct {
 	// Resets are board reset lines released during bring-up beyond the switch
 	// chip's own -- a retimer in front of some cages, for instance.
 	Resets []platformhal.ResetLine `yaml:"resets"`
+	// N3172TQ is the Cisco Nexus 3172TQ's own platform data, in its own
+	// driver's type. Board-specific on purpose: nothing here is shared with
+	// another board's HAL, so neither board constrains the other.
+	N3172TQ *n3172tq.Data `yaml:"n3172tq"`
 }
 
 // Thermal is a board's cooling curve.

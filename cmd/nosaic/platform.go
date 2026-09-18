@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
+	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/n3172tq" // registers the "n3172tq" driver
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/scd"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/sff"
 )
@@ -148,11 +150,12 @@ var installedBoardFile = "/etc/nosaic/board.yml"
 
 func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
 	hal, err := platformhal.Open(b.PlatformHAL.Driver, platformhal.Config{
-		PCI:     b.PlatformHAL.PCI,
-		ASICPCI: b.PlatformHAL.ASICPCI,
-		SMBus:   b.PlatformHAL.SMBus,
-		Cages:   b.PlatformHAL.Cages,
-		Resets:  b.PlatformHAL.Resets,
+		PCI:       b.PlatformHAL.PCI,
+		ASICPCI:   b.PlatformHAL.ASICPCI,
+		SMBus:     b.PlatformHAL.SMBus,
+		Cages:     b.PlatformHAL.Cages,
+		Resets:    b.PlatformHAL.Resets,
+		BoardData: b.PlatformHAL.N3172TQ,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -297,6 +300,18 @@ func releaseASIC(hal platformhal.HAL) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := hal.ReleaseSwitchChip(ctx); err != nil {
+		// ⚠ A BOARD THAT HAS NOTHING TO RELEASE IS NOT A FAILURE.
+		//
+		// The HAL contract says every method may answer ErrUnsupported, and a
+		// board whose switch chip is already on the PCI bus -- with nothing we
+		// can reach holding it in reset -- answers exactly that. This runs as
+		// a generated oneshot that nosd depends on, so returning the refusal
+		// takes the service database down with it and the datapath never
+		// starts: the truthful answer would brick the boot.
+		if errors.Is(err, platformhal.ErrUnsupported) {
+			fmt.Println("this board's switch chip needs no releasing; nothing to do.")
+			return nil
+		}
 		return err
 	}
 	fmt.Println("the switch chip is on the bus.")

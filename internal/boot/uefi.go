@@ -405,6 +405,18 @@ func (u uefi) Netboot(img Image, outDir string, log io.Writer) (string, error) {
 	if err := os.WriteFile(filepath.Join(dir, "nosaic.ipxe"), []byte(script), 0o644); err != nil {
 		return "", err
 	}
+	// The same command line as a plain file, for loaders that take one but
+	// cannot read an iPXE script. The Nexus 3172TQ's is the case in point:
+	// its own loader builds a command line we have no say in, so the NBI
+	// wrapper injects this one instead -- and it has to be the board's, not
+	// a copy that drifts. One line, no trailing newline, so a wrapper can
+	// hand it straight to the kernel.
+	cmdline := fmt.Sprintf("console=%s,%dn8 %s", consoleDev, consoleBaud, img.KernelParams)
+	cmdline = strings.TrimSpace(cmdline)
+	if err := os.WriteFile(filepath.Join(dir, "cmdline"), []byte(cmdline), 0o644); err != nil {
+		return "", err
+	}
+
 	readme := fmt.Sprintf(netbootREADME, img.Version, img.Board)
 	if err := os.WriteFile(filepath.Join(dir, "README"), []byte(readme), 0o644); err != nil {
 		return "", err

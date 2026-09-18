@@ -118,6 +118,44 @@ func (c *Client) DMAPool() (DMAPool, error) {
 	return out, err
 }
 
+// ASICTemperature is one of the switch die's own temperature monitors.
+//
+// Millidegrees, like hwmon and like the platform HAL, converted from the
+// SDK's 0.1 C by the datapath so there is exactly one place that knows.
+type ASICTemperature struct {
+	Index      int
+	MilliC     int
+	PeakMilliC int
+}
+
+// ASICTemperatures reads the switch die.
+//
+// Not part of the switchapi contract, for the same reason DMAPool is not: a
+// die sensor is a property of a datapath driving real silicon. It lives here
+// rather than in a board's HAL because the only path to it is the SDK over
+// PCIe -- no i2c part on any of these boards can see the die, which is why
+// every board's cooling loop has so far been regulating on sensors sited
+// near the ASIC rather than on it.
+//
+// An empty slice with no error means the chip has no monitors. That is
+// different from a failure, and a cooling loop has to tell them apart.
+func (c *Client) ASICTemperatures() ([]ASICTemperature, error) {
+	var out []ASICTemperature
+	err := c.call("asic.temp", nil, &out)
+	return out, err
+}
+
+// SetDeadline bounds every subsequent call on this connection.
+//
+// ⚠ THERE IS NO DEFAULT DEADLINE, AND ONE CALLER CANNOT AFFORD THAT.
+//
+// call() writes a request and blocks reading the reply. A nosd that is alive
+// enough to accept the connection but wedged before answering leaves the
+// caller blocked for ever. For the CLI that is a hang somebody can Ctrl-C;
+// for the cooling loop, which asks this daemon for the die temperature every
+// interval, it is fans frozen at their last duty with nothing logged.
+func (c *Client) SetDeadline(t time.Time) error { return c.conn.SetDeadline(t) }
+
 func (c *Client) Start() error { return nil }
 func (c *Client) Close() error { return c.conn.Close() }
 
