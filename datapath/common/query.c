@@ -37,6 +37,7 @@
 #include <bcm/stg.h>
 #include <bcm/vlan.h>
 #include <bcm/l3.h>
+#include <bcm/switch.h>
 #include <bcm/types.h>
 
 #include "dmapool.h"
@@ -193,6 +194,48 @@ static void handle(FILE *out, const char *req)
 	 * they contain no punctuation, and an unrecognised request is refused --
 	 * so the worst a malformed one does is get an error back.
 	 */
+	/*
+	 * The switch die's own temperature.
+	 *
+	 * ⚠ THIS IS THE HOTTEST THING IN THE BOX AND NOTHING ELSE CAN SEE IT.
+	 *
+	 * Board sensors are i2c parts near the ASIC, not on it -- on the Nexus
+	 * 3172TQ the vendor records the die at 56 C while the three board diodes
+	 * idle between 31 and 38, and the die trips at 100. The only way to the
+	 * die is the SDK over PCIe, which means this daemon, which is why a
+	 * reading that belongs to the platform HAL is served from here.
+	 *
+	 * The SDK reports 0.1 C units; millidegrees are what the HAL and hwmon
+	 * both speak, so the conversion happens once, here, rather than in each
+	 * consumer.
+	 *
+	 * A chip with no monitors answers with an empty list rather than an
+	 * error: "this chip cannot tell you" and "the query failed" are
+	 * different, and a cooling loop must be able to distinguish them.
+	 */
+	if (strstr(req, "\"asic.temp\"") != NULL) {
+		bcm_switch_temperature_monitor_t mon[8];
+		int n = 0, k, rv;
+
+		rv = bcm_switch_temperature_monitor_get(query_unit,
+			(int)(sizeof(mon) / sizeof(mon[0])), mon, &n);
+		if (rv != BCM_E_NONE) {
+			fprintf(out, "{\"ok\":false,\"error\":\"temperature monitors: %s\"}\n",
+				bcm_errmsg(rv));
+			return;
+		}
+		if (n < 0)
+			n = 0;
+		if (n > (int)(sizeof(mon) / sizeof(mon[0])))
+			n = (int)(sizeof(mon) / sizeof(mon[0]));
+		fprintf(out, "{\"ok\":true,\"result\":[");
+		for (k = 0; k < n; k++)
+			fprintf(out, "%s{\"Index\":%d,\"MilliC\":%d,\"PeakMilliC\":%d}",
+				k ? "," : "", k, mon[k].curr * 100, mon[k].peak * 100);
+		fprintf(out, "]}\n");
+		return;
+	}
+
 	if (strstr(req, "\"asic.ports\"") != NULL) {
 		fprintf(out, "{\"ok\":true,\"result\":[");
 		for (i = 0; i < nosaic_tap_count(); i++)

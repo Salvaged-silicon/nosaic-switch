@@ -22,6 +22,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include "bde.h"
 #include "props.h"
@@ -153,8 +154,72 @@ static const char *const datapath_conf[] = {
 	"portmode.conf",  /* shipped: which QSFP cages run as 4x10G */
 };
 
-/* Where the switch chip appears once the board controller releases it. */
+/* Where the switch chip appears once the board controller releases it.
+ *
+ * A fallback, not an answer. led_map_scd already makes the argument for the
+ * SCD -- "its PCI address is not fixed ... so it is found by vendor id rather
+ * than named" -- and the ASIC needs it more, because the address is not the
+ * only thing that moves:
+ *
+ *   7050TX-64      0000:01:00.0   14e4:b855 rev 0x03
+ *   Nexus 3172TQ   0000:02:00.0   14e4:b854 rev 0x02
+ *
+ * Both are Trident II and both attach through the same SDK driver, but the SDK
+ * matches on device and revision, so a compiled-in pair is right for exactly
+ * one board and silently wrong on the next. */
 #define DEFAULT_ASIC_BDF "0000:01:00.0"
+
+/* Trident II covers BCM56850 through BCM5685f. Narrow enough that nothing else
+ * Broadcom on a switch answers to it, wide enough to cover the variants. */
+#define TD2_DEVICE_FIRST 0xb850
+#define TD2_DEVICE_LAST  0xb85f
+
+/* Find the switch chip on the PCI bus.
+ *
+ * Returns 0 and fills bdf on success, -1 if nothing matched -- which is not
+ * fatal on its own: the caller falls back to the compiled-in address so a
+ * board whose chip is hidden behind something this cannot see still gets the
+ * old behaviour rather than no behaviour.
+ */
+static int td2_find(char *bdf, size_t bdflen)
+{
+	DIR *d = opendir("/sys/bus/pci/devices");
+	struct dirent *e;
+
+	if (d == NULL)
+		return -1;
+	while ((e = readdir(d)) != NULL) {
+		unsigned vendor = 0, device = 0;
+		char path[256];
+		FILE *f;
+
+		if (e->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", e->d_name);
+		if ((f = fopen(path, "r")) == NULL)
+			continue;
+		if (fscanf(f, "%x", &vendor) != 1)
+			vendor = 0;
+		fclose(f);
+		if (vendor != TD2_VENDOR)
+			continue;
+
+		snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/device", e->d_name);
+		if ((f = fopen(path, "r")) == NULL)
+			continue;
+		if (fscanf(f, "%x", &device) != 1)
+			device = 0;
+		fclose(f);
+		if (device < TD2_DEVICE_FIRST || device > TD2_DEVICE_LAST)
+			continue;
+
+		snprintf(bdf, bdflen, "%s", e->d_name);
+		closedir(d);
+		return 0;
+	}
+	closedir(d);
+	return -1;
+}
 
 /* How long --attach holds the device before exiting. Long enough for the SDK's
  * own threads to run and fault if they are going to. */
@@ -195,7 +260,8 @@ static int probe(const char *bdf)
 	if (nosaic_bde_open(&b, bdf) != 0)
 		return 1;
 
-	printf("device      %s\n", b.bdf);
+	printf("device      %s  %04x:%04x rev %#04x\n",
+	       b.bdf, b.vendor_id, b.dev_id, b.rev_id);
 	printf("BAR0        %zu bytes mapped\n", b.bar_len);
 	printf("DMA         %zu bytes at %#llx\n", b.dma_len,
 	       (unsigned long long)b.dma_phys);
@@ -291,7 +357,7 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
 		return 1;
 	}
 
-	unit = nosaic_sdk_attach(b, TD2_DEVICE, TD2_REVISION);
+	unit = nosaic_sdk_attach(b, b->dev_id, b->rev_id);
 	if (unit < 0) {
 		nosaic_bde_close(b);
 		return 1;
@@ -416,7 +482,7 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	if (nosaic_portmode_apply(0) < 0)
 		return 1;
 
-	unit = nosaic_sdk_attach(b, TD2_DEVICE, TD2_REVISION);
+	unit = nosaic_sdk_attach(b, b->dev_id, b->rev_id);
 	if (unit < 0)
 		return 1;
 	if (nosaic_sdk_soc_init(unit) != 0)
@@ -486,15 +552,18 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	 * against and the value is the logical port behind it.
 	 */
 	{
-		struct tap_spec specs[8];
-		char names[8][32];
-		int ntap = 0, i;
+		struct tap_spec specs[NOSAIC_MAX_TAPS];
+		char names[NOSAIC_MAX_TAPS][32];
+		int ntap = 0, i, tap_props = 0;
 
-		for (i = 0; i < nosaic_props_count() && ntap < 8; i++) {
+		for (i = 0; i < nosaic_props_count(); i++) {
 			const char *name = nosaic_props_name(i);
 			const char *val = nosaic_props_value(i);
 
 			if (name == NULL || strncmp(name, "tap_", 4) != 0)
+				continue;
+			tap_props++;
+			if (ntap >= NOSAIC_MAX_TAPS)
 				continue;
 			snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
 			specs[ntap].name = names[ntap];
@@ -513,6 +582,19 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				}
 			}
 			ntap++;
+		}
+
+		/* Say so rather than quietly making fewer. The array above is
+		 * sized to the bridge's own limit, so this only fires on a board
+		 * that really does declare more ports than one datapath can
+		 * carry -- but when it fires, the alternative is a switch short
+		 * some ports with nothing anywhere saying which or why. */
+		if (tap_props > NOSAIC_MAX_TAPS) {
+			fprintf(stderr, "nosd: %d tap_ properties but at most %d "
+				"taps are supported; refusing rather than "
+				"silently bridging %d\n",
+				tap_props, NOSAIC_MAX_TAPS, NOSAIC_MAX_TAPS);
+			return 1;
 		}
 
 		if (ntap == 0) {
@@ -542,7 +624,10 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				       "interface\n", name);
 				continue;
 			}
-			nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
+			if (nosaic_l3_add_intf(unit, name, port, vlan, mac,
+					       mtu) != 0)
+				fprintf(stderr, "l3: no router interface for %s; "
+					"routes via it cannot be programmed\n", name);
 		}
 
 		/* The front panel. Not fatal if it fails: a switch with a dark
@@ -658,7 +743,16 @@ int main(int argc, char **argv)
 			(char *)"/etc/nosaic/portmap.conf",
 			(char *)"/etc/nosaic/polarity.conf",
 		};
-		return run_daemon(DEFAULT_ASIC_BDF, confs,
+		char found[32];
+		const char *bdf = DEFAULT_ASIC_BDF;
+
+		if (td2_find(found, sizeof(found)) == 0)
+			bdf = found;
+		else
+			fprintf(stderr, "nosd: no %04x:%04x-%04x on the PCI bus; "
+				"trying %s\n", TD2_VENDOR, TD2_DEVICE_FIRST,
+				TD2_DEVICE_LAST, bdf);
+		return run_daemon(bdf, confs,
 				  (int)(sizeof(confs) / sizeof(confs[0])));
 	}
 

@@ -419,15 +419,18 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	 * against and the value is the logical port behind it.
 	 */
 	{
-		struct tap_spec specs[8];
-		char names[8][32];
-		int ntap = 0, i;
+		struct tap_spec specs[NOSAIC_MAX_TAPS];
+		char names[NOSAIC_MAX_TAPS][32];
+		int ntap = 0, i, tap_props = 0;
 
-		for (i = 0; i < nosaic_props_count() && ntap < 8; i++) {
+		for (i = 0; i < nosaic_props_count(); i++) {
 			const char *name = nosaic_props_name(i);
 			const char *val = nosaic_props_value(i);
 
 			if (name == NULL || strncmp(name, "tap_", 4) != 0)
+				continue;
+			tap_props++;
+			if (ntap >= NOSAIC_MAX_TAPS)
 				continue;
 			snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
 			specs[ntap].name = names[ntap];
@@ -446,6 +449,19 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				}
 			}
 			ntap++;
+		}
+
+		/* Say so rather than quietly making fewer. The array above is
+		 * sized to the bridge's own limit, so this only fires on a board
+		 * that really does declare more ports than one datapath can
+		 * carry -- but when it fires, the alternative is a switch short
+		 * some ports with nothing anywhere saying which or why. */
+		if (tap_props > NOSAIC_MAX_TAPS) {
+			fprintf(stderr, "nosd: %d tap_ properties but at most %d "
+				"taps are supported; refusing rather than "
+				"silently bridging %d\n",
+				tap_props, NOSAIC_MAX_TAPS, NOSAIC_MAX_TAPS);
+			return 1;
 		}
 
 		if (ntap == 0) {
@@ -475,7 +491,10 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				       "interface\n", name);
 				continue;
 			}
-			nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
+			if (nosaic_l3_add_intf(unit, name, port, vlan, mac,
+					       mtu) != 0)
+				fprintf(stderr, "l3: no router interface for %s; "
+					"routes via it cannot be programmed\n", name);
 		}
 
 		/* The front panel. Not fatal if it fails: a switch with a dark
