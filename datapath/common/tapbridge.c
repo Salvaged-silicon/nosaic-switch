@@ -114,6 +114,7 @@
 #include <bcm/stat.h>
 #include <bcm/stg.h>
 
+#include "props.h"
 #include "tapbridge.h"
 
 #define TAP_MTU        9216
@@ -468,11 +469,66 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sock >= 0) {
-		/* A distinct locally-administered MAC per port. */
+		/*
+		 * A locally-administered MAC, distinct per port AND per switch.
+		 *
+		 * It used to be 02:00:00:00:00:<0x50+index>, with nothing in it
+		 * derived from the board -- so every NOSaic switch handed out the
+		 * same addresses in the same order. That is not theoretical: on
+		 * this bench a 7050SX2's et1 and a 7050TX-64's et49 both held
+		 * 02:00:00:00:00:50, and et2 and et50 both held ...:51.
+		 *
+		 * Nothing broke, because each tap sits in its own VLAN and the
+		 * chip's L2 table is keyed on VLAN+MAC, so the duplicates never
+		 * met. That is a thinner margin than it looks. Until very
+		 * recently every port was also left in VLAN 1 -- one chip-wide
+		 * flood domain -- where two ports carrying the same address WOULD
+		 * have collided and the table would have flapped it between them.
+		 * Anything that puts two ports in a shared VLAN brings it back,
+		 * and two NOSaic switches on one segment collide outright with no
+		 * VLAN to separate them.
+		 *
+		 * So the middle four bytes come from a base the board supplies,
+		 * `tap_mac_base`, which is the switch's own address -- unique per
+		 * machine and already known to it. The last byte stays the port
+		 * index, which is what makes it distinct within the switch.
+		 *
+		 * Without the property the old constant is used, because a board
+		 * that has not been told its own address still has to bring its
+		 * ports up. It says so once: silently reverting to addresses
+		 * shared with every other switch is the kind of default that is
+		 * only discovered by two boxes fighting over an address.
+		 */
 		memset(&ifr, 0, sizeof(ifr));
 		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
 		ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
 		ifr.ifr_hwaddr.sa_data[0] = 0x02;
+		{
+			unsigned b[6];
+			const char *base = nosaic_props_get("tap_mac_base");
+			static int warned;
+
+			if (base != NULL && sscanf(base, "%x:%x:%x:%x:%x:%x",
+						   &b[0], &b[1], &b[2], &b[3],
+						   &b[4], &b[5]) == 6) {
+				/* The low four bytes of the board's address: the
+				 * top two are a vendor OUI shared by every unit of
+				 * the model, so they carry no per-switch
+				 * information worth spending a byte on. */
+				ifr.ifr_hwaddr.sa_data[1] = (char)(b[2] & 0xff);
+				ifr.ifr_hwaddr.sa_data[2] = (char)(b[3] & 0xff);
+				ifr.ifr_hwaddr.sa_data[3] = (char)(b[4] & 0xff);
+				ifr.ifr_hwaddr.sa_data[4] = (char)(b[5] & 0xff);
+			} else if (!warned) {
+				warned = 1;
+				fprintf(stderr,
+					"tap: no usable tap_mac_base, so tap addresses are "
+					"02:00:00:00:00:xx -- the SAME on every NOSaic "
+					"switch. Two of them on one segment, or two ports "
+					"of either in one VLAN, will collide. Set "
+					"tap_mac_base to this board's own MAC.\n");
+			}
+		}
 		ifr.ifr_hwaddr.sa_data[5] = (char)(0x50 + index);
 		ioctl(sock, SIOCSIFHWADDR, &ifr);
 		memcpy(t->mac, ifr.ifr_hwaddr.sa_data, 6);
