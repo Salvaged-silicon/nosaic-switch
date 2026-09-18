@@ -80,16 +80,36 @@ one), `setup_sects` (the vendor's kernel has the same situation), and KASLR
       bound and no size limit**. Write-up in the RE repo's
       `notes/loader_linux_handoff.md`; artifacts in
       `analysis/bios/loader-modules/`.
-- [ ] **Make the Linux-loader module verbose.** It can print
-      `[Linux-EFI, setup=0x%x, size=0x%x]` and `dest at %x` — a direct readout
-      of where the kernel was placed and how big its setup was, which is the
-      remaining unknown. `debug 3` enables the *NBI* module's prints and not
-      these; they test a separate `debug` symbol. Try `noquiet`, or find what
-      sets that one.
-- [ ] **Disassemble the 176-byte `switch_image` trampoline** — saved as
-      `analysis/bios/loader-modules/switch_image.bin`. It is entered in long
-      mode and must leave in 32-bit protected mode, and it is the only code in
-      the path not yet read.
+- [x] ~~Disassemble the 176-byte `switch_image` trampoline~~ — **done.** It is
+      a textbook long-mode exit and it is correct: `lgdt`/`lidt`, a far jump
+      that loads CS from a complete and valid GDT, then paging off, `EFER.LME`
+      off, `CR4 = 0`, and `jmp *%ebx` into `code32_start` with
+      `%esi = boot_params`. ⚠ It never writes DS/ES/SS, which is a real boot-
+      protocol violation — patched around in `0002-…-reload-the-data-segments`
+      — but it is **not** what stops the board.
+- [x] ~~Make the Linux-loader module verbose~~ — **not possible, and no longer
+      needed.** `debug level` only takes a number and only sets the NBI
+      module's variables; the Linux loader defines its own `debug` global that
+      nothing writes. The placement it would have printed was instead derived
+      statically from the code, and then confirmed on the hardware by a probe.
+- [x] ~~Does our kernel execute at all?~~ — **yes.** A probe patched over the
+      kernel's first instructions (`out` a character to `0x3f8`, which touches
+      no memory) arrives 162 ms after the loader's last line.
+- [x] ~~Is something timing us out?~~ — **no.** A kernel patched to
+      `out 'S'; jmp .` sat in that loop for minutes with no reset. There is no
+      watchdog.
+- [ ] **Bisect the four seconds.** The kernel runs for ~4 s and then the board
+      resets, and that is now known to be *work* rather than a timeout —
+      roughly what decompressing 14 MiB into 46 MiB costs on this CPU. Patch a
+      character out at the return from `extract_kernel`, just before the jump
+      into the decompressed kernel, and see whether it arrives. That separates
+      "decompressed and then died" from "never got there".
+- [ ] **Explain the missing decompressor output.** With
+      `earlyprintk=serial,0x3f8,9600`, `Decompressing Linux...` should have
+      appeared — `CONFIG_X86_VERBOSE_BOOTUP` is set and the loader fills in
+      `cmd_line_ptr`. It did not, while a raw `out` to the same port works.
+      Either `console_init()` is never reached, or the kernel's serial setup
+      does not survive the state the loader leaves the UART in.
 - [ ] **Or sidestep it: the USB/EFI-stub path does not use `boot_params` at
       all.** Both kernels have `CONFIG_EFI_STUB=y`, and the firmware executes
       EFI applications — so that route tests "does our kernel run on this

@@ -26,6 +26,7 @@ source:
 
 patches:
   - patches/0001-tg3-probe-without-an-nvram-address.patch
+  - patches/0002-x86-boot-reload-the-data-segments-at-startup_32.patch
 
 build:
   system: kernel

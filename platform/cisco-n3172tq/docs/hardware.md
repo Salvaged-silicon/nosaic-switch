@@ -387,12 +387,192 @@ EFI boot and handed half a pointer. Survivable on this board because the
 system table sits below 4 GiB, and the vendor's own kernel takes the identical
 branch, so it is not our blocker. Worth knowing before trusting that field.
 
-**The unread remainder is small and specific.** `grub_load_linux` can print
-`[Linux-EFI, setup=0x%x, size=0x%x]` and `dest at %x` — a direct readout of
-where the kernel was placed — but those are gated on a `debug` symbol in a
-different module from the one `debug 3` enables, which is why our captures
-show mod06's lines and none of mod05's. Getting that module verbose, and
-disassembling the 176-byte `switch_image` trampoline, are the two things left.
+### The cause: the trampoline sets CS and nothing else
+
+Found by reading the 176-byte `switch_image` trampoline and both kernels' 32-bit
+entry points. It is a boot-protocol violation on the loader's side that only
+bites a kernel new enough to trust the protocol.
+
+The trampoline, at physical `0x700`:
+
+```asm
+cli; cld
+lgdt 0x748          ; its own GDT
+lidt 0x758          ; a null IDT
+ljmp *0x740         ; -> selector 0x10 : offset 0x719   ** loads CS **
+0x719:
+  clear CR0.PG      ; paging off
+  clear EFER.LME    ; leave long mode
+  CR4 = 0
+  jmp *%ebx         ; -> code32_start, %esi = boot_params
+```
+
+Its GDT is correct and complete — `0x10` is a flat 32-bit code segment and
+`0x18` a flat 32-bit data segment, exactly what the protocol requires:
+
+| selector | |
+|---|---|
+| `0x10` | base 0, limit `0xfffff`, 4 K granularity, **code**, D/B=32 |
+| `0x18`, `0x20`, `0x28`, `0x30` | base 0, limit `0xfffff`, 4 K granularity, **data**, D/B=32 |
+
+⚠ **But it never writes DS, ES or SS.** There is no `mov`-to-segment-register
+anywhere in the 176 bytes. The far jump fixes CS; the data segments keep the
+selectors UEFI was running with.
+
+That is fine for a kernel that fixes them itself, and the vendor's 3.4 does —
+its `startup_32` still carries the `KEEP_SEGMENTS` dance that was removed from
+Linux in 5.x:
+
+```asm
+cld
+testb $0x40,0x211(%esi)     ; loadflags & KEEP_SEGMENTS
+jne   1f
+cli
+mov   $0x18,%eax
+mov   %eax,%ds              ; reloads DS
+mov   %eax,%es              ; reloads ES
+mov   %eax,%ss              ; reloads SS
+1:
+lea   0x1e8(%esi),%esp
+```
+
+Ours does not. Linux 6.12's `startup_32`, disassembled from our own bzImage:
+
+```asm
+0:  cld
+1:  cli
+2:  lea  0x1e8(%esi),%esp
+8:  call 0xd                ; ** first memory access: PUSH through SS **
+d:  pop  %ebp
+...
+1a: lgdtl (%eax)            ; only now installs its own GDT
+1d: mov  $0x18,%eax
+22: mov  %eax,%ds           ; only now reloads DS
+```
+
+The `call` three instructions in pushes a return address through a stale SS,
+before the kernel has installed anything of its own. On this board that
+triple-faults and the box resets — which is exactly the observed behaviour:
+no output at all, not even `earlyprintk`, because nothing has run yet.
+
+Everything else follows from this:
+
+- **Why it is version-dependent.** 3.4 reloads the segments, 6.12 trusts the
+  loader. The loader has presumably never booted anything newer.
+- **Why nothing we changed mattered.** The initrd, KASLR, `noefi`, relocation
+  and `setup_sects` are all decided long after the first `call`.
+- **Why the loader looks correct.** It is, by its own lights: its GDT is right,
+  its arithmetic is right, and it reports `Kernel loaded successfully` because
+  the kernel genuinely is loaded.
+
+### It is a real bug, and it is not the blocker
+
+`recipes/linux/patches/0002-x86-boot-reload-the-data-segments-at-startup_32.patch`
+restores the four instructions at the top of `startup_32`. Reloading `0x18` is
+idempotent on a conforming loader — it is the selector the protocol mandates,
+so a loader that did its job gets its own value written back — and it costs
+four instructions before the first memory access. It is deliberately **not**
+conditional on `KEEP_SEGMENTS`, and only the 32-bit legacy entry is touched.
+
+⚠ **It did not fix the boot.** The patched kernel fails exactly as before. The
+protocol violation is real and the patch is worth keeping — a loader that sets
+only CS is a loader we should survive — but it is not what stops this board.
+
+## The kernel does execute, and something resets the board 4 seconds later
+
+This is the finding that moves the problem. A probe was patched directly into
+the built `bzImage`, over the eleven bytes the segment-reload patch had added,
+so it runs as the kernel's very first instructions and touches no memory:
+
+```asm
+cld
+cli
+mov  $0x3f8,%edx      ; the console the firmware has already initialised
+mov  $'N',%al
+out  %al,(%dx)
+nop; nop; nop
+```
+
+On the console, timestamped from the terminal server:
+
+```
+[  71.255] 7634 bytes          <- the loader's last line
+[  71.417] N                   <- the kernel's first instruction
+[  75.482] (c) Copyright 2018, Cisco Systems.   <- the board resets
+```
+
+**The handoff works.** `code32_start` is right, the trampoline lands where it
+should, and our kernel runs — 162 ms after the loader's last output. Everything
+upstream of this point is exonerated: the NBI container, the segment
+descriptors, the placement arithmetic, the e820 block, all of it.
+
+Then **4.07 seconds of silence** and a reset. And that interval is the next
+clue, because it barely moves:
+
+| run | kernel | command line | gap |
+|---|---|---|---|
+| 1 | patched | `earlyprintk=serial,ttyS0` | 4.25 s |
+| 2 | probe | `console=ttyS0,9600n8` | 4.07 s |
+| 3 | probe | `+ memmap=exactmap` | 4.08 s |
+
+⚠ **A data-dependent crash does not keep time like that.** Overriding the e820
+map entirely with `memmap=exactmap` changed nothing, and neither did `noefi`,
+`nokaslr` or removing the initramfs. A fixed interval across different kernels,
+different command lines and a replaced memory map looks like something timing
+us out rather than something we did.
+
+The loader has a `wdog_enable` command — "start the watchdog before booting" —
+and the PCH here is a DH89xxCC, which has a TCO watchdog. A vendor OS pets it;
+a stock kernel would not, and would be reset on schedule.
+
+### There is no watchdog — measured
+
+The experiment that settles it: a kernel that does nothing at all. Same binary
+patch technique, entry rewritten to `cld; cli; out 'S'; jmp .` — emit one
+character and loop forever.
+
+```
+[  44.038] CardIndex = 11091
+[  44.160] S
+           ... silence, for minutes. No reset.
+```
+
+The board sat in that two-instruction loop indefinitely — no BIOS banner, no
+reset, no network. **So nothing is timing us out.** A hung kernel is left
+alone, and the ~4 second reset on a real boot is caused by what our kernel
+itself does.
+
+Which is the useful conclusion: the interval is not a timeout, it is **work**.
+Roughly four seconds is what decompressing a 14 MiB kernel into 46 MiB costs
+on a 2 GHz Ivy Bridge Pentium, so the kernel is very likely getting through
+`extract_kernel` and dying at or just after the jump into the decompressed
+image — before any console exists.
+
+### Where that leaves it
+
+Established, and none of it needs revisiting:
+
+| | |
+|---|---|
+| the NBI container | accepted; kernel and initramfs both load |
+| the handoff | works — our first instruction runs 162 ms after the loader's last line |
+| `code32_start` and the trampoline | correct |
+| a watchdog | does not exist |
+| e820, EFI, KASLR, relocation, the initramfs | all eliminated on the hardware |
+
+⚠ **One loose thread worth pulling first.** With
+`earlyprintk=serial,0x3f8,9600` the decompressor should have printed
+`Decompressing Linux...` — `CONFIG_X86_VERBOSE_BOOTUP` is set and the loader
+does fill in `cmd_line_ptr`. It printed nothing. Either the decompressor never
+reaches `console_init()`, which would contradict the four seconds, or its
+serial setup does not survive whatever state the loader leaves the UART in —
+and our raw `out` to `0x3f8` proves the port itself works at that moment.
+
+The next probe follows the same method that has worked all along: patch a
+character out at a later point — the return from `extract_kernel`, just before
+the jump into the decompressed kernel — and see whether it arrives. That
+bisects the remaining four seconds into "decompressed and then died" versus
+"never got there".
 
 **And the USB path is now the better test of the kernel itself**, because the
 EFI stub does not involve the loader's `boot_params` at all — see
