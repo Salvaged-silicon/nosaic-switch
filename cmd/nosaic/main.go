@@ -513,7 +513,13 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 	}
 	if netbootDir != "" {
 		fmt.Printf("\nor try it without installing, over the network\n")
-		fmt.Printf("  serve this directory over TFTP, then catch the loader and run `ipxe`\n")
+		// Deliberately does not name a loader command. Which one is right is
+		// per-board, and on at least one board the obvious one is a one-way
+		// door: the Nexus 3172TQ's `ipxe` sets the persistent boot mode to
+		// PXE-only, after which the firmware skips the loader and there is no
+		// prompt left to undo it from. The bundle's README says what to do on
+		// the board it was built for, warnings included.
+		fmt.Printf("  serve this directory over TFTP, then follow its README\n")
 		fmt.Printf("  %s\n", netbootDir)
 		fmt.Printf("  nothing is written to the switch, and nothing survives the reboot\n")
 	}
