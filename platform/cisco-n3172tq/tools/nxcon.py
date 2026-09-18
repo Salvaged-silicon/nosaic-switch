@@ -74,6 +74,27 @@ class Console:
             except (TimeoutError, socket.timeout):
                 time.sleep(0.02)
 
+    def settle(self, quiet=2.5, cap=180.0):
+        """Pump until the stream has been silent for `quiet` seconds.
+
+        The terminal server replays its whole scrollback when you connect, and
+        at 9600 baud that is minutes, not the one second the old --from-now
+        allowed for. Anything still arriving after a fixed pump looks live, so
+        a stale `switch login:` from the previous day matched --want and the
+        commands went nowhere. Wait for actual silence instead.
+        """
+        deadline = time.time() + cap
+        last = len(self.out)
+        quiet_since = time.time()
+        while time.time() < deadline:
+            self.pump(0.25)
+            if len(self.out) != last:
+                last = len(self.out)
+                quiet_since = time.time()
+            elif time.time() - quiet_since >= quiet:
+                return True
+        return False
+
     def text(self):
         return self.out.decode("utf-8", "replace")
 
@@ -145,8 +166,11 @@ for ln in a.send_before:
 
 start = 0
 if a.from_now:
+    quiet = c.settle()
     start = len(c.text())
-    print(f"[nxcon] ignoring {start} bytes of replayed backlog", file=sys.stderr)
+    print(f"[nxcon] ignoring {start} bytes of replayed backlog"
+          + ("" if quiet else " (still arriving -- backlog may not be drained)"),
+          file=sys.stderr)
 if a.after:
     n = len(c.text())
     print(f"[nxcon] waiting for marker {a.after!r} (ignoring {n} bytes of backlog)", file=sys.stderr)

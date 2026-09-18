@@ -1,298 +1,301 @@
 # Cisco Nexus 3172TQ — what is left, in the order it has to happen
 
-The board is `planned`: the discovery is done and none of it is proved. This is
-the path from here to a switch that forwards, ordered so that each step's
-failure is diagnosable with the step before it working.
+The reference for this board is the **Arista 7050TX-64**: same ASIC generation
+(Trident II), same 48 × 10GBASE-T + 6 × 40G shape, same `datapath/td2`, and the
+same BCM84848 copper PHYs. Where this page says "the reference does X", that is
+the board to copy from — its `config/` and its `docs/todo.md` are the model for
+this one. The 7050SX2-72Q is td2**p** and is only worth reading for the shape of
+its `walkthrough.md`, which is the one rack-to-forwarding document in the tree.
 
-## 0. Before leaving the switch powered on
+Status as of 2026-09-18: **the board boots, cools itself and its datapath is
+up.** It is not yet a switch, because nothing is on the Linux stack.
 
-**Find out what the fans do with nobody driving them.** ⚠ NOSaic declares no
-platform HAL for this board, and declaring one is what starts the cooling loop
-— so on a NOSaic boot the fans stay wherever the hardware leaves them at
-power-on. That has never been observed.
+## What is proven on the hardware
 
-The vendor's idle baseline *is* now measured, on the lab chassis:
+Measured, not inferred. Everything below has been seen on the lab chassis.
 
-| | |
-|---|---|
-| Fan zone 1 duty | `0x28` |
-| ASIC die | 56 °C (minor 100, major 110) |
-| Front-Left (D1) | 38 °C (minor 60, major 70) |
-| Front-Right (D2) | 37 °C (minor 56, major 70) |
-| Back (D3) | 31 °C (minor 46, major 70) |
+- **Boots to userspace.** Netboot of an `mknbi-linux` NBI through the vendor
+  loader's own TFTP, with four loader defects worked around (see
+  [hardware.md](hardware.md) and the RE repo's `loader_linux_handoff.md`).
+  s6-rc, login and FRR all come up. `/proc/cmdline` is ours, via a shim
+  patched into the 32-bit entry.
+- **The datapath is up.** `nosd: the datapath is up on unit 0`, 54 ports, over
+  two hours stable. DMA out of `memmap=64M$0xb0000000`; BAR0 memory decode
+  enabled explicitly (the chip ships with it off).
+- **The PHYs are configured.** 48 × `phy_84848` copper and 6 × `phy_84328`
+  retimers loaded from `config/portmap.conf`; 6 × 40g from
+  `config/portmode.conf`.
+- **The port map is validated against a cable.** Panel ports 31 and 32 were
+  patched to a 7050TX-64 and came up as **logical ports 31 and 32, UP at
+  10000** — the first independent check that the generated map matches the
+  physical panel.
+- **Environmentals.** `adt7462` plus two `pmbus` bound at boot; three board
+  diodes and the controller die read; four fans commanded by the thermal loop;
+  PSU presence. See [hardware.md](hardware.md).
 
-So the vendor does **not** run these fans flat out, and the idle margin is
-large — the tightest sensor, Back (D3), is 15 °C below its minor threshold.
-That is reassuring rather than sufficient: the die was at 56 °C with no
-datapath running, and `nosd` will make it hotter.
+## Blocking — this is not a switch until these are done
 
-What is still unknown is the *unmanaged* duty, and there are only two ways to
-learn it. Reading the fan controller from the loader's `smb` command needs the
-controller's SMBus address, which is behind the unmapped mux. The other way is
-item 1 below, which is why it comes first.
+Ordered so each step's failure is diagnosable with the one before it working.
 
-**Note the second unit, or the lack of one.** There is one 3172TQ in this lab
-and PSU 1 in it is dead (`NXA-PAC-500W`, serial `DCB2146L0KN`), so the chassis
-is single-supplied. A power event during a session takes the box down with
-nothing to hide it — and it has already happened once: the box power-cycled on
-2026-09-17 for "possible power loss", which is also how it lost
-`feature bash-shell`.
+- [x] ~~**No taps, so nothing is on the Linux stack.**~~ — **done, and the
+      reference's policy was not copied.** All 54 ports are declared in
+      `config/asic.conf`, not just the cabled two.
 
-## 1. Get the loader's handoff to work — the one thing between here and a boot
+      The 7050TX-64 declares taps only for ports that have a cable in them,
+      justified on cost: a tap on a dark port spends a VLAN, a router
+      interface and a MY_STATION entry. True, and irrelevant — 54 of each on
+      a Trident II is nothing. What the policy actually costs is that
+      `asic.conf` is read once at `nosd` start, so a port with no tap is not
+      an interface that is down, it is an interface that does not exist.
+      Plugging a cable into it does nothing, shows nothing and logs nothing
+      until somebody edits a file and restarts the datapath. The set of
+      usable ports ends up decided at build time by whoever last wrote the
+      config rather than by whoever is holding the cable.
 
-⚠ **This is the whole remaining blocker, and it is now narrow.**
+      ⚠ **The reference should be changed to match**, not the other way round.
 
-Netbooting through the **loader's own TFTP** works as far as it possibly can
-without executing: the NBI container is accepted, the kernel loads, the
-initramfs loads, our command line reaches the kernel parameters, and the loader
-calls `big_linux_boot`. Then the board resets with no kernel output, not even
-`earlyprintk`.
+- [x] ~~**The management MAC is the unprogrammed NIC default.**~~ —
+      **worked around, and the hardware turned out to carry it after all.**
 
-```
-Loading kernel length 14246400
-Kernel loaded successfully
-Loading intird 67579836
-big_linux_boot
-(c) Copyright 2018, Cisco Systems.     <- reset
-```
+      `eth0` comes up as `00:a0:c9:00:00:00`, Intel's OUI with an all-zero
+      suffix, i.e. a blank NIC EEPROM. `config/network.conf` now states the
+      real address.
 
-Three causes are eliminated — the exec address (the vendor's image has the same
-one), `setup_sects` (the vendor's kernel has the same situation), and KASLR
-(`nokaslr` fails identically). See
-[hardware.md](hardware.md#three-hypotheses-tested-and-eliminated).
+      Unlike the reference, it was not copied out of the vendor OS — it was
+      **read from this board's own ID PROM**, the `24c512` at `0x52` that the
+      i2c service already instantiates. The layout, measured:
 
-- [x] ~~Build a kernel with `CONFIG_RELOCATABLE=n` and
-      `CONFIG_PHYSICAL_START=0x100000`~~ — **ruled out without building it.**
-      The vendor kernel's own config, extracted from its `IKCFG_ST` blob, is
-      `CONFIG_RELOCATABLE=y`, `CONFIG_PHYSICAL_START=0x1000000`,
-      `CONFIG_EFI_STUB=y` — the same as ours in every field that decides where
-      a kernel may be loaded. The kernel this loader *does* boot is
-      relocatable and linked for 16 MB, exactly like ours.
-- [x] ~~Which needs per-board kernel fragments first~~ — **no longer needed
-      for this.** Worth having eventually, but it is not the prerequisite for
-      anything on this list any more.
-- [x] ~~Disassemble `big_linux_boot`~~ — **done.** The loader's `mods` section
-      is a GRUB module blob with 35 **unstripped** ELF objects, so the whole
-      path came back with symbols: NBI loader → `grub_load_linux` →
-      `big_linux_boot` → a 176-byte trampoline at physical `0x700` → 32-bit
-      entry at `code32_start` with `%esi = boot_params`. Every gate our kernel
-      must pass is now known with its constant, and **there is no upper version
-      bound and no size limit**. Write-up in the RE repo's
-      `notes/loader_linux_handoff.md`; artifacts in
-      `analysis/bios/loader-modules/`.
-- [x] ~~Disassemble the 176-byte `switch_image` trampoline~~ — **done.** It is
-      a textbook long-mode exit and it is correct: `lgdt`/`lidt`, a far jump
-      that loads CS from a complete and valid GDT, then paging off, `EFER.LME`
-      off, `CR4 = 0`, and `jmp *%ebx` into `code32_start` with
-      `%esi = boot_params`. ⚠ It never writes DS/ES/SS, which is a real boot-
-      protocol violation — patched around in `0002-…-reload-the-data-segments`
-      — but it is **not** what stops the board.
-- [x] ~~Make the Linux-loader module verbose~~ — **not possible, and no longer
-      needed.** `debug level` only takes a number and only sets the NBI
-      module's variables; the Linux loader defines its own `debug` global that
-      nothing writes. The placement it would have printed was instead derived
-      statically from the code, and then confirmed on the hardware by a probe.
-- [x] ~~Does our kernel execute at all?~~ — **yes.** A probe patched over the
-      kernel's first instructions (`out` a character to `0x3f8`, which touches
-      no memory) arrives 162 ms after the loader's last line.
-- [x] ~~Is something timing us out?~~ — **no.** A kernel patched to
-      `out 'S'; jmp .` sat in that loop for minutes with no reset. There is no
-      watchdog.
-- [ ] **Bisect the four seconds.** The kernel runs for ~4 s and then the board
-      resets, and that is now known to be *work* rather than a timeout —
-      roughly what decompressing 14 MiB into 46 MiB costs on this CPU. Patch a
-      character out at the return from `extract_kernel`, just before the jump
-      into the decompressed kernel, and see whether it arrives. That separates
-      "decompressed and then died" from "never got there".
-- [ ] **Explain the missing decompressor output.** With
-      `earlyprintk=serial,0x3f8,9600`, `Decompressing Linux...` should have
-      appeared — `CONFIG_X86_VERBOSE_BOOTUP` is set and the loader fills in
-      `cmd_line_ptr`. It did not, while a raw `out` to the same port works.
-      Either `console_init()` is never reached, or the kernel's serial setup
-      does not survive the state the loader leaves the UART in.
-- [ ] **Or sidestep it: the USB/EFI-stub path does not use `boot_params` at
-      all.** Both kernels have `CONFIG_EFI_STUB=y`, and the firmware executes
-      EFI applications — so that route tests "does our kernel run on this
-      board" independently of the loader. See item 1b.
+      | | |
+      |---|---|
+      | Two records | `0x0000` board, `0x1000` chassis, 4096 bytes each |
+      | `+0` | magic `ab ab` |
+      | `+14` | `Cisco Systems, Inc.` |
+      | `+34` | product ID (`N3K-C3172TQ-10GT`) |
+      | `+54` | serial (`FOC22010NYL` board, `FOC2201R1WZ` chassis) |
+      | `+74` | part number (`73-15384-02`, `68-4949-01`) |
+      | `+90` | revision (`R0`, `S0`) |
+      | `+184` | **MAC base** — `b4:de:31:3f:a5:c0`, chassis record only |
+      | `+190` | MAC count, `0x0080` = 128 addresses |
 
-## 1b. A USB stick — the other way to reach the same question
+      - [x] ~~**Read it in the HAL instead of the file.**~~ — done for the
+            identity half. `internal/platformhal/n3172tq/idprom.go` decodes
+            the PROM and `Board()` reports the chassis record, so `identity`
+            no longer says `ErrUnsupported`. The at24 is found through the
+            declared mux channel rather than a hardcoded bus number, a record
+            without the `0xabab` magic is refused outright, and a field that
+            reads as unprintable is dropped rather than reported — a
+            plausible wrong serial being worse than none. Tested against the
+            measured bytes of both records.
+      - [ ] **Use the PROM's MAC instead of `network.conf`.** The decoder
+            already returns it; what is missing is a path from the HAL to the
+            management interface, since `Identity` has no MAC field and the
+            network service reads a file. ⚠ Offsets are still two records
+            from one unit — check against a second 3172TQ before trusting
+            them generally.
 
-`Boot0003 "EFI USB Device"` is enabled and is `[ 3 ]` in the TAB menu, and the
-firmware executes EFI applications perfectly — it is how it starts its own
-loader and shell. So a FAT stick with `\EFI\BOOT\BOOTX64.EFI`,
-`\EFI\BOOT\initrd.img` and `\startup.nsh` boots with no boot-variable
-change at all, and **the EFI stub path does not involve the loader's
-`boot_params` at all** — which makes it an independent test of whether our
-kernel runs on this board.
+- [x] ~~**No `config/network.conf`.**~~ — written. Management `10.10.39.3/24`
+      (NX-OS keeps `.2`), default route, a route to the build/TFTP host
+      network, loopback `10.101.255.54/32`, and a `/29` per transit link:
+      `eth1_31` `10.101.101.89`, `eth1_32` `10.101.101.97`. Gateway
+      `10.10.39.1` was confirmed reachable before choosing it.
 
-It needs somebody at the rack. Procedure in
-[install.md](install.md#test-it-from-a-usb-stick-instead).
+- [x] ~~**`net_wait_secs: 60` would have thrown the front-panel addresses
+      away.**~~ — removed, so it takes the 1500 s default. The 60 was correct
+      when no port map existed and the taps could never appear; with the map
+      generated it means `eth0` is configured, every front-panel address is
+      silently skipped, and the box comes up with no transit addressing —
+      which reads as a dead data plane rather than a timeout. This board has
+      48 external PHYs whose firmware is downloaded over MDIO before the chip
+      reports its ports, so the wait is minutes.
 
-What either path settles:
+- [x] ~~**The datapath silently truncated the tap list at 8.**~~ — found by
+      declaring all 54, and fixed in `datapath/`.
 
-- [ ] **Does our kernel execute on this board at all?** Still unanswered. The
-      loader path dies at the handoff and the USB path has not been tried.
-- [ ] **The fans** — the only place the unmanaged duty can be observed.
-- [ ] **The platform i2c bus** — `tools/mki2cmap.sh --yaml`. ⚠ Partly answered
-      already, for free: the loader's own `debug 3` output shows it selecting
-      **two** muxes, `0x73` and `0x70`, and reading the board EEPROM at
-      **`0x52`**, which is where `CardIndex = 11091` comes from. Three
-      addresses the HAL needs, and `debug 3` is a way to watch platform i2c
-      with no OS in the way.
-- [ ] **The disk, read-only** — `cat /proc/partitions` should show the vendor's
-      `sda1..sda6` intact.
-- [ ] **The management port**, by MAC — see item 2.
+      `datapath/common/tapbridge.c` deliberately *refuses* rather than
+      truncates, on the reasoning that dropping taps quietly produces a switch
+      short some ports for no stated reason. That protection was dead code:
+      both `datapath/td2/main.c` and `datapath/td2p/main.c` declared
+      `struct tap_spec specs[8]` and stopped scanning at `ntap < 8`, so the
+      caller truncated before the callee ever saw the count. Declaring 54 gave
+      8 taps, `eth1_1`..`eth1_8`, with nothing said — and the network service
+      then waited out its whole deadline for interfaces that were never going
+      to exist. The old `contract 1, ports 8 max` recorded for the 7050TX-64
+      was this cap, not a property of the board.
 
-## 2. ~~Which of the four PCH GbE ports is `mgmt0`~~ — answered
+      The bridge's limit is now `NOSAIC_MAX_TAPS` in `tapbridge.h`, both
+      callers are sized to it, and a board declaring more than that is
+      refused with a message naming the count. ⚠ This is a shared-datapath
+      fix: it changes the 7050TX-64 and 7050SX2 too.
 
-**`01:00.1`, `8086:0438`, MAC `b4:de:31:3f:a5:c0`, driver `igb`.** Read off the
-running switch: it is the only one of the four with a driver bound.
+- [x] ~~**Transmits on dark ports were counted as successes.**~~ — the second
+      thing declaring all 54 ports exposed, also fixed in `datapath/`.
 
-And the premise of the original question was wrong. The two `8086:0436`
-functions are **`DH8900CC Null Device`** — placeholders the PCH exposes, which
-report an Ethernet class code (`0x020000`, which is what the EFI shell prints)
-and are not ports. No driver claims them and none should; there is no missing
-PCI ID and no kernel patch.
+      `bcm_tx` ANDs the packet's port bitmap with the bitmap linkscan
+      maintains, so a port with no link yields no descriptor: the SDK prints
+      `Could not send pkt with dv_vcnt = 0`, invokes the completion callback
+      inline, **and returns success**. Linux sends router solicitations and
+      MLD out of every interface it has, so 52 dark ports produced a steady
+      drip of failed transmits recorded in `tx_ok` as though they had gone
+      out — 364 of them in the first few minutes.
 
-So `CONFIG_IGB=y` is sufficient, and it is in the fragment.
+      `tap_tx()` now checks link before handing the frame over and counts
+      `tx_nolink` instead. Measured after the fix: **0** `dv_vcnt` messages,
+      and dark ports report `tx-ok=0 tx-nolink=N`. ⚠ Shared-datapath fix;
+      it changes the other td2/td2p boards too.
 
-- [ ] One thing left, and it is a naming question rather than a driver one:
-      `01:00.2` is a genuine second `8086:0438` that goes nowhere, and `igb`
-      will bind it as well as the front panel. NX-OS leaves it unbound. Which
-      kernel name each gets depends on probe order, so `network.conf` must not
-      be written against a guessed name — confirm by MAC during item 1.
+- [x] ~~**Nothing has been forwarded or routed.**~~ — **both links carry
+      traffic and OSPF is Full on both**, 2026-09-18. `10.101.101.33` and
+      `.97` here against `.34` and `.98` on the 7050TX-64, 0% loss, two
+      adjacencies to `10.101.255.50`, and the Nexus loopback reachable from
+      the Arista over an **ECMP pair** (equal cost on both links). This is
+      the first traffic either board has passed to a neighbour.
 
-## 3. Generate the port map, before the install rather than after
+- [x] ~~**Routes were learned but never reached the chip.**~~ — the third
+      hardcoded 8, and the one that actually mattered.
 
-`tools/mkportmap.sh` and `tools/mkpolarity.sh`, from one `config show` capture
-off the vendor's SDK shell. The datapath will not start without the first, and
-ports link and carry nothing without the second.
+      With full adjacencies and 18 OSPF routes in the RIB, the chip held
+      **none**: `l3: CHIP route 0/15360  intf 9/8192`, with every route
+      counted under `not a router interface`. The cause was
+      `#define MAX_IF 8` in `datapath/common/l3sync.c`:
+      `nosaic_l3_add_intf()` returned -1 past the eighth interface and its
+      caller in `td2/main.c` ignored the result, so taps 9 onward got no
+      router interface. `eth1_31` and `eth1_32` are taps 31 and 32.
 
-Take the capture **while the vendor OS is still installed**, because after an
-install it is gone — and getting it back means putting NX-OS back on the box.
-This is the one irreversible ordering constraint on the whole page.
+      It hid well. The one printf that names the interface is rate-limited
+      to four lines, and all four were spent on `eth0` — which legitimately
+      has no router interface, being the management NIC. So the log said
+      exactly one true and completely misleading thing.
 
-⚠ **Reaching that shell needs `feature bash-shell`, which is currently off.**
-It is a running-config setting and the lab unit lost it to a power cycle, so
-`run bash` returns a syntax error rather than a permission error. Turn it back
-on first.
+      `MAX_IF` is now `NOSAIC_MAX_TAPS`, the overflow says which interface it
+      refused, and the caller reports the failure. Measured after:
+      `CHIP route 15/15360  intf 55/8192` — 54 taps plus one, and routes in
+      the silicon.
 
-Both generators have been run against the real capture and produce the right
-shape — 54 port map entries, 54 PHY addresses, 48 copper PHYs, 6 cage PHYs, 18
-per-core lane maps — so what is left is running them against the switch you are
-installing on.
+- [ ] **The 7050TX-64 needs this same fix before two-hop traffic works.**
+      Its `nosd` now knows 52 taps and it is running the old binary:
+      `intf 9/8192`, so 44 of its ports have no router interface. The
+      symptom from here is that `10.101.255.50` (one hop) answers while
+      `10.101.255.53` and `10.101.101.241` (two hops, transiting the Arista)
+      are 100% loss — even though the far boxes have correct return routes.
+      It needs a rebuild with the current `datapath/`.
+ Both linked ports counted
+      `rx 0 pkts / tx 0 pkts` over 25 s, which is correct for two unconfigured
+      ends. **This end is now configured** — `eth1_31 10.101.101.89/29` and
+      `eth1_32 10.101.101.97/29`, verified applied on the hardware. What
+      remains is the far end: the 7050TX-64 has taps for `et49/et50/et52` and
+      `et1`..`et5` only, so its ports 31 and 32 are not on its Linux stack.
+      Add the matching pair there (`10.101.101.90` and `.98`) and this is the
+      first real traffic test either board has had. The reference is blocked on exactly this and for exactly one
+      reason — no neighbour. **That reason is now gone:** ports 31/32 are
+      patched to the 7050TX-64, so both ends are NOSaic boards we control.
+      Configure both ends and this becomes the first real traffic test on
+      either board.
 
-## 4. Install, and get back
+- [ ] **It is not installed.** Every boot is a netboot; a power cycle returns
+      the box to NX-OS. That is the safety property and it is deliberate, but
+      until it changes this is a demo.
 
-- [ ] Save the NX-OS image off the box and verify its md5. There is exactly one
-      copy on the chassis.
-- [ ] Run the installer. Check the EFI system partition verification line.
-- [ ] Boot NOSaic from the internal disk through the EFI shell.
-- [ ] **Then immediately prove the way back** — netboot the NX-OS image with
-      `loader> boot tftp://...` and `install all`. Recovery that has never been
-      exercised is not recovery. The TFTP transport itself is proven on this
-      hardware (5.3 MB at 3.7 MB/s across a subnet boundary); the reinstall is
-      not.
+      ⚠ **The install path is not the path being exercised.** Development
+      netboots through the vendor loader's NBI container; the installer writes
+      an EFI system partition and the firmware boots the kernel directly via
+      `CONFIG_EFI_STUB`. Those are two different handoffs and only the first
+      has ever run. Do not assume the install works because netboot does.
 
-## 5. A real firmware boot entry, instead of the shell
+- [ ] **Recovery has never been exercised.** There is exactly one copy of
+      `n3100-compact.7.0.3.I7.9.bin` on the chassis. Save it off and verify
+      its md5 *before* installing, then prove the way back by netbooting it
+      and running `install all`. Recovery that has never been run is not
+      recovery.
 
-Today's arrangement is: the EDK2 shell is first in `BootOrder`, it auto-runs
-`startup.nsh` from our EFI system partition, and the script launches the kernel
-with a command line. It works because the shell passes arguments and a plain
-`Boot####` entry does not.
+## Not blocking — the board runs, short of these
 
-The tidy ending is a `Boot####` entry whose **optional data carries the command
-line as UCS-2**, so the firmware boots the kernel directly. `CONFIG_EFIVAR_FS`
-is already built in for it. Two routes:
+- [ ] **The front panel is dark.** `led: no SCD found; the front panel stays
+      dark`. Chassis LEDs are 32-bit MMIO over the PLX PCI9030's local-bus
+      windows and the offsets are unknown; port LEDs belong to the ASIC. The
+      reference drives both through its SCD, which this board does not have,
+      so this is new work rather than a port.
+- [ ] **Transceivers and cages are not wired.** `PlatformHAL.Cages` is nil and
+      the `retimer`/`transceivers` services are gated off. ⚠ On this board the
+      QSFP EEPROMs hang off the **ASIC's CMIC I²C**, not the board controller
+      — the inverse of the Arista arrangement, and the easiest thing here to
+      implement backwards.
+- [ ] **Breakout is unproven.** All six cages are declared `40g`; none has
+      been broken out to 4 × 10G.
+- [x] ~~**No `config/frr.conf`.**~~ — written: router-id from the loopback,
+      OSPFv2 and OSPFv3 on both transit links at **equal cost**, so the pair
+      is an ECMP pair rather than a primary and a spare. `max-metric
+      router-lsa` is set, so the box is reachable but nothing routes through
+      it until the datapath has earned the traffic.
 
-- `efibootmgr` from the running switch, which is a package NOSaic does not
-  currently build. It is small and it is the right answer.
-- The shell's `bcfg boot -opt <index> <file>`, with a file containing the
-  command line already encoded UCS-2. Works from a console session and has to
-  be redone after a firmware reset.
+      Two things this fixed that were not obvious:
+      - **Without it the board ran another switch's configuration.** The frr
+        package's default `frr.conf` is not neutral — it carries router-id
+        `10.101.255.53` and that board's networks. Two routers claiming one
+        id is a fault that presents as a flapping neighbour.
+      - **`can't open logfile /var/log/frr.log`** on every boot: the daemons
+        drop to the `frr` account and /var/log is not theirs to write. The
+        7050TX-64 avoids it with `log syslog`, which is no better here —
+        ⚠ **no profile in this tree ships a syslog daemon**, so those go
+        nowhere at all, quietly. This board uses `log stdout`.
 
-Until one of those is done, **do not** replace the shell entry with a direct
-`bcfg boot add` — a kernel launched that way gets no `console=` and no
-`initrd=`, and the symptom is a completely silent boot.
+- [ ] **Fix the frr package default for every board.** Shipping one board's
+      router-id as the fallback, and a log path the daemons cannot write, are
+      both wrong independently of this port. Left alone here because it
+      changes every board and the 7050TX-64 is mid-configuration.
+- [ ] **Identity, watchdog and reset lines report `ErrUnsupported`**, each
+      honestly: the PROM layout is the vendor's and undecoded, and no watchdog
+      or reset line has been found to be reachable.
+- [ ] **ACL is not wired for td2 here.** `feature/acl-td2` exists and is
+      untested. This chip's ingress FP is 4096 entries, twice Trident+'s; the
+      prediction on record is ~2560 v4 + ~1536 v6, expected to come out lower.
+      Record whichever way it falls.
+- [x] ~~**The ASIC die temperature is invisible to the thermal loop.**~~ —
+      it reads, and it is the hottest thing in the box by 14 °C.
 
-## 6. Bring up the datapath
+      The die is reachable only through the SDK over PCIe, so the only
+      process that can ask is `nosd`. The datapath serves it as an
+      `asic.temp` query (`bcm_switch_temperature_monitor_get`, converted from
+      the SDK's 0.1 °C to millidegrees once, at the source), and this board's
+      HAL adds it to `Temperatures()`. `internal/thermal` needed no change:
+      the reading simply arrives and is taken as the hottest, which is what
+      that package's comment said would happen.
 
-Everything above is about getting a kernel and a userspace onto the box.
-`nosd-td2` is where the board becomes a switch.
+      Degradation is deliberate and tested: no datapath running, a datapath
+      too old to answer, a chip with no monitors, and a monitor reading zero
+      are all "no reading" rather than "0 °C" — zero on the hottest part of
+      the board would wind the fans *down*. A wedged `nosd` costs one
+      interval, not the cooling loop, via a deadline on the query.
 
-- [ ] `nosaic show caps`. Compare against the 7050TX-64's `contract 1, ports 8
-      max` — this board should be no worse, and if it is, the difference is
-      board data rather than driver.
-- [ ] The 48 copper ports, which is where `datapath/td2/phy.c` gets its second
-      test. The BCM84848 PHYs need firmware downloaded over MDIO at init, the
-      MDIO addresses are **swapped in pairs**, and physical lane numbering
-      **skips 17–20**. Each of those fails silently and differently.
-- [ ] The six 40G cages, which are **retimed through BCM84328s** rather than
-      direct-attach. That is new here: the Arista's cages are direct SerDes.
-      Whether the SDK's `phy_84328_<n>` handling wants anything from us beyond
-      the generated port map is unknown.
-- [ ] `config/portmode.conf` — prove one cage broken out into 4 × 10G.
-- [ ] ACL. `datapath/common/acl.c` exists, `datapath/td2` has no field-group
-      support wired to it, and this chip's ingress FP is **4096 entries** —
-      twice Trident+'s. The prediction on record is ~2560 IPv4 + ~1536 IPv6, or
-      ~3500 v4-only, and it is expected to come out lower because the vendor
-      reserves ingress slices for its own features. Falsifiable the moment the
-      capability exists; record whichever way it falls.
+      Measured: `temp ASIC 49.3 °C` against 30.2–35.0 for the board diodes.
 
-## 7. A platform HAL
+- [ ] **`thermal` takes one band against the hottest sensor, and this board
+      has sensors whose trip points differ by more than two to one.** The die
+      trips at 100, the Back diode at 46. Keyed to the die (55–90, which is
+      what `board.yml` now sets), Back could reach its own minor trip with
+      the fans still at the floor. Today that is covered by a measured
+      offset — the die runs ~19 °C above Back, so Back at 46 implies a die
+      around 65 — but that is an inference from one set of readings and it
+      fails for anything that heats the chassis without heating the ASIC: a
+      failed fan, a blocked intake, a hot PSU. The fix is per-sensor
+      thresholds in `internal/thermal`, and it is shared code affecting every
+      board.
+      ⚠ The first band shipped with the die in the loop was 38–52, keyed to
+      the diodes, and it ran the fans at **83% on an idle switch** where the
+      vendor runs 16%. If a band ever looks absurd, check which sensor is
+      driving it before adjusting the numbers.
 
-The largest remaining piece, and the board is useful without it.
+- [ ] **No hardware cooling backstop.** The ADT7462 can run the whole curve
+      itself, but its auto registers are factory defaults (no sensor routed to
+      any fan, ramp starting at 90 °C) and Cisco did not use them either. The
+      software loop already sets fans to 100% on any clean exit, so this only
+      covers `SIGKILL` and a wedged kernel. Cheap to add; does nothing for the
+      die blind spot.
 
-- [ ] **Map the mux `0x70` channels to devices.** There is a tool for this
-      now: `tools/mki2cmap.sh --yaml`, run under a netboot (item 1) where the
-      bus is idle and ours. The kernel carries the path — `I2C_I801`,
-      `I2C_MUX_PCA954x`, `GPIOLIB` — and the image carries the `i2c*` applets.
-      The alternative, watching `dmesg` on the vendor OS while touching each
-      subsystem, only works by elimination, because successful mux selections
-      are not logged and only the failures are. Without the channel map an i2c
-      map in `board.yml` would be a guess that reads a device that is not
-      there.
-- [ ] **Identify the parts, rather than believing the address hints.** The
-      sensor drivers ship as modules so this can be done by binding one and
-      checking the reading against the vendor's own numbers — the lab chassis
-      idles at ASIC 56 °C, D1 38 °C, D2 37 °C, D3 31 °C. A wrong part name is
-      worse than none: the driver binds, a sensor appears, and it reports a
-      number read from the wrong register.
-- [ ] **Land the Linux-i2c HAL on `main`.** `platform_hal.i2c` and
-      `internal/platformhal/i2cmap.go` were written for the Edgecore AS4610
-      and are on `board/edgecore-as4610-54t`. This board wants the same shape,
-      which makes two — and neither can declare an i2c map until it is on
-      `main`. This is the blocker between having the map and acting on it.
-- [ ] **Decode the SPROM** for the per-board thermal thresholds, the MAC base
-      and the serial. Dumps are in the RE repository's `analysis/hw/`. This is
-      what would let the switch state its own identity from hardware rather
-      than from configuration.
-- [ ] **Sensors**, four of them, enumerated by CCTRL rather than probed.
-- [ ] **Fans**, in zones, with a PWM floor — and worth copying the vendor's
-      **tachometer feedback**, which NOSaic does not do on any board. Commanding
-      a duty and checking the RPM agrees is the difference between noticing a
-      seized fan and not.
-- [ ] **PSU presence and health.** The vendor models presence, health,
-      redundancy mode and the PSU's own fan separately; ours is a GPIO word
-      giving presence. The dead supply in this unit makes it testable.
-- [ ] **QSFP EEPROM**, which on this board is reached through the **ASIC's CMIC
-      I²C**, not through the board controller. ⚠ This is the inverse of the
-      Arista arrangement and it is the easiest thing here to implement
-      backwards.
-- [ ] **Chassis LEDs.** 32-bit MMIO over the PLX PCI9030's local-bus windows.
-      Which offsets are the LEDs is not known and needs either a live read of
-      BAR2–5 or the register map out of `libcrdcfgdatan3k_qz2.so`. Front-panel
-      *port* LEDs are the ASIC's and the SDK already drives them.
+## Open questions
 
-## Not ours to finish, but worth recording
-
-**Why the NBI route resets after `CardIndex`.** NOSaic does not need it — the
-firmware boots our kernel directly — but the answer is in the RE repository's
-open threads, and if step 3 shows the firmware path failing the same way, the
-two questions turn out to be one.
-
-Candidates on record: the header's exec address (`0x92800`) points at mknbi's
-`first32pm` stub, which neither our image nor Cisco's contains, so their loader
-must take a different path for an image it recognises; or `Image valid` implies
-a validation step we do not satisfy whose failure path resets rather than
-printing.
+- **Why the kernel hangs early with `CONFIG_EFI_MIXED=n`.** Established by
+  bisect, not root-caused. Left at the default, with the reasoning recorded in
+  `recipes/linux/config/x86_64.fragment`.
+- **Whether the EFI-stub install path hits the same wall the NBI path did.**
+  Unknown until an install is attempted; if it fails identically, the loader
+  question and the firmware question turn out to be one.

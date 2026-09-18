@@ -51,6 +51,27 @@ CONFIG_MMC_SDHCI_ACPI=y
 CONFIG_EFI=y
 CONFIG_EFI_STUB=y
 
+# ⚠ EFI_MIXED IS LEFT ON, AND THAT IS A BISECT RESULT RATHER THAN A PREFERENCE.
+#
+# Turning it off is tempting: the option exists only for 32-bit firmware
+# loading a 64-bit kernel, which is not any boot NOSaic does, and it puts a
+# branch on the last instruction before long mode whose fallback loads %esp
+# from efi32_boot_sp -- a stack pointer only ever set when the 32-bit EFI stub
+# was the entry. On the Nexus 3172TQ that branch was taken for real, because
+# its loader was overwriting the tail of .data and efi_is64 stopped reading 1.
+#
+# But the cure for that was on the NBI side (pad the segment so the loader's
+# params page lands clear of .data), and with that in place efi_is64 reads
+# correctly and the branch is never taken. Turning the option off as well
+# changed head_64.S codegen -- which is exactly where the NBI shim patches --
+# and the resulting kernel hung in early boot, mid-line in the e820 user-table
+# print, with no reset and nothing further on the console. The shim's own
+# asserts passed, so nothing detected a mismatch.
+#
+# So: left at its default until somebody understands that hang. It is not
+# load-bearing either way, and a config change that costs a boot for no
+# benefit is not worth carrying.
+
 # The variable store, writable, so the switch can name itself in the firmware's
 # boot order once it is running.
 #
@@ -156,6 +177,24 @@ CONFIG_HWMON=y
 # two the sibling PowerPC board actually has. As modules they cost nothing in
 # the image and let identification proceed by binding one and seeing whether
 # the readings are sane, instead of by guessing in a kernel rebuild each time.
+# ADT7462 -- the one that matters on the Nexus 3172TQ, and it is not a guess.
+#
+# NX-OS's own i2c transaction history names it. /proc/i2c_evhist_dev is a
+# directory of per-device-type histories, and the live ones say:
+#
+#   NUOVA_I2C_ADT7462   bus 1  addr 0x58
+#   NUOVA_I2C_AT24C512  bus 1  addr 0x52    (board ID PROM)
+#   NUOVA_I2C_PS        bus 3 and 4  0x5b   (the two supplies, PMBus with PEC)
+#   NUOVA_I2C_PS_SPROM  bus 3 and 4  0x53
+#   NUOVA_I2C_PCA9539   0x74 / 0x76         (GPIO expanders)
+#
+# The ADT7462 is a thermal monitor AND a fan controller in one part -- four
+# temperature channels, four PWM outputs, eight tach inputs -- so it is both
+# the Front-Left/Front-Right/Back sensors `show environment temperature`
+# reports and the fan zone it drives. Its address range is 0x58-0x5c, which is
+# why probing 0x48-0x4f for an LM75 finds nothing on this board and why 0x58
+# looks like a phantom to a register-0 read: the vendor reads it at 0x98-0x9b.
+CONFIG_SENSORS_ADT7462=m
 CONFIG_SENSORS_LM75=m
 CONFIG_SENSORS_LM90=m
 CONFIG_SENSORS_LM77=m

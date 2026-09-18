@@ -886,9 +886,26 @@ in `datapath/common/acl.c` carries over.
 
 ## Platform HAL
 
-**There is none yet, but the path to one is in the image.** Everything
-auxiliary hangs off Cisco's board controller, **CCTRL** — their SCD — and that
-is a 2.4 MB kernel module we have neither source nor register map for.
+**There is one now, and it is this board's own — `driver: n3172tq`.**
+Everything auxiliary hangs off Cisco's board controller, **CCTRL** — their SCD —
+and that is a 2.4 MB kernel module we have neither source nor register map for.
+
+⚠ **Board-specific on purpose, not for want of a shared one.** The Edgecore
+AS4610 has `platform_hal.i2c` and `internal/platformhal/i2cmap.go` for what
+looks like the same job. It does not fit: `I2CMap` validates a `controller`
+unconditionally — on that board a CPLD carrying fan duty, tachometers and PSU
+status — and this board's equivalent *is* CCTRL, the one thing we cannot reach.
+Declaring one would mean inventing an address for a part that is not there,
+which is the failure its own comment warns about. Its rule that bus numbers are
+stated rather than discovered does not carry over either: the AS4610's buses are
+SoC controllers fixed by device tree, while every bus here is a channel of a mux
+**we** instantiate, numbered from the first free adapter at bind time.
+
+What *is* shared is the HAL interface — `platformhal.HAL` and `Cooling` — which
+is what makes `nosaic platform status` and `nosaic platform thermal` behave the
+same here as on an Arista. `SMBusMap` (Arista) and `I2CMap` (Edgecore) already
+coexist as two board-data shapes behind that one interface; this is a third, and
+that is the pattern rather than a departure from it.
 
 ⚠ **CCTRL is a software layer, not a chip we cannot reach.** This is the thing
 to get straight before concluding the board is closed. The sensors, the fan
@@ -908,14 +925,49 @@ CONFIG_I2C_MUX_PCA954x=y   ⚠ binds to nothing on its own here: x86 has no
 CONFIG_GPIOLIB=y           ⚠ the mux driver needs it and no x86 defconfig
                            sets it
 CONFIG_HWMON=y             so a bound sensor is readable
-CONFIG_SENSORS_*=m         a shortlist, as modules, pending identification
+CONFIG_SENSORS_ADT7462=m   the one this board actually has -- see below
 CONFIG_PMBUS=m             how a PSU reports voltage, current and its own fan
+CONFIG_EEPROM_AT24=y       the board ID PROM
 ```
 
 and the image carries busybox's `i2cdetect`, `i2cget`, `i2cset`, `i2cdump` and
-`i2ctransfer`, with `tools/mki2cmap.sh` to walk the mux. What is missing is the
-channel-to-device table, and [the netboot](#netbooting-it-first) is the only
-time the bus is both reachable and not owned by somebody else's driver.
+`i2ctransfer`, with `tools/mki2cmap.sh` to walk the mux.
+
+### ✅ The channel-to-device table
+
+Read off the vendor rather than probed. NX-OS keeps a per-device i2c
+transaction history in **`/proc/i2c_evhist_dev`** — a *directory* of ~79 device
+types, whose columns are `Bus` and `Addr`. Five have live traffic, and those
+five are this board:
+
+| dev | type | bus | addr | our channel | what |
+|---|---|---|---|---|---|
+| 7 | `NUOVA_I2C_AT24C512` | 1 | `0x52` | 0 | board ID PROM (`CardIndex = 11091`) |
+| 12 | `NUOVA_I2C_ADT7462` | 1 | `0x58` | 0 | **temperatures and fans** |
+| 15 | `NUOVA_I2C_PCA9539` | 2 / 1 | `0x74` / `0x76` | — | GPIO expanders |
+| 17 | `NUOVA_I2C_PS` | 3 and 4 | `0x5b` | 2, 3 | the two supplies, PMBus |
+| 18 | `NUOVA_I2C_PS_SPROM` | 3 and 4 | `0x53` | 2, 3 | PSU EEPROMs |
+
+**NX-OS's `Bus N` is the kernel's `i2c-N`, which is mux channel N-1.** Buses 3
+and 4 scan identically because they are PS1 and PS2.
+
+⚠ **There is no discrete temperature sensor, and a scan will never find one.**
+`NUOVA_I2C_TMP_SENS` has no traffic at all. The **ADT7462** is one part doing
+both jobs — four temperature channels and four PWM outputs — so
+Front-Left/Front-Right/Back *and* `Fan Zone Speed: Zone 1: 0x28` are the same
+chip. Its address range is `0x58`-`0x5c`, which is why probing `0x48`-`0x4f`
+for an LM75 finds nothing here.
+
+⚠ **Two addresses that look like phantoms are not.** `0x58` reads oddly at
+register 0 because the vendor only ever touches `0x98`-`0x9b`; and `0x5b` *is*
+PMBus, read with `Sz 3` — a word plus **PEC** — at `0x79` (`STATUS_WORD`) and
+`0x88` (`READ_VIN`), so a plain word read is refused. An address that refuses
+register 0 is not evidence of absence.
+
+These are declared in `board.yml`'s `i2c:` block and instantiated at boot by a
+generated `/etc/nosaic/i2c-devices.sh`, because **x86 has no device tree**: the
+drivers are all built and bind to nothing until something writes `new_device`.
+That is why the first netboot came up with `acpitz` and no board sensors at all.
 
 What is known about the shape of it:
 
