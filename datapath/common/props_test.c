@@ -36,6 +36,25 @@ static void write_file(const char *path, const char *body)
 	fclose(f);
 }
 
+/* A name that appears in NEITHER layer must read as absent, not as something.
+ *
+ * Asked directly: does deduplicating the store change the answer for a key
+ * nobody set? It must not. tap_mac_base is read exactly this way, and its
+ * caller decides between "build addresses from the board" and "warn that every
+ * switch will share them" purely on NULL -- so a store that answered anything
+ * else for an unset name would silently hand a fleet identical MACs.
+ *
+ * Pinning "last definition wins" does not cover this: that test only ever asks
+ * about names which ARE set.
+ */
+static void absent_key_reads_as_absent(void)
+{
+	check(nosaic_props_get("tap_mac_base") == NULL,
+	      "a name set in NEITHER layer reads as absent");
+	check(nosaic_props_get("no_such_property_at_all") == NULL,
+	      "an unrelated name that was never set reads as absent");
+}
+
 int main(void)
 {
 	const char *image = "/tmp/props_test_image.conf";
@@ -87,6 +106,8 @@ int main(void)
 	v = nosaic_props_get("tap_et1");
 	check(v != NULL && strcmp(v, "1:1006:1600") == 0,
 	      "a property the override does not mention is kept");
+
+	absent_key_reads_as_absent();
 
 	/* Three distinct names went in; three must come out. */
 	check(count == 3, "the table holds one entry per distinct name");
