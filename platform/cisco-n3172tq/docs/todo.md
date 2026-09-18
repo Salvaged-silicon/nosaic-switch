@@ -284,6 +284,23 @@ Ordered so each step's failure is diagnosable with the one before it working.
       vendor runs 16%. If a band ever looks absurd, check which sensor is
       driving it before adjusting the numbers.
 
+- [ ] **Adopt `tap_mac_base`, and feed it from the ID PROM.** The tap MACs
+      are generated identically on every board — `02:00:00:00:00:50` upward
+      by tap index — so this board and the 7050TX-64 hold overlapping ranges
+      (`0x50`–`0x85` against `0x50`–`0x86`) and collide index for index: our
+      `eth1_1` and its `et49` are both `02:00:00:00:00:50`. Measured, both
+      boards, 2026-09-18. The cabled pair escapes only because the same index
+      lands on different ports — their tap list starts `et49/et50/et52` — so
+      this is luck, and it changes the next time either tap list does.
+
+      `tapbridge.c` takes a `tap_mac_base` property now; setting one here
+      fixes it. Better: **this board does not need a made-up base.** Its ID
+      PROM carries a real allocated block — `b4:de:31:3f:a5:c0` with a count
+      of `0x0080`, 128 addresses for 54 taps — which is what a MAC block is
+      for, and `idprom.go` already decodes it. A locally-administered
+      constant is the right default for a board that cannot tell you; it is
+      the wrong answer for one that can.
+
 - [ ] **No hardware cooling backstop.** The ADT7462 can run the whole curve
       itself, but its auto registers are factory defaults (no sensor routed to
       any fan, ramp starting at 90 °C) and Cisco did not use them either. The
