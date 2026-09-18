@@ -121,7 +121,7 @@
 /* Enough for every front-panel port on the largest board here, which is 52.
  * It was 8, sized for a two-port test on the 7050SX2, and a board asking for
  * ten got eight without being told -- see the refusal below. */
-#define MAX_TAPS       64
+#define MAX_TAPS       NOSAIC_MAX_TAPS
 #define RX_PRIORITY    100
 
 struct tap {

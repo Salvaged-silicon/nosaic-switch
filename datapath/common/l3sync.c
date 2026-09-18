@@ -110,8 +110,9 @@
 
 #include "l3sync.h"
 #include "props.h"
+#include "tapbridge.h"
 
-#define MAX_IF   8
+#define MAX_IF   NOSAIC_MAX_TAPS
 #define MAX_NH   64
 #define MAX_RT   1024
 #define MAX_HOST 256

@@ -18,6 +18,15 @@ struct tap_spec {
 };
 
 /* Create the taps and start receiving. Returns how many were created. */
+/*
+ * The most taps this can build. Exported because the CALLER sizes the array it
+ * collects them into, and when that number lived in two places they drifted:
+ * tapbridge was raised to 64 and main.c's local array stayed at 8, so a board
+ * declaring 52 ports silently got the first 8 and no warning. One definition,
+ * and nosaic_tap_start refuses anything above it rather than truncating.
+ */
+#define NOSAIC_MAX_TAPS 64
+
 int nosaic_tap_start(int unit, const struct tap_spec *specs, int n);
 
 /* How many taps exist, and what each one is.
