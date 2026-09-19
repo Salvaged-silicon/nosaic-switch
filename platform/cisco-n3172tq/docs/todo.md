@@ -304,6 +304,16 @@ Ordered so each step's failure is diagnosable with the one before it working.
       `0x74`–`0x77` is both the PCA954x and the PCA9539 range, and reading
       all eight registers distinguishes them: a mux has none.
 
+- [ ] **Transceiver support starts at the PCA9539s, not at i²c discovery.**
+      Two independent measurements under NX-OS point the same way: the
+      optics answer i²c only while `ModSelL` is asserted (a full mux-channel
+      scan found no `0x50` anywhere), and NX-OS reports presence for empty
+      cages **without any i²c transaction at all**, so `ModPrsL` is a GPIO
+      read. The vendor's own device table names `NUOVA_I2C_QSFP_SPROM` and
+      `NUOVA_I2C_QSFP_MOD` as separate devices, which is the same split.
+      So the order of work is: map the expanders, assert ModSel, then read
+      SFF-8636 — not the other way round.
+
 - [ ] **Breakout is unproven.** All six cages are declared `40g`; none has
       been broken out to 4 × 10G.
 - [x] ~~**No `config/frr.conf`.**~~ — written: router-id from the loopback,
