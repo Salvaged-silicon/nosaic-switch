@@ -240,6 +240,22 @@ Ordered so each step's failure is diagnosable with the one before it working.
       boot, ~2 days ago, while its working cages 52/53 predate it. Rebooting
       it, or otherwise re-running its cage bring-up, is the test.
 
+      **Soft Tx-disable is eliminated.** The SX2 exposes
+      `nosaic platform tx <cage> on|off`, and a module cabled after boot
+      never having had its transmitter enabled would produce exactly this
+      one-way result. It reported `cage 49 transmitter on: 0x00000001 ->
+      0x00000001` — already on, so the write changed nothing and the
+      hypothesis is dead.
+
+      That leaves physical, and no software test can narrow it further from
+      here: these optics have no DOM, so neither end can measure light.
+      ⚠ The discriminating test needs hands at the rack — **swap the two
+      QSFP modules between Nexus panel 54 and SX2 et49.** If the dead
+      direction follows the module, that module's transmitter or receiver is
+      gone; if it stays at the Nexus end, it is the cage or the fibre. A
+      cheaper first move is to put the same fibre and optic into a different
+      Nexus cage.
+
       Otherwise it is physical — a fibre, a connector, or that module's
       receive path. ⚠ These optics report `DOM is not supported`, so there
       is no optical power reading on either end to settle it with; the SX2's
