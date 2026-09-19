@@ -664,10 +664,11 @@ func showModule(hal platformhal.HAL, cage int) error {
 	if m.SerialNumber != "" {
 		fmt.Fprintf(w, "serial\t%s\n", m.SerialNumber)
 	}
-	if m.TempOK {
+	dead := m.DiagnosticsAllZero()
+	if m.TempOK && !dead {
 		fmt.Fprintf(w, "temperature\t%.1f C\n", float64(m.TempMilliC)/1000)
 	}
-	if m.VccOK {
+	if m.VccOK && !dead {
 		fmt.Fprintf(w, "supply\t%.2f V\n", float64(m.VccMV)/1000)
 	}
 	if err := w.Flush(); err != nil {
@@ -676,6 +677,13 @@ func showModule(hal platformhal.HAL, cage int) error {
 	if len(m.Lanes) == 0 {
 		fmt.Println("\nthis module reports no diagnostics")
 		return nil
+	}
+
+	if dead {
+		fmt.Println("\nthis module implements diagnostics and reports all zeroes in")
+		fmt.Println("them, temperature included -- so no light level is available.")
+		fmt.Println("The zeroes below are what it says, not a measurement, and say")
+		fmt.Println("nothing about the link. Use `nosaic show ports` for that.")
 	}
 
 	fmt.Println()
