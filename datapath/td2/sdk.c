@@ -714,6 +714,29 @@ static void report_delta(bcm_port_t port, const struct pcounters *a,
 		printf("         clean: %llu frames arrived intact, so this lane is the\n"
 		       "         right way round.\n", dpkt);
 }
+/* Is this MAC interface one a 40G cage can actually run on?
+ *
+ * The list is every 40G attachment the SDK names, fibre and copper, because
+ * which one is right depends on the optic in the cage and not on us. XGMII is
+ * deliberately absent: it is the 10-Gigabit interface, and setting it here is
+ * what kept every cage on this board dark.
+ */
+static int if_is_40g(bcm_port_if_t f)
+{
+	switch (f) {
+	case BCM_PORT_IF_XLAUI:
+	case BCM_PORT_IF_XLAUI2:
+	case BCM_PORT_IF_CR4:
+	case BCM_PORT_IF_SR4:
+	case BCM_PORT_IF_LR4:
+	case BCM_PORT_IF_KR4:
+	case BCM_PORT_IF_CAUI:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 /*
  * A 40G port needs its interface and speed set through the API, not merely
  * declared in the port map.
@@ -834,11 +857,38 @@ static void bring_up_40g(int unit, bcm_port_t port)
 				       port, rv, BCM_PBMP_MEMBER(okay, port) ? 1 : 0);
 		}
 
+		/*
+		 * ⚠ XGMII IS THE 10-GIGABIT INTERFACE. DO NOT SET IT ON A 40G CAGE.
+		 *
+		 * This used to read `have_if != BCM_PORT_IF_XGMII` and force XGMII,
+		 * which is the right shape -- write only on a genuine mismatch --
+		 * against the wrong target. On this board the chip brings a cage up
+		 * as SR4 (28), which is correct and is what serdes_fiber_pref_<port>
+		 * in the port map asks for, and every cage was then rewritten to a
+		 * 10G interface. The visible result was a cage that configured
+		 * cleanly, reported speed 40000, and never linked:
+		 *
+		 *     port 69: interface 28 -> XGMII (rv 0)
+		 *     port 69: 40G cage, speed 40000, 1 setting(s) applied
+		 *     2 of 54 ports have link.          <- both of them copper
+		 *
+		 * A 40G cage wants a 40G interface and the chip has already chosen
+		 * one from the port map's ":40". Any of these is right and none of
+		 * them is ours to second-guess; the sibling board reached the same
+		 * conclusion the hard way and stopped writing this at all.
+		 */
 		if (bcm_port_interface_get(unit, port, &have_if) == BCM_E_NONE &&
-		    have_if != BCM_PORT_IF_XGMII) {
-			rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_XGMII);
-			printf("port %d: interface %d -> XGMII (rv %d)\n", port, have_if, rv);
+		    !if_is_40g(have_if)) {
+			/* Not a 40G interface at all, which is a real mismatch. SR4
+			 * rather than a generic choice because that is what this
+			 * board's own serdes_fiber_pref says the cages are. */
+			rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_SR4);
+			printf("port %d: interface %d is not 40G -> SR4 (rv %d)\n",
+			       port, have_if, rv);
 			wrote++;
+		} else {
+			printf("port %d: interface %d is 40G already, left alone\n",
+			       port, have_if);
 		}
 		if (bcm_port_speed_get(unit, port, &have_speed) == BCM_E_NONE &&
 		    have_speed != 40000) {
