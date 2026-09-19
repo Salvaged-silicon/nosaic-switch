@@ -142,6 +142,14 @@ struct tap {
 };
 
 static struct tap taps[MAX_TAPS];
+
+/* The board's "really has link" test; see nosaic_tap_link_filter(). */
+static int (*tap_link_real)(int port);
+
+void nosaic_tap_link_filter(int (*fn)(int port))
+{
+	tap_link_real = fn;
+}
 static int ntaps;
 static int tap_unit;
 
@@ -991,6 +999,14 @@ void nosaic_tap_stats(void)
 		 * only just come up is legitimately silent for a moment, and a
 		 * warning that fires on every fresh link is one nobody reads.
 		 */
+		/* ★ LINK AND A REAL SPEED, NOT LINK.
+		 *
+		 * Without this the detector is unusable on a board with external
+		 * PHYs, where every unconnected copper port reports link. The
+		 * board's filter is the only thing that can tell those apart. */
+		if (link == 1 && tap_link_real != NULL && !tap_link_real(taps[i].port))
+			link = 0;
+
 		if (link == 1 && traffic == 0) {
 			if (++taps[i].silent == TAP_SILENT_INTERVALS)
 				printf("tap: %s (port %d) has link and has carried NOTHING "

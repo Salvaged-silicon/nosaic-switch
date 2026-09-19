@@ -27,6 +27,29 @@ struct tap_spec {
  */
 #define NOSAIC_MAX_TAPS 64
 
+/*
+ * A board's own test for "this port really has link", for boards where the
+ * SDK's link status alone is not one.
+ *
+ * On a board with external PHYs every copper port can report link with the
+ * driver bound, cable or not -- "Link Up with Speed 0M!" -- so a diagnostic
+ * gated on link alone fires for every unconnected port. Measured on a
+ * 7050TX-64: 42 of 52 ports matched every interval, against one real fault.
+ * A detector with that signal-to-noise is worse than none, because the one
+ * line that matters is invisible in the other forty-one.
+ *
+ * The board supplies the discriminator because only it has one, and asking
+ * the SDK per port per interval is not an option: a naive speed sweep across
+ * 48 external PHYs is the exact call pattern that once killed copper receive
+ * on that board. A board that already tracks "link AND a real negotiated
+ * speed" for its own purposes can answer for free.
+ *
+ * Return 1 if the port genuinely has link, 0 if not. A port with no external
+ * PHY should return 1 and let link status stand. Unset means link status is
+ * trusted, which is right for a board whose ports are direct SerDes.
+ */
+void nosaic_tap_link_filter(int (*fn)(int port));
+
 int nosaic_tap_start(int unit, const struct tap_spec *specs, int n);
 
 /* How many taps exist, and what each one is.
