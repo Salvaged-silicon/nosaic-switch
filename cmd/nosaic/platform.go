@@ -69,6 +69,8 @@ func platformCmd(args []string) error {
 		return releaseASIC(hal)
 	case "asic":
 		return probeASIC(hal)
+	case "smbus":
+		return smbusCmd(hal, rest[1:])
 	case "schan":
 		return schanCmd(b, rest[1:])
 	case "retimer":
@@ -720,6 +722,75 @@ func dumpModule(hal platformhal.HAL, cage int) error {
 			}
 			fmt.Println()
 		}
+	}
+	return nil
+}
+
+// smbusCmd reads one register off the board controller's SMBus.
+//
+// Reads only. There is no write here on purpose: the devices on this bus are
+// sensors, power controllers and signal conditioners on a switch that is
+// forwarding, and a diagnostic that can only look cannot be the thing that
+// took the box down.
+func smbusCmd(hal platformhal.HAL, args []string) error {
+	r, ok := hal.(interface {
+		SMBusReadReg(accel, bus, addr, reg int) (byte, error)
+	})
+	if !ok {
+		return fmt.Errorf("%w: this board has no SMBus to read", platformhal.ErrUnsupported)
+	}
+	if len(args) < 4 || args[0] != "read" {
+		return fmt.Errorf("usage: nosaic platform smbus read <accel> <bus> <addr> <reg> [count]\n" +
+			"  addr and reg are hex; count defaults to 1\n" +
+			"  e.g. smbus read 1 7 0x58 0x00 8")
+	}
+	num := func(s string) (int, error) {
+		return func() (int, error) {
+			var v int64
+			var err error
+			if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+				v, err = strconv.ParseInt(s[2:], 16, 32)
+			} else {
+				v, err = strconv.ParseInt(s, 10, 32)
+			}
+			return int(v), err
+		}()
+	}
+	accel, err := num(args[1])
+	if err != nil {
+		return fmt.Errorf("accelerator %q: %w", args[1], err)
+	}
+	bus, err := num(args[2])
+	if err != nil {
+		return fmt.Errorf("bus %q: %w", args[2], err)
+	}
+	addr, err := num(args[3])
+	if err != nil {
+		return fmt.Errorf("address %q: %w", args[3], err)
+	}
+	reg := 0
+	if len(args) > 4 {
+		if reg, err = num(args[4]); err != nil {
+			return fmt.Errorf("register %q: %w", args[4], err)
+		}
+	}
+	count := 1
+	if len(args) > 5 {
+		if count, err = num(args[5]); err != nil {
+			return fmt.Errorf("count %q: %w", args[5], err)
+		}
+	}
+
+	for i := 0; i < count; i++ {
+		v, err := r.SMBusReadReg(accel, bus, addr, reg+i)
+		if err != nil {
+			// Reported per register rather than aborting: on a bus where the
+			// question is whether anything answers at all, which registers
+			// failed is the answer.
+			fmt.Printf("accel %d bus %d %#02x reg %#02x: %v\n", accel, bus, addr, reg+i, err)
+			continue
+		}
+		fmt.Printf("accel %d bus %d %#02x reg %#02x = %#02x\n", accel, bus, addr, reg+i, v)
 	}
 	return nil
 }
