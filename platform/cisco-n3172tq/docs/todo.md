@@ -240,6 +240,20 @@ Ordered so each step's failure is diagnosable with the one before it working.
       boot, ~2 days ago, while its working cages 52/53 predate it. Rebooting
       it, or otherwise re-running its cage bring-up, is the test.
 
+      **A cold boot does not clear it.** Outlet 3 switched fully off
+      (confirmed `Outlet 3: Off`), left down so the optic lost power, then
+      on, booting NX-OS with the loader uninterrupted: still
+      `Link not connected`, admin up, 40G. The far end dropped to `link=0`
+      while we were powered down and returned to `link=1` once we were back.
+      So a stuck port or cage state on this side is ruled out — the vendor
+      OS re-initialises everything from cold and the receive direction stays
+      dark.
+
+      ⚠ The far end's `tx` register reads erratically. Three calls returned
+      `0x01 -> 0x01`, `0x08 -> 0x40` and `0x40 -> 0x00` for what should be a
+      stable bit; it later settled at `0x00 -> 0x00`. Do not conclude
+      anything from a single read of it.
+
       **Soft Tx-disable is eliminated.** The SX2 exposes
       `nosaic platform tx <cage> on|off`, and a module cabled after boot
       never having had its transmitter enabled would produce exactly this
