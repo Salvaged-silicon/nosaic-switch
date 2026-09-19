@@ -216,7 +216,13 @@ Ordered so each step's failure is diagnosable with the one before it working.
       so this is new work rather than a port.
 - [ ] **Transceivers and cages are not wired.** `PlatformHAL.Cages` is nil and
       the `retimer`/`transceivers` services are gated off. ⚠ On this board the
-      QSFP EEPROMs hang off the **ASIC's CMIC I²C**, not the board controller
+      QSFP EEPROMs do **not** hang off the ASIC's CMIC I²C, despite what
+      `docs/hardware.md` says — measured under NX-OS with a module fitted
+      and readable by the vendor OS, `bcm-shell.0> i2c probe` answers
+      `I²C: detected 0 devices`. They are on the platform SMBus like
+      everything else, and a scan of every mux channel found no `0x50`
+      either — which fits, because a QSFP only answers i²c while its
+      `ModSelL` is asserted and nothing asserts it. That makes the PCA9539s
       — the inverse of the Arista arrangement, and the easiest thing here to
       implement backwards.
 - [ ] **The 40G cage to the SX2 is a ONE-WAY LINK, and it is not our

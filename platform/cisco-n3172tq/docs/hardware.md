@@ -51,7 +51,8 @@ Four things in that picture are worth stating in words, because each of them
 contradicts an assumption carried over from the Arista boards.
 
 **There is no single platform bus.** Four transports, three owners: MDIO for the
-PHYs (owned by the SDK), the ASIC's own CMIC I²C for the optic EEPROMs, the
+PHYs (owned by the SDK), ~~the ASIC's own CMIC I²C for the optic EEPROMs~~
+(⚠ WRONG, see below -- the optics are on the platform SMBus), the
 PCH's SMBus behind CCTRL for sensors/fans/PSUs, and 32-bit MMIO over a
 PLX-bridged local bus for chassis LEDs and board control. On the 7050TX-64 the
 SCD is a single place to go for almost all of that.
@@ -974,7 +975,7 @@ What is known about the shape of it:
 | subsystem | transport | vendor owner | addressing |
 |---|---|---|---|
 | PHYs | MDIO | the SDK (`phy8481`) | port → MDIO address, swapped in pairs |
-| QSFP EEPROM | I²C **via the ASIC's CMIC** | `t2usd` | port → SFF-8636 page + byte |
+| QSFP EEPROM | ⚠ **NOT the CMIC** -- platform SMBus; see the note below | `t2usd` | port → SFF-8636 page + byte |
 | Sensors | I²C via CCTRL | `dc3_sensor` | mux `0x70` → channel |
 | Fans / PSUs | I²C via CCTRL | `pfm` / `pfmclnt` | mux `0x70` → channel |
 | Chassis LEDs / board control | 32-bit MMIO over the PLX local bus | `libepldspi` inside `t2usd` | base + offset |
@@ -1145,3 +1146,29 @@ No vendor SDK source is copied into this repository, and none of it may be.
 Cisco's 6.4.8 plus 217 private patches is not licensed for reproduction,
 distribution or derivative works; OpenBCM is, which is why NOSaic can ship it.
 **Read it, do not copy from it** — and it is the older tree anyway.
+
+
+## ⚠ The QSFP EEPROMs are not on the ASIC's CMIC I²C
+
+Stated above in three places and it is wrong. Measured on 2026-09-19 under
+NX-OS, with a `QSFP-40G-SR-BD` fitted in panel 54 and its vendor, part number
+and serial all readable by the vendor OS:
+
+```
+bcm-shell.0> i2c probe
+I2C: detected 0 devices
+bcm-shell.0> i2c show
+unit 0 i2c bus: mode=INTR speed=110kbps SOC_address=0x00
+unit 0 i2c bus: received 0 bytes, transmitted 0 bytes
+```
+
+The chip's own controller has never carried a byte. So the optics sit on the
+platform SMBus with everything else -- which also means the Arista comparison
+in this file is backwards: this board is the *same* arrangement, not the
+inverse.
+
+A full scan of every mux channel found no `0x50` on any of them either. That
+is consistent rather than contradictory: a QSFP answers i²c only while its
+`ModSelL` is asserted, and nothing in NOSaic asserts it. The three PCA9539
+expanders are the likely owners of those lines, which makes them the way in
+to transceiver support rather than an unexplained curiosity.
