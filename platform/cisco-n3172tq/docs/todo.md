@@ -219,27 +219,32 @@ Ordered so each step's failure is diagnosable with the one before it working.
       QSFP EEPROMs hang off the **ASIC's CMIC I²C**, not the board controller
       — the inverse of the Arista arrangement, and the easiest thing here to
       implement backwards.
-- [ ] **No 40G cage links, and this is now a measured fault rather than an
-      untried path.** Panel 54 (logical 69) is cabled to the 7050SX2's et49.
-      Our side configures cleanly — `40G cage, speed 40000, 1 setting(s)
-      applied`, `interface 28 -> XGMII`, tap in VLAN 1054 at MTU 1600,
-      `fmax=1622`, address applied — and the chip still reports `link=0`,
-      with the boot survey taken after the cable was in.
+- [ ] **The 40G cage to the SX2 is a ONE-WAY LINK, and it is not our
+      software.** Panel 54 to the SX2's et49, both ends fitted with matched
+      `QSFP-40G-SR-BD` BiDi optics (`AFBR-79EBPZ-CS2`).
 
-      The far end is not the problem. The SX2 reads cage 49's word live as
-      `0x00000000`, the same as cages 52/53/54 which carry its working
-      transit links, while its unused 50/51 read `0x00000005`. So it has a
-      transceiver seated and in the same state as its good ones.
+      | | |
+      |---|---|
+      | our chip | `link=0` |
+      | **NX-OS on this board** | `Eth1/54 down, Link not connected` |
+      | the SX2's chip | **`link=1`**, live samples, log written seconds ago |
 
-      The difference here is the retimer: **this board's cages go through
-      BCM84328s rather than direct SerDes**, and nothing in the datapath log
-      mentions an 84328 beyond the property names — no firmware, no
-      programming, no report. That is the piece the port map alone was never
-      going to cover.
-      ⚠ A tap reads `LOWER_UP` whether or not the wire has link, and
-      `nosaic show ports` reported `OPER down SPEED 0` for eth1_31 while it
-      was passing traffic with OSPF Full. Neither is evidence about a link;
-      use the chip's own `link=` from the datapath.
+      NX-OS fails identically with all its own platform init, and the SX2
+      has PCS lock on our transmit — so our cage is powered, enabled and
+      transmitting. What is missing is the other direction.
+
+      Since a PHY generally declares link on receive sync alone, the SX2
+      reporting link says nothing about whether the SX2 is *transmitting*.
+      The strongest hypothesis is that its cage 49 laser is not on: that
+      board enables cages at init and this one was cabled after its last
+      boot, ~2 days ago, while its working cages 52/53 predate it. Rebooting
+      it, or otherwise re-running its cage bring-up, is the test.
+
+      Otherwise it is physical — a fibre, a connector, or that module's
+      receive path. ⚠ These optics report `DOM is not supported`, so there
+      is no optical power reading on either end to settle it with; the SX2's
+      all-zero temperature/voltage/bias is the absence of DOM and not a dead
+      optic, which is a trap worth knowing.
 
 - [ ] **Get the QSFP control map off NX-OS, then enable the cages.** The
       most likely reason no cage links: three **PCA9539 GPIO expanders** sit
