@@ -219,6 +219,28 @@ Ordered so each step's failure is diagnosable with the one before it working.
       QSFP EEPROMs hang off the **ASIC's CMIC I²C**, not the board controller
       — the inverse of the Arista arrangement, and the easiest thing here to
       implement backwards.
+- [ ] **No 40G cage links, and this is now a measured fault rather than an
+      untried path.** Panel 54 (logical 69) is cabled to the 7050SX2's et49.
+      Our side configures cleanly — `40G cage, speed 40000, 1 setting(s)
+      applied`, `interface 28 -> XGMII`, tap in VLAN 1054 at MTU 1600,
+      `fmax=1622`, address applied — and the chip still reports `link=0`,
+      with the boot survey taken after the cable was in.
+
+      The far end is not the problem. The SX2 reads cage 49's word live as
+      `0x00000000`, the same as cages 52/53/54 which carry its working
+      transit links, while its unused 50/51 read `0x00000005`. So it has a
+      transceiver seated and in the same state as its good ones.
+
+      The difference here is the retimer: **this board's cages go through
+      BCM84328s rather than direct SerDes**, and nothing in the datapath log
+      mentions an 84328 beyond the property names — no firmware, no
+      programming, no report. That is the piece the port map alone was never
+      going to cover.
+      ⚠ A tap reads `LOWER_UP` whether or not the wire has link, and
+      `nosaic show ports` reported `OPER down SPEED 0` for eth1_31 while it
+      was passing traffic with OSPF Full. Neither is evidence about a link;
+      use the chip's own `link=` from the datapath.
+
 - [ ] **Breakout is unproven.** All six cages are declared `40g`; none has
       been broken out to 4 × 10G.
 - [x] ~~**No `config/frr.conf`.**~~ — written: router-id from the loopback,
