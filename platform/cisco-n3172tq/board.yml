@@ -355,11 +355,29 @@ platform_hal:
 #   * The PSU SPROMs at 0x53. An at24 needs its size declaring and guessing it
 #     wrong either truncates the FRU data or reads off the end; the vendor's
 #     type name does not say which part it is.
-#   * The PCA9539 GPIO expanders. The vendor shows them at 0x74 and 0x76 on
-#     buses 2 and 1, but our own scan found 0x74/0x76 on channel 5 instead.
-#     Two readings that disagree is not a board description.
-#   * The cascaded muxes behind channels 1 and 5. They are the per-port optic
-#     buses, which is the transceiver problem and not this one.
+#   * The PCA9539 GPIO expanders -- but the reason has changed, and they are
+#     now the most interesting thing on this bus. A full scan of every mux
+#     channel puts them on channels 1 and 5, not the vendor's "bus 2 / 1", so
+#     the disagreement that held this up is resolved in favour of the scan:
+#     0x74 and 0x76 on channel 5, 0x75 on channel 1.
+#
+#     ⚠ They are expanders, NOT the cascaded muxes this file used to call
+#     them. 0x74-0x77 is both the PCA954x and the PCA9539 range; reading all
+#     eight registers settles it, because a mux has none. 0x76 has ALL
+#     SIXTEEN LINES CONFIGURED AS OUTPUTS and is driving 0x83/0xfe, and the
+#     platform firmware -- not us, and not NX-OS residue, these are readings
+#     after a cold power cycle -- is what sets them that way.
+#
+#     Six QSFP cages want ResetL, LPMode and ModSelL out and ModPrsL and IntL
+#     in: 30 lines against the 32 here. 0x76 port 0 reads 0x83, so bits 2-6
+#     are low, which on active-low resets is five cages held down. That is a
+#     hypothesis and not a map.
+#
+#     ⚠ DO NOT DECLARE OR DRIVE THEM UNTIL THE MAP IS KNOWN. Sixteen live
+#     outputs on an unmapped expander include, somewhere, whatever else this
+#     board gates. The safe route is a correlation rather than a poke: boot
+#     NX-OS, which drives these cages successfully, read the same three
+#     devices and diff against the values in the RE notes. See docs/todo.md.
 
     # Which chip and channel is which location. "temp1" is not a place on a
     # chassis; these names are the vendor's own, so a thermal log read beside

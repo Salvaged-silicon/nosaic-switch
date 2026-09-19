@@ -241,6 +241,28 @@ Ordered so each step's failure is diagnosable with the one before it working.
       was passing traffic with OSPF Full. Neither is evidence about a link;
       use the chip's own `link=` from the datapath.
 
+- [ ] **Get the QSFP control map off NX-OS, then enable the cages.** The
+      most likely reason no cage links: three **PCA9539 GPIO expanders** sit
+      on the platform bus — `0x74` and `0x76` on mux channel 5, `0x75` on
+      channel 1 — and nothing in NOSaic touches them. `0x76` has all sixteen
+      lines configured as outputs driving `0x83`/`0xfe`, and the platform
+      firmware sets that up at POST (these are readings after a cold power
+      cycle, and we never write them).
+
+      Six cages need `ResetL`, `LPMode`, `ModSelL` out and `ModPrsL`, `IntL`
+      in — 30 lines against the 32 available. `0x76` port 0 reads `0x83`, so
+      bits 2–6 are low: on active-low resets, five cages held down.
+
+      ⚠ **Do not find the map by writing to them.** Sixteen live outputs on
+      an unmapped expander include whatever else this board gates, supply
+      enables among them. Do it as a correlation: boot NX-OS, which drives
+      these cages, read the same three devices, and diff against the table
+      in the RE notes. One reboot, and the delta is the answer.
+
+      This also resolves the older note that these were "cascaded muxes" —
+      `0x74`–`0x77` is both the PCA954x and the PCA9539 range, and reading
+      all eight registers distinguishes them: a mux has none.
+
 - [ ] **Breakout is unproven.** All six cages are declared `40g`; none has
       been broken out to 4 × 10G.
 - [x] ~~**No `config/frr.conf`.**~~ — written: router-id from the loopback,
