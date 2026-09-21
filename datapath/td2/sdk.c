@@ -45,6 +45,7 @@
 #include <soc/error.h>
 #include <bcm/init.h>
 #include <bcm/port.h>
+#include <soc/phyctrl.h>
 #include <bcm/vlan.h>
 #include <bcm/link.h>
 #include <bcm/stat.h>
@@ -917,7 +918,32 @@ static void bring_up_40g(int unit, bcm_port_t port)
 	}
 }
 
+/* What the SDK believes is attached to this port, and where.
+ *
+ * ⚠ THE COPPER HALF OF THIS BOARD HIDES A DEAD MDIO BUS COMPLETELY.
+ *
+ * A BCM84848 autonegotiates 10GBASE-T on its own, so ports 1-48 link whether
+ * or not the SDK ever speaks to them. The six cages are BCM84328 repeaters,
+ * which carry nothing until configured. So an MDIO path that does not work
+ * presents as "the copper is fine and the optics are broken" -- which is a
+ * cabling fault, and is not what it is. A day went into fibres and modules
+ * before anybody asked the SDK what it had found.
+ *
+ * This is the same thing the vendor's `phy info` prints: the driver the SDK
+ * bound and the address it used. "no external PHY" here against BCM84848 or
+ * BCM84328 on the vendor's OS, at the very same addresses out of this
+ * board's own port map, is the whole fault in one line.
+ */
+static void report_phy(int unit, int port, const char *what)
+{
+	const char *name = soc_phyctrl_drv_name(unit, port);
+	uint16 addr = 0;
 
+	soc_phy_cfg_addr_get(unit, port, 0, &addr);
+	printf("phy: port %d (%s) addr %#04x driver %s\n",
+	       port, what, addr,
+	       (name != NULL && *name != '\0') ? name : "NONE -- no external PHY bound");
+}
 
 int nosaic_sdk_ports(int unit)
 {
@@ -988,6 +1014,11 @@ int nosaic_sdk_ports(int unit)
 		 * comes up, not corrected afterwards. */
 		if (port_is_40g(unit, port))
 			bring_up_40g(unit, port);
+
+		/* Every port, not just the cages: the copper half is the control.
+		 * If bus 0 answers and bus 2 does not, the fault is one MDIO bus
+		 * and not the board. */
+		report_phy(unit, port, port_is_40g(unit, port) ? "cage" : "copper");
 
 		erv = bcm_port_enable_set(unit, port, 1);
 

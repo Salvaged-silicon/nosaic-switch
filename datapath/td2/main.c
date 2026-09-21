@@ -554,16 +554,30 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	{
 		struct tap_spec specs[NOSAIC_MAX_TAPS];
 		char names[NOSAIC_MAX_TAPS][32];
-		int ntap = 0, i, tap_props = 0;
+		int ntap = 0, i, declared = 0;
 
+		/* ⚠ COUNT WHAT THE BOARD ASKED FOR, NOT WHAT FITS.
+		 *
+		 * This array was 8 while tapbridge's limit was 64, so a board
+		 * declaring 52 ports got the first 8 of them and was told
+		 * nothing at all -- the ports simply did not exist, and the
+		 * obvious reading was that the declarations had not loaded.
+		 * Counting separately is what makes the difference sayable. */
 		for (i = 0; i < nosaic_props_count(); i++) {
+			if (nosaic_props_name(i) != NULL &&
+			    strncmp(nosaic_props_name(i), "tap_", 4) == 0)
+				declared++;
+		}
+		if (declared > NOSAIC_MAX_TAPS)
+			fprintf(stderr, "nosd: %d tap_<name> properties but at most %d "
+				"can be built; the rest are ignored and their ports "
+				"will not appear\n", declared, NOSAIC_MAX_TAPS);
+
+		for (i = 0; i < nosaic_props_count() && ntap < NOSAIC_MAX_TAPS; i++) {
 			const char *name = nosaic_props_name(i);
 			const char *val = nosaic_props_value(i);
 
 			if (name == NULL || strncmp(name, "tap_", 4) != 0)
-				continue;
-			tap_props++;
-			if (ntap >= NOSAIC_MAX_TAPS)
 				continue;
 			snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
 			specs[ntap].name = names[ntap];
@@ -582,19 +596,6 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				}
 			}
 			ntap++;
-		}
-
-		/* Say so rather than quietly making fewer. The array above is
-		 * sized to the bridge's own limit, so this only fires on a board
-		 * that really does declare more ports than one datapath can
-		 * carry -- but when it fires, the alternative is a switch short
-		 * some ports with nothing anywhere saying which or why. */
-		if (tap_props > NOSAIC_MAX_TAPS) {
-			fprintf(stderr, "nosd: %d tap_ properties but at most %d "
-				"taps are supported; refusing rather than "
-				"silently bridging %d\n",
-				tap_props, NOSAIC_MAX_TAPS, NOSAIC_MAX_TAPS);
-			return 1;
 		}
 
 		if (ntap == 0) {

@@ -98,6 +98,68 @@ the box could make.
   at 40000 and the far end reported it down. Programming it brought Et52 up,
   confirmed from both ends, with an OSPF adjacency and 1.8 ms round trip.
 
+## Fixed on the hardware, 2026-09-15
+
+- **It boots itself.** `boot-config` on the switch names NOSaic instead of the
+  vendor OS, so a reboot needs no console and no Aboot prompt -- measured at 100
+  seconds from `reboot` to ssh, and every reboot since has been hands-off. The
+  EOS images stay on flash and Aboot still boots them on demand, so the way back
+  is unchanged; only the default moved.
+
+  ⚠⚠ AND IT SURVIVES A COLD POWER CUT, which is the bar this file set.
+
+  PDU outlet 4 off, confirmed dark by ping and by the PDU, held 60 s, back on:
+  ssh at 79 s and the datapath at 532 s, with no console, no Aboot prompt and
+  nothing typed. Slot a still active, `boot-config` still NOSaic, all seven
+  ports up, all three OSPFv2 adjacencies Full and 12 prefixes back in DEFIP.
+  532 s against the 487 s of a warm reboot is PSU and firmware time, so nothing
+  regressed. This board is now an installation rather than a demo.
+
+- **The PHY firmware download was 13 minutes of sleeping, and is now 8.**
+  `wait_response()` slept a flat 100 us before re-checking a transaction that
+  completes in about 109 us, 3.66 million times. Spinning on the status word
+  instead took boot-to-datapath from ~15.6 min to 487 s, reproduced twice.
+  ⚠ The predecessor's own exponential back-off, ported exactly, measured SLOWER
+  here (699 s) -- its `sal_usleep` and our `nanosleep` are not the same
+  primitive at single-digit microseconds. Do not re-adopt it on authority.
+
+- **A QSFP cage can be run as four 10G ports.** `config/portmode.conf`, applied
+  before `bcm_attach` because there is no runtime switch for it on this chip.
+  Proven against the empty cage so nothing cabled was at risk.
+
+## Found by testing, and not yet fixed
+
+- ⚠ **The fan curve has no headroom left, now that the copper PHYs run.** The
+  band is 25-40 °C and the board sits above it: over one boot the hottest sensor
+  read 42 °C on 1975 samples and 43 °C on 884, against 40 °C on 35 and 41 °C on
+  68. The only duties ever produced were 95% and 100%, so the loop is working
+  correctly and is pinned at the top, with nothing left for a real thermal event.
+
+  This board's README predicted the mechanism before anyone measured it: "48
+  copper PHYs dissipate considerably more than 48 SFP+ cages, and this board
+  starts ramping ten degrees sooner". Until this week those PHYs were in reset.
+
+  ⚠ It is NOT established whether the band is wrong or the board is genuinely
+  this warm, and the difference matters. The band was carried from the
+  predecessor rather than measured here, and the predecessor's own thresholds
+  (25, 31.66, 36.66, 40) would peg at 42 °C too -- so "EdgeNOS ran the fans flat
+  out as well" would not settle it. What would: EOS on this board with copper
+  up. Full fans is the safe direction, so this is loud rather than dangerous.
+
+- ⚠ **`tools/mkserdes.sh` tunes exactly one port, and the board has four cages.**
+  It takes the FIRST tap profile it finds in the description file (`head -1`) and
+  emits it for `PORT="${SERDES_PORT:-61}"`, so Et52 has transmit equalisation and
+  Et49/Et50/Et51 have none at all -- no `serdes_preemphasis`, no
+  `serdes_driver_current`. It was written during the Et52 bring-up and never
+  generalised.
+
+  It is recorded here rather than fixed because the obvious fix is unproven:
+  applying port 61's profile to 49 and 53 by hand changed nothing, and the taps
+  are per-PCB-trace tuning, so copying one cage's profile to another is an
+  assumption. The description file does carry per-port descriptors; reading them
+  properly needs the data file `/etc/prefdl` names, which is inside the vendor
+  OS rather than beside it.
+
 ## Fixed on the hardware, 2026-09-14
 
 - **The copper ports carry traffic.** Three faults, found by asking the
@@ -177,8 +239,6 @@ A deliberate pass over the claims this board had not been asked to prove.
 - **IPv6 forwarding.** Eight OSPFv3 routes learned over `et52` and programmed
   into the chip.
 
-## Found by testing, and not yet fixed
-
 - ⚠ **`nosaic platform tx <n> off` does not gate the laser on this board.** It
   writes the bit, reads it back changed (`0x108 -> 0x140`) and reports success,
   and the neighbour keeps receiving us: an adjacency held Full with an uptime of
@@ -218,13 +278,6 @@ A deliberate pass over the claims this board had not been asked to prove.
   first; that service is the actual work. `nosaic platform watchdog arm <ms>`
   is there for a human who is watching.
 
-- **It does not boot standalone.** `boot-config` still names the vendor OS, so
-  every NOSaic boot is a one-shot from the Aboot prompt and a power cycle
-  returns to EOS. That is the safety property and it is deliberate, but until
-  it changes this is a demo rather than an installation. ⚠ Do not change it
-  while the console is unreliable: with no console and a bad image there is no
-  way back in.
-
 - **No OSPFv3 adjacency with the 7050SX2.** There is one with the Edgecore on
   `et52`, and this end is configured and running on all three — `ospf6d`
   answers and every tap has a link-local address — so this looks like the
@@ -241,6 +294,14 @@ A deliberate pass over the claims this board had not been asked to prove.
   `nosaic platform status` cannot say what the board is and
   `config/network.conf` is the only thing that knows the address — correct for
   exactly one switch.
+
+- **The PSU decode is the sibling's, and presence is not power.** Through the
+  whole cold-cut test above -- outlet off, box dark, not answering ping -- this
+  board's driver went on reporting `psu1? present` and `psu2? present` from
+  register `0x00000003`. Those are presence bits for a module in a bay, and
+  nothing here reads whether a supply is energised. A board fed from one outlet
+  with two supplies fitted therefore looks fully redundant and is not, which is
+  the wrong way round for a field to be wrong.
 
 - **The cage-word decode table is the sibling's.**
   `internal/platformhal/scd/transceiver.go` knows `0x47`, `0x1c0` and `0x180`;

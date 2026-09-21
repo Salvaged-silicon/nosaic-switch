@@ -80,8 +80,46 @@
  */
 #define PHY_READS_PER_PASS 4
 
+/*
+ * The front-panel LED for a copper port, which is on the PHY and nowhere else.
+ *
+ * ⚠ THE SCD DOES NOT DRIVE THESE, WHATEVER THE SIBLING BOARD DOES.
+ *
+ * led.c lights ports 1-48 through SCD blocks at 0x6100 + 0x10*n, and its own
+ * comment calls them "SFP+" -- because on the sibling they are SFP+ cages and
+ * that is where those blocks come from. This board's ports 1-48 are 10GBASE-T
+ * behind BCM84848s, and the board description file creates LED blocks only for
+ * status, fan, both PSUs and the sixteen QSFP lanes. Writing 0x6100+ here
+ * addresses nothing and reports success, which is why the panel was dark.
+ *
+ * The real control is PHY register 1.0xa83b: five 3-bit mode fields, where 0 is
+ * dark, 2 is lit, 3 is the parked state the driver's halt path writes, and 4
+ * means "the PHY's own firmware drives this". The vendor OS holds all five at 4
+ * and lets firmware flip field 0 to 2 on link -- 0x4924 down, 0x4922 up.
+ *
+ * OUR firmware never writes the register at all, so the field that is supposed
+ * to follow link simply never moves. That is the difference, and it is why
+ * matching the vendor's three configuration registers is necessary and still
+ * lights nothing on its own: something has to write 0xa83b, and here it is us.
+ *
+ * ★ AND THE CONDITION IS LINK **AND** SPEED, NOT LINK.
+ *
+ * Every copper port on this board reports link with the driver bound, cable or
+ * not -- "Link Up with Speed 0M!". Gating on link alone lights all 48 with
+ * nothing plugged in, which looks like a working panel and is worse than a dark
+ * one. phy_matched[] is already exactly "has link and a real negotiated speed",
+ * so the LED follows it rather than a second, weaker test.
+ */
+#define PHY_LED_CTRL     0xa83b   /* five 3-bit mode fields */
+#define PHY_LED_LIT      0x4922   /* field 0 = 2 (lit),  rest firmware-driven */
+#define PHY_LED_DARK     0x4924   /* field 0 = 4 (firmware), and it never moves */
+#define PHY_LED_MODE_VAL 0x0020   /* what the vendor holds the three below at */
+
+static const int phy_led_mode_regs[] = { 0xa82c, 0xa82f, 0xa835 };
+
 static int phy_unit = -1;
 static int phy_any;                        /* any external PHY on this board */
+static char phy_led_lit[PHY_MAX_PORT + 1]; /* what we last wrote to 0xa83b */
 static char phy_copper[PHY_MAX_PORT + 1];  /* port has an external PHY */
 static char phy_matched[PHY_MAX_PORT + 1]; /* interface agrees with the wire */
 static int  phy_rr = 1;                    /* round robin across candidates */
@@ -119,6 +157,73 @@ static const char *phy_if_name(bcm_port_if_t i)
 	case BCM_PORT_IF_XGMII: return "XGMII";
 	default:                return "other";
 	}
+}
+
+/*
+ * ⚠ THESE PHYs ARE ONLY REACHABLE THROUGH THE DRIVER'S OWN ACCESSORS.
+ *
+ * bcm_port_phy_set with BCM_PORT_PHY_CLAUSE45 goes to soc_miimc45_write
+ * (src/bcm/esw/port.c) -- the switch chip's internal MIIM controller, on pins
+ * that have nothing attached here, because Arista hangs the copper PHYs off the
+ * SCD's MDIO accelerators. It returns BCM_E_NONE having reached nothing, which
+ * is how the first version of this code configured 48 LEDs, reported success
+ * for every one of them, and left the panel dark.
+ *
+ * pc->read / pc->write are the pointers the bound driver itself uses, so they
+ * land on the bus phybus.c serves. Address encoding is the SDK's own: devad in
+ * bits 21:16, regad in 15:0.
+ */
+#define PHY_C45_ADDR(_devad, _reg) \
+	((((uint32)(_devad) & 0x3f) << 16) | ((uint32)(_reg) & 0xffff))
+
+/*
+ * Declared here rather than included. soc/phy/phyctrl.h drags in phymod, whose
+ * headers the openbcm package does not stage, and the struct behind those
+ * accessors must not be hand-declared -- a struct this file and the SDK
+ * disagree about compiles, links and corrupts silently. A function prototype
+ * carries no layout, so declaring these two is safe in a way that declaring
+ * phy_ctrl_t would not be. Same arrangement, and same reasoning, as the bus
+ * hook in phybus.c.
+ *
+ * With SOC_PHY_INTERNAL clear these take the EXTERNAL PHY's driver, and for a
+ * BCM84848 in copper mode phy_8481_reg_write ends at WRITE_PHY_REG -- which is
+ * pc->write, the accessor that reaches the SCD's MDIO accelerators.
+ */
+extern int soc_phyctrl_reg_write(int unit, int port, uint32 flags,
+				 uint32 addr, uint32 data);
+extern int soc_phyctrl_reg_read(int unit, int port, uint32 flags,
+				uint32 addr, uint32 *data);
+
+static int phy_reg_write(int port, int devad, int reg, uint16 val)
+{
+	return soc_phyctrl_reg_write(phy_unit, port, 0,
+				     PHY_C45_ADDR(devad, reg), val) < 0 ? -1 : 0;
+}
+
+static int phy_reg_read(int port, int devad, int reg, uint16 *val)
+{
+	uint32 v = 0;
+
+	if (soc_phyctrl_reg_read(phy_unit, port, 0,
+				 PHY_C45_ADDR(devad, reg), &v) < 0)
+		return -1;
+	*val = (uint16)v;
+	return 0;
+}
+
+/* Drive one copper port's LED. One MDIO write, only on a change of state. */
+static void phy_led_set(int port, int lit)
+{
+	if (phy_reg_write(port, 1, PHY_LED_CTRL,
+			  lit ? PHY_LED_LIT : PHY_LED_DARK) != 0) {
+		/* Reported once per port rather than per attempt: a PHY that
+		 * refuses this is a dark port, not a broken switch. */
+		printf("phy: port %d would not take its LED control word; its "
+		       "front-panel light will not follow link\n", port);
+		fflush(stdout);
+		return;
+	}
+	phy_led_lit[port] = (char)(lit ? 1 : 0);
 }
 
 /*
@@ -220,6 +325,47 @@ int nosaic_phy_bind(int unit)
 		}
 	}
 	printf("phy: %d port(s) behind external PHYs; autonegotiation enabled\n", n);
+
+	/*
+	 * The LED configuration the vendor OS holds, and a dark panel to start.
+	 *
+	 * Three registers at a fixed value, written once: our PHY firmware
+	 * leaves them at 0x0008/0x0010/0x0040 and the vendor holds all three at
+	 * 0x0020 whether the port is linked or not, so they are configuration
+	 * rather than state. Then 0xa83b explicitly dark, because the firmware
+	 * default of 0x0400 is neither of the two states this code drives and a
+	 * port nothing is plugged into should not be lit.
+	 *
+	 * 4 writes per port, once. That is not the budget the warning at the top
+	 * of this file is about -- what starved the bus was POLLING every port on
+	 * a timer.
+	 */
+	for (p = 1; p <= PHY_MAX_PORT; p++) {
+		unsigned i;
+
+		if (!phy_copper[p])
+			continue;
+		for (i = 0; i < sizeof(phy_led_mode_regs) / sizeof(phy_led_mode_regs[0]); i++)
+			(void)phy_reg_write(p, 1, phy_led_mode_regs[i], PHY_LED_MODE_VAL);
+		phy_led_set(p, 0);
+
+		/* ⚠ READ ONE BACK. A write that reaches nothing reports success,
+		 * and that is exactly how this was wrong the first time. */
+		if (p == 1) {
+			uint16 v = 0;
+
+			if (phy_reg_read(p, 1, PHY_LED_CTRL, &v) != 0)
+				printf("phy: port 1 LED control is not readable; the "
+				       "panel will not follow link\n");
+			else if (v == 0xffff)
+				printf("phy: port 1 LED control reads 0xffff -- an idle "
+				       "bus, not data; the write did not land\n");
+			else
+				printf("phy: port 1 LED control reads %#06x after the "
+				       "dark write (expect %#06x)\n", v, PHY_LED_DARK);
+		}
+	}
+	printf("phy: %d port LED(s) configured and dark; they follow link from here\n", n);
 	fflush(stdout);
 	return 0;
 }
@@ -265,6 +411,16 @@ void nosaic_phy_poll(void)
 			continue;
 		if (bcm_port_link_status_get(phy_unit, n, &link) != BCM_E_NONE || !link)
 			phy_matched[n] = 0;
+	}
+
+	/* The panel follows phy_matched[], which is already "link with a real
+	 * speed" -- see the LED note at the top. One write per transition, so a
+	 * steady switch writes nothing at all. */
+	for (n = 1; n <= PHY_MAX_PORT; n++) {
+		if (!phy_copper[n])
+			continue;
+		if (phy_matched[n] != phy_led_lit[n])
+			phy_led_set(n, phy_matched[n]);
 	}
 
 	/* Then spend the MDIO budget, round robin so no port can starve behind a
