@@ -225,94 +225,44 @@ Ordered so each step's failure is diagnosable with the one before it working.
       `ModSelL` is asserted and nothing asserts it. That makes the PCA9539s
       — the inverse of the Arista arrangement, and the easiest thing here to
       implement backwards.
-- [ ] **The 40G cage to the SX2 is a ONE-WAY LINK, and it is not our
-      software.** Panel 54 to the SX2's et49, both ends fitted with matched
-      `QSFP-40G-SR-BD` BiDi optics (`AFBR-79EBPZ-CS2`).
+- [ ] **⚠ NO 40G CAGE RECEIVES UNDER NOSaic, AND IT IS OUR SOFTWARE.**
+      This overturns the earlier conclusion in this file that the dark cage
+      was physical and needed a module swap. It is not.
 
-      | | |
-      |---|---|
-      | our chip | `link=0` |
-      | **NX-OS on this board** | `Eth1/54 down, Link not connected` |
-      | the SX2's chip | **`link=1`**, live samples, log written seconds ago |
+      The decisive contrast: panel 53 to the Edgecore AS5610's `swp49`
+      **links at 40G under NX-OS** — same cage, same module, same fibre,
+      same far end — and reports `link=0` under NOSaic minutes later.
 
-      NX-OS fails identically with all its own platform init, and the SX2
-      has PCS lock on our transmit — so our cage is powered, enabled and
-      transmitting. What is missing is the other direction.
+      Every 40G combination tried shows the same one-way result, and the far
+      end always sees us:
 
-      Since a PHY generally declares link on receive sync alone, the SX2
-      reporting link says nothing about whether the SX2 is *transmitting*.
-      The strongest hypothesis is that its cage 49 laser is not on: that
-      board enables cages at init and this one was cabled after its last
-      boot, ~2 days ago, while its working cages 52/53 predate it. Rebooting
-      it, or otherwise re-running its cage bring-up, is the test.
+      | our cage | far end | far end sees us | we see them |
+      |---|---|---|---|
+      | 54 | 7050SX2 `et49` | yes | no |
+      | 53 | 7050SX2 `et50` | yes | no |
+      | 53 | AS5610 `swp49` | yes | no |
 
-      **A cold boot does not clear it.** Outlet 3 switched fully off
-      (confirmed `Outlet 3: Off`), left down so the optic lost power, then
-      on, booting NX-OS with the loader uninterrupted: still
-      `Link not connected`, admin up, 40G. The far end dropped to `link=0`
-      while we were powered down and returned to `link=1` once we were back.
-      So a stuck port or cage state on this side is ruled out — the vendor
-      OS re-initialises everything from cold and the receive direction stays
-      dark.
+      Two of our cages, two modules, three far-end ports on two different
+      switches. Our transmit always works; our receive never does. That rules
+      out optics, fibre and far ends, all of which the earlier note blamed.
 
-      ⚠ The far end's `tx` register reads erratically. Three calls returned
-      `0x01 -> 0x01`, `0x08 -> 0x40` and `0x40 -> 0x00` for what should be a
-      stable bit; it later settled at `0x00 -> 0x00`. Do not conclude
-      anything from a single read of it.
+      Our port configuration is not the difference either — both cages read
+      `interface 28 is 40G already, left alone` and `0 setting(s) applied`,
+      which is exactly the state NX-OS runs them in (`ps xe68`: SR4, enabled,
+      autoneg off, 40G FD).
 
-      **Soft Tx-disable is eliminated.** The SX2 exposes
-      `nosaic platform tx <cage> on|off`, and a module cabled after boot
-      never having had its transmitter enabled would produce exactly this
-      one-way result. It reported `cage 49 transmitter on: 0x00000001 ->
-      0x00000001` — already on, so the write changed nothing and the
-      hypothesis is dead.
+      **The remaining difference is the BCM84328 retimer.** NX-OS's SDK
+      enumerates it at MDIO `0x54`; our datapath never mentions an 84328
+      beyond reading `phy_84328_<port>` as a property name. A retimer whose
+      line side was never brought up is exactly a port that transmits and
+      does not receive. The copper ports hide this because a BCM84848
+      autonegotiates unaided.
 
-      That leaves physical, and no software test can narrow it further from
-      here: these optics have no DOM, so neither end can measure light.
-      ⚠ The discriminating test needs hands at the rack — **swap the two
-      QSFP modules between Nexus panel 54 and SX2 et49.** If the dead
-      direction follows the module, that module's transmitter or receiver is
-      gone; if it stays at the Nexus end, it is the cage or the fibre. A
-      cheaper first move is to put the same fibre and optic into a different
-      Nexus cage.
-
-      Otherwise it is physical — a fibre, a connector, or that module's
-      receive path. ⚠ These optics report `DOM is not supported`, so there
-      is no optical power reading on either end to settle it with; the SX2's
-      all-zero temperature/voltage/bias is the absence of DOM and not a dead
-      optic, which is a trap worth knowing.
-
-- [ ] **Get the QSFP control map off NX-OS, then enable the cages.** The
-      most likely reason no cage links: three **PCA9539 GPIO expanders** sit
-      on the platform bus — `0x74` and `0x76` on mux channel 5, `0x75` on
-      channel 1 — and nothing in NOSaic touches them. `0x76` has all sixteen
-      lines configured as outputs driving `0x83`/`0xfe`, and the platform
-      firmware sets that up at POST (these are readings after a cold power
-      cycle, and we never write them).
-
-      Six cages need `ResetL`, `LPMode`, `ModSelL` out and `ModPrsL`, `IntL`
-      in — 30 lines against the 32 available. `0x76` port 0 reads `0x83`, so
-      bits 2–6 are low: on active-low resets, five cages held down.
-
-      ⚠ **Do not find the map by writing to them.** Sixteen live outputs on
-      an unmapped expander include whatever else this board gates, supply
-      enables among them. Do it as a correlation: boot NX-OS, which drives
-      these cages, read the same three devices, and diff against the table
-      in the RE notes. One reboot, and the delta is the answer.
-
-      This also resolves the older note that these were "cascaded muxes" —
-      `0x74`–`0x77` is both the PCA954x and the PCA9539 range, and reading
-      all eight registers distinguishes them: a mux has none.
-
-- [ ] **Transceiver support starts at the PCA9539s, not at i²c discovery.**
-      Two independent measurements under NX-OS point the same way: the
-      optics answer i²c only while `ModSelL` is asserted (a full mux-channel
-      scan found no `0x50` anywhere), and NX-OS reports presence for empty
-      cages **without any i²c transaction at all**, so `ModPrsL` is a GPIO
-      read. The vendor's own device table names `NUOVA_I2C_QSFP_SPROM` and
-      `NUOVA_I2C_QSFP_MOD` as separate devices, which is the same split.
-      So the order of work is: map the expanders, assert ModSel, then read
-      SFF-8636 — not the other way round.
+      ⚠ Note what misled us: the very first cage tried also had a genuinely
+      suspect module in it, and NX-OS failed on that one link too, which
+      read as confirmation that the fault was physical. One bad module in
+      the first sample sent the whole investigation to the rack. Test
+      against a second far end before concluding it is hardware.
 
 - [ ] **Breakout is unproven.** All six cages are declared `40g`; none has
       been broken out to 4 × 10G.
