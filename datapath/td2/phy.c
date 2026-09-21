@@ -66,12 +66,28 @@
 
 #include <bcm/port.h>
 #include <bcm/error.h>
+#include <soc/phyctrl.h>
 
 #include "props.h"
+#include "query.h"
 #include "phy.h"
 
-/* Ports are 1-based and this board has 52. 64 covers the chip's range. */
-#define PHY_MAX_PORT 64
+/*
+ * Ports are 1-based, and this is the chip's logical port range rather than
+ * any board's panel.
+ *
+ * ⚠ 64 WAS TOO SMALL AND THE BOARD THAT EXCEEDED IT SHOWED NOTHING.
+ *
+ * It was written for a 52-port board, where "64 covers the chip's range" was
+ * true of that board and not of the chip. The Nexus 3172TQ runs its six QSFP
+ * cages broken out to four lanes each, so its logical ports run to 72 -- and
+ * the two cages under investigation are 65 and 69, both past the end. A scan
+ * that stops early does not report that it stopped; it reports a shorter
+ * list, and a missing row reads as a port with no PHY.
+ *
+ * Trident2 addresses 128 logical ports, so that is the bound.
+ */
+#define PHY_MAX_PORT 128
 
 /* MDIO reads per poll. The bus is shared with the SDK's own linkscan and with
  * the PHY firmware; this is the budget the datapath can spend without taking
@@ -211,6 +227,131 @@ static int phy_reg_read(int port, int devad, int reg, uint16 *val)
 	return 0;
 }
 
+/*
+ * Every external PHY's own status registers, straight off the MDIO bus.
+ *
+ * ⚠ READ BY ADDRESS, NOT THROUGH THE BOUND DRIVER.
+ *
+ * soc_phyctrl_reg_read above goes through whatever driver the SDK bound to
+ * the port. That is right for talking to a part, and useless for finding out
+ * why a part is not talking: the three subsidiary lanes of a 40G cage bind
+ * the Null driver by design -- the primary owns the group -- so the accessor
+ * reaches nothing for exactly the lanes whose silence is the question. Going
+ * at the bus by address answers for all four.
+ *
+ * The registers are the Clause 45 ones every 10G/40G PHY has, read in the
+ * order a failure walks: does the optic see light (PMD signal detect), does
+ * the PMD lock, do the PCS lanes achieve block lock, do the four align, and
+ * does the system side toward the ASIC sync. A link that is down has a
+ * lowest layer that is unhappy, and this says which.
+ *
+ * Nothing is decoded here. The caller knows which part this is; this file
+ * only knows how to ask.
+ */
+struct phy_reg_id { uint8 devad; uint16 reg; const char *name; };
+
+static const struct phy_reg_id phy_dump_regs[] = {
+	{ 1, 0x0001, "pma.status1"      }, /* bit 2: receive link, latching low */
+	{ 1, 0x000a, "pma.sigdet"       }, /* bit 0 global, bits 1-4 per lane   */
+	{ 1, 0x0008, "pma.status2"      },
+	{ 3, 0x0001, "pcs.status1"      },
+	{ 3, 0x0020, "pcs.baser.stat1"  }, /* bit 0 block lock, bit 12 rx link  */
+	{ 3, 0x0021, "pcs.baser.stat2"  }, /* bit 15 latched lock, 14 high BER  */
+	{ 3, 0x0032, "pcs.lane.align"   }, /* bits 0-3 lane lock, bit 12 align  */
+	{ 4, 0x0001, "xs.status1"       },
+	{ 4, 0x0018, "xs.lane.sync"     }, /* bits 0-3 lane sync, bit 12 align  */
+};
+
+/* Declared here for the same reason as the accessors above: soc/cmic.h is
+ * staged, but including it for one prototype drags the rest of the CMIC in. */
+extern int soc_miimc45_read(int unit, uint32 phy_id, uint8 phy_devad,
+			    uint16 phy_reg_addr, uint16 *phy_rd_data);
+
+static int phy_dump_unit = -1;
+
+void nosaic_phy_dump(FILE *out)
+{
+	int port, first = 1;
+
+	if (phy_dump_unit < 0) {
+		return;
+	}
+	for (port = 1; port <= PHY_MAX_PORT; port++) {
+		uint16 addr = 0;
+		const char *drv;
+		size_t k;
+
+		if (soc_phy_cfg_addr_get(phy_dump_unit, port, 0, &addr) < 0 ||
+		    addr == 0) {
+			continue;
+		}
+		drv = soc_phyctrl_drv_name(phy_dump_unit, port);
+		fprintf(out, "%s{\"Port\":%d,\"Addr\":%u,\"Driver\":\"%s\",\"Regs\":{",
+			first ? "" : ",", port, (unsigned)addr,
+			(drv != NULL && *drv != '\0') ? drv : "none");
+		first = 0;
+		for (k = 0; k < sizeof(phy_dump_regs) / sizeof(phy_dump_regs[0]); k++) {
+			uint16 v = 0;
+			int rv = soc_miimc45_read(phy_dump_unit, addr,
+						  phy_dump_regs[k].devad,
+						  phy_dump_regs[k].reg, &v);
+
+			/* A read that failed and a read that returned zero are
+			 * different answers, and the second one is the
+			 * interesting one. Report the failure as null. */
+			if (rv < 0) {
+				fprintf(out, "%s\"%s\":null",
+					k ? "," : "", phy_dump_regs[k].name);
+			} else {
+				fprintf(out, "%s\"%s\":%u",
+					k ? "," : "", phy_dump_regs[k].name,
+					(unsigned)v);
+			}
+		}
+		fprintf(out, "}}");
+	}
+}
+
+/*
+ * A run of registers from one PHY's MMD, by address.
+ *
+ * The companion to the dump above, and the reason it takes a range: the
+ * questions worth asking of a part that is half awake are which MMDs it
+ * implements (Clause 45 registers 1.5 and 1.6), what it calls itself (1.2
+ * and 1.3), and what its vendor registers hold -- none of which is known
+ * before the previous answer comes back.
+ */
+void nosaic_phy_read(FILE *out, int port, int devad, int reg, int count)
+{
+	uint16 addr = 0;
+	int i, first = 1;
+
+	if (phy_dump_unit < 0 || port < 1 || port > PHY_MAX_PORT) {
+		return;
+	}
+	if (soc_phy_cfg_addr_get(phy_dump_unit, port, 0, &addr) < 0) {
+		return;
+	}
+	for (i = 0; i < count; i++) {
+		uint16 v = 0;
+		int r = reg + i;
+		int rv;
+
+		if (r > 0xffff) {
+			break;
+		}
+		rv = soc_miimc45_read(phy_dump_unit, addr, (uint8)devad,
+				      (uint16)r, &v);
+		fprintf(out, "%s{\"Reg\":%d,\"Value\":", first ? "" : ",", r);
+		first = 0;
+		if (rv < 0) {
+			fprintf(out, "null}");
+		} else {
+			fprintf(out, "%u}", (unsigned)v);
+		}
+	}
+}
+
 /* Drive one copper port's LED. One MDIO write, only on a change of state. */
 static void phy_led_set(int port, int lit)
 {
@@ -238,6 +379,12 @@ int nosaic_phy_bind(int unit)
 	int p, n = 0;
 
 	phy_unit = unit;
+	/* Set before the early return below: the register dump is a diagnostic
+	 * for boards with no copper PHYs of the kind this file drives, and a
+	 * 40G cage is exactly that case. */
+	phy_dump_unit = unit;
+	nosaic_query_set_phydump(nosaic_phy_dump);
+	nosaic_query_set_phyread(nosaic_phy_read);
 	memset(phy_copper, 0, sizeof(phy_copper));
 	memset(phy_matched, 0, sizeof(phy_matched));
 	phy_any = 0;
@@ -375,6 +522,12 @@ int nosaic_phy_start(int unit)
 	int p, n = 0;
 
 	phy_unit = unit;
+	/* Set before the early return below: the register dump is a diagnostic
+	 * for boards with no copper PHYs of the kind this file drives, and a
+	 * 40G cage is exactly that case. */
+	phy_dump_unit = unit;
+	nosaic_query_set_phydump(nosaic_phy_dump);
+	nosaic_query_set_phyread(nosaic_phy_read);
 	memset(phy_copper, 0, sizeof(phy_copper));
 	memset(phy_matched, 0, sizeof(phy_matched));
 	phy_any = 0;

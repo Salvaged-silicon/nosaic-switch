@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -749,7 +750,7 @@ func switchCmd(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: nosaic show <ports|routes|caps>")
 		}
-		return showCmd(c, args[1])
+		return showCmd(c, args[1], args[2:])
 
 	case "interface":
 		if len(args) < 3 {
@@ -779,7 +780,7 @@ func switchCmd(args []string) error {
 	return fmt.Errorf("unknown command %q", args[0])
 }
 
-func showCmd(c *nosdclient.Client, what string) error {
+func showCmd(c *nosdclient.Client, what string, rest []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	defer w.Flush()
 
@@ -821,6 +822,80 @@ func showCmd(c *nosdclient.Client, what string) error {
 					humanBytes(k.Outstanding), humanBytes(k.Peak),
 					k.Allocs, k.Frees, k.Fails)
 			}
+		}
+		return nil
+
+	case "phy":
+		// Raw, and in the order a link failure walks down the stack: the
+		// optic seeing light, the PMD locking to it, the PCS lanes
+		// achieving block lock and aligning, the system side syncing to
+		// the ASIC. A port whose lowest unhappy layer is visible is a
+		// port somebody can fix.
+		phys, err := c.PHYs()
+		if err != nil {
+			return err
+		}
+		if len(phys) == 0 {
+			fmt.Fprintln(w, "no external PHYs on this board")
+			return nil
+		}
+		// One column per register, named by the datapath, so a new
+		// register there needs no change here.
+		cols := phyRegOrder(phys)
+		fmt.Fprint(w, "PORT\tADDR\tDRIVER")
+		for _, c := range cols {
+			fmt.Fprintf(w, "\t%s", c)
+		}
+		fmt.Fprintln(w)
+		for _, p := range phys {
+			fmt.Fprintf(w, "%d\t%#04x\t%s", p.Port, p.Addr, p.Driver)
+			for _, c := range cols {
+				v, ok := p.Regs[c]
+				switch {
+				case !ok:
+					fmt.Fprint(w, "\t-")
+				case v == nil:
+					// The read itself failed, which is not the
+					// same answer as a register reading zero.
+					fmt.Fprint(w, "\tERR")
+				default:
+					fmt.Fprintf(w, "\t%#06x", *v)
+				}
+			}
+			fmt.Fprintln(w)
+		}
+		return nil
+
+	case "phyreg":
+		// nosaic show phyreg <port> <devad> <reg> [count]
+		if len(rest) < 3 {
+			return fmt.Errorf("usage: nosaic show phyreg <port> <devad> <reg> [count]")
+		}
+		nums := make([]int, 0, 4)
+		for _, a := range rest {
+			// Base 0 so 0x-prefixed register numbers work: they are
+			// written in hex in every datasheet there is.
+			v, err := strconv.ParseInt(a, 0, 32)
+			if err != nil {
+				return fmt.Errorf("phyreg: %q is not a number", a)
+			}
+			nums = append(nums, int(v))
+		}
+		count := 1
+		if len(nums) > 3 {
+			count = nums[3]
+		}
+		regs, err := c.PHYRead(nums[0], nums[1], nums[2], count)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "MMD.REG\tVALUE")
+		for _, r := range regs {
+			if r.Value == nil {
+				fmt.Fprintf(w, "%d.%#06x\tERR\n", nums[1], r.Reg)
+				continue
+			}
+			fmt.Fprintf(w, "%d.%#06x\t%#06x\n", nums[1], r.Reg, *r.Value)
 		}
 		return nil
 
@@ -1229,4 +1304,41 @@ func diskArg(args []string) (upgrade.Disk, error) {
 	}
 	d.Log = os.Stdout
 	return d, nil
+}
+
+// phyRegOrder is the column order for `show phy`.
+//
+// The datapath sends a map, and Go map order is deliberately random, so a
+// table built by ranging it would shuffle its columns between runs -- which
+// makes two dumps impossible to compare by eye, and comparing two dumps is
+// the entire use of this command. Layer order first, because that is the
+// order a link failure is read in; anything the datapath adds later that is
+// not in the list still appears, sorted, rather than being dropped.
+func phyRegOrder(phys []nosdclient.PHYRegs) []string {
+	prefer := []string{"pma.", "pcs.", "xs."}
+	seen := map[string]bool{}
+	var all []string
+	for _, p := range phys {
+		for k := range p.Regs {
+			if !seen[k] {
+				seen[k] = true
+				all = append(all, k)
+			}
+		}
+	}
+	rank := func(s string) int {
+		for i, p := range prefer {
+			if strings.HasPrefix(s, p) {
+				return i
+			}
+		}
+		return len(prefer)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if a, b := rank(all[i]), rank(all[j]); a != b {
+			return a < b
+		}
+		return all[i] < all[j]
+	})
+	return all
 }

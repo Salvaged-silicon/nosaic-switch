@@ -839,24 +839,39 @@ static void bring_up_40g(int unit, bcm_port_t port)
 		bcm_port_if_t have_if;
 		int have_speed = 0, have_duplex = 0, have_an = 0, wrote = 0;
 
-		/* Bind a PHY driver to the port before asking it anything.
+		/*
+		 * ⚠ DO NOT bcm_port_probe A CAGE HERE. IT UNDOES THE FIRMWARE.
 		 *
-		 * The board's working configuration runs this as the first step of
-		 * its per-port bring-up, and nothing here did. It is cheap and it is
-		 * idempotent: on a direct-SerDes cage it re-binds the internal
-		 * driver the chip already chose.
+		 * This used to probe each cage first, on the reasoning that the
+		 * board's working configuration probes as the first step of its
+		 * per-port bring-up and that a probe is cheap and idempotent.
+		 * Neither half survives contact with an external PHY that runs
+		 * microcode.
+		 *
+		 * A BCM84328 has no firmware of its own until the SDK downloads
+		 * it, and the download is a BROADCAST sequence over MDIO -- setup,
+		 * enable, load, end -- run once for the whole chip, with every
+		 * participating PHY held in broadcast mode for the duration.
+		 * Probing a port re-initialises its PHY, and re-initialising one
+		 * BCM84328 re-runs that sequence for that port alone. Six probes,
+		 * six single-port broadcasts, after the chip-wide one had already
+		 * run:
+		 *
+		 *   entered soc_phyctrl_mdio_ucode_bcst: unit 0, pbmp 0x1ff..ffe
+		 *   entered soc_phyctrl_mdio_ucode_bcst: unit 0, pbmp 0x2000000000000
+		 *   ... one per cage, bits 49 53 57 61 65 69 ...
+		 *
+		 * and never, anywhere in the log, the driver's own
+		 * "PHY84328 Firmware revID=0x...". The part answers MDIO, reports
+		 * its device ID out of hardwired registers, and reads zero for
+		 * every register that firmware is supposed to populate -- signal
+		 * detect included. The visible result is a cage that configures
+		 * cleanly, reports SR4 and 40000, transmits well enough that the
+		 * far end links, and never receives.
+		 *
+		 * The probe is not idempotent on a part that has to be told who it
+		 * is. Leave the chip-wide download alone.
 		 */
-		{
-			bcm_pbmp_t want, okay;
-
-			BCM_PBMP_CLEAR(want);
-			BCM_PBMP_CLEAR(okay);
-			BCM_PBMP_PORT_ADD(want, port);
-			rv = bcm_port_probe(unit, want, &okay);
-			if (rv < 0 || !BCM_PBMP_MEMBER(okay, port))
-				printf("port %d: bcm_port_probe rv=%d, probed=%d\n",
-				       port, rv, BCM_PBMP_MEMBER(okay, port) ? 1 : 0);
-		}
 
 		/*
 		 * ⚠ XGMII IS THE 10-GIGABIT INTERFACE. DO NOT SET IT ON A 40G CAGE.

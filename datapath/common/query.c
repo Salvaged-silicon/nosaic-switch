@@ -55,6 +55,47 @@ void nosaic_query_set_dmapool(struct nosaic_dmapool *p)
 	query_pool = p;
 }
 
+/* The datapath's PHY register dumper, if it has one. See query.h. */
+static void (*query_phydump)(FILE *out);
+static void (*query_phyread)(FILE *out, int port, int devad, int reg, int count);
+
+void nosaic_query_set_phydump(void (*fn)(FILE *out))
+{
+	query_phydump = fn;
+}
+
+void nosaic_query_set_phyread(void (*fn)(FILE *out, int port, int devad,
+					 int reg, int count))
+{
+	query_phyread = fn;
+}
+
+/*
+ * One integer field out of a request, without a JSON parser.
+ *
+ * The same trade as the substring matching above and for the same reason:
+ * the keys are ours, the values are integers, and a request that does not
+ * contain the key gets the default rather than an error. Accepts 0x-prefixed
+ * values, because register numbers are read and written in hex everywhere
+ * else and a diagnostic that demanded decimal would be used wrongly.
+ */
+static int req_int(const char *req, const char *key, int dflt)
+{
+	char pat[32];
+	const char *p;
+
+	snprintf(pat, sizeof(pat), "\"%s\":", key);
+	p = strstr(req, pat);
+	if (p == NULL)
+		return dflt;
+	p += strlen(pat);
+	while (*p == ' ')
+		p++;
+	if (*p == '\0')
+		return dflt;
+	return (int)strtol(p, NULL, 0);
+}
+
 /* JSON string escaping for allocation names.
  *
  * The names come from the SDK, not from us, so they are not ours to assume
@@ -232,6 +273,58 @@ static void handle(FILE *out, const char *req)
 		for (k = 0; k < n; k++)
 			fprintf(out, "%s{\"Index\":%d,\"MilliC\":%d,\"PeakMilliC\":%d}",
 				k ? "," : "", k, mon[k].curr * 100, mon[k].peak * 100);
+		fprintf(out, "]}\n");
+		return;
+	}
+
+	/*
+	 * The external PHYs' own view of the line.
+	 *
+	 * Served raw -- register numbers and the words read out of them --
+	 * because the whole point is to see what the part says rather than
+	 * what a driver concluded from it. The decoding belongs in whoever is
+	 * reading, who knows which part this is.
+	 */
+	if (strstr(req, "\"phy.dump\"") != NULL) {
+		if (query_phydump == NULL) {
+			fprintf(out, "{\"ok\":false,\"error\":"
+				"\"this datapath has no external PHY driver bound\"}\n");
+			return;
+		}
+		fprintf(out, "{\"ok\":true,\"result\":[");
+		query_phydump(out);
+		fprintf(out, "]}\n");
+		return;
+	}
+
+	/*
+	 * One PHY register, or a run of them, by address.
+	 *
+	 * Separate from phy.dump because the dump answers "what is wrong" and
+	 * this answers "what is actually there" -- which registers a part
+	 * implements, what it calls itself, whether its firmware is running.
+	 * Those questions are not known in advance, and a diagnostic that
+	 * needs a rebuild to ask a new one is a diagnostic that does not get
+	 * asked.
+	 */
+	if (strstr(req, "\"phy.read\"") != NULL) {
+		int port  = req_int(req, "port", 0);
+		int devad = req_int(req, "devad", 1);
+		int reg   = req_int(req, "reg", 0);
+		int count = req_int(req, "count", 1);
+
+		if (query_phyread == NULL) {
+			fprintf(out, "{\"ok\":false,\"error\":"
+				"\"this datapath has no external PHY driver bound\"}\n");
+			return;
+		}
+		if (port <= 0 || count <= 0 || count > 256) {
+			fprintf(out, "{\"ok\":false,\"error\":"
+				"\"need a port, and a count between 1 and 256\"}\n");
+			return;
+		}
+		fprintf(out, "{\"ok\":true,\"result\":[");
+		query_phyread(out, port, devad, reg, count);
 		fprintf(out, "]}\n");
 		return;
 	}

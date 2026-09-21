@@ -145,6 +145,52 @@ func (c *Client) ASICTemperatures() ([]ASICTemperature, error) {
 	return out, err
 }
 
+// PHYRegs is one external PHY's status registers, read straight off the MDIO
+// bus by address rather than through whatever driver the SDK bound.
+//
+// Regs is left as the raw register name to value map the datapath sent, with
+// a nil value for a read that failed. Nothing is decoded here: which part
+// answers depends on the board, and a decode that assumes the wrong one is
+// worse than the number.
+type PHYRegs struct {
+	Port   int
+	Addr   uint16
+	Driver string
+	Regs   map[string]*uint16
+}
+
+// PHYs reads every external PHY's status registers.
+//
+// A diagnostic, like DMAPool: it exists because a 40G cage that transmits
+// correctly and never receives looks exactly like a bad fibre from anything
+// the switch API reports, and telling those apart means asking the PHY which
+// layer is unhappy.
+func (c *Client) PHYs() ([]PHYRegs, error) {
+	var out []PHYRegs
+	err := c.call("phy.dump", nil, &out)
+	return out, err
+}
+
+// PHYReg is one register read: Value is nil when the read itself failed,
+// which is a different answer from a register that holds zero.
+type PHYReg struct {
+	Reg   int
+	Value *uint16
+}
+
+// PHYRead reads count consecutive registers from one port's external PHY.
+//
+// devad is the Clause 45 MMD. Takes a range because the useful questions of a
+// part that is only half awake -- which MMDs it implements, what it calls
+// itself, whether its firmware is running -- are not known one at a time.
+func (c *Client) PHYRead(port, devad, reg, count int) ([]PHYReg, error) {
+	var out []PHYReg
+	err := c.call("phy.read", map[string]int{
+		"port": port, "devad": devad, "reg": reg, "count": count,
+	}, &out)
+	return out, err
+}
+
 // SetDeadline bounds every subsequent call on this connection.
 //
 // ⚠ THERE IS NO DEFAULT DEADLINE, AND ONE CALLER CANNOT AFFORD THAT.
