@@ -899,6 +899,55 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		}
 		return nil
 
+	case "phywrite":
+		// nosaic show phywrite <port> <devad> <reg> <value>
+		if len(rest) < 4 {
+			return fmt.Errorf("usage: nosaic show phywrite <port> <devad> <reg> <value>")
+		}
+		nums := make([]int, 0, 4)
+		for _, a := range rest[:4] {
+			v, err := strconv.ParseInt(a, 0, 32)
+			if err != nil {
+				return fmt.Errorf("phywrite: %q is not a number", a)
+			}
+			nums = append(nums, int(v))
+		}
+		ws, err := c.PHYWriteReg(nums[0], nums[1], nums[2], nums[3])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "MMD.REG\tWROTE\tREADS BACK")
+		for _, r := range ws {
+			if r.Value == nil {
+				fmt.Fprintf(w, "%d.%#06x\t%#06x\tERR\n", nums[1], r.Reg, r.Wrote)
+				continue
+			}
+			fmt.Fprintf(w, "%d.%#06x\t%#06x\t%#06x\n", nums[1], r.Reg, r.Wrote, *r.Value)
+		}
+		return nil
+
+	case "loopback":
+		// nosaic show loopback <port> [mode]   -- reads, or sets then reads
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: nosaic show loopback <port> [mode 0..5]")
+		}
+		port, err := strconv.Atoi(rest[0])
+		if err != nil {
+			return fmt.Errorf("loopback: %q is not a port", rest[0])
+		}
+		mode := -1
+		if len(rest) > 1 {
+			if mode, err = strconv.Atoi(rest[1]); err != nil {
+				return fmt.Errorf("loopback: %q is not a mode", rest[1])
+			}
+		}
+		lb, err := c.SetLoopback(port, mode)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "port\t%d\nloopback\t%s\n", lb.Port, loopbackName(lb.Mode))
+		return nil
+
 	case "ports":
 		ports, err := c.Ports()
 		if err != nil {
@@ -1341,4 +1390,17 @@ func phyRegOrder(phys []nosdclient.PHYRegs) []string {
 		return all[i] < all[j]
 	})
 	return all
+}
+
+// loopbackName names the SDK's loopback modes for `show loopback`.
+//
+// A mode the chip reports that this list does not know is printed as its
+// number rather than as "unknown": the number is what the next person has to
+// look up, and hiding it helps nobody.
+func loopbackName(m int) string {
+	names := []string{"none", "mac", "phy", "phy-remote", "mac-remote", "edb"}
+	if m >= 0 && m < len(names) {
+		return fmt.Sprintf("%s (%d)", names[m], m)
+	}
+	return fmt.Sprintf("%d", m)
 }

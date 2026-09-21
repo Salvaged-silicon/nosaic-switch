@@ -23,4 +23,7 @@ void nosaic_phy_dump(FILE *out);
 /* Read a run of registers from one PHY's MMD, for the socket's `phy.read`. */
 void nosaic_phy_read(FILE *out, int port, int devad, int reg, int count);
 
+/* Write one register of one PHY and read it back. A bring-up tool. */
+void nosaic_phy_write(FILE *out, int port, int devad, int reg, int val);
+
 #endif

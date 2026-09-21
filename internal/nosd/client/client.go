@@ -191,6 +191,47 @@ func (c *Client) PHYRead(port, devad, reg, count int) ([]PHYReg, error) {
 	return out, err
 }
 
+// PHYWrite is the result of writing one register: Value is the read-back, so
+// a register that ignored the write shows as a Value that is not Wrote.
+type PHYWrite struct {
+	Reg   int
+	Wrote int
+	Value *uint16
+	Ok    bool
+}
+
+// PHYWriteReg writes one register of a port's external PHY and reads it back.
+//
+// A bring-up tool: it can take a working port down. It exists because some
+// questions have no read-only form -- whether a far end's link actually
+// depends on our transmitter, for one, which needs our transmitter turned off.
+func (c *Client) PHYWriteReg(port, devad, reg, val int) ([]PHYWrite, error) {
+	var out []PHYWrite
+	err := c.call("phy.write", map[string]int{
+		"port": port, "devad": devad, "reg": reg, "value": val,
+	}, &out)
+	return out, err
+}
+
+// Loopback is one port's loopback mode, as the chip reports it back.
+type Loopback struct {
+	Port int
+	Mode int
+}
+
+// SetLoopback puts a port into one of the chip's loopbacks, or with mode < 0
+// only reads the current one. Modes are the SDK's: 0 none, 1 MAC, 2 PHY,
+// 3 PHY remote, 4 MAC remote, 5 EDB.
+//
+// A bring-up tool: it breaks traffic on the port. It exists because a port
+// that transmits correctly and never receives looks the same from every API
+// the switch offers, and a loopback is what splits that path in two.
+func (c *Client) SetLoopback(port, mode int) (Loopback, error) {
+	var out Loopback
+	err := c.call("port.loopback", map[string]int{"port": port, "mode": mode}, &out)
+	return out, err
+}
+
 // SetDeadline bounds every subsequent call on this connection.
 //
 // ⚠ THERE IS NO DEFAULT DEADLINE, AND ONE CALLER CANNOT AFFORD THAT.

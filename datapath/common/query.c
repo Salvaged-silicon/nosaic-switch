@@ -58,6 +58,7 @@ void nosaic_query_set_dmapool(struct nosaic_dmapool *p)
 /* The datapath's PHY register dumper, if it has one. See query.h. */
 static void (*query_phydump)(FILE *out);
 static void (*query_phyread)(FILE *out, int port, int devad, int reg, int count);
+static void (*query_phywrite)(FILE *out, int port, int devad, int reg, int val);
 
 void nosaic_query_set_phydump(void (*fn)(FILE *out))
 {
@@ -68,6 +69,12 @@ void nosaic_query_set_phyread(void (*fn)(FILE *out, int port, int devad,
 					 int reg, int count))
 {
 	query_phyread = fn;
+}
+
+void nosaic_query_set_phywrite(void (*fn)(FILE *out, int port, int devad,
+					  int reg, int val))
+{
+	query_phywrite = fn;
 }
 
 /*
@@ -325,6 +332,92 @@ static void handle(FILE *out, const char *req)
 		}
 		fprintf(out, "{\"ok\":true,\"result\":[");
 		query_phyread(out, port, devad, reg, count);
+		fprintf(out, "]}\n");
+		return;
+	}
+
+	/*
+	 * Put a port into, or take it out of, one of the chip's loopbacks.
+	 *
+	 * ⚠ THIS IS A BRING-UP TOOL AND IT BREAKS TRAFFIC ON THE PORT.
+	 *
+	 * It exists because "the far end links and we never receive" is not a
+	 * question the switch API can answer: link is one bit and it is down,
+	 * and everything upstream of the failure looks correct. A loopback
+	 * splits the path. PHY_REMOTE loops what the PHY receives on the line
+	 * straight back out of it, so the far end sees its own transmission
+	 * returned -- if the far end holds link, light IS reaching our PMD and
+	 * being recovered, and the fault is downstream toward the ASIC. If it
+	 * drops, we really are receiving nothing.
+	 *
+	 * Modes are the SDK's: 0 none, 1 MAC, 2 PHY, 3 PHY remote, 4 MAC
+	 * remote, 5 EDB. Passed through rather than named, because which ones
+	 * a given PHY implements is the PHY's business and a name we invented
+	 * for one that is refused would only obscure the refusal.
+	 */
+	if (strstr(req, "\"port.loopback\"") != NULL) {
+		int port = req_int(req, "port", 0);
+		int mode = req_int(req, "mode", -1);
+		int have = -1, rv;
+
+		if (port <= 0) {
+			fprintf(out, "{\"ok\":false,\"error\":\"need a port\"}\n");
+			return;
+		}
+		if (mode >= 0) {
+			rv = bcm_port_loopback_set(query_unit, port, mode);
+			if (rv != BCM_E_NONE) {
+				fprintf(out, "{\"ok\":false,\"error\":"
+					"\"loopback %d on port %d: %s\"}\n",
+					mode, port, bcm_errmsg(rv));
+				return;
+			}
+		}
+		/* Read back rather than echo: a mode the PHY quietly declined is
+		 * the thing most worth seeing here. */
+		if (bcm_port_loopback_get(query_unit, port, &have) != BCM_E_NONE)
+			have = -1;
+		fprintf(out, "{\"ok\":true,\"result\":{\"Port\":%d,\"Mode\":%d}}\n",
+			port, have);
+		return;
+	}
+
+	/*
+	 * Write one PHY register, by address.
+	 *
+	 * ⚠ A BRING-UP TOOL. IT CAN TAKE A WORKING PORT DOWN.
+	 *
+	 * The counterpart of phy.read, and it earns its risk on exactly the
+	 * questions read cannot answer. The one it was added for: a far end
+	 * reporting link tells you its RECEIVER locked, and says nothing
+	 * about its transmitter -- so "the far end links, therefore our
+	 * transmit is good and only our receive is broken" is an inference,
+	 * not a measurement. Disabling our own PMD transmitter (1.9 bit 0)
+	 * and watching whether the far end drops turns it into one.
+	 *
+	 * Writes nothing on its own initiative and reads the register back
+	 * afterwards, because a register that ignored the write is the
+	 * interesting case.
+	 */
+	if (strstr(req, "\"phy.write\"") != NULL) {
+		int port  = req_int(req, "port", 0);
+		int devad = req_int(req, "devad", 1);
+		int reg   = req_int(req, "reg", -1);
+		int val   = req_int(req, "value", -1);
+
+		if (query_phywrite == NULL) {
+			fprintf(out, "{\"ok\":false,\"error\":"
+				"\"this datapath has no external PHY driver bound\"}\n");
+			return;
+		}
+		if (port <= 0 || reg < 0 || reg > 0xffff ||
+		    val < 0 || val > 0xffff) {
+			fprintf(out, "{\"ok\":false,\"error\":"
+				"\"need a port, a register and a 16-bit value\"}\n");
+			return;
+		}
+		fprintf(out, "{\"ok\":true,\"result\":[");
+		query_phywrite(out, port, devad, reg, val);
 		fprintf(out, "]}\n");
 		return;
 	}

@@ -30,6 +30,8 @@ const platformUsage = `usage: nosaic platform <command>
                        run the cooling loop: fans track the hottest sensor,
                        fail to full cooling, and are left at full on exit
   beacon [on|off]      the blue locator, for finding this box in a rack
+  i2c <bus> <addr> <reg> [count]
+                       read raw i2c registers (read-only; no write path)
   schan selftest       prove S-Channel reaches the chip (read-only)
   schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed
@@ -73,6 +75,11 @@ func platformCmd(args []string) error {
 		return probeASIC(hal)
 	case "schan":
 		return schanCmd(b, rest[1:])
+	case "i2c":
+		// Read-only, and deliberately not part of any board's driver: it
+		// is the instrument the cage-expander map is derived WITH, not a
+		// capability a board has. See i2craw.go.
+		return i2cReadCmd(rest[1:])
 	case "retimer":
 		// The repeater between the ASIC and the cages behind it. Reports by
 		// default and programs only when asked, because the values it writes

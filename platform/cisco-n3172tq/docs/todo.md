@@ -264,6 +264,77 @@ Ordered so each step's failure is diagnosable with the one before it working.
       the first sample sent the whole investigation to the rack. Test
       against a second far end before concluding it is hardware.
 
+      **Update — the retimer had no firmware, and that is now fixed.** It
+      was not "never brought up" in the sense above: the driver bound and
+      configured it correctly. It had no microcode. `phy_force_firmware_load`
+      was `0` in `config/asic.conf`, which property.h documents as MAY SKIP
+      LOAD, and the SDK took the permission -- the framework entered the
+      broadcast download and returned without calling one driver step. At
+      `0x11` all six report `PHY84328 Firmware revID=0x29`. The cages still
+      do not link, so this was a precondition rather than the fault.
+
+      **The ASIC-to-PHY path is now PROVEN GOOD and is not the fault.**
+      `nosaic show loopback 65 2` -- PHY local loopback -- brings the port
+      **up at 40000**. That exercises the MAC, the PCS, all four SerDes
+      lanes, the lane maps and the polarity in both directions. MAC loopback
+      links at 10000 and no loopback is down. So everything from the MAC to
+      the PHY's line interface works, and the fault is on the line side.
+
+      ⚠ **THE "FAR END ALWAYS SEES US" COLUMN ABOVE DID NOT SURVIVE A DIRECT
+      TEST, AND THE TABLE SHOULD NOT BE TRUSTED.** It was read off far-end
+      link state, and a far end's link bit says its RECEIVER locked -- which
+      on the AS5610 turns out to be latched anyway: `swp49` stayed `up` at
+      40000 with our own PMD transmitter explicitly disabled
+      (`phy.write 65 1 0x09 1`, read back as 1). Worse, its receive counter
+      kept advancing at exactly the same rate with our laser off as with it
+      on -- +16 per 100s either way -- so `swp49` is not being fed by our
+      cage at all and never was. Every inference of the form "our transmit
+      works, only our receive is broken" rests on that column. Re-establish
+      it with counters and a laser toggle before building on it again.
+
+- [ ] **The QSFP cage GPIO correlation is DONE, and it moved the answer.**
+      board.yml prescribed it: read the three PCA9539s under NOSaic, boot
+      NX-OS which drives these cages successfully, read the same registers,
+      diff. Both halves are now measured (registers 0x00-0x07, in0 in1 out0
+      out1 pol0 pol1 cfg0 cfg1):
+
+      | device | NOSaic | NX-OS |
+      |---|---|---|
+      | bus6/0x74 | `f0 80 ff 80 00 00 ff 7f` | `f3 80 ff 80 00 00 fc 00` |
+      | bus6/0x76 | `83 fe 83 fe 00 00 00 00` | `83 fe 83 fe 00 00 00 00` |
+      | bus2/0x75 | `7f fa ff fa 00 00 ff 00` | `ff fa ff fa 00 00 1f 00` |
+
+      ⚠ **0x76 is byte-for-byte identical under both**, so board.yml's
+      reading of `port 0 = 0x83` as "five cages held in reset" is WRONG --
+      whatever those bits are, the working OS leaves them exactly where we
+      do. Delete that hypothesis rather than carrying it.
+
+      What actually differs is the direction registers, and only three lines
+      change LEVEL. NX-OS makes these outputs and drives them HIGH where we
+      leave them as floating inputs reading LOW:
+
+        * 0x74 port 0 bit 0
+        * 0x74 port 0 bit 1
+        * 0x75 port 0 bit 7
+
+      (0x74 port 1 bits 0-6 also go from floating to driven, but NX-OS
+      drives them to the level they already float at, so they are a
+      direction change without a level change.)
+
+      Three lines against six cages is not a per-cage signal, so this is not
+      ResetL. Next step is to drive those three as NX-OS does and see
+      whether `pma.sigdet` on a cabled cage stops reading zero. That is a
+      poke at a mapped bit rather than at an unmapped expander, which is
+      what board.yml's warning was actually about.
+
+      Read them with `nosaic platform i2c <bus> <addr> <reg> [count]`, which
+      is read-only on purpose; under NX-OS, `feature bash-shell`, then
+      `sudo mknod /dev/i2c-0 c 89 0` because NX-OS has i2cget but ships no
+      device node, and its single adapter is the root SMBus with the muxes
+      driven in its own code rather than by the kernel. 0x70 selects the
+      channel (0x02 = channel 1 = kernel i2c-2, 0x20 = channel 5 = i2c-6);
+      it sits at 0x02, so 0x75 reads with no mux write at all. Put it back.
+
 - [ ] **Breakout is unproven.** All six cages are declared `40g`; none has
       been broken out to 4 × 10G.
 - [x] ~~**No `config/frr.conf`.**~~ — written: router-id from the loopback,

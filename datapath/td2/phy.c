@@ -266,6 +266,8 @@ static const struct phy_reg_id phy_dump_regs[] = {
  * staged, but including it for one prototype drags the rest of the CMIC in. */
 extern int soc_miimc45_read(int unit, uint32 phy_id, uint8 phy_devad,
 			    uint16 phy_reg_addr, uint16 *phy_rd_data);
+extern int soc_miimc45_write(int unit, uint32 phy_id, uint8 phy_devad,
+			     uint16 phy_reg_addr, uint16 phy_wr_data);
 
 static int phy_dump_unit = -1;
 
@@ -352,6 +354,37 @@ void nosaic_phy_read(FILE *out, int port, int devad, int reg, int count)
 	}
 }
 
+/*
+ * Write one register of one PHY, by address, and read it straight back.
+ *
+ * The read-back is the point: a register that took the write and one that
+ * ignored it are the same call and different answers, and on a part running
+ * microcode the second is common -- firmware owns some of these and puts
+ * them back.
+ */
+void nosaic_phy_write(FILE *out, int port, int devad, int reg, int val)
+{
+	uint16 addr = 0, back = 0;
+	int rv;
+
+	if (phy_dump_unit < 0 || port < 1 || port > PHY_MAX_PORT) {
+		return;
+	}
+	if (soc_phy_cfg_addr_get(phy_dump_unit, port, 0, &addr) < 0) {
+		return;
+	}
+	rv = soc_miimc45_write(phy_dump_unit, addr, (uint8)devad,
+			       (uint16)reg, (uint16)val);
+	if (soc_miimc45_read(phy_dump_unit, addr, (uint8)devad,
+			     (uint16)reg, &back) < 0) {
+		fprintf(out, "{\"Reg\":%d,\"Wrote\":%d,\"Value\":null}",
+			reg, val);
+		return;
+	}
+	fprintf(out, "{\"Reg\":%d,\"Wrote\":%d,\"Value\":%u,\"Ok\":%s}",
+		reg, val, (unsigned)back, rv < 0 ? "false" : "true");
+}
+
 /* Drive one copper port's LED. One MDIO write, only on a change of state. */
 static void phy_led_set(int port, int lit)
 {
@@ -385,6 +418,7 @@ int nosaic_phy_bind(int unit)
 	phy_dump_unit = unit;
 	nosaic_query_set_phydump(nosaic_phy_dump);
 	nosaic_query_set_phyread(nosaic_phy_read);
+	nosaic_query_set_phywrite(nosaic_phy_write);
 	memset(phy_copper, 0, sizeof(phy_copper));
 	memset(phy_matched, 0, sizeof(phy_matched));
 	phy_any = 0;
@@ -528,6 +562,7 @@ int nosaic_phy_start(int unit)
 	phy_dump_unit = unit;
 	nosaic_query_set_phydump(nosaic_phy_dump);
 	nosaic_query_set_phyread(nosaic_phy_read);
+	nosaic_query_set_phywrite(nosaic_phy_write);
 	memset(phy_copper, 0, sizeof(phy_copper));
 	memset(phy_matched, 0, sizeof(phy_matched));
 	phy_any = 0;

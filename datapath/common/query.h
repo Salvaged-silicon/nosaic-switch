@@ -59,6 +59,11 @@ void nosaic_query_set_phydump(void (*fn)(FILE *out));
 void nosaic_query_set_phyread(void (*fn)(FILE *out, int port, int devad,
 					 int reg, int count));
 
+/* Write one PHY register, for the socket's `phy.write`. A bring-up tool: it
+ * can take a working port down. Same array-elements convention. */
+void nosaic_query_set_phywrite(void (*fn)(FILE *out, int port, int devad,
+					  int reg, int val));
+
 /* What this provider calls itself in `show caps`. Set per datapath so an
  * operator can tell which silicon answered without knowing the board. */
 #ifndef NOSAIC_QUERY_DRIVER
