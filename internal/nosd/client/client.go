@@ -176,6 +176,11 @@ func (c *Client) PHYs() ([]PHYRegs, error) {
 type PHYReg struct {
 	Reg   int
 	Value *uint16
+	// ViaDriver says which path answered. False means the raw MIIM bus by
+	// address, which on a BCM84328 returns 0 for signal detect even on a
+	// linked port -- see the note in datapath/td2/phy.c. A raw answer is
+	// not necessarily wrong, but it is not to be trusted on its own.
+	ViaDriver bool
 }
 
 // PHYRead reads count consecutive registers from one port's external PHY.

@@ -31,7 +31,9 @@ const platformUsage = `usage: nosaic platform <command>
                        fail to full cooling, and are left at full on exit
   beacon [on|off]      the blue locator, for finding this box in a rack
   i2c <bus> <addr> <reg> [count]
-                       read raw i2c registers (read-only; no write path)
+                       read raw i2c registers
+  i2c write <bus> <addr> <reg> <value>
+                       write one -- bring-up only, and read the warning
   schan selftest       prove S-Channel reaches the chip (read-only)
   schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed

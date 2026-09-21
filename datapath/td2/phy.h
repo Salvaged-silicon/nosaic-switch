@@ -23,6 +23,12 @@ void nosaic_phy_dump(FILE *out);
 /* Read a run of registers from one PHY's MMD, for the socket's `phy.read`. */
 void nosaic_phy_read(FILE *out, int port, int devad, int reg, int count);
 
+/* Take one 40G cage's BCM84328 out of the state it powers up in. Without it
+ * the cage configures cleanly, reports SR4 and 40000, and never links. See
+ * the long note at the definition: it was found by diffing the part's vendor
+ * registers against the vendor OS, not from a datasheet. */
+int nosaic_phy_cage_enable(int unit, int port);
+
 /* Write one register of one PHY and read it back. A bring-up tool. */
 void nosaic_phy_write(FILE *out, int port, int devad, int reg, int val);
 

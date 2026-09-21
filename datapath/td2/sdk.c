@@ -31,6 +31,7 @@
 #include "bde.h"
 #include "mmio.h"
 #include "props.h"
+#include "phy.h"
 #include "sdk.h"
 
 /* The SDK's own headers. Included last: they define types with names general
@@ -926,6 +927,11 @@ static void bring_up_40g(int unit, bcm_port_t port)
 			printf("port %d: autoneg on -> off (rv %d)\n", port, rv);
 			wrote++;
 		}
+
+		/* The retimer's own enable, last, once the port's speed and
+		 * interface are settled. See nosaic_phy_cage_enable. */
+		if (nosaic_phy_cage_enable(unit, port) == 0)
+			wrote++;
 
 		if (bcm_port_speed_get(unit, port, &rv) == BCM_E_NONE)
 			printf("port %d: 40G cage, speed %d, %d setting(s) applied\n",

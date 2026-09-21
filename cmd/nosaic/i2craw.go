@@ -22,12 +22,17 @@ import (
 // live outputs on an unmapped expander include, somewhere, whatever else the
 // board gates.
 //
-// A correlation needs a reader on both sides. It does not need a writer, so
-// there isn't one: the writer belongs in the board's platform driver once
-// the map is known, where it can be named rather than numbered.
+// A correlation needs a reader on both sides. The writer came later and only
+// once the map existed: the diff says exactly which registers the working OS
+// sets and to what, so `i2c write` replicates a known-good state rather than
+// poking to see what happens, which is what board.yml's warning is about.
+// It still belongs in the board's platform driver in the end, where the bits
+// can be named instead of numbered; this is the instrument that proves which
+// ones to name.
 const (
-	i2cSlave = 0x0703
-	i2cSMBus = 0x0720
+	i2cSlave   = 0x0703
+	smbusWrite = 0
+	i2cSMBus   = 0x0720
 
 	smbusRead     = 1
 	smbusByteData = 2
@@ -53,6 +58,22 @@ type smbusIoctl struct {
 	data      *smbusData
 }
 
+func smbusWriteByte(fd uintptr, reg, val byte) error {
+	var d smbusData
+	d.block[0] = val
+	a := smbusIoctl{
+		readWrite: smbusWrite,
+		command:   reg,
+		size:      smbusByteData,
+		data:      &d,
+	}
+	if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, fd,
+		uintptr(i2cSMBus), uintptr(unsafe.Pointer(&a))); e != 0 {
+		return e
+	}
+	return nil
+}
+
 func smbusReadByte(fd uintptr, reg byte) (byte, error) {
 	var d smbusData
 	a := smbusIoctl{
@@ -69,7 +90,16 @@ func smbusReadByte(fd uintptr, reg byte) (byte, error) {
 }
 
 func i2cReadCmd(args []string) error {
-	if len(args) < 3 {
+	write := false
+	if len(args) > 0 && args[0] == "write" {
+		write = true
+		args = args[1:]
+	}
+	if write {
+		if len(args) != 4 {
+			return fmt.Errorf("usage: nosaic platform i2c write <bus> <addr> <reg> <value>")
+		}
+	} else if len(args) < 3 {
 		return fmt.Errorf("usage: nosaic platform i2c <bus> <addr> <reg> [count]")
 	}
 	nums := make([]int, 0, 4)
@@ -83,12 +113,20 @@ func i2cReadCmd(args []string) error {
 		nums = append(nums, int(v))
 	}
 	bus, addr, reg := nums[0], nums[1], nums[2]
+	// ⚠ nums[3] is a COUNT when reading and a VALUE when writing. Checking
+	// it as a count either way rejected every write of zero -- which is a
+	// perfectly ordinary value, and the error said "count must be between
+	// 1 and 256" about something the caller had not written as a count.
 	count := 1
-	if len(nums) > 3 {
-		count = nums[3]
-	}
-	if count < 1 || count > 256 {
-		return fmt.Errorf("i2c: count must be between 1 and 256")
+	if !write {
+		if len(nums) > 3 {
+			count = nums[3]
+		}
+		if count < 1 || count > 256 {
+			return fmt.Errorf("i2c: count must be between 1 and 256")
+		}
+	} else if nums[3] < 0 || nums[3] > 0xff {
+		return fmt.Errorf("i2c: value must be a byte")
 	}
 
 	path := fmt.Sprintf("/dev/i2c-%d", bus)
@@ -105,6 +143,24 @@ func i2cReadCmd(args []string) error {
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	defer w.Flush()
+
+	if write {
+		val := byte(nums[3])
+		if err := smbusWriteByte(f.Fd(), byte(reg), val); err != nil {
+			return fmt.Errorf("i2c: writing %#02x to %#02x reg %#02x: %w",
+				val, addr, reg, err)
+		}
+		// Read back, because a register that ignored the write and one
+		// that took it are the same call and different answers.
+		back, err := smbusReadByte(f.Fd(), byte(reg))
+		if err != nil {
+			return fmt.Errorf("i2c: reading back: %w", err)
+		}
+		fmt.Fprintf(w, "REG\tWROTE\tREADS BACK\n%#02x\t%#02x\t%#02x\n",
+			reg, val, back)
+		return nil
+	}
+
 	fmt.Fprintln(w, "REG\tVALUE")
 	for i := 0; i < count; i++ {
 		r := byte(reg + i)

@@ -248,7 +248,61 @@ static int phy_reg_read(int port, int devad, int reg, uint16 *val)
  * Nothing is decoded here. The caller knows which part this is; this file
  * only knows how to ask.
  */
+/* Declared here for the same reason as the accessors above: soc/cmic.h is
+ * staged, but including it for one prototype drags the rest of the CMIC in. */
+extern int soc_miimc45_read(int unit, uint32 phy_id, uint8 phy_devad,
+			    uint16 phy_reg_addr, uint16 *phy_rd_data);
+extern int soc_miimc45_write(int unit, uint32 phy_id, uint8 phy_devad,
+			     uint16 phy_reg_addr, uint16 phy_wr_data);
+
+/*
+ * ⚠ READ THROUGH THE BOUND DRIVER WHERE THERE IS ONE. THE RAW PATH LIES.
+ *
+ * Both paths reach this part and mostly agree, which is what makes the
+ * disagreement dangerous. On a BCM84328 with a LINKED 40G cage, under the
+ * vendor's OS, the same register read two ways:
+ *
+ *   phy raw c45 xe64 1 0xa         -> 0x0000     (raw MIIM, by address)
+ *   phy xe64 0x0100000a, DevAd 1   -> 0x001f     (through the driver)
+ *
+ * 0x1f is global signal detect plus all four lanes. 0x0000 is what "no
+ * light at all" looks like, and it is what the raw path returns on a link
+ * that is up and passing traffic -- repeatedly, so it is not a latch. Eight
+ * other PMA registers agree exactly between the two paths, so this is not
+ * the wrong register space; the driver simply does not serve 1.10 from the
+ * wire, and the part does not answer it there.
+ *
+ * Reading raw cost this investigation a long detour: sigdet reading zero on
+ * our side was taken as proof that no light was arriving, and the far end's
+ * optics and fibre were doubted on the strength of it.
+ *
+ * The raw path stays, because it is the only way to reach the three
+ * subsidiary lanes of a cage -- they bind the Null driver by design, so
+ * there is no driver accessor for them. It is the fallback, not the
+ * default, and the dump says which one answered.
+ */
 struct phy_reg_id { uint8 devad; uint16 reg; const char *name; };
+
+/* Read one register the best way available: the bound driver if there is
+ * one, the raw bus by address otherwise. Returns 0 on success, and sets
+ * *viadrv so the caller can report which path answered. */
+static int phy_read_best(int unit, int port, uint16 addr, uint8 devad,
+			 uint16 reg, uint16 *val, int *viadrv)
+{
+	const char *drv = soc_phyctrl_drv_name(unit, port);
+	uint32 v = 0;
+
+	if (drv != NULL && *drv != '\0' && strstr(drv, "Null") == NULL) {
+		if (soc_phyctrl_reg_read(unit, port, 0,
+					 PHY_C45_ADDR(devad, reg), &v) >= 0) {
+			*val = (uint16)v;
+			*viadrv = 1;
+			return 0;
+		}
+	}
+	*viadrv = 0;
+	return soc_miimc45_read(unit, addr, devad, reg, val) < 0 ? -1 : 0;
+}
 
 static const struct phy_reg_id phy_dump_regs[] = {
 	{ 1, 0x0001, "pma.status1"      }, /* bit 2: receive link, latching low */
@@ -262,12 +316,6 @@ static const struct phy_reg_id phy_dump_regs[] = {
 	{ 4, 0x0018, "xs.lane.sync"     }, /* bits 0-3 lane sync, bit 12 align  */
 };
 
-/* Declared here for the same reason as the accessors above: soc/cmic.h is
- * staged, but including it for one prototype drags the rest of the CMIC in. */
-extern int soc_miimc45_read(int unit, uint32 phy_id, uint8 phy_devad,
-			    uint16 phy_reg_addr, uint16 *phy_rd_data);
-extern int soc_miimc45_write(int unit, uint32 phy_id, uint8 phy_devad,
-			     uint16 phy_reg_addr, uint16 phy_wr_data);
 
 static int phy_dump_unit = -1;
 
@@ -294,9 +342,10 @@ void nosaic_phy_dump(FILE *out)
 		first = 0;
 		for (k = 0; k < sizeof(phy_dump_regs) / sizeof(phy_dump_regs[0]); k++) {
 			uint16 v = 0;
-			int rv = soc_miimc45_read(phy_dump_unit, addr,
-						  phy_dump_regs[k].devad,
-						  phy_dump_regs[k].reg, &v);
+			int viadrv = 0;
+			int rv = phy_read_best(phy_dump_unit, port, addr,
+					       phy_dump_regs[k].devad,
+					       phy_dump_regs[k].reg, &v, &viadrv);
 
 			/* A read that failed and a read that returned zero are
 			 * different answers, and the second one is the
@@ -337,14 +386,15 @@ void nosaic_phy_read(FILE *out, int port, int devad, int reg, int count)
 	for (i = 0; i < count; i++) {
 		uint16 v = 0;
 		int r = reg + i;
-		int rv;
+		int rv, viadrv = 0;
 
 		if (r > 0xffff) {
 			break;
 		}
-		rv = soc_miimc45_read(phy_dump_unit, addr, (uint8)devad,
-				      (uint16)r, &v);
-		fprintf(out, "%s{\"Reg\":%d,\"Value\":", first ? "" : ",", r);
+		rv = phy_read_best(phy_dump_unit, port, addr, (uint8)devad,
+				   (uint16)r, &v, &viadrv);
+		fprintf(out, "%s{\"Reg\":%d,\"ViaDriver\":%s,\"Value\":",
+			first ? "" : ",", r, viadrv ? "true" : "false");
 		first = 0;
 		if (rv < 0) {
 			fprintf(out, "null}");
@@ -383,6 +433,74 @@ void nosaic_phy_write(FILE *out, int port, int devad, int reg, int val)
 	}
 	fprintf(out, "{\"Reg\":%d,\"Wrote\":%d,\"Value\":%u,\"Ok\":%s}",
 		reg, val, (unsigned)back, rv < 0 ? "false" : "true");
+}
+
+/*
+ * Take one 40G cage's retimer out of whatever state it powers up in.
+ *
+ * ⚠ WITHOUT THIS A CAGE LINKS UNDER THE VENDOR'S OS AND NOT UNDER OURS,
+ * WITH EVERY OTHER REGISTER IDENTICAL.
+ *
+ * Found by correlation rather than from a datasheet, because there is no
+ * datasheet for this part: dump the BCM84328's PMA vendor block under
+ * NX-OS with the cage UP, dump it here with the cage DOWN, diff. Both
+ * dumps have the same 28 non-zero registers. Ten differ, and all but this
+ * one are status that differs BECAUSE the link is up. Writing this one
+ * alone brings the cage up, within ten seconds, on both cages
+ * independently:
+ *
+ *   NX-OS  1.0xc8e4 = 0x8cc4
+ *   ours   1.0xc8e4 = 0x0cc4      <- bit 15 clear
+ *
+ * What finally identified it is worth keeping, because two readings of the
+ * evidence were wrong for a long time. The standard PMD signal-detect
+ * register 1.10 reads 0x0000 here and 0x001f under NX-OS, which says "no
+ * light on any lane" and sent the search to the fibre, the optics and the
+ * far end. It is a REPORTED value, not the hardware's: the vendor register
+ * 1.0xc877 holds the real per-lane signal detect and reads 0x001f under
+ * BOTH operating systems. Light was always arriving, on all four lanes.
+ * 1.10 starts reading 0x001f the moment this bit is set.
+ *
+ * Read-modify-write, and bit 15 only. The rest of the register differs
+ * between cages and is not ours to invent.
+ */
+#define PHY_84328_CAGE_ENABLE_REG 0xc8e4
+#define PHY_84328_CAGE_ENABLE_BIT 0x8000
+
+int nosaic_phy_cage_enable(int unit, int port)
+{
+	uint16 addr = 0, v = 0;
+
+	if (soc_phy_cfg_addr_get(unit, port, 0, &addr) < 0 || addr == 0) {
+		return -1;
+	}
+	if (soc_miimc45_read(unit, addr, 1, PHY_84328_CAGE_ENABLE_REG, &v) < 0) {
+		printf("phy: port %d: cannot read the cage enable register; "
+		       "this cage will not link\n", port);
+		fflush(stdout);
+		return -1;
+	}
+	if ((v & PHY_84328_CAGE_ENABLE_BIT) != 0) {
+		return 0;                       /* already set: nothing to do */
+	}
+	if (soc_miimc45_write(unit, addr, 1, PHY_84328_CAGE_ENABLE_REG,
+			      (uint16)(v | PHY_84328_CAGE_ENABLE_BIT)) < 0) {
+		printf("phy: port %d: cage enable write refused; this cage will "
+		       "not link\n", port);
+		fflush(stdout);
+		return -1;
+	}
+	/* Read back. A register the firmware owns can take a write and put it
+	 * straight back, and that is worth saying out loud rather than
+	 * discovering from a dark port. */
+	if (soc_miimc45_read(unit, addr, 1, PHY_84328_CAGE_ENABLE_REG, &v) < 0 ||
+	    (v & PHY_84328_CAGE_ENABLE_BIT) == 0) {
+		printf("phy: port %d: cage enable did not stick (%#06x); this "
+		       "cage will not link\n", port, v);
+		fflush(stdout);
+		return -1;
+	}
+	return 0;
 }
 
 /* Drive one copper port's LED. One MDIO write, only on a change of state. */

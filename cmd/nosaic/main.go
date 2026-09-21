@@ -889,13 +889,17 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintln(w, "MMD.REG\tVALUE")
+		fmt.Fprintln(w, "MMD.REG\tVALUE\tVIA")
 		for _, r := range regs {
+			via := "raw"
+			if r.ViaDriver {
+				via = "driver"
+			}
 			if r.Value == nil {
-				fmt.Fprintf(w, "%d.%#06x\tERR\n", nums[1], r.Reg)
+				fmt.Fprintf(w, "%d.%#06x\tERR\t%s\n", nums[1], r.Reg, via)
 				continue
 			}
-			fmt.Fprintf(w, "%d.%#06x\t%#06x\n", nums[1], r.Reg, *r.Value)
+			fmt.Fprintf(w, "%d.%#06x\t%#06x\t%s\n", nums[1], r.Reg, *r.Value, via)
 		}
 		return nil
 
