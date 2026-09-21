@@ -92,6 +92,6 @@ sdk.o: sdk.c bde.h sdk.h ../common/props.h
 ../common/props.o: ../common/props.c ../common/props.h
 
 clean:
-	rm -f nosd-td2p *.o
+	rm -f nosd-td2p *.o ../common/*.o
 
 .PHONY: clean strip
