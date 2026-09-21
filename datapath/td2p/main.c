@@ -325,6 +325,40 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
  * reporting that as success is how a switch looks healthy and forwards
  * nothing. Better to fail here, where the service log says why.
  */
+/*
+ * Is this the value of a tap declaration: <port>[:vlan[:mtu]], all decimal,
+ * port >= 1?
+ *
+ * ⚠ CHECKING ONLY THE FIRST NUMBER IS NOT ENOUGH, AND THAT IS NOT HYPOTHETICAL.
+ *
+ * The first attempt at this guard tested atoi(val) <= 0, which rejects a MAC
+ * beginning 00: and ACCEPTS one beginning 44: -- 44:4c:a8:eb:93:f6 parses as
+ * port 44 and would have built a silent bogus tap colliding with tap_et44. One
+ * board's address happened to be caught and another board's would not have
+ * been. So the whole value is validated, not its first field.
+ */
+static int tap_decl_valid(const char *v)
+{
+	const char *start = v;
+	int fields = 1, digits = 0;
+
+	if (v == NULL || *v == '\0')
+		return 0;
+	for (; *v != '\0'; v++) {
+		if (*v == ':') {
+			if (digits == 0 || ++fields > 3)
+				return 0;
+			digits = 0;
+			continue;
+		}
+		if (*v < '0' || *v > '9')
+			return 0;
+		digits++;
+	}
+	/* Well-formed is not enough: port 0 is the CPU, never a front panel. */
+	return digits > 0 && atoi(start) >= 1;
+}
+
 static int run_daemon(const char *bdf, char **confs, int nconf)
 {
 	struct nosaic_bde *b = &attached_dev;
@@ -429,6 +463,31 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 
 			if (name == NULL || strncmp(name, "tap_", 4) != 0)
 				continue;
+			/*
+			 * ⚠ `tap_` IS A NAMESPACE, NOT A GUARANTEE.
+			 *
+			 * A declaration is tap_<ifname>=<port>[:vlan[:mtu]], and a
+			 * front-panel port is never 0 -- port 0 is the CPU. Anything
+			 * else beginning tap_ parses into nonsense here and is then
+			 * acted on: a board-level tap_mac_base=00:1c:73:da:fe:7a
+			 * became a tap called "mac_base" on port 0 with an MTU of
+			 * 73, bcm_port_frame_max_set refused it, the whole bring-up
+			 * failed with "could not bridge ports to Linux", and the
+			 * supervisor retried that for ever. Four restarts before
+			 * anybody looked, with all 52 taps built and torn down each
+			 * time.
+			 *
+			 * So a value that is not a port is skipped and NAMED. The
+			 * daemon still starts: one unreadable property is not a
+			 * reason to leave every port off the Linux stack, and the
+			 * message says which property rather than which symptom.
+			 */
+			if (!tap_decl_valid(val)) {
+				fprintf(stderr, "nosd: %s=%s is not a tap declaration "
+					"(expected tap_<name>=<port>[:vlan[:mtu]] with "
+					"port >= 1); ignoring it\n", name, val);
+				continue;
+			}
 			snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
 			specs[ntap].name = names[ntap];
 			/* "<port>", "<port>:<vlan>" or "<port>:<vlan>:<mtu>" */
