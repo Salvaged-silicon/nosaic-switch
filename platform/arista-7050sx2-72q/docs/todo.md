@@ -246,6 +246,31 @@ The split is per-flow and hashes on the destination, so it is lumpy with few
 flows and evens out with more -- at the halfway mark this run stood at 35/10
 and finished at 35/40. Do not read a small sample as a broken hash.
 
+### The signal repeater is never programmed, and works anyway
+
+The board carries one TI repeater — the FDL gives `repeaterSmbus` at accel 1
+bus 7 and `repeaterInfo = [ ( 'qsfpDS125BR401R1', 0x58 ) ]` — and it sits in
+front of the **last two QSFP cages**, Ethernet53 and Ethernet54, the same
+arrangement the 7050TX-64 uses for its DS100KR800.
+
+NOSaic has the machinery: an s6 `retimer` service and
+`nosaic platform retimer --program`. It runs at every boot and does nothing,
+because `/etc/nosaic/retimer.conf` does not exist and this board has no
+`mkretimer.sh` to generate one. The 7050TX-64 has both — copy its generator.
+
+Measured on 2026-09-20: the part is populated and holds `EQ=0x2f`,
+`amplitude=0xad`, `de-emphasis=0x82` on every channel base. Those do **not**
+match the FDL's own `repeaterSettings` (`rxEqualization=0`,
+`outputAmplitude=168`, `txDeEmphasis=0`), so they are most likely the
+power-on defaults rather than anything EOS left behind — an earlier note
+claiming they were EOS's was not supported by the numbers.
+
+Both cages it serves carry Full adjacencies, so this is **unobserved rather
+than broken**. It is still worth closing: two of the six 40G cages depend on
+configuration that nothing in this codebase owns or can reproduce, and the
+failure mode if it ever resets is the silent one — a cage that links and
+carries nothing.
+
 ### The watchdog is not armed
 
 Every boot says so:
@@ -262,11 +287,61 @@ should happen when it fires — is the actual work.
 s6 restarts it immediately, forever, when the reason it exited will not change
 by trying again. It should back off and say so once.
 
-### Two QSFP macros are left at the global lane map
+### ~~Two QSFP macros are left at the global lane map~~ — resolved 2026-09-21
 
-Macros 42 and 45 use `xgxs_tx_lane_map_core` rather than a per-macro exception.
-Two derived exceptions were tried and refuted. Neither cage is cabled, so this
-is unobserved rather than known-good.
+Every one of the 18 cores now carries an explicit per-port lane map and no
+global key remains. See *Fixed on 2026-09-21* below: the exceptions that were
+"tried and refuted" were correct values under a key the SDK never asked for.
+
+## Fixed on 2026-09-21
+
+- **The SerDes lane map key hardcoded core 0, and two cages never got one.**
+  `tsce.c` reads the lane map with `soc_property_port_suffix_num_get(unit,
+  port, core_num, spn_XGXS_TX_LANE_MAP, "core", 0x3210)`, which builds
+  `<name>_core<CORE_NUM>_<port>` and falls back to `<name>_<port>`. Every key
+  in `asic.conf` was written `_core0_`, which is right only for ports whose
+  core number really is 0. Logical 49 and 53 — Ethernet49 and Ethernet50 — ran
+  on the SDK's own default map while the other four 40G cages got the values
+  meant for them. The values were never wrong; the key reached four ports of
+  six. Re-keyed without the infix, the way EOS writes it, which is correct
+  whatever the core number is.
+
+  **The symptom is why this took a day.** A wrong RX lane map brings the link
+  UP — the lanes lock individually — and then nothing reassembles. `in-nuc`
+  sat at 0 with `in-err` also at 0: not one corrupt frame, because nothing got
+  far enough to be called a frame. From outside that is indistinguishable from
+  a far end which is not transmitting, and the search went to the far end of
+  the fibre, then the optics, then the retimer. The Nexus 3172 on the other
+  side had been transmitting the whole time.
+
+  **The daemon had been saying so at every boot.** `config N of M properties
+  were NEVER read by the SDK` named `xgxs_tx/rx_lane_map_core0_49` and `_53`,
+  and only those two of the six cages. That list is the first thing to read
+  when a port links and carries nothing.
+
+  Localised by booting EOS 4.18.3 on the same board, cage, optic and fibre:
+  it brought Ethernet50 up at 40G where we received nothing, which cleared the
+  hardware, the fibre and the far end in one step. Its `config show` then gave
+  both the values and — the half that mattered — their correct spelling.
+
+- **`tools/mkpolarity.sh` now captures the lane maps and firmware modes**, not
+  just polarity, so this cannot drift again. Its absence is warned about
+  separately, because a board with no lane maps still produces a file that
+  looks complete. The 7050TX-64's generator already did this; ours did not.
+
+- **The QSFP polarity table was wrong for four of six cages.** The generator
+  that made it read lane 0 only, so cages whose lane 0 is not inverted were
+  absent entirely — and absent reads as "no flip needed" rather than "never
+  measured". The value is a bitmask over the cage's four lanes. Corrected and
+  confirmed three independent ways: a live EOS register sweep, the board's own
+  FDL, and EOS's running SDK config. This was a real latent bug but it was
+  *not* what kept Ethernet49 and Ethernet50 dark.
+
+- **`nosaic platform transceivers` reported "no signal" on working links.**
+  These CISCO-AVAGO BiDi modules advertise receive-power monitoring in
+  SFF-8636 byte 220 and then populate none of it. EOS reads the same zeroes on
+  a link that is up, so it is the module, not our decode. An all-zero
+  diagnostic block is now called what it is.
 
 ## Fixed on 2026-09-11
 
