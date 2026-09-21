@@ -225,7 +225,13 @@ Ordered so each step's failure is diagnosable with the one before it working.
       `ModSelL` is asserted and nothing asserts it. That makes the PCA9539s
       — the inverse of the Arista arrangement, and the easiest thing here to
       implement backwards.
-- [ ] **⚠ NO 40G CAGE RECEIVES UNDER NOSaic, AND IT IS OUR SOFTWARE.**
+- [x] **SOLVED: no 40G cage linked, and it was one bit in the retimer.**
+      `1.0xc8e4` bit 15 -- the BCM84328 powers up with it clear, NX-OS
+      sets it, we did not. Set at the end of cage bring-up now; both
+      cages come up at 40000 from a cold boot. The history below is
+      kept because two confident readings of the evidence were wrong.
+
+- [x] **⚠ NO 40G CAGE RECEIVES UNDER NOSaic, AND IT IS OUR SOFTWARE.**
       This overturns the earlier conclusion in this file that the dark cage
       was physical and needed a module swap. It is not.
 
@@ -292,7 +298,18 @@ Ordered so each step's failure is diagnosable with the one before it working.
       works, only our receive is broken" rests on that column. Re-establish
       it with counters and a laser toggle before building on it again.
 
-- [ ] **The QSFP cage GPIO correlation is DONE, and it moved the answer.**
+- [x] **The QSFP cage GPIO correlation is DONE -- and it was a dead end.**
+      Recorded because a dead end that cost a day is worth one that
+      costs nobody another. The three lines NX-OS drives and we left
+      floating are now driven identically here, the expanders read the
+      same on both systems, and the cages stayed dark. The real fault
+      was `1.0xc8e4` bit 15, above.
+
+      ⚠ The reverse test -- reverting the lines under NX-OS, which did
+      not drop its links -- proved less than it looked like: the
+      modules were already initialised. Only the forward test counts.
+
+- [x] **The correlation method itself, which is the reusable part.**
       board.yml prescribed it: read the three PCA9539s under NOSaic, boot
       NX-OS which drives these cages successfully, read the same registers,
       diff. Both halves are now measured (registers 0x00-0x07, in0 in1 out0
