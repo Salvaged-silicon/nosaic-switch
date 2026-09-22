@@ -15,7 +15,7 @@ void nosaic_phy_poll(void);
 void nosaic_phy_stop(void);
 
 /* Dump every external PHY's status registers as JSON array elements, for the
- * query socket's `phy.dump`. Registered with the socket by nosaic_phy_start,
+ * query socket's `phy.dump`. Registered with the socket by nosaic_phy_bind,
  * including on a board where this file drives nothing else. */
 #include <stdio.h>
 void nosaic_phy_dump(FILE *out);

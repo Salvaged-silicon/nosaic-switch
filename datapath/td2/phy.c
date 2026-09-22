@@ -620,9 +620,16 @@ int nosaic_phy_bind(int unit)
 	int p, n = 0;
 
 	phy_unit = unit;
-	/* Set before the early return below: the register dump is a diagnostic
-	 * for boards with no copper PHYs of the kind this file drives, and a
-	 * 40G cage is exactly that case. */
+	/*
+	 * Registered here rather than in nosaic_phy_start, and before the
+	 * early return below.
+	 *
+	 * Two reasons. The register dump is a diagnostic for boards with no
+	 * copper PHYs of the kind this file drives -- a 40G cage is exactly
+	 * that case -- so it must survive the `!phy_any` return. And bind runs
+	 * unconditionally while start runs only once the ports are enabled, so
+	 * this is the one that is always reached.
+	 */
 	phy_dump_unit = unit;
 	nosaic_query_set_phydump(nosaic_phy_dump);
 	nosaic_query_set_phyread(nosaic_phy_read);
@@ -769,13 +776,6 @@ int nosaic_phy_start(int unit)
 	 * copper port. Without it 42 of this board's 52 ports match "link and
 	 * no traffic" every interval and the one real fault is invisible. */
 	nosaic_tap_link_filter(phy_link_is_real);
-	/* Set before the early return below: the register dump is a diagnostic
-	 * for boards with no copper PHYs of the kind this file drives, and a
-	 * 40G cage is exactly that case. */
-	phy_dump_unit = unit;
-	nosaic_query_set_phydump(nosaic_phy_dump);
-	nosaic_query_set_phyread(nosaic_phy_read);
-	nosaic_query_set_phywrite(nosaic_phy_write);
 	memset(phy_copper, 0, sizeof(phy_copper));
 	memset(phy_matched, 0, sizeof(phy_matched));
 	phy_any = 0;
