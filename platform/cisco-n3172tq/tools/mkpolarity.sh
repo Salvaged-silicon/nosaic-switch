@@ -1,0 +1,141 @@
+#!/bin/sh
+# Generate this board's SerDes polarity and lane routing from YOUR OWN switch.
+#
+# WHY THIS EXISTS
+#
+# A PCB does not have to route a differential pair the same way round at both
+# ends, and it does not have to keep four lanes of a QSFP cage in order. Where
+# it inverts a pair and where it crosses lanes over is board layout, and the
+# SDK has to be told: it cannot detect either.
+#
+# Which makes it a fact about the board that no public document publishes, read
+# out of the vendor's software on a switch that has it -- vendor-derived, so
+# NOSaic ships this generator and not its output.
+#
+# WHAT GOES WRONG WITHOUT IT
+#
+# A port with an inverted pair the SDK does not know about achieves signal lock
+# and carries nothing. There is no error at either end: the link is up, the
+# lanes are locked, no symbol errors, no CRC errors, and no frames. The same
+# capture on the Arista sibling was the difference between cages that reported
+# 40000 and passed zero frames and cages that worked.
+#
+# ⚠ TAKE THE CAPTURE BEFORE YOU INSTALL NOSAIC. Installing replaces the disk
+# and the vendor's SDK with it. Same capture as mkportmap.sh, taken once.
+#
+# WHAT IT EMITS
+#
+#   phy_xaui_tx_polarity_flip_<p>   per PORT: this lane's transmit pair is
+#   phy_xaui_rx_polarity_flip_<p>   inverted on the board, or is not
+#   xgxs_tx_lane_map_xe<i>          per CORE: the four lanes' order, as a
+#   xgxs_rx_lane_map_xe<i>          nibble per lane, e.g. 0x2301
+#
+# ⚠ TWO DIFFERENT THINGS, KEYED TWO DIFFERENT WAYS, AND THAT IS THE TRAP HERE.
+#
+# The polarity flips are PER PORT and keyed by logical port from 1 -- there are
+# 72 of each on this board, one per logical port.
+#
+# The lane maps are PER CORE and keyed by the SDK interface name of the core's
+# FIRST port, counting from 0 -- so xe0, xe4, xe8 ... xe68. There are 18 of
+# each, because 72 lanes is 18 cores of four, and every one of them survives a
+# 54-port build: collapsing a cage from four 10G ports to one 40G port does not
+# remove the core the cage sits on.
+#
+# So the port filter that mkportmap.sh applies MUST NOT be applied to the lane
+# maps. Applying it drops twelve of the eighteen cores -- every copper core
+# above xe48 stays, every cage core is kept, and the copper cores in between
+# vanish. The symptom is a block of ports that link and carry nothing while
+# their neighbours work.
+#
+# WHAT IS NOT HERE, AND WHY THIS BOARD IS SHORT TWO GENERATORS
+#
+# ⚠ NO TRANSMIT EQUALISATION AND NO RETIMER PROFILE, unlike the Arista
+# 7050TX-64 which needs mkserdes.sh and mkretimer.sh as well.
+#
+# That is architectural, not an oversight. Every front-panel port on this board
+# has a PHY in front of it -- the six 40G cages are RETIMED through BCM84328s
+# rather than direct-attach -- so nothing drives a channel straight off the
+# ASIC SerDes, and there is no per-trace tuning to capture. The vendor's own
+# configuration for this board contains no preemphasis and no TX-FIR
+# coefficients at all, and the SerDes library named for this platform is a 4 KB
+# stub whose lane accessor returns NULL while its siblings for other platforms
+# run to 178 MB. The board buys its way out of SerDes tuning.
+#
+# Polarity and lane order are still board layout and still have to be read.
+#
+# READ-ONLY. `config show` is a show command.
+#
+# USAGE
+#   ./mkpolarity.sh --stdin < captured.txt > polarity.conf
+#
+# Capture it on the switch, with root (see docs/install.md):
+#
+#   bash-4.2# bcm-sdk-shell
+#   bcm-shell.0> config show
+#
+# Environment: UNIT_FROM/UNIT_TO rewrite the unit suffix. Default is no
+#              rewrite, because NX-OS drives this chip as unit 0 already and so
+#              does our datapath. See mkportmap.sh for the full reasoning.
+set -u
+
+UNIT_FROM="${UNIT_FROM:-}"
+UNIT_TO="${UNIT_TO:-0}"
+
+usage() {
+	echo "usage: $0 --stdin < captured.txt > polarity.conf" >&2
+	echo "" >&2
+	echo "  capture it on the switch with:  bcm-shell.0> config show" >&2
+	exit 2
+}
+
+[ $# -eq 1 ] && [ "$1" = "--stdin" ] || usage
+
+src=$(cat)
+[ -n "$src" ] || { echo "$0: no input" >&2; exit 1; }
+
+clean=$(printf '%s\n' "$src" |
+	sed 's/^[[:space:]]*//; s/^bcm-shell\.[0-9]*>[[:space:]]*//')
+
+if [ -n "$UNIT_FROM" ]; then
+	clean=$(printf '%s\n' "$clean" | sed "s/\.${UNIT_FROM}=/.${UNIT_TO}=/")
+fi
+
+# No lane filter at all, deliberately. The polarity flips are wanted for every
+# logical port the chip has, including the subordinate cage lanes: a cage
+# running as one 40G port still stripes across four lanes, and each of those
+# lanes still has whatever polarity the board gave it. The Arista generator
+# keeps all thirteen of its autoneg-clause entries for the same reason -- the
+# SDK is the only authority on which of its properties are per-lane, and this
+# family is.
+props=$(printf '%s\n' "$clean" |
+	grep -E "^(phy_xaui_tx_polarity_flip_[0-9]+|phy_xaui_rx_polarity_flip_[0-9]+|xgxs_tx_lane_map_xe[0-9]+|xgxs_rx_lane_map_xe[0-9]+)(\.[0-9]+)?=" |
+	sort)
+
+printf '# Generated by mkpolarity.sh from this switch. Do not commit.\n'
+printf '# SerDes polarity and lane routing for one physical Cisco Nexus 3172TQ.\n\n'
+printf '%s\n' "$props"
+
+tx=$(printf '%s\n' "$props" | grep -c '^phy_xaui_tx_polarity_flip_' || true)
+rx=$(printf '%s\n' "$props" | grep -c '^phy_xaui_rx_polarity_flip_' || true)
+ltx=$(printf '%s\n' "$props" | grep -c '^xgxs_tx_lane_map_xe' || true)
+lrx=$(printf '%s\n' "$props" | grep -c '^xgxs_rx_lane_map_xe' || true)
+
+echo "$0: polarity flips tx=$tx rx=$rx, lane maps tx=$ltx rx=$lrx" >&2
+[ "$tx" -eq 72 ] || echo "$0: WARNING: expected 72 tx polarity flips, got $tx" >&2
+[ "$rx" -eq 72 ] || echo "$0: WARNING: expected 72 rx polarity flips, got $rx" >&2
+[ "$ltx" -eq 18 ] || echo "$0: WARNING: expected 18 tx lane maps (72 lanes / 4 per core), got $ltx" >&2
+[ "$lrx" -eq 18 ] || echo "$0: WARNING: expected 18 rx lane maps, got $lrx" >&2
+
+# A lane map keyed anywhere but a multiple of four is not a core's first port,
+# which means the capture is from a board with a different lane grouping and
+# nothing below this point should be trusted.
+bad=$(printf '%s\n' "$props" | grep -oE '^xgxs_[tr]x_lane_map_xe[0-9]+' |
+	sed 's/.*xe//' | awk '$1 % 4 != 0' | sort -un | tr '\n' ' ')
+[ -z "$bad" ] || echo "$0: WARNING: lane maps keyed off a core boundary: $bad" >&2
+
+# Nothing flipped anywhere is suspicious rather than lucky. This board does
+# invert pairs -- if every value came back 0, the capture is probably from a
+# shell that printed defaults rather than the running configuration.
+set=$(printf '%s\n' "$props" | grep -cE '^phy_xaui_[tr]x_polarity_flip_[0-9]+(\.[0-9]+)?=(0x)?0*[1-9a-fA-F]' || true)
+echo "$0: $set of $((tx + rx)) polarity entries are non-zero" >&2
+[ "$set" -gt 0 ] || echo "$0: WARNING: no polarity flip is set anywhere; this board has some" >&2

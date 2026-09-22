@@ -240,8 +240,28 @@ blog() {
 }
 
 mkdir -p /mnt/boot
-BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null || echo /dev/vda1)"
-if mount -t ext2 "$BOOTDEV" /mnt/boot 2>/dev/null; then
+
+# ⚠ THE LABEL IS LOOKED FOR IN BOTH CASES, BECAUSE FAT HAS NO LOWERCASE.
+#
+# On a board whose firmware is its own bootloader this partition is the EFI
+# system partition, so it is FAT -- and a FAT label is stored uppercase
+# whatever was asked for. findfs compares exactly, so LABEL=nosaic-boot
+# matches the ext2 boards and misses the UEFI ones, which then fall through to
+# the /dev/vda1 guess and boot slot A stateless for ever: A/B keeps appearing
+# to work and no upgrade is ever reversible.
+#
+# PARTLABEL is tried after both, for a disk whose filesystem label was lost but
+# whose GPT names survive.
+BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null \
+        || findfs LABEL=NOSAIC-BOOT 2>/dev/null \
+        || findfs PARTLABEL=nosaic-boot 2>/dev/null \
+        || echo /dev/vda1)"
+
+# ext2 first, then vfat. Tried rather than derived: the initramfs is one script
+# for every board and it does not know which kind of boot partition this disk
+# has, and letting mount name the wrong type first costs nothing.
+if mount -t ext2 "$BOOTDEV" /mnt/boot 2>/dev/null \
+   || mount -t vfat "$BOOTDEV" /mnt/boot 2>/dev/null; then
     B=/mnt/boot/boot
     mkdir -p $B
 elif [ "$PERSIST" = yes ]; then

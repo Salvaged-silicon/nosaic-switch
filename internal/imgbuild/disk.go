@@ -47,7 +47,7 @@ import (
 
 // BuildDisk assembles a partitioned disk image containing the composed image
 // in slot A and an empty, initialised data partition.
-func BuildDisk(o Options, squashfs string) (string, int64, error) {
+func BuildDisk(o Options, squashfs, kernel, initramfs string) (string, int64, error) {
 	bootMiB, slotMiB, dataMiB := o.Board.Layout()
 	out := filepath.Join(o.OutDir, "disk.img")
 	fmt.Fprintf(o.Log, "==> assembling the disk image\n")
@@ -93,12 +93,23 @@ func BuildDisk(o Options, squashfs string) (string, int64, error) {
 	// partition, and this board's own vendor OS boots exactly this way
 	// (usbboot from a raw partition). Using the mechanism already proven on
 	// the hardware beats using the tidier one that has never run there.
+	// type=uefi on a board whose firmware is the bootloader.
+	//
+	// Not cosmetic and not a hint: UEFI enumerates EFI system partitions by
+	// GUID, and a FAT filesystem in a partition typed `linux` is a FAT
+	// filesystem the firmware will not look inside. The symptom is a disk
+	// that is laid out perfectly, mounts perfectly under Linux, and offers
+	// the firmware nothing to boot.
+	bootType := "linux"
+	if o.Board.WantsESP() {
+		bootType = "uefi"
+	}
 	script := fmt.Sprintf(`label: gpt
-size=%dMiB, type=linux, name="nosaic-boot"
+size=%dMiB, type=%s, name="nosaic-boot"
 size=%dMiB, type=linux, name="nosaic-slot-a"
 size=%dMiB, type=linux, name="nosaic-slot-b"
                 type=linux, name="nosaic-data"
-`, bootMiB, slotMiB, slotMiB)
+`, bootMiB, bootType, slotMiB, slotMiB)
 	fitMiB := o.Board.FITMiB
 	if o.Board.PartTable() == "dos" {
 		if fitMiB > 0 {
@@ -141,7 +152,13 @@ size=%dMiB, type=83
 	// build -- it is made from the kernel and initramfs after the disk is
 	// assembled.
 	if !(o.Board.PartTable() == "dos" && o.Board.FITMiB > 0) {
-		boot, err := buildBootPartition(o, parts[0].Size*512)
+		build := buildBootPartition
+		if o.Board.WantsESP() {
+			build = func(o Options, size int64) (string, error) {
+				return buildESP(o, size, kernel, initramfs)
+			}
+		}
+		boot, err := build(o, parts[0].Size*512)
 		if err != nil {
 			return "", 0, err
 		}
@@ -257,6 +274,217 @@ func buildBootPartition(o Options, size int64) (string, error) {
 		return "", fmt.Errorf("mke2fs (boot): %v\n%s", err, b)
 	}
 	return img, nil
+}
+
+// buildESP makes the EFI system partition for a board whose firmware is its
+// own bootloader.
+//
+// It replaces buildBootPartition on such a board and does that function's job
+// as well as its own: the slot pointer lives here too, because this is still
+// the first partition and still the small filesystem the initramfs reads
+// before it mounts anything else. FAT has no journal to replay, so the
+// property that put the pointer on an ext2 filesystem -- that an offline edit
+// stays edited -- holds here for free.
+//
+// # What goes on it
+//
+//	/EFI/BOOT/BOOTX64.EFI   the kernel. CONFIG_EFI_STUB makes a bzImage a
+//	                        valid PE32+ application, so there is no separate
+//	                        bootloader to install and nothing to configure.
+//	/EFI/BOOT/initrd.img    the initramfs, loaded by the stub itself.
+//	/startup.nsh            the command line, run by the UEFI Shell.
+//	/boot/active            the slot pointer.
+//
+// # Why the command line is in a shell script
+//
+// The EFI stub takes its command line from the firmware's LoadOptions, and a
+// boot entry created with the EDK2 shell's `bcfg boot add` has none -- so a
+// kernel launched that way comes up with no console= and no initrd= and says
+// nothing about either. The shell, on the other hand, passes arguments, and it
+// auto-runs `startup.nsh` from the filesystem it finds one on.
+//
+// So the arrangement on the first board using this backend is: the firmware's
+// boot order reaches the EDK2 shell, the shell runs this script, and the
+// script launches the kernel with a full command line. That is unusual and it
+// is written down loudly in the board's install page, along with what to do
+// when the script is not picked up. The tidier ending -- a real boot entry
+// whose optional data carries the command line as UCS-2, written with
+// efibootmgr from the running switch -- is in that board's todo.
+func buildESP(o Options, size int64, kernel, initramfs string) (string, error) {
+	if kernel == "" || initramfs == "" {
+		return "", fmt.Errorf("an EFI system partition needs a kernel and an initramfs")
+	}
+	dir := filepath.Join(o.Root, ".cache", "image", o.Board.ID)
+
+	// ⚠ A RAM-BOOT IMAGE'S BOOT FILES DO NOT GO ON THE DISK.
+	//
+	// On a RAM boot the initramfs carries the whole root filesystem -- 64 MiB
+	// where the installable one is a few -- and the disk it would be written
+	// to is a disk nobody may install: the uefi backend refuses to wrap a
+	// RAM-boot image into an installer, because that installer would work and
+	// lose every setting at the next reboot.
+	//
+	// So the ESP gets the partition and none of the contents. Found by an ESP
+	// sized for the real case failing with "Disk full" on the RAM-boot one,
+	// which is the right failure for the wrong reason: the fix is not a bigger
+	// boot partition, it is not putting a netboot image on a disk.
+	if o.RAMBoot {
+		img := filepath.Join(dir, "esp.vfat")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", err
+		}
+		if err := truncate(img, size); err != nil {
+			return "", err
+		}
+		cmd := exec.Command("mkfs.vfat", "-F", "16", "-n", "NOSAIC-BOOT", img)
+		if b, err := cmd.CombinedOutput(); err != nil {
+			return "", fmt.Errorf("mkfs.vfat: %v\n%s", err, b)
+		}
+		fmt.Fprintf(o.Log, "    EFI system partition: %d MiB, left empty -- "+
+			"a RAM-boot image is netbooted, not installed\n", size/(1<<20))
+		return img, nil
+	}
+
+	// ⚠ CHECKED BEFORE mkfs, BECAUSE THE FAILURE AFTERWARDS IS "Disk full".
+	//
+	// mcopy's message says nothing about which partition, which file, or which
+	// board.yml field decides the size -- and the answer is boot_mib, which is
+	// three files away from the error. A board whose kernel grows past its boot
+	// partition should be told that in those words.
+	var total int64
+	for _, f := range []string{kernel, initramfs} {
+		fi, err := os.Stat(f)
+		if err != nil {
+			return "", err
+		}
+		total += fi.Size()
+	}
+	// FAT's own overhead plus slack for startup.nsh and the slot pointer. Ten
+	// per cent rather than a computed figure: the point is to fail early with
+	// a useful sentence, not to predict cluster allocation exactly.
+	if want := total + total/10; want > size {
+		return "", fmt.Errorf("the kernel and initramfs are %.1f MiB and the EFI system "+
+			"partition is %d MiB.\n       Raise boot_mib in platform/%s/board.yml to at "+
+			"least %d",
+			float64(total)/(1<<20), size/(1<<20), o.Board.ID, (want>>20)+1)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	img := filepath.Join(dir, "esp.vfat")
+	if err := truncate(img, size); err != nil {
+		return "", err
+	}
+
+	// FAT16, not FAT32, and the installer depends on the choice: it verifies
+	// the partition by reading the filesystem type string, which FAT16 puts at
+	// offset 54 of the first sector and FAT32 puts at 82. UEFI requires
+	// firmware to support both, and 16 is what fits a boot partition of this
+	// size without mkfs arguing about cluster counts.
+	//
+	// The label is uppercase because FAT labels are: the filesystem has no
+	// lowercase, so asking for one produces a label that does not match what
+	// blkid reports, and the initramfs looks the partition up by label.
+	cmd := exec.Command("mkfs.vfat", "-F", "16", "-n", "NOSAIC-BOOT", img)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("mkfs.vfat: %v\n%s", err, b)
+	}
+
+	// mtools, rather than mounting. Mounting needs root and a loop device, and
+	// the builder container has neither -- the whole image build is deliberately
+	// unprivileged, which is why every other filesystem here is made with
+	// mke2fs -d.
+	run := func(name string, args ...string) error {
+		// mtools reads ~/.mtoolsrc and complains about a drive letter it has
+		// no configuration for; MTOOLS_SKIP_CHECK stops it refusing an image
+		// whose geometry it did not create.
+		c := exec.Command(name, args...)
+		c.Env = append(os.Environ(), "MTOOLS_SKIP_CHECK=1")
+		if b, err := c.CombinedOutput(); err != nil {
+			return fmt.Errorf("%s: %v\n%s", name, err, b)
+		}
+		return nil
+	}
+	for _, d := range []string{"::/EFI", "::/EFI/BOOT", "::/boot"} {
+		if err := run("mmd", "-i", img, d); err != nil {
+			return "", err
+		}
+	}
+
+	// ⚠ BOOTX64.EFI IS THE NAME, AND IT IS NOT A CONVENTION WE CHOSE.
+	//
+	// UEFI's removable-media path is \EFI\BOOT\BOOTX64.EFI exactly, and it is
+	// the one path firmware will boot without a boot variable telling it to.
+	// A kernel installed under any other name needs a boot entry created
+	// before the box can ever start it, which on a switch means a console
+	// session in the EFI shell before the first boot rather than after a
+	// failed one.
+	for _, f := range [][2]string{
+		{kernel, "::/EFI/BOOT/BOOTX64.EFI"},
+		{initramfs, "::/EFI/BOOT/initrd.img"},
+	} {
+		if err := run("mcopy", "-i", img, "-o", f[0], f[1]); err != nil {
+			return "", err
+		}
+	}
+
+	nsh := startupScript(o)
+
+	// ⚠ ITERATED OVER FILESYSTEMS RATHER THAN HARDCODING fs0.
+	//
+	// Which alias the shell gives our partition depends on what else is
+	// plugged in: insert a USB stick to copy an image over and the internal
+	// disk can become fs1. A script that says fs0 then launches a kernel off
+	// the USB stick, or nothing at all, and the failure is a shell prompt in
+	// a rack.
+	stage := filepath.Join(dir, "startup.nsh")
+	if err := os.WriteFile(stage, []byte(nsh), 0o644); err != nil {
+		return "", err
+	}
+	if err := run("mcopy", "-i", img, "-o", stage, "::/startup.nsh"); err != nil {
+		return "", err
+	}
+
+	// A fresh disk boots slot A, with nothing on trial. Same file and same
+	// contents as buildBootPartition writes; the filesystem under it differs
+	// and nothing above it knows.
+	active := filepath.Join(dir, "active")
+	if err := os.WriteFile(active, []byte("a\n"), 0o644); err != nil {
+		return "", err
+	}
+	if err := run("mcopy", "-i", img, "-o", active, "::/boot/active"); err != nil {
+		return "", err
+	}
+
+	fmt.Fprintf(o.Log, "    EFI system partition: %d MiB, kernel as \\EFI\\BOOT\\BOOTX64.EFI\n",
+		size/(1<<20))
+	return img, nil
+}
+
+// startupScript is the command line the kernel is launched with, as a UEFI
+// Shell script.
+//
+// Split out of buildESP so it can be read and tested without mtools: the
+// filesystem this lands on needs three external tools to inspect, and the
+// thing most likely to be wrong is this text.
+func startupScript(o Options) string {
+	consoleDev, consoleBaud := o.Board.ConsolePort()
+	return fmt.Sprintf(`# NOSaic %s for %s. Generated -- do not edit.
+#
+# The UEFI Shell runs this. It exists because the EFI stub reads its command
+# line from the firmware and a boot entry does not carry one.
+@echo -off
+echo NOSaic %s
+echo .
+for %%v in fs0 fs1 fs2 fs3
+    if exist %%v:\EFI\BOOT\BOOTX64.EFI then
+        %%v:
+        echo booting from %%v:
+        \EFI\BOOT\BOOTX64.EFI initrd=\EFI\BOOT\initrd.img console=%s,%dn8 %s
+    endif
+endfor
+echo NOSaic: no EFI system partition found on fs0..fs3
+`, o.Version, o.Board.ID, o.Version, consoleDev, consoleBaud, o.Board.KernelParams)
 }
 
 type partition struct {

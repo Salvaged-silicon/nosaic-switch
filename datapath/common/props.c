@@ -76,23 +76,43 @@ int nosaic_props_load(const char *path)
 		if (*name == '\0')
 			continue;
 
-		if (nprops >= MAX_PROPS) {
-			fprintf(stderr, "nosd-td2p: more than %d properties in %s; "
-				"the rest are ignored\n", MAX_PROPS, path);
+		/* Stored through nosaic_props_set(), so a name defined again
+		 * REPLACES the earlier definition rather than being appended
+		 * beside it.
+		 *
+		 * nosaic_props_get() already searched backwards, so lookups
+		 * always saw the last definition and the documented layering --
+		 * /etc/nosaic first, then /mnt/data/config overriding it --
+		 * appeared to work. What did not work is every caller that
+		 * ENUMERATES the array: those walk forwards and saw both copies.
+		 *
+		 * That is not theoretical. A tap defined in both files made nosd
+		 * create it twice; the second TUNSETIFF returned EBUSY, the
+		 * daemon exited, and s6 restarted it into the same wall eleven
+		 * times. The log ends mid-startup with no error line, and
+		 * `nosaic show ports` reports only that the socket is missing,
+		 * which reads as the chip failing to come up.
+		 *
+		 * Going through the same setter the derived properties use --
+		 * the QSFP port mode rewrites the port map through it -- rather
+		 * than deduplicating separately here. One implementation of
+		 * "last definition wins" means a file and a derived value cannot
+		 * disagree about what that phrase means, and a new enumerator
+		 * cannot reintroduce the bug by forgetting.
+		 */
+		if (nosaic_props_set(name, value) < 0) {
+			fprintf(stderr, "nosd-td2p: cannot store %s from %s "
+				"(more than %d properties, or out of memory); "
+				"the rest of the file is ignored\n",
+				name, path, MAX_PROPS);
 			break;
 		}
-		props[nprops].name = strdup(name);
-		props[nprops].value = strdup(value);
-		if (props[nprops].name == NULL || props[nprops].value == NULL) {
-			fprintf(stderr, "nosd-td2p: out of memory reading %s\n", path);
-			break;
-		}
-		nprops++;
 		n++;
 	}
 	fclose(f);
 	return n;
 }
+
 
 /*
  * Look up a property. The LAST definition wins.

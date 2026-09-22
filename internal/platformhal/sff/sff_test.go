@@ -215,3 +215,35 @@ func TestKindOf(t *testing.T) {
 		}
 	}
 }
+
+// A module that implements diagnostics and reports nothing in them must be
+// distinguishable from one reporting a genuinely dark lane. Both render as
+// zeroes, and only the first is a reason to disbelieve the display.
+func TestDiagnosticsAllZero(t *testing.T) {
+	populated := Module{TempMilliC: 31000, VccMV: 3300,
+		Lanes: []Lane{{Index: 1, TXBiasUA: 7000, RXPowerUW: 550}}}
+	if populated.DiagnosticsAllZero() {
+		t.Error("a module reporting real readings must not read as all-zero")
+	}
+
+	// The observed case on this board: every diagnostic byte 0x00 while the
+	// cage carries traffic.
+	empty := Module{Lanes: []Lane{{Index: 1}, {Index: 2}, {Index: 3}, {Index: 4}}}
+	if !empty.DiagnosticsAllZero() {
+		t.Error("an all-zero diagnostic block must be recognised as unpopulated")
+	}
+
+	// One dark lane on an otherwise live module is a real measurement and must
+	// NOT be suppressed -- that is the case the display exists for.
+	dark := Module{TempMilliC: 31000, VccMV: 3300,
+		Lanes: []Lane{{Index: 1, TXBiasUA: 7000, RXPowerUW: 0}}}
+	if dark.DiagnosticsAllZero() {
+		t.Error("a dark lane on a live module must stay visible")
+	}
+
+	// No lanes at all is "reports no diagnostics", handled separately; it must
+	// not claim to be a populated-but-zero block.
+	if (Module{}).DiagnosticsAllZero() {
+		t.Error("a module with no lanes must not read as an all-zero block")
+	}
+}

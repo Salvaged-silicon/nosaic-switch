@@ -114,6 +114,7 @@
 #include <bcm/stat.h>
 #include <bcm/stg.h>
 
+#include "props.h"
 #include "tapbridge.h"
 
 #define TAP_MTU        9216
@@ -134,9 +135,22 @@ struct tap {
 	unsigned long tx_ok;
 	unsigned long tx_err;
 	unsigned long tx_nobuf;   /* dropped: no free packet in the ring */
+	/* Consecutive stats intervals with link and no traffic either way.
+	 * Counted so a port that has just come up is not accused of being
+	 * dead for the first moment it is legitimately quiet. */
+	int silent;
+	unsigned long tx_nolink;  /* dropped: the port has no link to send on */
 };
 
 static struct tap taps[MAX_TAPS];
+
+/* The board's "really has link" test; see nosaic_tap_link_filter(). */
+static int (*tap_link_real)(int port);
+
+void nosaic_tap_link_filter(int (*fn)(int port))
+{
+	tap_link_real = fn;
+}
 static int ntaps;
 static int tap_unit;
 
@@ -153,6 +167,12 @@ static int tap_unit;
  * means a slot whose callback never fires simply sinks out of rotation instead
  * of being retried in order.
  */
+/* How many stats intervals a port may have link and carry nothing before
+ * it is worth saying so. The table is printed about once a minute, so
+ * this is a few minutes of genuine silence rather than a port that has
+ * just linked and not yet been spoken to. */
+#define TAP_SILENT_INTERVALS 3
+
 #define TX_RING 64
 
 static bcm_pkt_t *tx_ring[TX_RING];
@@ -380,6 +400,36 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 		return -1;
 
 	/*
+	 * Don't hand a frame to a port with no link.
+	 *
+	 * bcm_tx ANDs the packet's port bitmap with the bitmap linkscan
+	 * maintains, so a dark port yields no descriptor. The SDK then prints
+	 * "Could not send pkt with dv_vcnt = 0", invokes the completion
+	 * callback inline, AND RETURNS SUCCESS -- so without this the frame is
+	 * counted in tx_ok as though it went out, and the log fills up.
+	 *
+	 * This only became visible when this board declared a tap for all 54
+	 * of its ports rather than only the cabled ones. Linux sends router
+	 * solicitations and MLD out of every interface it has, so 52 dark
+	 * ports produced a steady drip of failed transmits reported as
+	 * successes. Declaring every port is right -- a cable plugged in later
+	 * should just work -- so the transmit path has to tolerate dark ones.
+	 *
+	 * Checked per frame rather than cached: this is the CPU-originated
+	 * slow path at a few frames a second, and a cached copy would need a
+	 * linkscan handler to stay honest.
+	 */
+	{
+		int link = 0;
+
+		if (bcm_port_link_status_get(tap_unit, t->port, &link) ==
+		    BCM_E_NONE && !link) {
+			t->tx_nolink++;
+			return -1;
+		}
+	}
+
+	/*
 	 * A full ring means every packet is still with the DMA engine. Drop
 	 * this frame and say so: the alternative is to wait, and waiting here
 	 * is the failure this whole arrangement exists to prevent.
@@ -458,11 +508,66 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sock >= 0) {
-		/* A distinct locally-administered MAC per port. */
+		/*
+		 * A locally-administered MAC, distinct per port AND per switch.
+		 *
+		 * It used to be 02:00:00:00:00:<0x50+index>, with nothing in it
+		 * derived from the board -- so every NOSaic switch handed out the
+		 * same addresses in the same order. That is not theoretical: on
+		 * this bench a 7050SX2's et1 and a 7050TX-64's et49 both held
+		 * 02:00:00:00:00:50, and et2 and et50 both held ...:51.
+		 *
+		 * Nothing broke, because each tap sits in its own VLAN and the
+		 * chip's L2 table is keyed on VLAN+MAC, so the duplicates never
+		 * met. That is a thinner margin than it looks. Until very
+		 * recently every port was also left in VLAN 1 -- one chip-wide
+		 * flood domain -- where two ports carrying the same address WOULD
+		 * have collided and the table would have flapped it between them.
+		 * Anything that puts two ports in a shared VLAN brings it back,
+		 * and two NOSaic switches on one segment collide outright with no
+		 * VLAN to separate them.
+		 *
+		 * So the middle four bytes come from a base the board supplies,
+		 * `tap_mac_base`, which is the switch's own address -- unique per
+		 * machine and already known to it. The last byte stays the port
+		 * index, which is what makes it distinct within the switch.
+		 *
+		 * Without the property the old constant is used, because a board
+		 * that has not been told its own address still has to bring its
+		 * ports up. It says so once: silently reverting to addresses
+		 * shared with every other switch is the kind of default that is
+		 * only discovered by two boxes fighting over an address.
+		 */
 		memset(&ifr, 0, sizeof(ifr));
 		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
 		ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
 		ifr.ifr_hwaddr.sa_data[0] = 0x02;
+		{
+			unsigned b[6];
+			const char *base = nosaic_props_get("tap_mac_base");
+			static int warned;
+
+			if (base != NULL && sscanf(base, "%x:%x:%x:%x:%x:%x",
+						   &b[0], &b[1], &b[2], &b[3],
+						   &b[4], &b[5]) == 6) {
+				/* The low four bytes of the board's address: the
+				 * top two are a vendor OUI shared by every unit of
+				 * the model, so they carry no per-switch
+				 * information worth spending a byte on. */
+				ifr.ifr_hwaddr.sa_data[1] = (char)(b[2] & 0xff);
+				ifr.ifr_hwaddr.sa_data[2] = (char)(b[3] & 0xff);
+				ifr.ifr_hwaddr.sa_data[3] = (char)(b[4] & 0xff);
+				ifr.ifr_hwaddr.sa_data[4] = (char)(b[5] & 0xff);
+			} else if (!warned) {
+				warned = 1;
+				fprintf(stderr,
+					"tap: no usable tap_mac_base, so tap addresses are "
+					"02:00:00:00:00:xx -- the SAME on every NOSaic "
+					"switch. Two of them on one segment, or two ports "
+					"of either in one VLAN, will collide. Set "
+					"tap_mac_base to this board's own MAC.\n");
+			}
+		}
 		ifr.ifr_hwaddr.sa_data[5] = (char)(0x50 + index);
 		ioctl(sock, SIOCSIFHWADDR, &ifr);
 		memcpy(t->mac, ifr.ifr_hwaddr.sa_data, 6);
@@ -795,7 +900,7 @@ void nosaic_tap_stats(void)
 		{ "in-err",   snmpIfInErrors },
 		{ "out-err",  snmpIfOutErrors },
 	};
-	int i, j;
+	int i, j, traffic;
 
 	bcm_stat_sync(tap_unit);
 	for (i = 0; i < ntaps; i++) {
@@ -858,13 +963,15 @@ void nosaic_tap_stats(void)
 
 			printf("port: %s (port %d) link=%d lb=%d fmax=%d "
 			       "intf=%d ability=%#x tx-ok=%lu tx-err=%lu "
-			       "tx-nobuf=%lu",
+			       "tx-nobuf=%lu tx-nolink=%lu",
 			       taps[i].name, taps[i].port, link, lb, fmax,
 			       (int)intf, (unsigned)fd,
-			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf);
+			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf, taps[i].tx_nolink);
 		}
+		traffic = 0;
 		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {
 			uint64 v;
+			unsigned long long n;
 			int rv;
 
 			/* A counter this chip does not keep is reported, not skipped.
@@ -874,13 +981,77 @@ void nosaic_tap_stats(void)
 			rv = bcm_stat_get(tap_unit, taps[i].port, want[j].val, &v);
 			if (rv != BCM_E_NONE) {
 				printf("  %s=?(%d)", want[j].name, rv);
+				/* Unreadable is not the same as zero. A port whose
+				 * counters cannot be read must not be accused of
+				 * carrying nothing. */
+				traffic = -1;
 				continue;
 			}
-			printf("  %s=%llu", want[j].name,
-			       (unsigned long long)COMPILER_64_LO(v) |
-			       ((unsigned long long)COMPILER_64_HI(v) << 32));
+			n = (unsigned long long)COMPILER_64_LO(v) |
+			    ((unsigned long long)COMPILER_64_HI(v) << 32);
+			printf("  %s=%llu", want[j].name, n);
+			if (traffic >= 0 && n != 0 && want[j].val != snmpIfInDiscards &&
+			    want[j].val != snmpIfOutDiscards &&
+			    want[j].val != snmpIfInErrors &&
+			    want[j].val != snmpIfOutErrors)
+				traffic = 1;
 		}
 		printf("\n");
+
+		/*
+		 * A port with link and nothing on it, in either direction.
+		 *
+		 * This is a real state and it has cost two days on this fleet. The
+		 * port reports link, the tap is bound, the VLAN and STP state are
+		 * right, the per-port bring-up ran with the same values as a port
+		 * that works, and not one frame moves either way -- with no errors
+		 * and no discards, because nothing was ever attempted badly enough
+		 * to count. Every diagnostic says the port is healthy.
+		 *
+		 * It is distinguishable from the ordinary cases, which is why it is
+		 * worth saying:
+		 *
+		 *   link down            obvious, and reported by OPER already
+		 *   far end dark         we still transmit, so out-nuc climbs
+		 *   wrong polarity       frames arrive and fail to decode; errors
+		 *   nothing to talk to   a routed port still sends its own hellos
+		 *
+		 * All of those move a counter. Only this one leaves every counter
+		 * at zero while the link is up.
+		 *
+		 * Not fatal, and deliberately not acted on: the cause is not yet
+		 * known -- reproducing it needs the far end to go away while this
+		 * daemon restarts, which has not been reproducible on demand -- and
+		 * a remedy for a fault nobody understands is how a switch acquires
+		 * behaviour nobody can explain. This says what it sees and leaves
+		 * the decision to a person.
+		 *
+		 * Counted rather than announced every interval: a port that has
+		 * only just come up is legitimately silent for a moment, and a
+		 * warning that fires on every fresh link is one nobody reads.
+		 */
+		/* ★ LINK AND A REAL SPEED, NOT LINK.
+		 *
+		 * Without this the detector is unusable on a board with external
+		 * PHYs, where every unconnected copper port reports link. The
+		 * board's filter is the only thing that can tell those apart. */
+		if (link == 1 && tap_link_real != NULL && !tap_link_real(taps[i].port))
+			link = 0;
+
+		if (link == 1 && traffic == 0) {
+			if (++taps[i].silent == TAP_SILENT_INTERVALS)
+				printf("tap: %s (port %d) has link and has carried NOTHING "
+				       "in either direction for %d intervals -- not a "
+				       "counter that failed to read, and not a far end "
+				       "that is merely quiet, because this port's own "
+				       "transmits are not reaching the wire either. "
+				       "Restarting the datapath has cleared this before; "
+				       "the cause is not understood, so capture "
+				       "`nosaic show ports` and this log before doing so.\n",
+				       taps[i].name, taps[i].port, TAP_SILENT_INTERVALS);
+		} else {
+			taps[i].silent = 0;
+		}
 	}
 
 	/*

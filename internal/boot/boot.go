@@ -92,6 +92,16 @@ type Image struct {
 	// AbootMaxHWEpoch is the newest Arista hardware epoch this image claims to
 	// support; Aboot refuses a board whose epoch is higher. Empty means 1.
 	AbootMaxHWEpoch string
+
+	// RAMBoot says the root filesystem is inside the initramfs, so this image
+	// needs no partition of ours to mount and touches no disk.
+	//
+	// A backend needs to know because such an image is not installable: it has
+	// no persistent data partition, so configuration does not survive a
+	// reboot and an A/B slot pointer has nothing to point at. What an operator
+	// wants from a RAM-boot image is a way to netboot it, which is what
+	// Netbooter is for.
+	RAMBoot bool
 }
 
 // Backend produces an installable artifact for one bootloader.
@@ -113,6 +123,24 @@ type Backend interface {
 
 	// Wrap writes the installable artifact into outDir and returns its path.
 	Wrap(img Image, outDir string, log io.Writer) (string, error)
+}
+
+// Netbooter is implemented by a backend whose bootloader can load an image
+// over the network, so it can be tried on real hardware without writing the
+// disk.
+//
+// Optional, because not every bootloader can. It matters most where installing
+// is destructive and hard to undo: on a board whose vendor OS shares the only
+// disk, writing that disk is what removes the way back, so being able to try
+// an image first is the difference between a bring-up and a one-way trip.
+//
+// Netboot returns the path of a directory to serve, not a single file. A
+// network boot is at least a kernel and an initramfs, and a bootloader that
+// fetches them needs to be told which to fetch and with what command line --
+// so the bundle carries that instruction with it rather than leaving it in a
+// document somebody has to find.
+type Netbooter interface {
+	Netboot(img Image, outDir string, log io.Writer) (string, error)
 }
 
 var backends = map[string]Backend{}
