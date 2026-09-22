@@ -1,3 +1,17 @@
+# EXAMPLE ONLY -- this file is NOT shipped in the image.
+#
+# Every router-id and network below belong to ONE switch. Put your own in
+#
+#     /mnt/data/config/frr.conf
+#
+# which is on the data partition, so it survives an upgrade, a rollback and a
+# reinstall -- and is never overwritten by an image built for this model.
+#
+# ⚠ THIS USED TO SHIP. An image built from this directory carried one lab
+# switch's management address, its management MAC and its OSPF router-id, so a
+# second switch built from the same source came up as a duplicate of the first.
+# That is why the real values live off the image and only a shape lives here.
+#
 # FRR configuration for this board.
 #
 # The interface addresses live in network.conf beside this file; this one
@@ -14,7 +28,7 @@
 
 frr version 10.2
 frr defaults traditional
-hostname nosaic-7050tx64
+hostname <this switch>
 log syslog informational
 service integrated-vtysh-config
 !
@@ -61,11 +75,11 @@ exit
 # The router-id is the loopback address, which is the one address that does not
 # depend on a link staying up.
 router ospf
- ospf router-id 10.101.255.50
- network 10.101.101.80/29 area 0.0.0.0
- network 10.101.101.72/29 area 0.0.0.0
- network 10.101.101.48/29 area 0.0.0.0
- network 10.101.255.50/32 area 0.0.0.0
+ ospf router-id <router-id>
+ network <subnet>/<prefix> area 0.0.0.0
+ network <subnet>/<prefix> area 0.0.0.0
+ network <subnet>/<prefix> area 0.0.0.0
+ network <subnet>/<prefix> area 0.0.0.0
 exit
 !
 # ── OSPFv3 ───────────────────────────────────────────────────────────────────
@@ -74,7 +88,7 @@ exit
 # it. OSPFv3 runs over link-local addresses, so the transit links need no
 # global IPv6 address for an adjacency to form.
 router ospf6
- ospf6 router-id 10.101.255.50
+ ospf6 router-id <router-id>
 exit
 !
 line vty

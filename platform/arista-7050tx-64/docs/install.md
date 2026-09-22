@@ -157,6 +157,41 @@ absent on a stateless boot and nothing later complains.
 To reach the Aboot prompt: reload the switch and press **Control-C** when the
 banner appears. The window is short, so start sending before you expect it.
 
+## Configuring it for YOUR switch
+
+The image is built for the board MODEL and carries nothing that belongs to one
+unit. Addresses, the management MAC, the OSPF router-id and which ports run a
+routing protocol all live on the data partition instead:
+
+```
+/mnt/data/config/network.conf    addresses, routes, the management MAC
+/mnt/data/config/frr.conf        router-id, and which ports run OSPF
+/mnt/data/config/asic.conf       this switch's datapath overrides, merged
+                                 property-by-property over the shipped file
+```
+
+`config/network.conf.example` and `config/frr.conf.example` in the board
+directory show the shape. Copy them to the switch, fill in your own values, and
+they survive an upgrade, a rollback and a reinstall -- the image never
+overwrites them.
+
+⚠ **network.conf and frr.conf used to ship in the image**, carrying one lab
+switch's management address, its management MAC and its router-id. A second
+switch built from the same source came up as a duplicate of the first: same MAC
+on the management network, same OSPF router-id in the area. If you have an image
+built before that changed, check what it is about to claim to be.
+
+⚠ **network.conf and frr.conf are whole-file overrides**, unlike asic.conf.
+A file in `/mnt/data/config/` REPLACES the shipped one rather than merging with
+it, so it has to be complete. asic.conf merges per property, so it only needs
+the lines that differ.
+
+⚠ **The management MAC is in network.conf because the board will not say what
+it is.** It lives in `prefdl` on an i2c SEEPROM that nothing here reads yet, so
+`tg3` comes up with the unprogrammed Broadcom default and the real address has
+to be stated. Two switches that both take the shipped default are two switches
+with the same MAC.
+
 ## First boot
 
 Expect a few minutes rather than seconds: the Trident2 comes out of reset and 48
