@@ -1,0 +1,98 @@
+# nosd-fm6000 — the Intel FM6000 "Alta" datapath daemon.
+#
+# One of several providers of the virtual name `nosd`. The board's ASIC decides
+# which provider its image gets, so nothing central maps boards to daemons: it
+# falls out of the silicon. `conflicts: [nosd]` is what stops two datapath
+# daemons co-installing and fighting over one chip.
+#
+# NOT DERIVED FROM ANY OF THE OTHERS. Every existing nosd in this tree is a
+# Broadcom part reached through a CMIC, a userspace BDE and the openbcm SDK.
+# This chip has none of those. There is exactly one FM6000 SDK --
+# libFocalpointSDK.so -- it is proprietary, and it is not a build dependency
+# here and must not become one. What replaces it is register-level code written
+# against the public Intel datasheet (331496-002), which is why this is the only
+# datapath in the tree that a contributor can build in full with nothing
+# fetched and nothing staged.
+#
+# STATE: M1, and the package says so rather than leaving it to be discovered.
+# The daemon finds the chip, maps BAR0, serves the switch-api socket and
+# watches for the chip leaving the PCIe bus. It does NOT bring ports up, does
+# NOT forward, and reports every capability as false -- which is the truth, and
+# is what stops a switch accepting configuration it will silently drop.
+name: nosd-fm6000
+version: "0.1.0"
+summary: Intel FM6000 (Alta) datapath daemon
+
+license: Apache-2.0
+redistributable: true
+
+provides: [nosd]
+conflicts: [nosd]
+
+# Built from this repository rather than fetched, so there is no source: stanza
+# with a URL and a hash.
+#
+# The whole datapath tree rather than just this ASIC's directory: datapath/common
+# carries the MMIO ordering that differs per host architecture, and a second
+# ASIC needs the same header rather than a copy of it. build.subdir selects
+# which one is built.
+source:
+  local: datapath
+
+depends: [glibc]
+
+# Deliberately no build_depends. Every other nosd recipe stages openbcm here.
+# If a vendor tree ever appears in this list, something has gone wrong with the
+# decision this board was ported under.
+
+build:
+  system: make
+  subdir: fm6000
+  # clean first: the source is this repository, so a local build leaves object
+  # files in the tree that get copied in. make then finds them newer than their
+  # sources and links the wrong architecture -- caught by the arch check, but
+  # only after a full build.
+  targets: [clean, all, strip]
+
+  # Two binaries, and the second is not an optional extra.
+  #
+  # fm6000-probe is separate from the daemon because at the point where somebody
+  # needs to look at this chip, the daemon is very likely the thing that is
+  # wrong. It is also the only safe way to read a register on this part: an
+  # illegal access takes the endpoint off the PCIe bus while the link stays up,
+  # so a hand-rolled devmem poke is how a switch dies silently. The probe
+  # refuses the addresses that are known to do that.
+  stage:
+    - src: fm6000/nosd-fm6000
+      dst: /usr/sbin/nosd-fm6000
+      mode: "0755"
+    - src: fm6000/fm6000-probe
+      dst: /usr/sbin/fm6000-probe
+      mode: "0755"
+
+  # The name everything above this layer uses. The unit, the CLI and the docs
+  # only ever say `nosd`; the builder picks the provider from the board's ASIC.
+  #
+  # A symlink rather than a copy, for consistency with the other providers --
+  # though here the binary is tens of kilobytes rather than the 151 MB an
+  # SDK-linked one costs.
+  links:
+    - target: nosd-fm6000
+      path: /usr/sbin/nosd
+
+services:
+  - name: nosd
+    # --boot is NOT passed. The cold-boot sequence writes to the chip, it is
+    # incomplete, and a supervisor that restarts this daemon would run it again
+    # against a chip in an unknown state. Cold boot is a deliberate act:
+    # `fm6000-probe --boot`, by hand, watching the console.
+    exec: /usr/sbin/nosd-fm6000
+    # Restarted rather than one-shot: the daemon owns the chip for as long as
+    # the switch is up, and the supervisor is what notices when it stops.
+    #
+    # ⚠ It exits non-zero when it cannot find the chip, and that is deliberate.
+    # On this board the FM6000 is held in reset by the SCD until the platform
+    # HAL releases it, so "no chip" is a real and expected failure -- and a
+    # datapath that stays up reporting it would look healthy to A/B
+    # trial-confirm and stop a broken image from rolling back.
+    restart: always

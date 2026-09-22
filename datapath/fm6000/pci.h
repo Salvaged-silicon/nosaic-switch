@@ -1,0 +1,153 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * Reaching the FM6000's registers, and surviving it.
+ *
+ * There is no BDE here because there is no CMIC. The chip is an ordinary PCIe
+ * endpoint with a 32 MB BAR0, and this file maps that BAR and hands out two
+ * accessors over it.
+ *
+ * It is not a thin wrapper, and it should not become one. Two properties of
+ * this silicon make unguarded access a liability rather than a convenience:
+ *
+ * 1. AN ILLEGAL ACCESS TAKES THE CHIP OFF THE PCIe BUS. Touching an
+ *    ECC-uninitialised bank memory word raises an uncorrectable error the chip
+ *    escalates to fatal. The endpoint then answers 0xffffffff to everything --
+ *    config space included -- while the PCIe link stays up. Nothing raises an
+ *    exception, nothing logs, and the failure surfaces minutes later as an MMIO
+ *    stall or an RCU warning somewhere unrelated. Every accessor here checks
+ *    for it and latches, so the first bad access is reported at the point it
+ *    happened and the ten thousand after it never leave the host.
+ *
+ * 2. SOME ADDRESSES ARE ONLY SAFE AFTER PART OF BOOT HAS RUN. The bank
+ *    memories are refused outright until something calls
+ *    fm_bank_mark_initialised(). That is a deliberate obstacle: the whole
+ *    reason it is awkward to read STATS on a cold chip is that doing so kills
+ *    the chip.
+ */
+#ifndef NOSAIC_FM6000_PCI_H
+#define NOSAIC_FM6000_PCI_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#define FM_SLOT_LEN 16
+
+struct fm6000 {
+	char               slot[FM_SLOT_LEN];  /* "0000:02:00.0" */
+	volatile uint32_t *bar0;
+	size_t             bar_bytes;
+	int                bar_fd;
+
+	/* Sticky. Once the chip has left the bus it does not come back without
+	 * a reset, so there is nothing to be gained by trying again -- and a
+	 * great deal of log noise to be had. */
+	int                offbus;
+	/* Set only when the bank memories have actually been initialised. */
+	int                banks_ready;
+	/* Whether every write is followed by a config-space check. See
+	 * fm_set_write_check(). Defaults on. */
+	int                check_writes;
+
+	unsigned long long reads, writes, refused;
+};
+
+/*
+ * Return values. Negative is failure; the distinction between them matters
+ * because one of them means "the chip is gone" and the callers that must stop
+ * immediately can only tell from this.
+ */
+#define FM_OK		0
+#define FM_ERR		-1	/* ordinary failure: bad argument, no device */
+#define FM_EOFFBUS	-2	/* the chip has left the PCIe bus */
+#define FM_EUNSAFE	-3	/* refused: not safe to touch this yet */
+
+/*
+ * Find the chip and map its BAR0.
+ *
+ * `slot` may be a PCI address such as "0000:02:00.0", or NULL to search for
+ * the first 8086:155b on the bus. Searching is the normal case; naming a slot
+ * is for a board that somehow has two.
+ *
+ * ⚠ IF THIS FINDS NOTHING ON A 7150S, THE CHIP IS PROBABLY STILL IN RESET.
+ * The SCD holds the FM6000 down from power-on and it does not appear on the
+ * bus until released, so "no device" here is the expected state of an
+ * un-initialised board rather than evidence of a fault. Releasing it is the
+ * platform HAL's job, not this file's.
+ */
+int fm_open(struct fm6000 *d, const char *slot);
+void fm_close(struct fm6000 *d);
+
+/* Register access by 32-bit WORD address, which is how the chip's own
+ * documentation and every address in regs.h are expressed. */
+int fm_rd(struct fm6000 *d, uint32_t word, uint32_t *out);
+int fm_wr(struct fm6000 *d, uint32_t word, uint32_t val);
+
+/* Access by BYTE offset into BAR0, for the packet DMA block -- the one region
+ * that is addressed that way. Kept separate rather than making callers
+ * multiply, because getting this wrong reads a different block and the chip
+ * answers plausibly. */
+int fm_rd_byte(struct fm6000 *d, uint32_t off, uint32_t *out);
+int fm_wr_byte(struct fm6000 *d, uint32_t off, uint32_t val);
+
+/*
+ * Whether to confirm after every write that the chip is still on the bus.
+ *
+ * DEFAULTS ON, and during bring-up it should stay on: a write is precisely
+ * what kills this chip, a write cannot report failure by itself, and without
+ * the check a caller keeps writing into a device that stopped existing several
+ * hundred registers ago. The eventual symptom names none of them, which is how
+ * the prior work on this chassis lost days.
+ *
+ * The check is a sysfs read, on the order of tens of microseconds. That is
+ * nothing against a bring-up sequence and everything against a bulk memory
+ * fill -- the ECC initialisation alone is over a million words, where a check
+ * per word turns a second into half a minute.
+ *
+ * So bulk writers turn it off, and OWE A CHECK AT THE END: write the burst,
+ * call fm_check_offbus() once, and treat a positive as "some write in that
+ * burst did it" rather than as a mystery. That trade is honest -- it gives up
+ * knowing WHICH write, which for a uniform fill is not information anyone
+ * wanted -- and it is not a trade any bring-up code should make.
+ */
+void fm_set_write_check(struct fm6000 *d, int on);
+
+/*
+ * Ask the bus, not the BAR, whether the chip is still there.
+ *
+ * Reads the device's PCI config space through sysfs. A live endpoint answers
+ * its vendor ID; one that has gone fatal answers 0xffff to config reads too,
+ * which is what separates "this register genuinely contains 0xffffffff" from
+ * "there is no longer a chip". Returns 1 if off-bus, 0 if present, negative if
+ * the question could not be asked.
+ */
+int fm_check_offbus(struct fm6000 *d);
+
+/* True once the chip has been seen off-bus. Cheap; does not touch hardware. */
+static inline int fm_is_offbus(const struct fm6000 *d) { return d->offbus; }
+
+/*
+ * Declare the ECC bank memories initialised, unlocking access to them.
+ *
+ * Call this ONLY after they really have been, and never to get past the guard.
+ * The guard is the cheapest protection this port has.
+ */
+void fm_bank_mark_initialised(struct fm6000 *d);
+
+/* Whether a word address falls in a bank memory. Exposed so a tool can say
+ * why it will not read something. */
+int fm_is_bank(uint32_t word);
+
+/*
+ * Why this address is refused before the chip is initialised, or NULL if it is
+ * not. Covers the bank memories and the registers that are hazardous to READ
+ * -- which is not an empty set on this chip, and is the trap that catches
+ * someone debugging, because reading more registers is the obvious thing to do
+ * when something is wrong.
+ */
+const char *fm_hazard(const struct fm6000 *d, uint32_t word);
+
+/* Human-readable name for a word address's block, for diagnostics. Returns a
+ * static string; never NULL. */
+const char *fm_block_name(uint32_t word);
+
+#endif /* NOSAIC_FM6000_PCI_H */

@@ -680,5 +680,38 @@ tree to fetch, `-lpthread` and libc.
 
 ## What NOSaic actually drives today
 
-Nothing. This section stays empty until it does not, and the honest form of
-this page is one that says so.
+`datapath/fm6000` exists and builds. It does **not** forward, bring ports up or
+program anything — and it reports every capability as false, so `nosaic show
+caps` on this board tells the truth rather than a plan.
+
+What is real:
+
+| | |
+|---|---|
+| `pci.c` | finds `8086:155b`, maps BAR0 through **sysfs `resource0`** rather than `/dev/mem` — so unlike the Broadcom boards this needs no `iomem=relaxed`, and the mapping is bounded to the device's own BAR |
+| | word- and byte-addressed accessors, **off-bus detection**, and a guard that refuses the ECC bank memories and the ESCHED read hazard until something says they are safe |
+| `boot.c` | Table 4-1 as twelve named steps. Runs steps 1–5, waits the documented PLL time, and then **refuses by name** because `PLL_STATUS`, `SOFT_RESET` and `BOOT_STATUS` addresses are not established |
+| `sock.c` | the switch-api socket, same JSON as every other datapath, plus `asic.state` and `asic.reg` |
+| `probe.c` | `fm6000-probe` — a separate binary, because when this chip misbehaves the daemon is usually the thing that is wrong |
+
+### The off-bus detector, and why it is built the way it is
+
+All-ones is both the signature of a departed chip and a legitimate register
+value, so the BAR alone cannot tell them apart. The accessors treat `0xffffffff`
+as a *suspicion* and confirm it against **PCI config space**, which is the only
+place the two cases differ — a live endpoint answers its vendor ID and a fatal
+one answers `0xffff` there too.
+
+Writes get the same check, and that matters more: a write cannot report failure,
+and a write is precisely what kills this chip. The check costs a sysfs read, so
+bulk writers — the memory fill is over a million words — turn it off with
+`fm_set_write_check()` and **owe a check when the burst ends**. That trade gives
+up knowing *which* write did it, which for a uniform fill is not information
+anyone wanted.
+
+### The guard is not politeness
+
+`fm_rd`/`fm_wr` refuse the bank ranges and ESCHED `0x2000` outright until
+`fm_bank_mark_initialised()` has been called, and only the code that genuinely
+initialises them is entitled to call it. The instinct when a chip misbehaves is
+to go and read more registers; on this part that is what kills it.

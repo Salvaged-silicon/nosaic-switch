@@ -58,8 +58,13 @@ committed, as on every other board.
 - [ ] SCD support for *this* board in `internal/platformhal/scd`: it is the same
       FPGA family as the sibling Arista boards and not the same layout
 - [ ] release the FM6000 from reset and have `02:00.0` enumerate
-- [ ] map its BAR0 (`0xe2000000`, 32 MB) and read something that identifies the
-      chip
+- [x] map BAR0 (`0xe2000000`, 32 MB) and read something that identifies the
+      chip — `fm6000-probe` does, over sysfs `resource0`, needing no
+      `iomem=relaxed`
+- [ ] **find the addresses `boot.c` is missing**: `PLL_STATUS`, `SOFT_RESET`,
+      `BOOT_STATUS`, and `BOOT_CTRL`'s field layout. The cold-boot sequence
+      stops at step 6 naming exactly these, and each one deleted from that list
+      is a step that starts working
 - [ ] **set the Alta core rails from prefdl** — `AltaVdd 1.01`, `AltaVdds 1.0`
       on this board, per-board data rather than a constant
 - [ ] find out what the SCD's second BAR (16 MB at `0xe0000000`) is for
@@ -71,9 +76,11 @@ memory raises an uncorrectable ECC error, the chip escalates it to fatal, and th
 endpoint leaves the PCIe bus — everything reads `0xffffffff` and the host sees a
 hang rather than an error.
 
-- [ ] a way to detect off-bus immediately and say so, rather than waiting for an
-      RCU stall — every debugging session on this chip needs this first, before
-      any bring-up code exists
+- [x] **a way to detect off-bus immediately and say so** — done:
+      `datapath/fm6000/pci.c` confirms an all-ones read against PCI config
+      space, latches, and refuses everything afterwards; `nosd-fm6000` reports
+      the transition once, loudly; `fm6000-probe` names the exact word that did
+      it
 - [ ] **run the documented boot sequence in the documented order** (331496-002
       Table 4-1, reproduced in [hardware.md](hardware.md#the-documented-boot-sequence)):
       scan chain → PLL → modules out of reset → FFU slice numbers → **bank

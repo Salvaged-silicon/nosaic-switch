@@ -61,6 +61,7 @@ local.mk
 datapath/*/*.o
 datapath/*/nosd-*
 datapath/*/tdp-probe
+datapath/*/fm6000-probe
 
 # The C CLI, for the same reason: it builds in its own directory and the
 # package builder copies the tree. This was missing while the datapath's
