@@ -13,6 +13,57 @@ Status is in [the README](../README.md); the hardware is in
 [its own todo](../../arista-7050sx2-72q/docs/todo.md), and the two share a
 datapath -- `datapath/common` -- so a fix in one often lands in both.
 
+## Fixed on 2026-09-16
+
+- **ACLs work, and the field processor was never the blocker.** See
+  [the section below](#the-field-processor-does-not-evaluate-live-traffic) for
+  what EdgeNOS hit and why NOSaic did not; [docs/acl.md](../../../docs/acl.md)
+  for what the feature is; the [README](../README.md#acls) for the numbers.
+  The whole of it is `datapath/common/acl.c` over `bcm_field`, shared with the
+  7050SX2, plus `nosaic show acl` in both CLIs. IPv6 followed on 2026-09-17 as
+  a second, double-wide group -- 768 rules beside 1280 for v4 -- with L4 ports
+  in the key and proven by traffic the same way.
+
+### The ingress-port gate reaches one pipeline
+
+Worked around, not fixed, and worth knowing before anything else uses it.
+
+The SDK's qualifier for "arrived on this port" is `bcmFieldQualifyInPorts`, a
+port bitmap. On this family it is not a field in the key: it lives in
+`FP_GLOBAL_MASK_TCAM`, a gate in front of the slice, and the chip keeps one
+copy per ingress pipeline, `_X` and `_Y`. The SDK writes it through the
+aggregate view with `MEM_BLOCK_ALL`, reads both pipes' copies back, ORs them
+and rewrites the aggregate with `VALID=1` (`src/bcm/esw/triumph/field.c`,
+`_field_tr_tcam_policy_install`).
+
+Read back on this board after installing a rule scoped to swp6:
+
+    ipbm: [256] all ipbm=..00000040 mask=00000002.00000000.00000040 ports={6} care={6,65}
+    ipbm: [256] x   ipbm=..00000000 mask=00000000.00000000.00000000 ports={}  care={}
+    ipbm: [256] y   ipbm=..00000040 mask=00000002.00000000.00000040 ports={6} care={6,65}
+
+The Y copy is right (port 6, care bits 6 and the loopback port 65 the SDK adds).
+The X copy is all zeros, and a zero mask **matches every port**. So the gate
+fails open for whichever ports the X pipeline serves: a `permit in swp6` counted
+the swp51 neighbour's replies, and a `deny in swp6 proto ospf` took all three
+adjacencies down. The main TCAM is not affected -- that same deny reached the
+swp51 and swp52 hellos, so `FP_TCAM` is in both pipes.
+
+The workaround is to put the port in the key: `bcmFieldQualifySrcPort`,
+(module, port) in the F3 selector, which the SDK places like any other field.
+With that, one counting permit per port saw only its own neighbour's hellos and
+the swp6-only OSPF deny left the other two adjacencies Full.
+
+What is not known is *why* the aggregate write lands in one pipe. Candidates,
+none tested: the S-Channel access-type field that selects a pipe on this CMICe
+is not honoured or is placed wrong in the header NOSaic's bring-up produces;
+or the SDK's 56840 memory description for the aggregate has one block copy.
+EdgeNOS hit the same wall from the other side ("must be written to the X/Y
+pipe memories via a PBMP-aware setter, not the combined view"). Whoever needs
+`InPorts` -- a per-port default deny, say, where a key bit per rule is not
+enough -- starts by writing `FP_GLOBAL_MASK_TCAM_Xm` directly after install
+and seeing whether the gate then holds, which separates the two candidates.
+
 ## Fixed on 2026-09-11
 
 - **The DMA pool leaked, and the control plane died with it.** Found on a
@@ -1110,10 +1161,10 @@ are marked *(shared)*.
 
 ### Forwarding
 
-- **ACLs.** *(shared)* The one item EdgeNOS never finished either: an entry
-  installs into the IFP TCAM, reads back correctly and never matches a packet.
-  See "the field processor does not evaluate live traffic" above -- it is a real
-  blocker with a recommended next step, not an unknown.
+- ~~**ACLs.**~~ *(shared)* Done, 2026-09-16 and 17: ingress IPv4 and IPv6
+  permit/deny by port, protocol, addresses and L4 ports, with counters, proven
+  on this board. See *Fixed on 2026-09-16* above. Not yet: layer 2, ranges,
+  policing, egress, and an atomic swap on change.
 - **VLANs as a user-facing feature.** Ports sit in per-port service VLANs and
   `--bridge` throws every port into one. Neither is a VLAN *model*: there is no
   way to say "these six ports are VLAN 100, tagged on the uplink". This is the
@@ -1134,7 +1185,8 @@ are marked *(shared)*.
   milliseconds; worth doing after ACLs, since CoPP protects it.
 - **CoPP.** *(shared)* Nothing protects the CPU from the punt path. A broadcast
   storm arriving on a front-panel port is currently the control plane's problem.
-  Blocked behind ACLs, which is most of why ACLs are first.
+  No longer blocked: the field processor works and `acl.c` shows the shape.
+  What it needs that ACLs do not is a meter per rule and a CPU queue per class.
 
 ### The box itself
 
@@ -1252,9 +1304,20 @@ patching. Checking for it is one line:
   `ospfd`/`ospf6d`; the fix is for the network service to be a consumer that
   re-runs, or for nosd to persist the taps.
 
-## Known blocker inherited from EdgeNOS
+## ~~Known blocker inherited from EdgeNOS~~ — it was not one
 
-### The field processor does not evaluate live traffic
+### ~~The field processor does not evaluate live traffic~~ — it does, 2026-09-16
+
+**Resolved without the register diff.** The first thing measured was the
+control plane's own `bcm_field` punt rule for this box's address on swp6, with
+its counter turned on (`l3_fp_stats=1`): twenty pings to the neighbour, twenty
+echo replies counted by the rule. The lookup fires. The difference from EdgeNOS
+is the bring-up underneath: it programmed the TCAM by hand over a minimal init
+and, later, ran the SDK with `soc_skip_reset=1` and a hand-built BDE over a
+chip its own code had already touched. NOSaic resets the chip and runs
+`soc_init` and `bcm_init` whole, and needed none of EdgeNOS's five S-Channel
+patches to do it (`recipes/openbcm/patches` holds one patch, for the
+toolchain). Everything below is kept as the record of what was ruled out.
 
 EdgeNOS reached the point where an ACL is installed in the TCAM, reads back
 correctly, and **never matches a packet**. 2000 injected IPv4 packets to a

@@ -183,7 +183,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route":
+	case "show", "interface", "route", "acl":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -748,7 +748,7 @@ func switchCmd(args []string) error {
 	switch args[0] {
 	case "show":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: nosaic show <ports|routes|caps>")
+			return fmt.Errorf("usage: nosaic show <ports|routes|acl|caps>")
 		}
 		return showCmd(c, args[1], args[2:])
 
@@ -776,6 +776,9 @@ func switchCmd(args []string) error {
 
 	case "route":
 		return routeCmd(c, args[1:])
+
+	case "acl":
+		return aclCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -792,6 +795,16 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		fmt.Fprintf(w, "ports\t%d max\n", caps.MaxPorts)
 		fmt.Fprintf(w, "vlans\t%v\n", caps.VLANs)
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
+		if caps.ACL {
+			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)
+		} else {
+			fmt.Fprintf(w, "acl\tno\n")
+		}
+		if caps.ACL6 {
+			fmt.Fprintf(w, "acl ipv6\tyes, %d rules\n", caps.ACL6Entries)
+		} else {
+			fmt.Fprintf(w, "acl ipv6\tno\n")
+		}
 		// Reported explicitly because an operator planning multipath needs to
 		// know before configuring it, not after a route is refused.
 		if caps.ECMP {
@@ -968,6 +981,35 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		}
 		return nil
 
+	case "acl":
+		a, err := c.ACLList()
+		if err != nil {
+			return err
+		}
+		if !a.Available && !a.Available6 {
+			return fmt.Errorf("this switch's datapath has no field group for access lists")
+		}
+		if len(a.Rules) == 0 {
+			fmt.Fprintln(w, "no rules; add one with: nosaic acl add <seq> deny|permit [ipv4|ipv6] [in <port>] [proto <p>] [src <prefix>] [dst <prefix>] [sport <n>] [dport <n>]")
+			return nil
+		}
+		fmt.Fprintln(w, "SEQ\tACTION\tMATCH\tPACKETS\tSTATUS")
+		for _, r := range a.Rules {
+			action, match, _ := strings.Cut(r.Rule, " ")
+			if match == "" {
+				match = "any"
+			}
+			status := r.Error
+			if status == "" {
+				status = "not installed"
+				if r.Installed {
+					status = "in chip"
+				}
+			}
+			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\n", r.Seq, action, match, r.Packets, status)
+		}
+		return nil
+
 	case "routes":
 		routes, err := c.Routes()
 		if err != nil {
@@ -988,6 +1030,46 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		return nil
 	}
 	return fmt.Errorf("unknown show target %q", what)
+}
+
+// aclCmd is `nosaic acl add <seq> <rule words>` and `nosaic acl del <seq>`.
+//
+// The rule is sent as text: the datapath parses it, refuses it with a reason
+// if it is wrong, and on a switch persists it as the acl_<seq> setting, so
+// `config show` lists it and it survives an upgrade. On a datapath that
+// cannot hold rules the add is refused as unsupported, which is the
+// capability model doing its job rather than a setting quietly ignored.
+func aclCmd(c *nosdclient.Client, args []string) error {
+	usage := fmt.Errorf("usage: nosaic acl add <seq> deny|permit [ipv4|ipv6] [in <port>] [proto <p>] [src <prefix>] [dst <prefix>] [sport <n>] [dport <n>] | acl del <seq>")
+	if len(args) < 2 {
+		return usage
+	}
+	seq, err := strconv.Atoi(args[1])
+	if err != nil {
+		return fmt.Errorf("sequence %q is not a number", args[1])
+	}
+	switch args[0] {
+	case "add":
+		if len(args) < 3 {
+			return usage
+		}
+		r, err := switchapi.ParseACLRule(seq, strings.Join(args[2:], " "))
+		if err != nil {
+			return err
+		}
+		if err := c.SetACL(r); err != nil {
+			return err
+		}
+		fmt.Printf("acl_%d=%s\n", seq, r)
+		return nil
+	case "del":
+		if err := c.DelACL(seq); err != nil {
+			return err
+		}
+		fmt.Printf("acl_%d removed\n", seq)
+		return nil
+	}
+	return usage
 }
 
 func routeCmd(c *nosdclient.Client, args []string) error {

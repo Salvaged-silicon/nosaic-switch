@@ -41,6 +41,8 @@ type Switch struct {
 	mu    sync.Mutex
 	cfg   Config
 	names []string
+	nft   bool // nftables works here, so access lists are real
+	acls  map[int]switchapi.ACLRule
 }
 
 // New builds a virtual switch. Nothing is created until Start.
@@ -51,7 +53,7 @@ func New(cfg Config) *Switch {
 	if cfg.Peer == "" {
 		cfg.Peer = "-p"
 	}
-	s := &Switch{cfg: cfg}
+	s := &Switch{cfg: cfg, nft: nftWorks(), acls: map[int]switchapi.ACLRule{}}
 	for i := 1; i <= cfg.Ports; i++ {
 		s.names = append(s.names, fmt.Sprintf("swp%d", i))
 	}
@@ -76,8 +78,22 @@ func (s *Switch) Capabilities() switchapi.Capabilities {
 		IPv6:       true,
 		ECMP:       true,
 		MaxECMP:    32,
-		Counters:   true,
+		// Real when nftables works in this namespace, absent when it does
+		// not; see acl.go. The counts are nominal: nftables has no fixed
+		// table, and a number an operator can size against beats "unknown".
+		ACL:         s.nft,
+		ACLEntries:  4096 * b2i(s.nft),
+		ACL6:        s.nft,
+		ACL6Entries: 4096 * b2i(s.nft),
+		Counters:    true,
 	}
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func ipCmd(args ...string) (string, error) {

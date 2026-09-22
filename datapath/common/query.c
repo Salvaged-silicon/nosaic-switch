@@ -42,6 +42,7 @@
 
 #include "dmapool.h"
 #include "tapbridge.h"
+#include "acl.h"
 #include "query.h"
 
 static int query_unit;
@@ -121,6 +122,39 @@ static void json_str(FILE *out, const char *s)
 			fputc(*s, out);
 	}
 	fputc('"', out);
+}
+
+/*
+ * A request's arguments. The protocol is flat enough that finding a key and
+ * reading what follows it is a parser: the CLI writes the JSON and nothing
+ * here needs more than a number or a string out of it.
+ */
+static int req_int(const char *req, const char *key, int missing)
+{
+	char pat[40];
+	const char *p;
+
+	snprintf(pat, sizeof(pat), "\"%s\":", key);
+	p = strstr(req, pat);
+	return p ? atoi(p + strlen(pat)) : missing;
+}
+
+static void req_str(const char *req, const char *key, char *out, size_t len)
+{
+	char pat[40];
+	const char *p;
+	size_t n = 0;
+
+	out[0] = '\0';
+	snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+	if ((p = strstr(req, pat)) == NULL)
+		return;
+	for (p += strlen(pat); *p != '\0' && *p != '"' && n + 1 < len; p++) {
+		if (*p == '\\' && p[1] != '\0')
+			p++;
+		out[n++] = *p;
+	}
+	out[n] = '\0';
 }
 
 /*
@@ -480,6 +514,7 @@ static void handle(FILE *out, const char *req)
 	 */
 	if (strstr(req, "\"capabilities\"") != NULL) {
 		bcm_l3_info_t info;
+		struct nosaic_acl_caps acl;
 		int maxv4 = 0, maxecmp = 0;
 
 		bcm_l3_info_t_init(&info);
@@ -487,6 +522,7 @@ static void handle(FILE *out, const char *req)
 			maxv4 = info.l3info_max_route;
 			maxecmp = info.l3info_max_ecmp;
 		}
+		nosaic_acl_capability(&acl);
 
 		/*
 		 * ⚠ ECMP WAS NEVER REPORTED, AND IT HAD BEEN WORKING ALL ALONG.
@@ -504,12 +540,45 @@ static void handle(FILE *out, const char *req)
 		 * port speeds follow.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.1\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"L2Learning\":true,\"L3\":true,"
-			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d}}\n",
+			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
+			"\"ACL\":%s,\"ACLEntries\":%d,"
+			"\"ACL6\":%s,\"ACL6Entries\":%d}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
-			maxecmp > 1 ? "true" : "false", maxecmp);
+			maxecmp > 1 ? "true" : "false", maxecmp,
+			acl.v4 ? "true" : "false", acl.v4_total,
+			acl.v6 ? "true" : "false", acl.v6_total);
+		return;
+	}
+
+	/* The rules and what each has matched, straight from the chip's
+	 * counters. Read-only like everything else here: rules are set through
+	 * configuration, so that what the chip holds and what the switch was
+	 * told to hold cannot be two different things. */
+	if (strstr(req, "\"acl.set\"") != NULL || strstr(req, "\"acl.del\"") != NULL) {
+		char rule[256], err[128];
+		int seq = req_int(req, "seq", 0), rv;
+
+		if (strstr(req, "\"acl.set\"") != NULL) {
+			req_str(req, "rule", rule, sizeof(rule));
+			rv = nosaic_acl_set(seq, rule, err, sizeof(err));
+		} else {
+			rv = nosaic_acl_del(seq, err, sizeof(err));
+		}
+		if (rv == 0) {
+			fprintf(out, "{\"ok\":true}\n");
+		} else {
+			fprintf(out, "{\"ok\":false,\"error\":");
+			json_str(out, err);
+			fprintf(out, "%s}\n", rv == -2 ? ",\"unsupported\":true" : "");
+		}
+		return;
+	}
+
+	if (strstr(req, "\"acl\"") != NULL) {
+		nosaic_acl_query(out);
 		return;
 	}
 

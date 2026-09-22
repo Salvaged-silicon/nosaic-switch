@@ -34,17 +34,21 @@ type Config struct {
 // DefaultCaps is what a fully featured software datapath claims.
 func DefaultCaps() switchapi.Capabilities {
 	return switchapi.Capabilities{
-		Contract:   switchapi.Version,
-		Driver:     "mem",
-		MaxPorts:   64,
-		VLANs:      true,
-		MaxVLANs:   4094,
-		L2Learning: true,
-		L3:         true,
-		IPv6:       true,
-		ECMP:       true,
-		MaxECMP:    8,
-		Counters:   true,
+		Contract:    switchapi.Version,
+		Driver:      "mem",
+		MaxPorts:    64,
+		VLANs:       true,
+		MaxVLANs:    4094,
+		L2Learning:  true,
+		L3:          true,
+		IPv6:        true,
+		ECMP:        true,
+		MaxECMP:     8,
+		ACL:         true,
+		ACLEntries:  1024,
+		ACL6:        true,
+		ACL6Entries: 512,
+		Counters:    true,
 	}
 }
 
@@ -65,6 +69,7 @@ type Switch struct {
 	byName  map[string]*port
 	vlans   map[int]bool
 	routes  map[netip.Prefix]switchapi.Route
+	acls    map[int]switchapi.ACLRule
 }
 
 // New builds a simulated switch.
@@ -83,6 +88,7 @@ func New(cfg Config) *Switch {
 		byName: map[string]*port{},
 		vlans:  map[int]bool{},
 		routes: map[netip.Prefix]switchapi.Route{},
+		acls:   map[int]switchapi.ACLRule{},
 	}
 	for i := 1; i <= cfg.Ports; i++ {
 		p := &port{
@@ -298,4 +304,59 @@ func (s *Switch) Routes() ([]switchapi.Route, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Prefix.String() < out[j].Prefix.String() })
 	return out, nil
+}
+
+// Access lists, held rather than enforced: nothing forwards here, so there is
+// nothing to drop. What this proves is the contract's shape -- replace by
+// sequence, refuse what every datapath must refuse, list what is held -- and
+// it is what the conformance suite is developed against.
+func (s *Switch) ACLs() ([]switchapi.ACLEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.cfg.Caps.ACL && !s.cfg.Caps.ACL6 {
+		return nil, switchapi.Unsupported("acl")
+	}
+	seqs := make([]int, 0, len(s.acls))
+	for seq := range s.acls {
+		seqs = append(seqs, seq)
+	}
+	sort.Ints(seqs)
+	out := make([]switchapi.ACLEntry, 0, len(seqs))
+	for _, seq := range seqs {
+		r := s.acls[seq]
+		out = append(out, switchapi.ACLEntry{
+			Seq: seq, Text: r.String(), Rule: r, Parsed: true, Installed: true,
+		})
+	}
+	return out, nil
+}
+
+func (s *Switch) SetACL(r switchapi.ACLRule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r.Family == 6 {
+		if !s.cfg.Caps.ACL6 {
+			return switchapi.Unsupported("ipv6 acl")
+		}
+	} else if !s.cfg.Caps.ACL {
+		return switchapi.Unsupported("acl")
+	}
+	if err := r.Validate(func(name string) bool { _, ok := s.byName[name]; return ok }); err != nil {
+		return err
+	}
+	s.acls[r.Seq] = r
+	return nil
+}
+
+func (s *Switch) DelACL(seq int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.cfg.Caps.ACL && !s.cfg.Caps.ACL6 {
+		return switchapi.Unsupported("acl")
+	}
+	if _, ok := s.acls[seq]; !ok {
+		return fmt.Errorf("no rule with sequence %d", seq)
+	}
+	delete(s.acls, seq)
+	return nil
 }

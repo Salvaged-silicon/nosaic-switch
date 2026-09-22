@@ -44,7 +44,7 @@ Ordered by how much they matter to a switch being a switch.
 | **Cut-through** | 550 ns | store-and-forward | EOS sets `cut_through=1`, which is an Arista property absent from OpenBCM 6.5.24 — so this needs finding, not copying |
 | **CoS queues** | 8 per port | SDK default | `bcm_num_cos=8` in EOS |
 | **VXLAN** | routing, bridging and gateway at wire speed | nothing | see below — the SDK driver is already compiled in |
-| **ACLs** | ingress + egress, L2/L3/L4, with counters | field processor used only to punt | the FP groups exist; nothing exposes them |
+| **ACLs** | ingress + egress, L2/L3/L4, with counters | **ingress IPv4 in silicon, with counters** | `datapath/common/acl.c`; proven here 2026-09-17 (below) and on the AS5610. IPv6 group present (`show caps`: 4096 rules) but not traffic-tested here. See [docs/acl.md](../../../docs/acl.md) |
 | **Mirroring** | 4 active sessions, filtered | none | |
 | **PFC / ETS** | yes | none | |
 | **sFlow** | yes | none | |

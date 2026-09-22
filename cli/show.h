@@ -32,6 +32,8 @@ void nosaic_table_emit(const struct nosaic_table *t);
 int nosaic_show_caps(void);
 int nosaic_show_ports(void);
 int nosaic_show_routes(void);
+int nosaic_show_acl(void);
+int nosaic_acl_cmd(int argc, char **argv);
 
 /* What the datapath's DMA pool holds, and which allocation names hold it.
  *

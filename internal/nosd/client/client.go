@@ -361,3 +361,44 @@ func dialError(path string, err error) error {
 		return fmt.Errorf("cannot reach nosd at %s: %w", path, err)
 	}
 }
+
+// ACLList is the acl operation's whole answer: the rules and each family's
+// room. ACLs, the contract method, is the rules alone; the room is on
+// Capabilities, and this exists for `show acl` to print both from one call.
+func (c *Client) ACLList() (proto.ACLList, error) {
+	var out proto.ACLList
+	err := c.call(proto.OpACL, nil, &out)
+	return out, err
+}
+
+func (c *Client) ACLs() ([]switchapi.ACLEntry, error) {
+	l, err := c.ACLList()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]switchapi.ACLEntry, 0, len(l.Rules))
+	for _, w := range l.Rules {
+		e := switchapi.ACLEntry{
+			Seq: w.Seq, Text: w.Rule, Installed: w.Installed,
+			Packets: w.Packets, Error: w.Error,
+		}
+		if w.Parsed {
+			if r, perr := switchapi.ParseACLRule(w.Seq, w.Rule); perr == nil {
+				e.Rule = r
+				e.Parsed = true
+			}
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// SetACL sends the rule in its text form; the far side parses it with the
+// same grammar, so what is installed is what String says.
+func (c *Client) SetACL(r switchapi.ACLRule) error {
+	return c.call(proto.OpSetACL, proto.ACLSetArgs{Seq: r.Seq, Rule: r.String()}, nil)
+}
+
+func (c *Client) DelACL(seq int) error {
+	return c.call(proto.OpDelACL, proto.ACLDelArgs{Seq: seq}, nil)
+}

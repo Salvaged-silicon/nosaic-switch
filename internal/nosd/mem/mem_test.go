@@ -29,6 +29,31 @@ func TestConformanceWithoutVLANs(t *testing.T) {
 	switchapi.Conform(t, New(Config{Ports: 4, Caps: caps}))
 }
 
+// A datapath with no field processor passes by refusing every rule, and one
+// with room for IPv4 rules and not IPv6 passes by refusing only the v6 ones.
+func TestConformanceWithoutACLs(t *testing.T) {
+	caps := DefaultCaps()
+	caps.ACL = false
+	caps.ACL6 = false
+	switchapi.Conform(t, New(Config{Ports: 4, Caps: caps}))
+}
+
+func TestConformanceWithoutIPv6ACLs(t *testing.T) {
+	caps := DefaultCaps()
+	caps.ACL6 = false
+	switchapi.Conform(t, New(Config{Ports: 4, Caps: caps}))
+}
+
+// The suite must catch a datapath that installs a rule on a port it does not
+// have, because that rule would then match nothing and say so nowhere.
+func TestSuiteCatchesACLOnUnknownPort(t *testing.T) {
+	sw := &acceptsAnyPort{New(Config{Ports: 4, Caps: DefaultCaps()})}
+	probs := switchapi.Check(sw)
+	if !anyContains(probs, "a port the switch does not have") {
+		t.Fatalf("the suite did not catch an ACL on an unknown port; problems were: %v", probs)
+	}
+}
+
 // A datapath honestly lacking ECMP passes: it refuses multipath.
 func TestConformanceWithoutECMP(t *testing.T) {
 	caps := DefaultCaps()
@@ -112,6 +137,13 @@ func TestRouteRoundTrip(t *testing.T) {
 type refusesVLANs struct{ *Switch }
 
 func (r *refusesVLANs) AddVLAN(int) error { return switchapi.Unsupported("vlans") }
+
+type acceptsAnyPort struct{ *Switch }
+
+func (a *acceptsAnyPort) SetACL(r switchapi.ACLRule) error {
+	r.InPort = ""
+	return a.Switch.SetACL(r)
+}
 
 type wrongError struct{ *Switch }
 

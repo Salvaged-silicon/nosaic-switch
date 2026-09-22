@@ -44,7 +44,10 @@ import (
 // meaning of an existing call is a major one, and requires updating every
 // implementation in the same commit — including the virtual one, which is what
 // keeps that honest.
-const Version = "1.0"
+//
+// 1.1 added access lists: ACLs, SetACL and DelACL, gated by Capabilities.ACL
+// and ACL6.
+const Version = "1.1"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -82,6 +85,15 @@ type Capabilities struct {
 
 	ACL       bool
 	ACLSlices int
+	// ACLEntries is how many rules the chip's field group can hold in
+	// total, which is what an operator sizing an access list needs; slices
+	// are how the silicon is organised, not how many rules fit.
+	ACLEntries int
+	// ACL6 and ACL6Entries are the same for IPv6, which is a separate group
+	// on every chip so far: a 128-bit address does not share a key with a
+	// 32-bit one, and a chip can have room for one family and not the other.
+	ACL6        bool
+	ACL6Entries int
 
 	Counters bool
 	SFP      bool
@@ -169,6 +181,13 @@ type Switch interface {
 	AddVLAN(vid int) error
 	DelVLAN(vid int) error
 	SetPortVLAN(name string, vid int, tagged bool) error
+
+	// Access lists. See acl.go. SetACL adds the rule or replaces the one with
+	// the same sequence number; DelACL removes it; ACLs lists every rule the
+	// datapath holds, installed or not, with its hit count.
+	ACLs() ([]ACLEntry, error)
+	SetACL(r ACLRule) error
+	DelACL(seq int) error
 
 	// L2.
 	FDB() ([]FDBEntry, error)

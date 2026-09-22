@@ -67,7 +67,7 @@ CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"td2p\" -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include
 # problem nobody has solved and does not need solving.
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
-OBJS    += sdk.o ../common/tapbridge.o ../common/l3sync.o ../common/query.o led.o
+OBJS    += sdk.o ../common/tapbridge.o ../common/l3sync.o ../common/acl.o ../common/query.o led.o
 endif
 
 nosd-td2p: $(OBJS)
@@ -89,6 +89,7 @@ bde.o: bde.c bde.h
 sdk.o: sdk.c bde.h sdk.h ../common/props.h
 ../common/tapbridge.o: ../common/tapbridge.c ../common/tapbridge.h
 ../common/l3sync.o: ../common/l3sync.c ../common/l3sync.h ../common/props.h
+../common/acl.o: ../common/acl.c ../common/acl.h ../common/props.h ../common/tapbridge.h
 ../common/props.o: ../common/props.c ../common/props.h
 
 clean:

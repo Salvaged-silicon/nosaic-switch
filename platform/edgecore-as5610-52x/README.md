@@ -212,6 +212,38 @@ spreads across both links whether or not the chip does anything at all. That
 reads as a pass and proves nothing; it is how the missing hash went unnoticed
 here for a commit.
 
+## ACLs
+
+    nosaic acl add 10 deny in swp6 proto icmp src 10.101.101.26/32
+    nosaic show acl
+
+Ingress access lists, IPv4 and IPv6, by port, protocol, addresses and L4
+ports, permit or deny, each with a hit counter, applied while the switch runs.
+What they are and how to read them is [docs/acl.md](../../docs/acl.md); this
+is what the board did on 2026-09-16 and 17, with its OSPF adjacencies up
+throughout.
+
+A deny of ICMP from the swp6 neighbour took 10 of 10 echo replies and counted
+10. A permit of the same at a lower sequence let 10 of 10 through, counted on
+the permit and not the deny. One counting permit per neighbour counted only its
+own port's hellos, 13, 9 and 10 in 45 seconds. A deny of OSPF on swp6 alone
+took that adjacency down and left swp51 and swp52 Full, and unsetting it
+brought swp6 back in 32 seconds. Three malformed rules showed their reasons in
+`show acl` while the good ones installed around them. The next day, IPv6: a
+deny on ICMPv6 from the swp6 neighbour lost 10 of 10 pings while IPv4 pings
+kept working, a deny of OSPFv3 on swp6 took that adjacency down and left the
+OSPFv2 one on the same port Full, and in both families a rule on TCP source
+port 22 counted the neighbour's replies while one on port 23 counted nothing.
+The chip holds 1280 IPv4 and 768 IPv6 rules.
+
+Two things had to be found out on the way and both are recorded in the
+[todo](docs/todo.md#fixed-on-2026-09-16). The field processor that EdgeNOS
+could never arm fires under the SDK's own bring-up; the first test was the
+control plane's existing punt rule counting exactly the twenty replies sent
+through it. And the SDK's ingress-port bitmap reaches only one of the chip's
+two pipelines on this board, so a rule scoped to one port matched every other
+until the port went into the key instead.
+
 ## What is left before this replaces EdgeNOS
 
 Measured against `edgenos/platform/accton-as5610-52x`.
@@ -220,13 +252,14 @@ Measured against `edgenos/platform/accton-as5610-52x`.
 service VLANs; CPU punt on taps; hardware L3 with routes in DEFIP; ECMP across
 swp1 and swp2 with traffic on both; OSPFv2 with four adjacencies and OSPFv3 with
 one; forwarding enabled; cooling and environmentals through `nosaic platform`;
-an unattended boot to all of it, and 1.7 ms punt latency to a hardware
-responder.
+an unattended boot to all of it, 1.7 ms punt latency to a hardware responder,
+and ingress access lists, IPv4 and IPv6, that drop in silicon and count what
+they matched.
 
 **Small gaps.** LED writes: both registers are known and their bits are not.
 Per-tray fan status: the register is read and reported raw, because EdgeNOS does
 not decode it either and there is no known-good map to copy.
 
-**ACLs are not a parity item.** EdgeNOS never got them working -- its own notes
-record the IFP-arming wall as open -- so this is new work for both trees, and
-`edgenos/docs/full-sdk-port-5610.md` is where to start.
+**ACLs are ahead of parity.** EdgeNOS never got them working -- its own notes
+record the IFP-arming wall as open -- and NOSaic has them: see [ACLs](#acls)
+above. The wall was the bring-up underneath, not the silicon.

@@ -50,6 +50,7 @@
 #include <bcm/rx.h>
 #include "tapbridge.h"
 #include "l3sync.h"
+#include "acl.h"
 #include <bcm/link.h>
 #include <bcm/error.h>
 #include <stdarg.h>
@@ -890,6 +891,7 @@ static void *periodic(void *arg)
 	for (;;) {
 		sleep(1);
 		nosaic_l3_poll();
+		nosaic_acl_poll();
 		/* Once a minute. It is a diagnostic, and it reads every port's
 		 * counters out of the chip, so it is not free even here. */
 		if (++ticks % 60 == 0)
@@ -955,6 +957,12 @@ int nosaic_tdp_sdk_run(int unit)
 		}
 		nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
 	}
+
+	/* After the taps, because a rule may name a port; after the router
+	 * interfaces, because the punt groups they create must exist before
+	 * this one claims a priority above them. Not fatal if it fails: the
+	 * capability is reported absent and the switch forwards without it. */
+	nosaic_acl_start(unit);
 
 	printf("taps         %d port(s) on the Linux stack\n", nosaic_tap_count());
 	fflush(stdout);
