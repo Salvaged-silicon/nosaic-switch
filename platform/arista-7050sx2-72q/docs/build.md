@@ -117,10 +117,30 @@ the same lane map and the same PCB polarity — so one generation serves all of
 them. An image built without them boots and has no datapath. See
 [running.md](running.md#4-site-configuration).
 
-`config/asic.conf` **is** in the repository, because everything in it is
-board-independent chip configuration rather than vendor data: interrupt mode,
-port defaults, the SerDes lane map and its per-macro exceptions, and the `tap_`
-declarations.
+`config/asic.conf` **is** in the repository: interrupt mode, port defaults, the
+`tap_` declarations — and the SerDes lane map.
+
+The lane map is the exception to the rule above, and it is deliberate. It is
+board data of exactly the same kind as the polarity table, read off a machine
+that already has it. It is committed anyway because its absence is **silent**:
+a 40G cage with no lane map links at 40000, reports healthy on every status the
+SDK offers, and reassembles not one frame. A missing `portmap.conf` refuses to
+start and says why; a missing lane map forwards nothing and says nothing. Given
+the choice between publishing a permutation and shipping that failure mode, the
+permutation wins.
+
+`tools/mkpolarity.sh` also emits lane maps, so the same values have two
+sources. `/mnt/data/config` is loaded after `/etc/nosaic` and the last key
+wins, so a generated `polarity.conf` overrides `asic.conf`. **They must agree**,
+and the generator's output is the reference: it comes from the running vendor
+configuration. Treat a disagreement as the committed table being stale, not the
+other way round.
+
+⚠ Key these `xgxs_<dir>_lane_map_<port>`, with no `_core<n>_` infix. The SDK
+reads them with a core number in the name and falls back to the plain form; a
+hardcoded `_core0_` is right only for ports whose core is 0, and on this board
+it silently missed two of the six 40G cages for a day. The daemon's `properties
+were NEVER read by the SDK` line names this class of mistake at every boot.
 
 ## Reproducibility
 

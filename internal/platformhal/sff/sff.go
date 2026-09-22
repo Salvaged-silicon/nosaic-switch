@@ -86,6 +86,31 @@ type Module struct {
 	VccOK  bool
 }
 
+// DiagnosticsAllZero reports whether the whole diagnostic block reads as zero.
+//
+// A module may implement diagnostics and populate nothing. SFF-8636 byte 220
+// on this board's CISCO-AVAGO QSFP+ modules advertises receive power
+// monitoring, and every diagnostic byte then reads 0x00 -- on cages carrying a
+// healthy OSPF adjacency. A raw SMBus read of those same bytes returns the
+// same zeroes, so the module is the source and not this decode.
+//
+// It matters because zeroes render as "0.0 C" and "no signal" on every lane,
+// which is indistinguishable from a dead link. That cost real time during the
+// Ethernet49 investigation on 2026-09-19, where the display was read as
+// evidence of no light when it was evidence of nothing at all. Temperature is
+// the giveaway: a powered module always has one.
+func (m Module) DiagnosticsAllZero() bool {
+	if m.TempMilliC != 0 || m.VccMV != 0 {
+		return false
+	}
+	for _, l := range m.Lanes {
+		if l.TXBiasUA != 0 || l.RXPowerUW != 0 || l.TXPowerUW != 0 {
+			return false
+		}
+	}
+	return len(m.Lanes) > 0
+}
+
 // DBm converts a power in microwatts to dBm.
 //
 // Zero is not 0 dBm, it is no light, and log(0) is -Inf. A module reporting

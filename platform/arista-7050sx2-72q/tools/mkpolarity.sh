@@ -166,3 +166,47 @@ printf '\n# --- TX polarity: %d inverted lanes ---\n' "$ntx"
 printf '%s' "$TXO"
 printf '\n# --- RX polarity: %d inverted lanes ---\n' "$nrx"
 printf '%s' "$RXO"
+
+# ---- pass 3: the rest of the SerDes wiring ------------------------------
+#
+# ⚠ WITHOUT THE LANE MAPS A 40G CAGE LINKS AND CARRIES NOTHING. The PCB does
+# not route the four SerDes lanes to the QSFP connector in order, and the chip
+# has to be told the permutation. Each lane still carries valid 64b/66b either
+# way, so the cage comes up at 40000 and every status the SDK offers says the
+# port is healthy -- and not one frame ever reassembles. On 2026-09-21 two
+# cages on this board sat at in-nuc=0 with in-err=0: not a single corrupt
+# frame, because nothing got far enough to be counted as one. That reads as a
+# far end which is not transmitting, and it sent a day of searching to the
+# wrong end of the fibre.
+#
+# Taken from `config show` rather than from registers, because the SDK's own
+# property NAMES are the half that was wrong here. The values had been correct
+# all along, under a key -- xgxs_<dir>_lane_map_core0_<port> -- that the SDK
+# asks for only when that port's core number happens to be 0. tsce.c reads it
+# with soc_property_port_suffix_num_get(unit, port, core_num, ..., "core", ...),
+# which builds <name>_core<CORE_NUM>_<port> and falls back to <name>_<port>.
+# Emit the fallback form: it is right whatever the core number turns out to be,
+# and it is what EOS itself writes.
+#
+# The unit suffix is dropped. EOS spells these <name>_<port>.1, and the SDK
+# resolves <name>.<unit> before <name> -- so carrying a foreign unit number
+# across would make the whole table invisible, which is the same trap in a
+# different place.
+SERDES=$(printf 'config show lane_map\nconfig show serdes_firmware_mode\n' | bsh |
+         sed 's/^[[:space:]]*//' |
+         grep -E '^(xgxs_(rx|tx)_lane_map|serdes_firmware_mode)_[0-9]+(\.[0-9]+)?=' |
+         sed -E 's/\.[0-9]+=/=/' |
+         sort -u)
+
+nlm=$(printf '%s\n' "$SERDES" | grep -c '^xgxs_' || true)
+nfw=$(printf '%s\n' "$SERDES" | grep -c '^serdes_firmware_mode_' || true)
+
+printf '\n# --- SerDes lane maps: %d. Firmware modes: %d. ---\n' "$nlm" "$nfw"
+[ "$nlm" -gt 0 ] && printf '%s\n' "$SERDES"
+
+echo "mkpolarity: $ntx TX and $nrx RX polarity entries, $nlm lane maps, $nfw firmware modes" >&2
+
+# Counted separately and warned about separately, because a missing lane map is
+# silent in a way a missing polarity entry is not: a board with none of them
+# still produces a file that looks complete.
+[ "$nlm" -gt 0 ] || echo "mkpolarity: WARNING: no lane maps -- 40G cages will link and carry nothing" >&2

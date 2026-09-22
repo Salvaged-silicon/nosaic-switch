@@ -70,6 +70,7 @@
 #include <soc/phyctrl.h>
 
 #include "props.h"
+#include "tapbridge.h"
 #include "query.h"
 #include "phy.h"
 
@@ -140,6 +141,29 @@ static char phy_led_lit[PHY_MAX_PORT + 1]; /* what we last wrote to 0xa83b */
 static char phy_copper[PHY_MAX_PORT + 1];  /* port has an external PHY */
 static char phy_matched[PHY_MAX_PORT + 1]; /* interface agrees with the wire */
 static int  phy_rr = 1;                    /* round robin across candidates */
+
+/*
+ * Does this port really have link? The answer tapbridge's silent-port
+ * diagnostic needs, and the ★ condition from the LED note above: link AND a
+ * real negotiated speed, not link.
+ *
+ * A port with no external PHY is not ours to judge -- the uplinks are direct
+ * SerDes and their link status means what it says -- so it answers yes and
+ * lets the SDK stand. Only copper is filtered, because only copper lies.
+ *
+ * Free to call: phy_matched[] is already maintained per link event, so this
+ * reads software state and issues no MDIO. A per-interval speed sweep across
+ * 48 external PHYs is the call pattern that once killed copper receive here,
+ * which is exactly why this is answered from cached state and not asked.
+ */
+static int phy_link_is_real(int port)
+{
+	if (port < 1 || port > PHY_MAX_PORT)
+		return 1;
+	if (!phy_copper[port])
+		return 1;
+	return phy_matched[port] ? 1 : 0;
+}
 
 /* Which ports have an external PHY, from the properties rather than from a
  * port number range. The board declares phy_bus_i2c_<n> for exactly the ports
@@ -740,6 +764,11 @@ int nosaic_phy_start(int unit)
 	int p, n = 0;
 
 	phy_unit = unit;
+
+	/* So the silent-port diagnostic does not fire for every unconnected
+	 * copper port. Without it 42 of this board's 52 ports match "link and
+	 * no traffic" every interval and the one real fault is invisible. */
+	nosaic_tap_link_filter(phy_link_is_real);
 	/* Set before the early return below: the register dump is a diagnostic
 	 * for boards with no copper PHYs of the kind this file drives, and a
 	 * 40G cage is exactly that case. */

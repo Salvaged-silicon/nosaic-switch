@@ -330,6 +330,28 @@ restart, so this costs the same six minutes as a boot — but not the boot.
 - **The console drops characters** when the thermal service is logging to it,
   so long commands arrive corrupted. Keep them short, and check what actually
   happened rather than trusting the echo.
+- **A port that links and carries nothing is a DECODE failure, not a dead far
+  end.** `in-uc=0 in-nuc=0` together with **`in-err=0`** does not mean nothing
+  arrived — it means nothing ever got far enough to be counted as a frame. Not
+  one corrupt frame is the tell: a genuinely marginal link produces errors. The
+  usual causes are a wrong SerDes lane map or wrong polarity, both of which let
+  each lane lock individually so the cage reports up at full speed and every
+  status the SDK offers says the port is healthy.
+
+  **Check the never-read list first.** Every start prints `config N of M
+  properties were NEVER read by the SDK`, followed by the names. That list is
+  the cheapest diagnostic in the system and it names inert configuration
+  directly — a key the SDK never asked for is loaded, counted, reported, and
+  has no effect, which looks identical to a wrong value. On 2026-09-21 it had
+  been naming the exact two cages that would not pass traffic, at every boot,
+  for a day before anyone read it.
+
+  For the truth rather than a guess, boot EOS on the board and read its live
+  SDK configuration: `platform trident shell`, then `config show <substring>`
+  (`config show lane_map`, `config show _53.` for everything about one port).
+  That gives both the correct values and their correct key spelling, and the
+  spelling is the half more likely to be wrong. `tools/mkpolarity.sh` captures
+  it for you.
 
 ## Getting back in when the management port is down
 

@@ -459,23 +459,12 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 
 		/* ⚠ COUNT WHAT THE BOARD ASKED FOR, NOT WHAT FITS.
 		 *
-		 * Same shape as td2. This array was 8 while tapbridge's limit
-		 * was 64, so a board declaring 52 ports got the first 8 and was
-		 * told nothing -- the ports simply did not exist, which reads as
-		 * the declarations never having loaded. Counting separately is
-		 * what makes the difference sayable. */
-		for (i = 0; i < nosaic_props_count(); i++) {
-			if (nosaic_props_name(i) != NULL &&
-			    strncmp(nosaic_props_name(i), "tap_", 4) == 0)
-				declared++;
-		}
-		if (declared > NOSAIC_MAX_TAPS)
-			fprintf(stderr, "nosd: %d tap_<name> properties but at most %d "
-				"can be built; the rest are ignored and their ports "
-				"will not appear\n", declared, NOSAIC_MAX_TAPS);
-
-		for (i = 0; i < nosaic_props_count() && ntap < NOSAIC_MAX_TAPS; i++) {
-			const char *name = nosaic_props_name(i);
+		 * This array was 8 while tapbridge's limit was 64, so a board
+		 * declaring more ports than that got the first eight of them and
+		 * was told nothing at all -- the rest simply did not exist, and
+		 * the obvious reading was that the declarations had not loaded.
+		 * Counting separately is what makes the difference sayable. */
+		for (i = 0; i < nosaic_props_count(); i++) {			const char *name = nosaic_props_name(i);
 			const char *val = nosaic_props_value(i);
 
 			if (name == NULL || strncmp(name, "tap_", 4) != 0)
@@ -521,10 +510,17 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 						specs[ntap].mtu = atoi(colon + 1);
 				}
 			}
-			ntap++;
+			declared++;
+			if (ntap < NOSAIC_MAX_TAPS)
+				ntap++;
 		}
 
-
+		if (declared > ntap)
+			fprintf(stderr,
+				"nosd-td2p: %d tap_<name> properties declared and only "
+				"%d can be built (NOSAIC_MAX_TAPS); the rest are "
+				"IGNORED and those ports will not exist\n",
+				declared, ntap);
 		if (ntap == 0) {
 			printf("nosd: no tap_<name>=<port> properties, so no port is on "
 			       "the Linux stack.\n"
