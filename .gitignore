@@ -34,6 +34,9 @@ local.mk
 /platform/*/config/portmap.conf
 /platform/*/config/polarity.conf
 /platform/*/config/statusleds.conf
+# Where each of the AS4610-54T's 48 copper PHYs answers on MDIO. Same rule:
+# read off a switch running the vendor's OS, so the numbers are the vendor's.
+/platform/*/config/phymap.conf
 
 # ⚠ One exception, and the reason is the provenance rather than the filename.
 # The 7050TX-64's lamps are on the SCD rather than the fan CPLD, so its map is

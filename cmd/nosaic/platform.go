@@ -13,6 +13,10 @@ import (
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/board"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
+	// Board HAL drivers, linked in for their registration. A board asking
+	// for a driver gets one only if it is here, which keeps board data
+	// honest about what exists.
+	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/as4610"
 	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/n3172tq" // registers the "n3172tq" driver
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/scd"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/sff"

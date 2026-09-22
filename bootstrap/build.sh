@@ -109,6 +109,37 @@ CT_GLIBC_KERNEL_VERSION_NONE=y
 # CT_GLIBC_KERNEL_VERSION_AS_HEADERS is not set
 # CT_GLIBC_KERNEL_VERSION_CHOSEN is not set
 EOF
+
+    # Per-architecture corrections to the upstream sample.
+    #
+    # An entry here means the closest sample crosstool-NG tests is not quite
+    # the CPU we have. That is normal for end-of-service-life hardware and it
+    # is the one place a sample may be contradicted, so each says which fact
+    # about which machine it comes from.
+    case "$arch" in
+    armhf)
+        cat <<'EOF'
+
+# The sample is arm-cortexa9_neon-linux-gnueabihf and this CPU has no NEON.
+#
+# NEON is optional on a Cortex-A9 and the AS4610-54T's does not have it.
+# /proc/cpuinfo on the running switch lists
+#
+#   half thumb fastmult vfp edsp vfpv3 tls vfpd32
+#
+# with no `neon` and no `idiva`/`idivt` -- that list comes from the CPU's own
+# ID registers, so it is the part and not the kernel talking.
+#
+# Left at the sample's "neon" the compiler is free to vectorise anything, and
+# what comes out disassembles cleanly, runs under QEMU (whose -cpu cortex-a15
+# does have NEON) and SIGILLs on the switch. vfpv3 rather than vfpv3-d16
+# because `vfpd32` above says all 32 double registers are there.
+#
+# arch/armhf/arch.yml carries an instruction audit as the backstop for this.
+CT_ARCH_FPU="vfpv3"
+EOF
+        ;;
+    esac
 }
 
 cmd_seed() {

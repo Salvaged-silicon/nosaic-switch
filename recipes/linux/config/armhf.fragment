@@ -1,0 +1,175 @@
+# ARMv7-A, Cortex-A9 iProc — the AS4610-54T.
+#
+# The architecture's defconfig is multi_v7_defconfig, which is the whole ARMv7
+# world in one config and already carries ARCH_BCM_HR2. This fragment is what a
+# switch needs on top of it, and — more to the point — the handful of things
+# that config leaves out which this particular board cannot boot without.
+
+# --- the SoC ---------------------------------------------------------------
+# Stated rather than inherited. multi_v7_defconfig has these today; a board
+# that cannot boot without them should say so itself rather than depend on a
+# shared config continuing to make the same choice.
+#
+# ARCH_BCM_IPROC is deliberately not listed: it has no prompt and is selected
+# by ARCH_BCM_HR2. Asking for a symbol kconfig will not let you set is how a
+# fragment grows lines that look like decisions and are not.
+CONFIG_ARCH_BCM=y
+CONFIG_ARCH_BCM_HR2=y
+CONFIG_SMP=y
+
+# Cortex-A9 errata. mainline selects these for Northstar Plus (ARCH_BCM_NSP)
+# and not for Hurricane 2, which is a single-core part where the SMP one does
+# not arise. This board is a dual-core A9 r3p0 and wants all three.
+CONFIG_ARM_ERRATA_754322=y
+CONFIG_ARM_ERRATA_775420=y
+CONFIG_ARM_ERRATA_764369=y
+
+# 768 MB of DRAM based at 0x61000000, which only just fits in lowmem before
+# the kernel's vmalloc reservation takes its share. BISDN set this on the same
+# board and the same kernel series; it is cheap to have and awkward to diagnose
+# without, so it is not left to arithmetic.
+CONFIG_HIGHMEM=y
+
+# --- floating point --------------------------------------------------------
+# The userland is gnueabihf: every binary passes floats in VFP registers, so
+# without VFP support in the kernel there is nothing to save and restore across
+# a context switch and userspace is quietly wrong rather than loudly broken.
+CONFIG_VFP=y
+CONFIG_VFPv3=y
+CONFIG_AEABI=y
+
+# CONFIG_NEON stays as the defconfig has it, and that is deliberate.
+#
+# This CPU has no NEON — an A9's Advanced SIMD unit is optional and this part
+# does not have one. The symbol is safe anyway: every in-kernel user tests
+# ELF_HWCAP for it before executing anything, so on this board they decline and
+# fall back. What is NOT safe is building *userspace* for NEON, which is why
+# arch/armhf/arch.yml overrides the toolchain's FPU and audits the output.
+
+# --- console ---------------------------------------------------------------
+# ttyS0 at 115200, on a plain ns16550a. The reference clock is 62.5 MHz and is
+# stated in the board's device tree; see that file for what happens when it is
+# taken from mainline's dtsi instead.
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_OF_PLATFORM=y
+
+# --- the switch chip -------------------------------------------------------
+# There is no PCI here. The CMIC is a platform device at 0x48000000, and the
+# datapath daemon reaches it from userspace through UIO — a mapping of the
+# register window plus the chip's interrupt, with no vendor kernel module
+# anywhere. uio_pdrv_genirq is what binds the "generic-uio" compatible in the
+# board's CMIC node.
+#
+# Without these two the node is described in the device tree, nothing binds to
+# it, /dev/uio0 does not appear, and the daemon has no way to reach the chip at
+# all. Nothing reports a problem: the hardware is simply absent.
+CONFIG_UIO=y
+CONFIG_UIO_PDRV_GENIRQ=y
+
+# Contiguous memory for the chip's DMA rings.
+#
+# Unlike powerpc, arm selects HAVE_DMA_CONTIGUOUS, so DMA_CMA is available and
+# dma_alloc_coherent() draws from the CMA pool — which is the mechanism the
+# datapath should use here rather than the memmap= reservation the x86 boards
+# use or the reserved-memory node the AS5610 needs.
+CONFIG_CMA=y
+CONFIG_DMA_CMA=y
+
+# --- storage ---------------------------------------------------------------
+# ⚠ THE DISK IS ON USB. That is not a detail of this board, it is the board:
+# /dev/sda is a 29 GB device behind the SoC's EHCI controller, and the whole
+# operating system lives on it. Every one of these is required to mount root,
+# so every one is built in — a module cannot be loaded from a root filesystem
+# that has not been mounted.
+#
+# The failure if any is missing is "VFS: Unable to mount root fs", which names
+# the filesystem and not the bus underneath it.
+CONFIG_USB=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_EHCI_HCD_PLATFORM=y
+CONFIG_USB_EHCI_ROOT_HUB_TT=y
+CONFIG_USB_STORAGE=y
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+
+# --- management port -------------------------------------------------------
+# The SoC's own AMAC, behind an SGMII PHY. BGMAC_PLATFORM, not BGMAC_BCMA:
+# multi_v7_defconfig carries the BCMA one, which is for the same MAC on a
+# Broadcom AXI bus and does not match a device-tree platform node. So this is
+# the symbol that has to be added, and the symptom of leaving the defconfig's
+# choice alone is a switch with no management interface at all.
+#
+# ⚠ THIS IS NECESSARY AND PROBABLY NOT SUFFICIENT.
+#
+# The board's device tree claims brcm,nsp-amac, on the reasoning that the AMAC
+# is the AMAC. BISDN run the same kernel series on this board and carry 320
+# lines of changes to bgmac-platform.c, bgmac.c and bgmac.h — SerDes bring-up
+# through <linux/soc/bcm/xgs-iproc-misc-setup.h> that mainline's bgmac does not
+# do — under their own brcm,xgs-iproc-amac. The vendor's own tree on the
+# running switch uses that compatible too.
+#
+# So expect the management port to be absent or dead on a first boot, and take
+# 10-10-bgmac-xgs-iproc-changes.patch when it is. docs/bisdn-prior-art.md.
+CONFIG_BGMAC_PLATFORM=y
+# The SGMII PHY in front of it. BCM_NET_PHYLIB comes with it and is not listed
+# for the same reason as above -- it has no prompt.
+CONFIG_BROADCOM_PHY=y
+
+# --- i2c: the board controller, the optics, the sensors --------------------
+# One controller for the CPLD and one for everything behind the mux. The mux
+# is what creates buses 2..9, so without PCA954x the optics and the sensor do
+# not exist.
+CONFIG_I2C=y
+CONFIG_I2C_CHARDEV=y
+CONFIG_I2C_BCM_IPROC=y
+CONFIG_I2C_MUX=y
+CONFIG_I2C_MUX_PCA954x=y
+
+# The CPLD, the PSU PMBus parts and the transceiver EEPROMs have no kernel
+# driver here on purpose — they are read over i2c-dev, which is what
+# CONFIG_I2C_CHARDEV above is for. What does get a driver:
+CONFIG_SENSORS_LM77=y
+CONFIG_EEPROM_AT24=y
+
+# The ChipcommonA GPIO block, which the board's reset lines hang off.
+# GPIO_BCM_XGS_IPROC, not GPIO_XGS_IPROC: the driver is gpio-xgs-iproc.c and
+# the symbol is not spelled the way the file is.
+CONFIG_GPIO_BCM_XGS_IPROC=y
+
+# The hardware random number generator, because a switch generating host keys
+# on first boot with no entropy is a switch generating predictable host keys.
+#
+# BCM2835, which is not a typo: the board's device tree declares
+# brcm,bcm-nsp-rng, and in mainline that compatible is matched by
+# drivers/char/hw_random/bcm2835-rng.c rather than by the iproc-rng200 driver
+# whose name suggests it. Picking the plausible symbol gives a kernel that
+# builds, boots, and has no /dev/hwrng.
+#
+# ⚠ AND IT MAY STILL NOT BIND. The vendor's tree calls this block
+# brcm,iproc-rng100 and BISDN carry a driver for it
+# (10-04-hw_random-xgs-iproc-rng100.patch); mainline has neither that
+# compatible nor that driver. So this is the closest mainline thing to the
+# right one rather than the right one. The cost of being wrong is no
+# /dev/hwrng, which is cosmetic except on a first boot, when it is where host
+# keys come from. See docs/bisdn-prior-art.md.
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_BCM2835=y
+
+# --- deliberately absent ---------------------------------------------------
+#
+# The QSPI controller and the NOR flash behind it. The board's device tree
+# disables that node because mainline has no driver for this SoC's AXI clock
+# tree, and a QSPI given the wrong bus clock reads plausible rubbish out of the
+# bootloader you depend on to recover the switch.
+#
+# The cost is real and is not fatal: no /proc/mtd, so no fw_setenv, so the
+# installer cannot write the firmware's boot variable from the running system
+# and it has to be set by hand at the U-Boot prompt once. platform/
+# edgecore-as4610-54t/docs/todo.md carries it.
+#
+# The real-time clock. There is a DS1307 on the i2c tree and the board's device
+# tree disables it, following the vendor's own "rtcdis" tree: a flat backup
+# cell wedges the boot on the mux. CONFIG_RTC_DRV_DS1307 is therefore pointless
+# here rather than harmful, and is left out so that turning the node on is one
+# decision rather than one that half-happened already.

@@ -1,0 +1,80 @@
+# nosd-helix4 — the Helix4 datapath, for the BCM56340 family.
+#
+# The AS4610-54T's chip, and the first in this tree whose CMIC is on the CPU's
+# own die rather than behind PCI. That is the whole reason it is a fourth
+# package rather than a flag on an existing one: every other BDE here begins by
+# finding a PCI device and mapping a BAR, and there is no bus to find one on.
+#
+# WHAT IT IS TODAY. It attaches the chip over UIO, maps the DMA pool, brings
+# the SOC and BCM layers up, puts every port in its own service VLAN and
+# forwarding, bridges the declared ports to Linux as taps and mirrors the
+# kernel FIB into the chip. That is the same shape nosd-tdp reached on the
+# AS5610 — and unlike that one it has never been run, because the board it is
+# for has not been assembled. It claims `nosd` because the daemon a unit file
+# names has to exist for the rest of the image to be testable; what it does not
+# yet have is a single measurement taken on hardware.
+#
+# The parts most likely to need changing on the first boot are named in
+# platform/edgecore-as4610-54t/docs/todo.md, and each is one line: the SAL bus
+# type, the set of iProc registers to map, and whether the SDK's interrupt
+# handler can be driven from a UIO file descriptor.
+name: nosd-helix4
+version: "0.1.0"
+summary: Helix4 (BCM56340) datapath — on-die CMIC over UIO
+
+license: Apache-2.0
+redistributable: true
+
+# The whole datapath tree, because datapath/common carries the DMA allocator,
+# the property reader, the tap bridge and the FIB mirror that this shares with
+# the other three. build.subdir selects which ASIC is built.
+source:
+  local: datapath
+
+depends: [glibc]
+
+# Exclusive: two datapath daemons on one chip would fight over it.
+provides: [nosd]
+conflicts: [nosd]
+
+# Staged to build against, never shipped: the SDK is 874 MB of static archives
+# and what leaves here is the binary that linked them.
+build_depends: [openbcm]
+
+build:
+  system: make
+  subdir: helix4
+  env:
+    # Where the staged SDK is. Without it the makefile builds only the BDE and
+    # the probe, which is deliberate -- a contributor without the vendor tree
+    # can still build, test and change everything else here, and it is what CI
+    # compiles.
+    SDK_DIR: "${STAGING}/usr"
+  # clean first: the source is this repository, so a local build leaves object
+  # files in the tree that get copied in. make then finds them newer than their
+  # sources and links the wrong architecture -- caught by the arch check, but
+  # only after a full build.
+  targets: [clean, nosd-helix4, strip]
+
+  # Relative to the source root, which is the whole datapath tree.
+  stage:
+    - src: helix4/nosd-helix4
+      dst: /usr/sbin/nosd-helix4
+      mode: "0755"
+
+# The name everything above this layer uses. The unit, the CLI and the docs
+# only ever say `nosd`; the builder picks the provider from the board's ASIC.
+services:
+  - name: nosd
+    exec: /usr/sbin/nosd-helix4
+    # Restarted rather than one-shot: the daemon owns the chip for as long as
+    # the switch is up, and the supervisor is what notices when it stops.
+    #
+    # ⚠ STOP IT THROUGH THE SUPERVISOR, WITH A TIMEOUT, AND NEVER WITH kill -9.
+    #
+    # On the AS5610 a kill -9 leaves the chip mid-operation and the next attach
+    # comes back with TXPLL lock failures, 48 of 52 ports and no link, while
+    # reporting that it is serving -- only a board reset clears it. Nothing
+    # here resets the chip on the way in or out yet, so the same is expected of
+    # this one. `s6-rc -t 30000 -d change nosd`.
+    restart: always

@@ -31,6 +31,7 @@ hand-maintained list of hardware on the front page is the first thing to go stal
 | [arista 7050sx2-72q](platform/arista-7050sx2-72q/) | td2p | x86_64 | aboot | experimental |
 | [arista 7050tx-64](platform/arista-7050tx-64/) | td2 | x86_64 | aboot | bringup |
 | [cisco n3172tq](platform/cisco-n3172tq/) | td2 | x86_64 | uefi | bringup |
+| [edgecore as4610-54t](platform/edgecore-as4610-54t/) | helix4 | armhf | onie-sfx | planned |
 | [edgecore as5610-52x](platform/edgecore-as5610-52x/) | tdp | powerpc | onie-sfx | experimental |
 | [nosaic virt](platform/virt-x86_64/) | virt | x86_64 | virt | bringup |
 

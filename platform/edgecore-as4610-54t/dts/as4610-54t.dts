@@ -1,0 +1,575 @@
+/*
+ * NOSaic device tree for the Edgecore AS4610-54T.
+ *
+ * Broadcom BCM56340 (Helix4). The host CPU is the iProc block on the same die:
+ * two Cortex-A9 cores, whose peripherals mainline Linux supports as the
+ * Hurricane 2 family (ARCH_BCM_HR2).
+ *
+ * PROVENANCE, because it decides which parts of this file are trustworthy.
+ *
+ * The addresses, interrupts and topology are read out of the device tree this
+ * switch boots today -- extracted from the fdt node of the vendor's
+ * arm-accton-as4610-54-r0.itb and decompiled -- and cross-checked against
+ * /sys/bus/platform/devices on the running machine. Where a node's shape came
+ * from upstream instead it is Broadcom's own BSD-licensed bcm-hr2.dtsi and
+ * bcm-nsp.dtsi in arch/arm/boot/dts/broadcom/, copyright 2017 Broadcom.
+ *
+ * ⚠ WHAT IS DELIBERATELY NOT COPIED: the vendor's `compatible` strings.
+ *
+ * The tree on the box names out-of-tree Broadcom BSP drivers --
+ * brcm,xgs-iproc-amac, brcm,xgs-iproc-armpll, brcm,usb-phy-hx4,
+ * brcm,spi-xgs-iproc-qspi, brcm,helix4 -- none of which exist in mainline. A
+ * kernel built from this repository binds none of them. Copying that tree
+ * verbatim produces a switch that reaches a login prompt on the console (the
+ * UART is a plain ns16550a and needs nobody) with no network, no USB and
+ * therefore no disk, which is a difficult thing to diagnose from the outside
+ * because it looks like a boot that nearly worked.
+ *
+ * So every compatible here is one mainline 6.12 has a driver for, and the
+ * nodes whose mainline driver does not exist are disabled and named in
+ * docs/todo.md rather than left in to look complete.
+ *
+ * Compiled by `dtc -I dts -O dtb` with no C preprocessor, so the interrupt
+ * cells are numbers: <type number flags>, type 0 = SPI and 1 = PPI, flags
+ * 4 = level high and 1 = edge rising. 0x301 on the per-CPU timers is the
+ * two-CPU mask (0x300) or'd with edge rising.
+ */
+
+/dts-v1/;
+
+/ {
+	model = "edgecore-as4610-54t";
+
+	/*
+	 * "brcm,hr2" is load-bearing and is not what the vendor's tree says.
+	 *
+	 * arch/arm/mach-bcm/bcm_hr2.c matches exactly this string, and the
+	 * machine descriptor it selects is what sets l2c_aux_val/l2c_aux_mask
+	 * and so brings up the PL310. The vendor claims "brcm,helix4", which
+	 * mainline has never heard of: the board then falls through to the
+	 * generic DT machine and runs with its L2 cache uninitialised.
+	 */
+	compatible = "accton,as4610_54", "brcm,hr2";
+	interrupt-parent = <&gic>;
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	chosen {
+	};
+
+	aliases {
+		serial0 = &uart1;
+		ethernet0 = &amac0;
+		i2c0 = &i2c0;
+		i2c1 = &i2c1;
+	};
+
+	/*
+	 * DRAM does not start at zero on this SoC. 0x61000000 is where it is,
+	 * which is why the FIT's kernel load address is 0x61008000 and why the
+	 * usual 0x00008000 would be an address with nothing behind it.
+	 *
+	 * The size here is 768 MiB and U-Boot overwrites it during bootm from
+	 * its own memory detection -- the vendor's tree claims 0x7f000000 (2 GiB)
+	 * and the running kernel reports 748 MiB, which is that fixup happening.
+	 * It is stated correctly anyway: a tree that is only right because
+	 * something else corrects it is one that boots differently the day it is
+	 * loaded by anything but this bootloader.
+	 */
+	memory@61000000 {
+		device_type = "memory";
+		reg = <0x61000000 0x30000000>;
+	};
+
+	/*
+	 * The DMA pool the datapath hands to the switch chip.
+	 *
+	 * The SDK programs most chip tables through SBUS DMA: it builds a
+	 * descriptor in host memory and has the chip fetch it, so the daemon
+	 * needs a block of physically contiguous memory whose address it knows.
+	 *
+	 * ⚠ IT IS RESERVED HERE EVEN THOUGH THIS ARCHITECTURE HAS CMA, and the
+	 * reason is the mechanism above it rather than the memory. arm selects
+	 * HAVE_DMA_CONTIGUOUS, so unlike the AS5610 this board could use
+	 * dma_alloc_coherent -- but only from a kernel driver, and there is no
+	 * kernel driver here. UIO offers a userspace process a mapping of a
+	 * physical range and nothing else, so the range has to exist and to be
+	 * known before anybody asks for it.
+	 *
+	 * no-map keeps it out of the kernel's linear mapping. That is what makes
+	 * it safe to hand to the chip -- nothing else can be allocated from it --
+	 * and it is also what lets the /dev/mem fallback work at all, since the
+	 * region stops being System RAM and devmem_is_allowed() permits it even
+	 * with CONFIG_STRICT_DEVMEM.
+	 *
+	 * 0x88000000 is 640 MiB into this board's DRAM and is clear of
+	 * everything a boot touches: the kernel unpacks at 0x61008000 and the
+	 * FIT is staged at 0x70000000, where its initramfs is used in place
+	 * rather than relocated. 64 MiB matches what the AS5610 reserves, which
+	 * is the only figure in this project measured against a chip of this
+	 * family actually running.
+	 */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		nosaic_dma: nosaic-dma@88000000 {
+			reg = <0x88000000 0x04000000>;
+			no-map;
+		};
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			next-level-cache = <&L2>;
+			reg = <0x0>;
+		};
+
+		/*
+		 * Both cores, which mainline's bcm-hr2.dtsi does not have: a
+		 * Hurricane 2 is single-core and this part is not. Without this
+		 * node the switch runs on half its CPU and nothing reports a
+		 * problem.
+		 *
+		 * secondary-boot-reg is 0xffff042c and is read off this board. It
+		 * is NOT the 0xffff0fec that mainline's bcm-nsp.dtsi uses for the
+		 * same enable-method: the address is where the holding pen looks
+		 * for its jump target, so the wrong one leaves the second core
+		 * spinning forever with no message.
+		 */
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a9";
+			next-level-cache = <&L2>;
+			enable-method = "brcm,bcm-nsp-smp";
+			secondary-boot-reg = <0xffff042c>;
+			reg = <0x1>;
+		};
+	};
+
+	pmu {
+		compatible = "arm,cortex-a9-pmu";
+		interrupts = <0 8 4>,
+			     <0 9 4>;
+		interrupt-affinity = <&cpu0>, <&cpu1>;
+	};
+
+	mpcore@19000000 {
+		compatible = "simple-bus";
+		ranges = <0x00000000 0x19000000 0x00023000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		a9pll: arm_clk@0 {
+			#clock-cells = <0>;
+			compatible = "brcm,hr2-armpll";
+			clocks = <&osc>;
+			reg = <0x0 0x1000>;
+		};
+
+		timer@20200 {
+			compatible = "arm,cortex-a9-global-timer";
+			reg = <0x20200 0x100>;
+			interrupts = <1 11 1>;
+			clocks = <&periph_clk>;
+		};
+
+		twd-timer@20600 {
+			compatible = "arm,cortex-a9-twd-timer";
+			reg = <0x20600 0x20>;
+			interrupts = <1 13 0x301>;
+			clocks = <&periph_clk>;
+		};
+
+		twd-watchdog@20620 {
+			compatible = "arm,cortex-a9-twd-wdt";
+			reg = <0x20620 0x20>;
+			interrupts = <1 14 0x301>;
+			clocks = <&periph_clk>;
+		};
+
+		gic: interrupt-controller@21000 {
+			compatible = "arm,cortex-a9-gic";
+			#interrupt-cells = <3>;
+			#address-cells = <0>;
+			interrupt-controller;
+			reg = <0x21000 0x1000>,
+			      <0x20100 0x100>;
+		};
+
+		/*
+		 * arm,filter-ranges is <start length>, not <start end> --
+		 * cache-l2x0.c computes filter_end as start + length. So this is
+		 * 0x60000000 upward for 2 GiB, taken unaltered from the vendor's
+		 * tree, and it comfortably covers this board's DRAM at
+		 * 0x61000000..0x91000000.
+		 *
+		 * Reading it as a limit and "correcting" the second cell to
+		 * 0x20000000 leaves the top third of DRAM outside the filter.
+		 * The board still boots.
+		 *
+		 * What the filter buys: the CMIC's register window at
+		 * 0x48000000 is below the start, so chip register access is
+		 * never cached -- which is what you want when the memory on the
+		 * other side is a register file.
+		 */
+		L2: cache-controller@22000 {
+			compatible = "arm,pl310-cache";
+			reg = <0x22000 0x1000>;
+			cache-unified;
+			cache-level = <2>;
+			arm,filter-ranges = <0x60000000 0x80000000>;
+		};
+	};
+
+	clocks {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		osc: oscillator {
+			#clock-cells = <0>;
+			compatible = "fixed-clock";
+			clock-frequency = <25000000>;
+		};
+
+		periph_clk: periph_clk {
+			#clock-cells = <0>;
+			compatible = "fixed-factor-clock";
+			clocks = <&a9pll>;
+			clock-div = <2>;
+			clock-mult = <1>;
+		};
+	};
+
+	/*
+	 * Identity ranges and full addresses, following the tree this board
+	 * boots rather than mainline's translated form. Same result, and it
+	 * makes every address here directly comparable with
+	 * /sys/bus/platform/devices on a running machine.
+	 */
+	axi {
+		compatible = "simple-bus";
+		ranges;
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/*
+		 * The console.
+		 *
+		 * ⚠ clock-frequency, not clocks = <&osc>. Mainline's
+		 * bcm-hr2.dtsi feeds this UART the 25 MHz oscillator; on this
+		 * board it runs at 62.5 MHz, which is what the vendor's tree
+		 * says and what makes 115200 come out at 115200. Taking the
+		 * upstream node unaltered gives a console at roughly two and a
+		 * half times the configured baud -- so the kernel boots and
+		 * every character of it is garbage, on the one output you have.
+		 */
+		uart1: serial@18000400 {
+			compatible = "ns16550a";
+			reg = <0x18000400 0x100>;
+			interrupts = <0 91 4>;
+			clock-frequency = <62500000>;
+			status = "okay";
+		};
+
+		/*
+		 * The management port: the SoC's own AMAC behind an SGMII PHY,
+		 * driven by mainline's bgmac-platform.
+		 *
+		 * It is `ma1` under ONL and EdgeNOS, both of which run systemd
+		 * and rename it. Nothing in NOSaic renames interfaces, so the
+		 * kernel's own name stands -- the same trap the AS5610's
+		 * eth0/end0 note records.
+		 */
+		amac0: ethernet@18022000 {
+			compatible = "brcm,nsp-amac";
+			reg = <0x18022000 0x1000>,
+			      <0x18110000 0x1000>;
+			reg-names = "amac_base", "idm_base";
+			interrupts = <0 202 4>;
+			phy-mode = "sgmii";
+			status = "okay";
+		};
+
+		gpio_cca: gpio@18000060 {
+			compatible = "brcm,iproc-gpio-cca";
+			reg = <0x18000060 0x50>,
+			      <0x18000000 0x50>;
+			ngpios = <8>;
+			pin-reg-bit-shift = <0>;
+			pin-base = <4>;
+			#gpio-cells = <2>;
+			gpio-controller;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+			interrupts = <0 91 4>;
+			status = "okay";
+		};
+
+		/*
+		 * The disk is behind this controller, so it is the node that
+		 * decides whether the switch can boot from its own flash at all.
+		 *
+		 * ⚠ AND IT IS THE NODE MOST LIKELY TO BE WRONG. mainline's
+		 * bcm-hr2.dtsi has no USB at all; this is bcm-nsp.dtsi's
+		 * generic-ehci at the address this board uses. The PHY in front
+		 * of it is a brcm,usb-phy-hx4, which mainline has no driver for.
+		 *
+		 * The hope was that U-Boot's own `usb start` leaves the PHY
+		 * powered through the handover. BISDN, running the same kernel
+		 * series on this board, contradicts it: they carry a 23 KB
+		 * driver for that PHY, a second patch for its mode, and a hack
+		 * into ehci-platform.c, and they bind brcm,xgs-iproc-ehci rather
+		 * than generic-ehci.
+		 *
+		 * So expect this to fail, and expect it to fail as a kernel that
+		 * reaches a console and then cannot mount root. The fix is
+		 * theirs, it is GPL, and docs/bisdn-prior-art.md says which
+		 * patches.
+		 *
+		 * dma-coherent is deliberately absent. bcm-nsp.dtsi sets it and
+		 * the vendor's tree for this board does not, and the vendor's
+		 * tree is the one known to move data on this silicon.
+		 *
+		 * docs/todo.md carries this as the first thing to check on a
+		 * first boot, because the symptom -- kernel panics, unable to
+		 * mount root -- names neither USB nor a PHY.
+		 */
+		ehci0: usb@1802a000 {
+			compatible = "generic-ehci";
+			reg = <0x1802a000 0x1000>;
+			interrupts = <0 85 4>;
+			status = "okay";
+		};
+
+		/* Board controller bus: the CPLD at 0x30, reached from
+		 * userspace through i2c-dev. No node for the CPLD itself --
+		 * accton,as4610_54_cpld is an out-of-tree binding and there is
+		 * nothing in mainline to bind it to. */
+		i2c0: i2c@18038000 {
+			compatible = "brcm,iproc-i2c";
+			reg = <0x18038000 0x100>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <0 95 4>;
+			clock-frequency = <400000>;
+			status = "okay";
+		};
+
+		/* Front-panel optics, power supplies and the board sensor, all
+		 * behind one 8-channel mux. The mux is what creates i2c buses
+		 * 2..9; the optics live on 2..7 and everything else on 8 and 9. */
+		i2c1: i2c@1803b000 {
+			compatible = "brcm,iproc-i2c";
+			reg = <0x1803b000 0x100>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			interrupts = <0 96 4>;
+			clock-frequency = <100000>;
+			status = "okay";
+
+			mux@70 {
+				compatible = "nxp,pca9548";
+				reg = <0x70>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/*
+				 * Not optional. Without it the mux leaves the
+				 * last-selected channel open, and six SFP
+				 * cages all answer at 0x50 -- so a read
+				 * intended for one transceiver returns
+				 * whichever one was addressed last.
+				 */
+				i2c-mux-idle-disconnect;
+
+				/*
+				 * Channels 0..5 are the six SFP+ cages, xe0..xe5
+				 * in netdev order (silkscreen 49..54, of which
+				 * 53 and 54 are the stacking ports). They carry
+				 * no child nodes: the vendor binds `optoe`,
+				 * which is an Open Network Linux driver and not
+				 * in mainline, and NOSaic's platform HAL reads
+				 * transceiver EEPROMs over i2c-dev anyway --
+				 * the same way it does on every other board.
+				 * The mux creates the buses regardless, which
+				 * is all that is needed.
+				 */
+				sfp0: i2c@0 { #address-cells = <1>; #size-cells = <0>; reg = <0>; };
+				sfp1: i2c@1 { #address-cells = <1>; #size-cells = <0>; reg = <1>; };
+				sfp2: i2c@2 { #address-cells = <1>; #size-cells = <0>; reg = <2>; };
+				sfp3: i2c@3 { #address-cells = <1>; #size-cells = <0>; reg = <3>; };
+				sfp4: i2c@4 { #address-cells = <1>; #size-cells = <0>; reg = <4>; };
+				sfp5: i2c@5 { #address-cells = <1>; #size-cells = <0>; reg = <5>; };
+
+				/* Both power supplies: an EEPROM and a PMBus
+				 * controller each. The PMBus parts are
+				 * 3Y-Power YM-1921s and there is no mainline
+				 * binding for them, so they are read over
+				 * i2c-dev like the CPLD. */
+				i2c@6 {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					reg = <6>;
+				};
+
+				i2c@7 {
+					#address-cells = <1>;
+					#size-cells = <0>;
+					reg = <7>;
+
+					/* The board's only temperature sensor,
+					 * and the one the cooling loop will
+					 * read. hwmon0 on the running switch. */
+					temp@48 {
+						compatible = "national,lm77";
+						reg = <0x48>;
+					};
+
+					board_eeprom@50 {
+						compatible = "atmel,24c04";
+						reg = <0x50>;
+						label = "board_eeprom";
+					};
+
+					/*
+					 * ⚠ THE REAL-TIME CLOCK STAYS DISABLED.
+					 *
+					 * The vendor ships two device trees for
+					 * this board and the one it boots is
+					 * called "rtcdis" for this node. A
+					 * DS1307 with a flat backup cell wedges
+					 * the boot on the i2c mux -- the switch
+					 * stops with no message and the fault
+					 * looks like the mux rather than the
+					 * clock behind it.
+					 *
+					 * Enabling this is not a small tidy-up.
+					 * Replace the cell first, and expect a
+					 * board that will not come up if you
+					 * are wrong.
+					 */
+					rtc@68 {
+						compatible = "dallas,ds1307";
+						reg = <0x68>;
+						status = "disabled";
+					};
+				};
+			};
+		};
+
+		hwrng@18033000 {
+			compatible = "brcm,bcm-nsp-rng";
+			reg = <0x18033000 0x14>;
+			status = "okay";
+		};
+
+		/*
+		 * THE SWITCH CHIP.
+		 *
+		 * A 256 KiB register window at a fixed physical address and one
+		 * interrupt -- no PCI bus, no config space, no BAR. This is the
+		 * whole architectural difference between this board and every
+		 * other one NOSaic supports, and docs/hardware.md is where it is
+		 * explained.
+		 *
+		 * ⚠ HOW THIS GETS BOUND IS NOT VISIBLE IN THIS FILE, AND THAT IS
+		 * THE PART THAT SURPRISES PEOPLE.
+		 *
+		 * NOSaic drives the chip from userspace, so what it wants here
+		 * is uio_pdrv_genirq: a mapping of the register window plus the
+		 * interrupt, with no vendor kernel module. The obvious way to
+		 * ask for that is a "generic-uio" compatible, and mainline does
+		 * not have one -- uio_pdrv_genirq's of_match_table is a single
+		 * empty entry filled in at runtime by its `of_id` module
+		 * parameter (drivers/uio/uio_pdrv_genirq.c). A node claiming
+		 * "generic-uio" therefore binds nothing at all, silently.
+		 *
+		 * So the binding is a kernel command-line argument, which the
+		 * board states in board.yml as kernel_params:
+		 *
+		 *     uio_pdrv_genirq.of_id=brcm,iproc-cmicd
+		 *
+		 * and this node stays honest about what the hardware is.
+		 *
+		 * THE SECOND reg IS THE DMA POOL, not a second register bank.
+		 * uio_pdrv_genirq publishes every IORESOURCE_MEM of the platform
+		 * device as a UIO map, so map0 is the CMIC and map1 is the
+		 * reserved region below -- which is how the datapath gets
+		 * physically contiguous memory, at an address it knows, without
+		 * /dev/mem and without tripping CONFIG_STRICT_DEVMEM. The BDE
+		 * still falls back to the AS5610's /dev/mem path if map1 is
+		 * absent; see datapath/helix4/bde.c.
+		 */
+		cmic: iproc_cmicd@48000000 {
+			compatible = "brcm,iproc-cmicd";
+			reg = <0x48000000 0x40000>,
+			      <0x88000000 0x04000000>;
+			reg-names = "cmic", "dma";
+			memory-region = <&nosaic_dma>;
+			interrupts = <0 162 4>;
+			status = "okay";
+		};
+
+		/*
+		 * ── DISABLED, AND WHY ────────────────────────────────────────
+		 *
+		 * Everything below needs the SoC's AXI/APB clock tree, which the
+		 * vendor supplies with brcm,xgs-iproc-axi-clk and mainline does
+		 * not have at all. A node whose clock never appears does not
+		 * fail loudly; it stays unprobed, and the device is simply
+		 * missing later.
+		 *
+		 * None of it is needed to boot: the console is the other UART
+		 * and takes a fixed frequency, and the disk is on USB. The NOR
+		 * flash behind the QSPI holds U-Boot and ONIE, which is worth
+		 * reaching eventually and is not worth guessing a bus clock for
+		 * -- a QSPI clocked wrong reads plausible rubbish out of the
+		 * bootloader you rely on to recover the board.
+		 */
+		serial@18037000 {
+			compatible = "ns16550a";
+			reg = <0x18037000 0x100>;
+			interrupts = <0 92 4>;
+			reg-io-width = <4>;
+			reg-shift = <2>;
+			status = "disabled";
+		};
+
+		qspi: spi@18027200 {
+			compatible = "brcm,spi-nsp-qspi", "brcm,spi-bcm-qspi";
+			reg = <0x18027200 0x188>,
+			      <0x18027000 0x124>,
+			      <0x1811c408 0x004>,
+			      <0x180273a0 0x01c>;
+			reg-names = "mspi", "bspi", "intr_regs", "intr_status_reg";
+			interrupts = <0 78 4>, <0 79 4>, <0 80 4>, <0 81 4>,
+				     <0 82 4>, <0 83 4>, <0 84 4>;
+			interrupt-names = "spi_lr_fullness_reached",
+					  "spi_lr_session_aborted",
+					  "spi_lr_impatient",
+					  "spi_lr_session_done",
+					  "spi_lr_overread",
+					  "mspi_done",
+					  "mspi_halted";
+			num-cs = <2>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		watchdog@18039000 {
+			compatible = "arm,sp805", "arm,primecell";
+			reg = <0x18039000 0x1000>;
+			interrupts = <0 213 4>;
+			status = "disabled";
+		};
+	};
+};

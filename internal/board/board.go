@@ -152,7 +152,8 @@ type Board struct {
 	// because the EFI stub takes its command line from the firmware and a
 	// plain boot entry carries none. A U-Boot board is handed its command
 	// line by its own boot command, so its parameters belong in
-	// u_boot_nos_bootcmd instead.
+	// u_boot_nos_bootcmd instead. Validate refuses a board that states them
+	// anywhere else, rather than leaving it to be found on the hardware.
 	KernelParams string `yaml:"kernel_params"`
 
 	// Console is the serial device and speed a login is offered on. Board data
@@ -325,6 +326,9 @@ func (b *Board) Validate(root string) []string {
 	if err := b.PlatformHAL.Cages.Validate(); err != nil {
 		bad("platform_hal.%s", err)
 	}
+	if err := b.PlatformHAL.I2C.Validate(); err != nil {
+		bad("platform_hal.i2c: %s", err)
+	}
 	if err := platformhal.ValidateResets(b.PlatformHAL.Resets); err != nil {
 		bad("platform_hal.resets: %s", err)
 	}
@@ -334,6 +338,22 @@ func (b *Board) Validate(root string) []string {
 	// and the board boots with no sensors and no complaint.
 	if err := b.PlatformHAL.N3172TQ.Validate(); err != nil {
 		bad("platform_hal.n3172tq: %s", err)
+	}
+
+	// A parameter nothing will read is worse than no parameter: it looks like
+	// the box was configured. The symptom is a kernel booting without a
+	// setting somebody is certain they applied.
+	//
+	// ⚠ THE LIST OF BACKENDS THAT READ THIS IS NOT JUST ABOOT. It was when
+	// this check was written, and the uefi backend renders kernel_params into
+	// the EFI startup script as well -- so a test for `!= "aboot"` refuses a
+	// perfectly correct UEFI board. Anything added here that renders
+	// KernelParams has to be added to this list too.
+	if b.KernelParams != "" && b.Boot != "aboot" && b.Boot != "uefi" && b.Boot != "" {
+		bad("kernel_params is read only by the aboot and uefi backends, and "+
+			"this board boots with %q. Put them where that bootloader gets "+
+			"its command line -- for uboot and onie-sfx that is "+
+			"u_boot_nos_bootcmd", b.Boot)
 	}
 
 	// Checked here rather than at build time: a U-Boot board with no load
@@ -414,6 +434,11 @@ type PlatformHAL struct {
 	// Resets are board reset lines released during bring-up beyond the switch
 	// chip's own -- a retimer in front of some cages, for instance.
 	Resets []platformhal.ResetLine `yaml:"resets"`
+	// I2C is the same idea as SMBus for a board whose platform devices are on
+	// ordinary Linux i2c buses rather than behind an SCD's accelerators. The
+	// two are alternatives, not layers: a board has one kind of controller.
+	I2C *platformhal.I2CMap `yaml:"i2c"`
+
 	// N3172TQ is the Cisco Nexus 3172TQ's own platform data, in its own
 	// driver's type. Board-specific on purpose: nothing here is shared with
 	// another board's HAL, so neither board constrains the other.

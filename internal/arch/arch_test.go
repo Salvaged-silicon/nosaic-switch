@@ -65,8 +65,23 @@ func TestTripleMustCarryVendor(t *testing.T) {
 func TestTripleMustMatchID(t *testing.T) {
 	a := load(t, "x86_64", strings.Replace(valid,
 		"triple: x86_64-nosaic-linux-gnu", "triple: aarch64-nosaic-linux-gnu", 1))
-	if !hasErr(a.Validate(), "does not start with the arch id") {
+	if !hasErr(a.Validate(), "is not for the arch id") {
 		t.Fatalf("a triple disagreeing with the id should be an error, got %v", a.Validate())
+	}
+}
+
+// An id may be a port name that adds an ABI suffix to the CPU name. armhf is
+// arm plus a float ABI, and the compiler has never heard of "armhf" -- the
+// triple is arm-nosaic-linux-gnueabihf, with the ABI in the environment field
+// where a toolchain expects it. Requiring the triple to start with the id
+// would make that architecture unnameable.
+func TestTripleMayNameTheCPUWhileTheIDNamesThePort(t *testing.T) {
+	a := load(t, "armhf", strings.NewReplacer(
+		"id: x86_64", "id: armhf",
+		"triple: x86_64-nosaic-linux-gnu", "triple: arm-nosaic-linux-gnueabihf",
+	).Replace(valid))
+	if hasErr(a.Validate(), "is not for the arch id") {
+		t.Fatalf("armhf/arm-...-gnueabihf should be accepted, got %v", a.Validate())
 	}
 }
 
