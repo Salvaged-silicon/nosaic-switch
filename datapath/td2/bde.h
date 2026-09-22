@@ -9,6 +9,12 @@
 
 struct nosaic_bde {
 	char      bdf[32];
+	/* What the device says it is, read out of config space when it is
+	 * opened. The SDK matches on device and revision, so these are the
+	 * values to attach with -- not a constant, which is right for exactly
+	 * one board. */
+	uint16_t  vendor_id, dev_id;
+	uint8_t   rev_id;
 	int       bar_fd, cfg_fd, mem_fd;
 	int       uio_fd;      /* -1 when the device is not bound to uio_pci_generic */
 	volatile void *bar;

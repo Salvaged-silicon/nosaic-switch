@@ -33,6 +33,37 @@ int nosaic_query_start(int unit, const char *path);
 struct nosaic_dmapool;
 void nosaic_query_set_dmapool(struct nosaic_dmapool *p);
 
+/*
+ * Let the socket dump the external PHYs' own status registers.
+ *
+ * Optional and per datapath, for the same reason as the DMA pool above: only
+ * a datapath that has bound external PHY drivers can reach them, and the
+ * accessors are the driver's, not ours.
+ *
+ * This exists because a 40G cage that transmits correctly -- the far end
+ * links -- and never receives cannot be told apart from a bad fibre using
+ * anything the switch API reports. Link is one bit, and by the time it is
+ * clear the interesting question is already three layers down: does the
+ * optic see light, does the PMD lock to it, do the four lanes align. Those
+ * are registers, and nothing else in this daemon can read them.
+ *
+ * The callback writes the ELEMENTS of a JSON array -- comma-separated
+ * objects, no brackets -- because the envelope is this file's business and
+ * the contents are the datapath's.
+ */
+#include <stdio.h>
+void nosaic_query_set_phydump(void (*fn)(FILE *out));
+
+/* Read `count` consecutive registers from one PHY, by port and MMD, for the
+ * socket's `phy.read`. Same array-elements convention as the dump above. */
+void nosaic_query_set_phyread(void (*fn)(FILE *out, int port, int devad,
+					 int reg, int count));
+
+/* Write one PHY register, for the socket's `phy.write`. A bring-up tool: it
+ * can take a working port down. Same array-elements convention. */
+void nosaic_query_set_phywrite(void (*fn)(FILE *out, int port, int devad,
+					  int reg, int val));
+
 /* What this provider calls itself in `show caps`. Set per datapath so an
  * operator can tell which silicon answered without knowing the board. */
 #ifndef NOSAIC_QUERY_DRIVER

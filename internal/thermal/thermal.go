@@ -87,6 +87,19 @@ type Lamps interface {
 
 // Hottest returns the highest sensor reading in whole degrees, or -1 if
 // nothing could be read.
+//
+// "Hottest" means the hottest thing the HAL can measure, which on every board
+// so far is a set of board sensors on an i2c monitor. It is not the hottest
+// thing in the box: the switch ASIC's own die is typically the largest heat
+// source by a wide margin, and no board's HAL reports it yet, so this loop has
+// never seen it. Boards compensate with a conservative band -- margin standing
+// in for a missing sensor, not headroom to spend.
+//
+// The die belongs behind the HAL like every other sensor, with each board
+// implementing its own way to reach it (the SDK over PCIe on one board is not
+// the answer on the next). Nothing changes in this loop when that lands: it
+// arrives through Temperatures() and is simply another reading to be hottest.
+// What does want revisiting is each board's band, which was set blind to it.
 func Hottest(s Sensors) (int, map[string]int) {
 	temps, err := s.Temperatures()
 	if err != nil && len(temps) == 0 {

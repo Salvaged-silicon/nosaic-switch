@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -454,7 +455,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 		}
 	}
 
-	artifact, err := backend.Wrap(boot.Image{
+	img := boot.Image{
 		Kernel: res.Kernel, Initramfs: res.Initramfs,
 		Squashfs: res.Squashfs, Disk: res.Disk,
 		FIT: netboot, FITOffset: res.FITOffset, NOSBootCmd: b.UBootNOSBootCmd,
@@ -466,9 +467,34 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 		FITHash:         b.UBootFITHash,
 		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
 		KernelParams:    b.KernelParams,
-	}, filepath.Join(root, "out", "images", boardID), os.Stdout)
-	if err != nil {
-		return err
+		RAMBoot:         ramBoot,
+	}
+	outDir := filepath.Join(root, "out", "images", boardID)
+
+	// A bootloader that can fetch an image over the network gets a bundle for
+	// it, so the image can be tried on the switch before its disk is replaced.
+	//
+	// Built for every such board rather than only on --ram-boot, because the
+	// bundle is how somebody discovers the option exists -- but it refuses to
+	// build without an embedded root filesystem, since a netbooted image has
+	// no disk slot to find.
+	netbootDir := ""
+	if nb, ok := backend.(boot.Netbooter); ok && ramBoot {
+		netbootDir, err = nb.Netboot(img, outDir, os.Stdout)
+		if err != nil {
+			return err
+		}
+	}
+
+	// And a RAM-boot image is not installed. The backend refuses it -- what
+	// would be produced is an installer that works and loses every setting at
+	// the next reboot -- so do not ask for one.
+	artifact := ""
+	if !ramBoot {
+		artifact, err = backend.Wrap(img, outDir, os.Stdout)
+		if err != nil {
+			return err
+		}
 	}
 
 	fmt.Printf("\nimage for %s (%s profile)\n", b.ID, pr.Name)
@@ -480,9 +506,23 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 			fmt.Printf("  %-42s %6.1f MiB\n", f, float64(fi.Size())/(1<<20))
 		}
 	}
-	fmt.Printf("\ninstall with %s\n  %s\n", backend.ID(), backend.Describe())
-	if fi, err := os.Stat(artifact); err == nil {
-		fmt.Printf("  %-42s %6.1f MiB\n", artifact, float64(fi.Size())/(1<<20))
+	if artifact != "" {
+		fmt.Printf("\ninstall with %s\n  %s\n", backend.ID(), backend.Describe())
+		if fi, err := os.Stat(artifact); err == nil {
+			fmt.Printf("  %-42s %6.1f MiB\n", artifact, float64(fi.Size())/(1<<20))
+		}
+	}
+	if netbootDir != "" {
+		fmt.Printf("\nor try it without installing, over the network\n")
+		// Deliberately does not name a loader command. Which one is right is
+		// per-board, and on at least one board the obvious one is a one-way
+		// door: the Nexus 3172TQ's `ipxe` sets the persistent boot mode to
+		// PXE-only, after which the firmware skips the loader and there is no
+		// prompt left to undo it from. The bundle's README says what to do on
+		// the board it was built for, warnings included.
+		fmt.Printf("  serve this directory over TFTP, then follow its README\n")
+		fmt.Printf("  %s\n", netbootDir)
+		fmt.Printf("  nothing is written to the switch, and nothing survives the reboot\n")
 	}
 	if netboot != "" {
 		fmt.Printf("\nor try it without installing, from the U-Boot prompt\n")
@@ -710,7 +750,7 @@ func switchCmd(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: nosaic show <ports|routes|caps>")
 		}
-		return showCmd(c, args[1])
+		return showCmd(c, args[1], args[2:])
 
 	case "interface":
 		if len(args) < 3 {
@@ -740,7 +780,7 @@ func switchCmd(args []string) error {
 	return fmt.Errorf("unknown command %q", args[0])
 }
 
-func showCmd(c *nosdclient.Client, what string) error {
+func showCmd(c *nosdclient.Client, what string, rest []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	defer w.Flush()
 
@@ -783,6 +823,133 @@ func showCmd(c *nosdclient.Client, what string) error {
 					k.Allocs, k.Frees, k.Fails)
 			}
 		}
+		return nil
+
+	case "phy":
+		// Raw, and in the order a link failure walks down the stack: the
+		// optic seeing light, the PMD locking to it, the PCS lanes
+		// achieving block lock and aligning, the system side syncing to
+		// the ASIC. A port whose lowest unhappy layer is visible is a
+		// port somebody can fix.
+		phys, err := c.PHYs()
+		if err != nil {
+			return err
+		}
+		if len(phys) == 0 {
+			fmt.Fprintln(w, "no external PHYs on this board")
+			return nil
+		}
+		// One column per register, named by the datapath, so a new
+		// register there needs no change here.
+		cols := phyRegOrder(phys)
+		fmt.Fprint(w, "PORT\tADDR\tDRIVER")
+		for _, c := range cols {
+			fmt.Fprintf(w, "\t%s", c)
+		}
+		fmt.Fprintln(w)
+		for _, p := range phys {
+			fmt.Fprintf(w, "%d\t%#04x\t%s", p.Port, p.Addr, p.Driver)
+			for _, c := range cols {
+				v, ok := p.Regs[c]
+				switch {
+				case !ok:
+					fmt.Fprint(w, "\t-")
+				case v == nil:
+					// The read itself failed, which is not the
+					// same answer as a register reading zero.
+					fmt.Fprint(w, "\tERR")
+				default:
+					fmt.Fprintf(w, "\t%#06x", *v)
+				}
+			}
+			fmt.Fprintln(w)
+		}
+		return nil
+
+	case "phyreg":
+		// nosaic show phyreg <port> <devad> <reg> [count]
+		if len(rest) < 3 {
+			return fmt.Errorf("usage: nosaic show phyreg <port> <devad> <reg> [count]")
+		}
+		nums := make([]int, 0, 4)
+		for _, a := range rest {
+			// Base 0 so 0x-prefixed register numbers work: they are
+			// written in hex in every datasheet there is.
+			v, err := strconv.ParseInt(a, 0, 32)
+			if err != nil {
+				return fmt.Errorf("phyreg: %q is not a number", a)
+			}
+			nums = append(nums, int(v))
+		}
+		count := 1
+		if len(nums) > 3 {
+			count = nums[3]
+		}
+		regs, err := c.PHYRead(nums[0], nums[1], nums[2], count)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "MMD.REG\tVALUE\tVIA")
+		for _, r := range regs {
+			via := "raw"
+			if r.ViaDriver {
+				via = "driver"
+			}
+			if r.Value == nil {
+				fmt.Fprintf(w, "%d.%#06x\tERR\t%s\n", nums[1], r.Reg, via)
+				continue
+			}
+			fmt.Fprintf(w, "%d.%#06x\t%#06x\t%s\n", nums[1], r.Reg, *r.Value, via)
+		}
+		return nil
+
+	case "phywrite":
+		// nosaic show phywrite <port> <devad> <reg> <value>
+		if len(rest) < 4 {
+			return fmt.Errorf("usage: nosaic show phywrite <port> <devad> <reg> <value>")
+		}
+		nums := make([]int, 0, 4)
+		for _, a := range rest[:4] {
+			v, err := strconv.ParseInt(a, 0, 32)
+			if err != nil {
+				return fmt.Errorf("phywrite: %q is not a number", a)
+			}
+			nums = append(nums, int(v))
+		}
+		ws, err := c.PHYWriteReg(nums[0], nums[1], nums[2], nums[3])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, "MMD.REG\tWROTE\tREADS BACK")
+		for _, r := range ws {
+			if r.Value == nil {
+				fmt.Fprintf(w, "%d.%#06x\t%#06x\tERR\n", nums[1], r.Reg, r.Wrote)
+				continue
+			}
+			fmt.Fprintf(w, "%d.%#06x\t%#06x\t%#06x\n", nums[1], r.Reg, r.Wrote, *r.Value)
+		}
+		return nil
+
+	case "loopback":
+		// nosaic show loopback <port> [mode]   -- reads, or sets then reads
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: nosaic show loopback <port> [mode 0..5]")
+		}
+		port, err := strconv.Atoi(rest[0])
+		if err != nil {
+			return fmt.Errorf("loopback: %q is not a port", rest[0])
+		}
+		mode := -1
+		if len(rest) > 1 {
+			if mode, err = strconv.Atoi(rest[1]); err != nil {
+				return fmt.Errorf("loopback: %q is not a mode", rest[1])
+			}
+		}
+		lb, err := c.SetLoopback(port, mode)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "port\t%d\nloopback\t%s\n", lb.Port, loopbackName(lb.Mode))
 		return nil
 
 	case "ports":
@@ -1190,4 +1357,54 @@ func diskArg(args []string) (upgrade.Disk, error) {
 	}
 	d.Log = os.Stdout
 	return d, nil
+}
+
+// phyRegOrder is the column order for `show phy`.
+//
+// The datapath sends a map, and Go map order is deliberately random, so a
+// table built by ranging it would shuffle its columns between runs -- which
+// makes two dumps impossible to compare by eye, and comparing two dumps is
+// the entire use of this command. Layer order first, because that is the
+// order a link failure is read in; anything the datapath adds later that is
+// not in the list still appears, sorted, rather than being dropped.
+func phyRegOrder(phys []nosdclient.PHYRegs) []string {
+	prefer := []string{"pma.", "pcs.", "xs."}
+	seen := map[string]bool{}
+	var all []string
+	for _, p := range phys {
+		for k := range p.Regs {
+			if !seen[k] {
+				seen[k] = true
+				all = append(all, k)
+			}
+		}
+	}
+	rank := func(s string) int {
+		for i, p := range prefer {
+			if strings.HasPrefix(s, p) {
+				return i
+			}
+		}
+		return len(prefer)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if a, b := rank(all[i]), rank(all[j]); a != b {
+			return a < b
+		}
+		return all[i] < all[j]
+	})
+	return all
+}
+
+// loopbackName names the SDK's loopback modes for `show loopback`.
+//
+// A mode the chip reports that this list does not know is printed as its
+// number rather than as "unknown": the number is what the next person has to
+// look up, and hiding it helps nobody.
+func loopbackName(m int) string {
+	names := []string{"none", "mac", "phy", "phy-remote", "mac-remote", "edb"}
+	if m >= 0 && m < len(names) {
+		return fmt.Sprintf("%s (%d)", names[m], m)
+	}
+	return fmt.Sprintf("%d", m)
 }

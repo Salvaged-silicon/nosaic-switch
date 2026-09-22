@@ -63,16 +63,33 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include <bcm/port.h>
 #include <bcm/error.h>
+#include <soc/phyctrl.h>
 
 #include "props.h"
 #include "tapbridge.h"
+#include "query.h"
 #include "phy.h"
 
-/* Ports are 1-based and this board has 52. 64 covers the chip's range. */
-#define PHY_MAX_PORT 64
+/*
+ * Ports are 1-based, and this is the chip's logical port range rather than
+ * any board's panel.
+ *
+ * ⚠ 64 WAS TOO SMALL AND THE BOARD THAT EXCEEDED IT SHOWED NOTHING.
+ *
+ * It was written for a 52-port board, where "64 covers the chip's range" was
+ * true of that board and not of the chip. The Nexus 3172TQ runs its six QSFP
+ * cages broken out to four lanes each, so its logical ports run to 72 -- and
+ * the two cages under investigation are 65 and 69, both past the end. A scan
+ * that stops early does not report that it stopped; it reports a shorter
+ * list, and a missing row reads as a port with no PHY.
+ *
+ * Trident2 addresses 128 logical ports, so that is the bound.
+ */
+#define PHY_MAX_PORT 128
 
 /* MDIO reads per poll. The bus is shared with the SDK's own linkscan and with
  * the PHY firmware; this is the budget the datapath can spend without taking
@@ -235,6 +252,347 @@ static int phy_reg_read(int port, int devad, int reg, uint16 *val)
 	return 0;
 }
 
+/*
+ * Every external PHY's own status registers, straight off the MDIO bus.
+ *
+ * ⚠ READ BY ADDRESS, NOT THROUGH THE BOUND DRIVER.
+ *
+ * soc_phyctrl_reg_read above goes through whatever driver the SDK bound to
+ * the port. That is right for talking to a part, and useless for finding out
+ * why a part is not talking: the three subsidiary lanes of a 40G cage bind
+ * the Null driver by design -- the primary owns the group -- so the accessor
+ * reaches nothing for exactly the lanes whose silence is the question. Going
+ * at the bus by address answers for all four.
+ *
+ * The registers are the Clause 45 ones every 10G/40G PHY has, read in the
+ * order a failure walks: does the optic see light (PMD signal detect), does
+ * the PMD lock, do the PCS lanes achieve block lock, do the four align, and
+ * does the system side toward the ASIC sync. A link that is down has a
+ * lowest layer that is unhappy, and this says which.
+ *
+ * Nothing is decoded here. The caller knows which part this is; this file
+ * only knows how to ask.
+ */
+/* Declared here for the same reason as the accessors above: soc/cmic.h is
+ * staged, but including it for one prototype drags the rest of the CMIC in. */
+extern int soc_miimc45_read(int unit, uint32 phy_id, uint8 phy_devad,
+			    uint16 phy_reg_addr, uint16 *phy_rd_data);
+extern int soc_miimc45_write(int unit, uint32 phy_id, uint8 phy_devad,
+			     uint16 phy_reg_addr, uint16 phy_wr_data);
+
+/*
+ * ⚠ READ THROUGH THE BOUND DRIVER WHERE THERE IS ONE. THE RAW PATH LIES.
+ *
+ * Both paths reach this part and mostly agree, which is what makes the
+ * disagreement dangerous. On a BCM84328 with a LINKED 40G cage, under the
+ * vendor's OS, the same register read two ways:
+ *
+ *   phy raw c45 xe64 1 0xa         -> 0x0000     (raw MIIM, by address)
+ *   phy xe64 0x0100000a, DevAd 1   -> 0x001f     (through the driver)
+ *
+ * 0x1f is global signal detect plus all four lanes. 0x0000 is what "no
+ * light at all" looks like, and it is what the raw path returns on a link
+ * that is up and passing traffic -- repeatedly, so it is not a latch. Eight
+ * other PMA registers agree exactly between the two paths, so this is not
+ * the wrong register space; the driver simply does not serve 1.10 from the
+ * wire, and the part does not answer it there.
+ *
+ * Reading raw cost this investigation a long detour: sigdet reading zero on
+ * our side was taken as proof that no light was arriving, and the far end's
+ * optics and fibre were doubted on the strength of it.
+ *
+ * The raw path stays, because it is the only way to reach the three
+ * subsidiary lanes of a cage -- they bind the Null driver by design, so
+ * there is no driver accessor for them. It is the fallback, not the
+ * default, and the dump says which one answered.
+ */
+struct phy_reg_id { uint8 devad; uint16 reg; const char *name; };
+
+/* Read one register the best way available: the bound driver if there is
+ * one, the raw bus by address otherwise. Returns 0 on success, and sets
+ * *viadrv so the caller can report which path answered. */
+static int phy_read_best(int unit, int port, uint16 addr, uint8 devad,
+			 uint16 reg, uint16 *val, int *viadrv)
+{
+	const char *drv = soc_phyctrl_drv_name(unit, port);
+	uint32 v = 0;
+
+	if (drv != NULL && *drv != '\0' && strstr(drv, "Null") == NULL) {
+		if (soc_phyctrl_reg_read(unit, port, 0,
+					 PHY_C45_ADDR(devad, reg), &v) >= 0) {
+			*val = (uint16)v;
+			*viadrv = 1;
+			return 0;
+		}
+	}
+	*viadrv = 0;
+	return soc_miimc45_read(unit, addr, devad, reg, val) < 0 ? -1 : 0;
+}
+
+static const struct phy_reg_id phy_dump_regs[] = {
+	{ 1, 0x0001, "pma.status1"      }, /* bit 2: receive link, latching low */
+	{ 1, 0x000a, "pma.sigdet"       }, /* bit 0 global, bits 1-4 per lane   */
+	{ 1, 0x0008, "pma.status2"      },
+	{ 3, 0x0001, "pcs.status1"      },
+	{ 3, 0x0020, "pcs.baser.stat1"  }, /* bit 0 block lock, bit 12 rx link  */
+	{ 3, 0x0021, "pcs.baser.stat2"  }, /* bit 15 latched lock, 14 high BER  */
+	{ 3, 0x0032, "pcs.lane.align"   }, /* bits 0-3 lane lock, bit 12 align  */
+	{ 4, 0x0001, "xs.status1"       },
+	{ 4, 0x0018, "xs.lane.sync"     }, /* bits 0-3 lane sync, bit 12 align  */
+};
+
+
+static int phy_dump_unit = -1;
+
+void nosaic_phy_dump(FILE *out)
+{
+	int port, first = 1;
+
+	if (phy_dump_unit < 0) {
+		return;
+	}
+	for (port = 1; port <= PHY_MAX_PORT; port++) {
+		uint16 addr = 0;
+		const char *drv;
+		size_t k;
+
+		if (soc_phy_cfg_addr_get(phy_dump_unit, port, 0, &addr) < 0 ||
+		    addr == 0) {
+			continue;
+		}
+		drv = soc_phyctrl_drv_name(phy_dump_unit, port);
+		fprintf(out, "%s{\"Port\":%d,\"Addr\":%u,\"Driver\":\"%s\",\"Regs\":{",
+			first ? "" : ",", port, (unsigned)addr,
+			(drv != NULL && *drv != '\0') ? drv : "none");
+		first = 0;
+		for (k = 0; k < sizeof(phy_dump_regs) / sizeof(phy_dump_regs[0]); k++) {
+			uint16 v = 0;
+			int viadrv = 0;
+			int rv = phy_read_best(phy_dump_unit, port, addr,
+					       phy_dump_regs[k].devad,
+					       phy_dump_regs[k].reg, &v, &viadrv);
+
+			/* A read that failed and a read that returned zero are
+			 * different answers, and the second one is the
+			 * interesting one. Report the failure as null. */
+			if (rv < 0) {
+				fprintf(out, "%s\"%s\":null",
+					k ? "," : "", phy_dump_regs[k].name);
+			} else {
+				fprintf(out, "%s\"%s\":%u",
+					k ? "," : "", phy_dump_regs[k].name,
+					(unsigned)v);
+			}
+		}
+		fprintf(out, "}}");
+	}
+}
+
+/*
+ * A run of registers from one PHY's MMD, by address.
+ *
+ * The companion to the dump above, and the reason it takes a range: the
+ * questions worth asking of a part that is half awake are which MMDs it
+ * implements (Clause 45 registers 1.5 and 1.6), what it calls itself (1.2
+ * and 1.3), and what its vendor registers hold -- none of which is known
+ * before the previous answer comes back.
+ */
+void nosaic_phy_read(FILE *out, int port, int devad, int reg, int count)
+{
+	uint16 addr = 0;
+	int i, first = 1;
+
+	if (phy_dump_unit < 0 || port < 1 || port > PHY_MAX_PORT) {
+		return;
+	}
+	if (soc_phy_cfg_addr_get(phy_dump_unit, port, 0, &addr) < 0) {
+		return;
+	}
+	for (i = 0; i < count; i++) {
+		uint16 v = 0;
+		int r = reg + i;
+		int rv, viadrv = 0;
+
+		if (r > 0xffff) {
+			break;
+		}
+		rv = phy_read_best(phy_dump_unit, port, addr, (uint8)devad,
+				   (uint16)r, &v, &viadrv);
+		fprintf(out, "%s{\"Reg\":%d,\"ViaDriver\":%s,\"Value\":",
+			first ? "" : ",", r, viadrv ? "true" : "false");
+		first = 0;
+		if (rv < 0) {
+			fprintf(out, "null}");
+		} else {
+			fprintf(out, "%u}", (unsigned)v);
+		}
+	}
+}
+
+/*
+ * Write one register of one PHY, by address, and read it straight back.
+ *
+ * The read-back is the point: a register that took the write and one that
+ * ignored it are the same call and different answers, and on a part running
+ * microcode the second is common -- firmware owns some of these and puts
+ * them back.
+ */
+void nosaic_phy_write(FILE *out, int port, int devad, int reg, int val)
+{
+	uint16 addr = 0, back = 0;
+	int rv;
+
+	if (phy_dump_unit < 0 || port < 1 || port > PHY_MAX_PORT) {
+		return;
+	}
+	if (soc_phy_cfg_addr_get(phy_dump_unit, port, 0, &addr) < 0) {
+		return;
+	}
+	rv = soc_miimc45_write(phy_dump_unit, addr, (uint8)devad,
+			       (uint16)reg, (uint16)val);
+	if (soc_miimc45_read(phy_dump_unit, addr, (uint8)devad,
+			     (uint16)reg, &back) < 0) {
+		fprintf(out, "{\"Reg\":%d,\"Wrote\":%d,\"Value\":null}",
+			reg, val);
+		return;
+	}
+	fprintf(out, "{\"Reg\":%d,\"Wrote\":%d,\"Value\":%u,\"Ok\":%s}",
+		reg, val, (unsigned)back, rv < 0 ? "false" : "true");
+}
+
+/*
+ * Take one 40G cage's retimer out of whatever state it powers up in.
+ *
+ * ⚠ WITHOUT THIS A CAGE LINKS UNDER THE VENDOR'S OS AND NOT UNDER OURS,
+ * WITH EVERY OTHER REGISTER IDENTICAL.
+ *
+ * Found by correlation rather than from a datasheet, because there is no
+ * datasheet for this part: dump the BCM84328's PMA vendor block under
+ * NX-OS with the cage UP, dump it here with the cage DOWN, diff. Both
+ * dumps have the same 28 non-zero registers. Ten differ, and all but this
+ * one are status that differs BECAUSE the link is up. Writing this one
+ * alone brings the cage up, within ten seconds, on both cages
+ * independently:
+ *
+ *   NX-OS  1.0xc8e4 = 0x8cc4
+ *   ours   1.0xc8e4 = 0x0cc4      <- bit 15 clear
+ *
+ * What finally identified it is worth keeping, because two readings of the
+ * evidence were wrong for a long time. The standard PMD signal-detect
+ * register 1.10 reads 0x0000 here and 0x001f under NX-OS, which says "no
+ * light on any lane" and sent the search to the fibre, the optics and the
+ * far end. It is a REPORTED value, not the hardware's: the vendor register
+ * 1.0xc877 holds the real per-lane signal detect and reads 0x001f under
+ * BOTH operating systems. Light was always arriving, on all four lanes.
+ * 1.10 starts reading 0x001f the moment this bit is set.
+ *
+ * Read-modify-write, and bit 15 only. The rest of the register differs
+ * between cages and is not ours to invent.
+ */
+static void phy_cage_tune(int unit, int port, uint16 addr);
+
+#define PHY_84328_CAGE_ENABLE_REG 0xc8e4
+#define PHY_84328_CAGE_ENABLE_BIT 0x8000
+
+int nosaic_phy_cage_enable(int unit, int port)
+{
+	uint16 addr = 0, v = 0;
+
+	if (soc_phy_cfg_addr_get(unit, port, 0, &addr) < 0 || addr == 0) {
+		return -1;
+	}
+	if (soc_miimc45_read(unit, addr, 1, PHY_84328_CAGE_ENABLE_REG, &v) < 0) {
+		printf("phy: port %d: cannot read the cage enable register; "
+		       "this cage will not link\n", port);
+		fflush(stdout);
+		return -1;
+	}
+	if ((v & PHY_84328_CAGE_ENABLE_BIT) != 0) {
+		phy_cage_tune(unit, port, addr);
+		return 0;                       /* already on: tune and go */
+	}
+	if (soc_miimc45_write(unit, addr, 1, PHY_84328_CAGE_ENABLE_REG,
+			      (uint16)(v | PHY_84328_CAGE_ENABLE_BIT)) < 0) {
+		printf("phy: port %d: cage enable write refused; this cage will "
+		       "not link\n", port);
+		fflush(stdout);
+		return -1;
+	}
+	/* Read back. A register the firmware owns can take a write and put it
+	 * straight back, and that is worth saying out loud rather than
+	 * discovering from a dark port. */
+	if (soc_miimc45_read(unit, addr, 1, PHY_84328_CAGE_ENABLE_REG, &v) < 0 ||
+	    (v & PHY_84328_CAGE_ENABLE_BIT) == 0) {
+		printf("phy: port %d: cage enable did not stick (%#06x); this "
+		       "cage will not link\n", port, v);
+		fflush(stdout);
+		return -1;
+	}
+	phy_cage_tune(unit, port, addr);
+	return 0;
+}
+
+/*
+ * This board's own tuning for the part, if the board brought any.
+ *
+ * ⚠ ABSENT IS A VALID ANSWER AND MUST NOT BE GUESSED AT.
+ *
+ * The enable above is the same bit on every board carrying a BCM84328, so it
+ * is compiled in. These are not: they are per-PCB values the board vendor
+ * established for one set of trace lengths, they are read from a file
+ * generated on the switch by tools/mkretimer.sh, and they are not ours to
+ * invent. A cage with no lines runs the part's power-up defaults, which is a
+ * working link and an untuned one -- so this says nothing and does nothing
+ * rather than reaching for a number. The sibling Arista boards' repeater
+ * driver reached the same conclusion for the same reason: unprogrammed is a
+ * fault you can see, and wrongly programmed is a link that works until it
+ * does not.
+ *
+ * Keyed by logical port, because nothing guarantees six cages on one board
+ * want the same values -- the SerDes polarity on this board does not.
+ */
+static void phy_cage_tune(int unit, int port, uint16 addr)
+{
+	static const uint16 regs[] = { 0xc80e, 0xc876, 0xc87c };
+	size_t k;
+	int n = 0;
+
+	for (k = 0; k < sizeof(regs) / sizeof(regs[0]); k++) {
+		char key[48];
+		const char *val;
+		uint16 want, back = 0;
+
+		snprintf(key, sizeof(key), "retimer_84328_%d_%#06x", port, regs[k]);
+		val = nosaic_props_get_unit(key, unit);
+		if (val == NULL) {
+			continue;
+		}
+		want = (uint16)strtoul(val, NULL, 0);
+		if (soc_miimc45_write(unit, addr, 1, regs[k], want) < 0) {
+			printf("phy: port %d: retimer %#06x would not take %#06x\n",
+			       port, regs[k], want);
+			fflush(stdout);
+			continue;
+		}
+		/* Two of the registers in this block are read-only status that
+		 * accept a write and keep their own value. Saying so beats
+		 * believing the tuning landed. */
+		if (soc_miimc45_read(unit, addr, 1, regs[k], &back) >= 0 &&
+		    back != want) {
+			printf("phy: port %d: retimer %#06x kept %#06x, not the "
+			       "%#06x asked for\n", port, regs[k], back, want);
+			fflush(stdout);
+			continue;
+		}
+		n++;
+	}
+	if (n > 0) {
+		printf("phy: port %d: retimer tuned, %d register(s) from the "
+		       "board's own values\n", port, n);
+		fflush(stdout);
+	}
+}
+
 /* Drive one copper port's LED. One MDIO write, only on a change of state. */
 static void phy_led_set(int port, int lit)
 {
@@ -262,6 +620,13 @@ int nosaic_phy_bind(int unit)
 	int p, n = 0;
 
 	phy_unit = unit;
+	/* Set before the early return below: the register dump is a diagnostic
+	 * for boards with no copper PHYs of the kind this file drives, and a
+	 * 40G cage is exactly that case. */
+	phy_dump_unit = unit;
+	nosaic_query_set_phydump(nosaic_phy_dump);
+	nosaic_query_set_phyread(nosaic_phy_read);
+	nosaic_query_set_phywrite(nosaic_phy_write);
 	memset(phy_copper, 0, sizeof(phy_copper));
 	memset(phy_matched, 0, sizeof(phy_matched));
 	phy_any = 0;
@@ -404,6 +769,13 @@ int nosaic_phy_start(int unit)
 	 * copper port. Without it 42 of this board's 52 ports match "link and
 	 * no traffic" every interval and the one real fault is invisible. */
 	nosaic_tap_link_filter(phy_link_is_real);
+	/* Set before the early return below: the register dump is a diagnostic
+	 * for boards with no copper PHYs of the kind this file drives, and a
+	 * 40G cage is exactly that case. */
+	phy_dump_unit = unit;
+	nosaic_query_set_phydump(nosaic_phy_dump);
+	nosaic_query_set_phyread(nosaic_phy_read);
+	nosaic_query_set_phywrite(nosaic_phy_write);
 	memset(phy_copper, 0, sizeof(phy_copper));
 	memset(phy_matched, 0, sizeof(phy_matched));
 	phy_any = 0;

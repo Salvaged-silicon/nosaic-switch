@@ -197,6 +197,16 @@ image: $(BUILDER_DEP)
 	@test -n "$(BOARD)" || { echo "usage: make image BOARD=<board>"; exit 2; }
 	@$(RUN) go run -ldflags "$(LDFLAGS)" ./cmd/nosaic build $(BOARD) $(if $(PROFILE),--profile $(PROFILE),) $(ARGS)
 
+## netboot: build a RAM-boot bundle to try on hardware without installing, e.g. make netboot BOARD=cisco-n3172tq
+# A thin wrapper over `image ARGS=--ram-boot`, and it exists because that is
+# not discoverable: the flag is what makes the image netbootable, and an image
+# netbooted without it stops in a rescue shell looking for a disk slot.
+#
+# Only boards whose bootloader can fetch over the network produce a bundle.
+netboot: $(BUILDER_DEP)
+	@test -n "$(BOARD)" || { echo "usage: make netboot BOARD=<board>"; exit 2; }
+	@$(RUN) go run -ldflags "$(LDFLAGS)" ./cmd/nosaic build $(BOARD) $(if $(PROFILE),--profile $(PROFILE),) --ram-boot $(ARGS)
+
 ## dataplane-test: drive the veth datapath with real interfaces
 # Needs NET_ADMIN and SYS_ADMIN: it creates interfaces, in a private network
 # namespace of its own so nothing outside is touched.

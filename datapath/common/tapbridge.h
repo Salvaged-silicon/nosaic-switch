@@ -2,6 +2,20 @@
 #ifndef NOSAIC_TAPBRIDGE_H
 #define NOSAIC_TAPBRIDGE_H
 
+/* The most taps one datapath can have.
+ *
+ * ⚠ EXPORTED SO CALLERS STOP INVENTING THEIR OWN, SMALLER ONE.
+ *
+ * nosaic_tap_start() below refuses rather than truncates, on the reasoning
+ * that silently dropping taps produces a switch that is short some ports for
+ * no stated reason. That protection is worthless if the caller has already
+ * truncated to fill a fixed array: both td2 and td2p sized theirs at 8 and
+ * stopped scanning properties at 8, so a board declaring all 54 of its ports
+ * got 8, silently, and the network service then waited out its full deadline
+ * for interfaces that were never going to be made.
+ */
+#define NOSAIC_MAX_TAPS 64
+
 /* One hardware port presented to Linux under a name. */
 struct tap_spec {
 	const char *name;
