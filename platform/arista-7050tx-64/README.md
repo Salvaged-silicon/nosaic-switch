@@ -13,7 +13,7 @@ second in the tree rather than first — see
 | Management | RJ45, `tg3` |
 | Bootloader | Aboot 4.0.7, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots, forwards and routes on all three 40G links; copper carries frames, nothing routed over it yet |
+| Status | **bringup** — boots and routes over three 40G and three copper ports; 41 of 48 copper ports never cabled |
 
 - **[Hardware reference](docs/hardware.md)** — diagrams, port map, registers, quirks
 - **[Build](docs/build.md)** — building an image for it
@@ -48,23 +48,30 @@ cabled 40G links. Measured on the hardware:
 - **The board's own hardware is driven** — four thermal sensors and fan control,
   PSU presence, chassis lamps, the QSFP cages, the transceiver EEPROMs, and the
   DS100KR800 signal repeater in front of the last two cages.
-- **The copper PHYs link, and the MAC follows what they negotiate.** All 48
-  BCM84848s answer `0x600d`, take their firmware over the SCD's MDIO bus and
-  bind to Broadcom's driver; four ports have been cabled and all four came up —
-  `et1`/`et2` at 1000 with the MAC on SGMII, `et3`/`et4` at 10000 on XFI. The
-  MAC-interface matching is the whole reason [phy.c](../../datapath/td2/phy.c)
-  exists, and those two pairs are the first evidence it works. Frames cross:
-  `et3` and `et4` are patched together and four ARP frames sent each way were
-  received each way. ⚠ **The datapath is what is proven, not routing.** Both
-  ends of that patch are the same host, so Linux answers no ARP — a real
-  neighbour or a network namespace is what the next step needs.
+- **The copper ports route.** All 48 BCM84848s answer `0x600d`, take their
+  firmware over the SCD's MDIO bus and bind to Broadcom's driver, and the MAC
+  follows what the wire negotiates — which is the whole reason
+  [phy.c](../../datapath/td2/phy.c) exists. Seven are cabled and each came up at
+  the speed its far end offered: `et1`/`et2` at 1000 on SGMII, `et3`/`et4` at
+  10000 on XFI, `et5` at 1000, and `et31`/`et32` at 10000. Three of them carry
+  routed traffic to real neighbours — `et31` and `et32` to a Nexus 3172TQ with
+  an OSPFv2 adjacency on each, and `et5` to the lab's management switch as an
+  out-of-band path. Traffic entering `et5` and leaving a 40G port and back has
+  been measured end to end, which is forwarding between two different front
+  panel ports rather than a loopback.
+- **Copper link LEDs follow link.** Driven through the PHY's own control word
+  rather than the board controller — the SCD path drives the QSFP cages only.
+  The write is read back (`0x4924` dark, `0x4922` lit) because
+  `bcm_port_phy_set` reports success on these parts without reaching them.
 
-**It is still `bringup`, and the reasons are specific.** The copper ports link
-but have carried nothing: four of the 48 have been cabled, none has an address,
-and no frame has crossed one in either direction. The watchdog is not armed,
-because arming it without a petting service is a timer that power-cycles the
-switch. `prefdl` is unread, so the board cannot say what
-it is and the management MAC lives in a config file.
+**It is still `bringup`, and the reasons are specific.** Forty-one of the 48
+copper ports have never been cabled, so what is claimed above is seven ports and
+not a panel. The watchdog is not armed, because arming it without a petting
+service is a timer that power-cycles the switch. `prefdl` is unread, so the
+board cannot say what it is and the management MAC lives in a config file. The
+cooling band is carried from the predecessor rather than measured here, and the
+fan sits at 100% because the board idles at the top of it. Readdressing a routed
+port needs a datapath restart to reach the chip.
 
 Everything left is in [todo](docs/todo.md).
 
