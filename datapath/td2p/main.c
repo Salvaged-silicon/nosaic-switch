@@ -453,11 +453,28 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	 * against and the value is the logical port behind it.
 	 */
 	{
-		struct tap_spec specs[8];
-		char names[8][32];
-		int ntap = 0, i;
+		struct tap_spec specs[NOSAIC_MAX_TAPS];
+		char names[NOSAIC_MAX_TAPS][32];
+		int ntap = 0, i, declared = 0;
 
-		for (i = 0; i < nosaic_props_count() && ntap < 8; i++) {
+		/* ⚠ COUNT WHAT THE BOARD ASKED FOR, NOT WHAT FITS.
+		 *
+		 * Same shape as td2. This array was 8 while tapbridge's limit
+		 * was 64, so a board declaring 52 ports got the first 8 and was
+		 * told nothing -- the ports simply did not exist, which reads as
+		 * the declarations never having loaded. Counting separately is
+		 * what makes the difference sayable. */
+		for (i = 0; i < nosaic_props_count(); i++) {
+			if (nosaic_props_name(i) != NULL &&
+			    strncmp(nosaic_props_name(i), "tap_", 4) == 0)
+				declared++;
+		}
+		if (declared > NOSAIC_MAX_TAPS)
+			fprintf(stderr, "nosd: %d tap_<name> properties but at most %d "
+				"can be built; the rest are ignored and their ports "
+				"will not appear\n", declared, NOSAIC_MAX_TAPS);
+
+		for (i = 0; i < nosaic_props_count() && ntap < NOSAIC_MAX_TAPS; i++) {
 			const char *name = nosaic_props_name(i);
 			const char *val = nosaic_props_value(i);
 
@@ -507,6 +524,7 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 			ntap++;
 		}
 
+
 		if (ntap == 0) {
 			printf("nosd: no tap_<name>=<port> properties, so no port is on "
 			       "the Linux stack.\n"
@@ -534,7 +552,10 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				       "interface\n", name);
 				continue;
 			}
-			nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
+			if (nosaic_l3_add_intf(unit, name, port, vlan, mac,
+					       mtu) != 0)
+				fprintf(stderr, "l3: no router interface for %s; "
+					"routes via it cannot be programmed\n", name);
 		}
 
 		/* The front panel. Not fatal if it fails: a switch with a dark

@@ -1,0 +1,83 @@
+Reload DS/ES/SS at the 32-bit entry, for a bootloader that sets only CS.
+
+The 32-bit boot protocol says the loader must hand the kernel flat 4 GB
+__BOOT_CS (0x10) and __BOOT_DS (0x18) descriptors and have DS/ES/SS already
+loaded with the data one. Until v5.x the kernel did not rely on that: it
+reloaded DS/ES/SS from __BOOT_DS itself unless the loader set KEEP_SEGMENTS.
+That code went away with KEEP_SEGMENTS, and startup_32 now takes the loader at
+its word -- the `call 1f` three instructions in is a push through whatever SS
+the loader left behind.
+
+The Cisco Nexus 3172TQ's bootloader does not set one. It is a customised GNU
+GRUB 2 built as a UEFI application, and its handoff trampoline -- 176 bytes
+memcpy'd to physical 0x700 -- does this and nothing else:
+
+    cli; cld
+    lgdt <its own GDT>; lidt <null IDT>
+    ljmp $0x10, $32bit_entry        <- loads CS, and only CS
+    clear CR0.PG; clear EFER.LME; CR4 = 0
+    jmp *%ebx                       <- boot_params->hdr.code32_start
+
+Its GDT is correct and complete -- 0x10 is a flat 32-bit code segment and 0x18
+a flat 32-bit data segment, exactly as the protocol requires -- but it never
+writes DS, ES or SS, so they still hold the selectors UEFI was running with.
+The far jump fixes CS. Nothing fixes the rest.
+
+So the kernel reaches
+
+    cld
+    cli
+    leal    (BP_scratch+4)(%esi), %esp
+    call    1f
+
+and that call pushes a return address through a stale SS. On this board that
+triple-faults and the box resets, with no output at all -- not even
+earlyprintk, because nothing has run yet. The vendor's own 3.4 kernel boots on
+the same loader because it still had the reload:
+
+    testb   $(1<<6), BP_loadflags(%esi)      /* KEEP_SEGMENTS */
+    jne     1f
+    cli
+    movl    $(__BOOT_DS), %eax
+    movl    %eax, %ds
+    movl    %eax, %es
+    movl    %eax, %ss
+ 1:
+
+Doing it again here is idempotent on a conforming loader: 0x18 is the
+selector the protocol mandates, so on a loader that already set DS/ES/SS we
+reload them with the value they already have. It costs four instructions
+before the first memory access.
+
+This is deliberately NOT conditional on KEEP_SEGMENTS. That flag meant "the
+loader has set up segments it wants kept", and a loader that sets only CS is
+not making that claim -- it is simply older than the assumption the kernel now
+makes.
+
+Only the 32-bit legacy entry is touched. The EFI stub and the 64-bit entry
+come in elsewhere and are unaffected.
+
+--- a/arch/x86/boot/compressed/head_64.S
++++ b/arch/x86/boot/compressed/head_64.S
+@@ -89,6 +89,21 @@ SYM_FUNC_START(startup_32)
+ 	cld
+ 	cli
+ 
++/*
++ * Reload the data segments before touching memory.
++ *
++ * The 32-bit boot protocol requires the loader to leave DS/ES/SS holding a
++ * flat 4 GB __BOOT_DS, and some do not -- a loader whose handoff sets CS with
++ * a far jump and nothing else leaves whatever the firmware was running with.
++ * The call below pushes through SS, so a stale one faults here, before any
++ * console exists to say so. Reloading is idempotent where the loader did its
++ * job, and is what the kernel itself did until KEEP_SEGMENTS was removed.
++ */
++	movl	$(__BOOT_DS), %eax
++	movl	%eax, %ds
++	movl	%eax, %es
++	movl	%eax, %ss
++
+ /*
+  * Calculate the delta between where we were compiled to run
+  * at and where we were actually loaded at.  This can only be done

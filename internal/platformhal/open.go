@@ -23,6 +23,15 @@ type Config struct {
 	// Resets are board reset lines released during bring-up, beyond the
 	// switch chip's own.
 	Resets []ResetLine
+	// BoardData is whatever one board's own driver needs, in that driver's
+	// own type.
+	//
+	// An `any` rather than a typed field per board, deliberately. SMBus and
+	// Cages above are here because two Arista boards genuinely share a shape;
+	// a field per board is how a third board's sensor table becomes a shape
+	// two boards then have to agree on. A driver asserts its own type out of
+	// this and a mismatch is that driver's error to report, by name.
+	BoardData any
 }
 
 // Opener constructs a board's HAL from its configuration.
@@ -53,5 +62,6 @@ func Open(driver string, cfg Config) (HAL, error) {
 	if err := ValidateResets(cfg.Resets); err != nil {
 		return nil, fmt.Errorf("this board's reset lines: %w", err)
 	}
+
 	return o(cfg)
 }

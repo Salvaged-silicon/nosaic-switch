@@ -134,6 +134,7 @@ struct tap {
 	unsigned long tx_ok;
 	unsigned long tx_err;
 	unsigned long tx_nobuf;   /* dropped: no free packet in the ring */
+	unsigned long tx_nolink;  /* dropped: the port has no link to send on */
 };
 
 static struct tap taps[MAX_TAPS];
@@ -378,6 +379,36 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 
 	if (tx_ring[0] == NULL || len < 12 || len + 4 > TAP_MTU)
 		return -1;
+
+	/*
+	 * Don't hand a frame to a port with no link.
+	 *
+	 * bcm_tx ANDs the packet's port bitmap with the bitmap linkscan
+	 * maintains, so a dark port yields no descriptor. The SDK then prints
+	 * "Could not send pkt with dv_vcnt = 0", invokes the completion
+	 * callback inline, AND RETURNS SUCCESS -- so without this the frame is
+	 * counted in tx_ok as though it went out, and the log fills up.
+	 *
+	 * This only became visible when this board declared a tap for all 54
+	 * of its ports rather than only the cabled ones. Linux sends router
+	 * solicitations and MLD out of every interface it has, so 52 dark
+	 * ports produced a steady drip of failed transmits reported as
+	 * successes. Declaring every port is right -- a cable plugged in later
+	 * should just work -- so the transmit path has to tolerate dark ones.
+	 *
+	 * Checked per frame rather than cached: this is the CPU-originated
+	 * slow path at a few frames a second, and a cached copy would need a
+	 * linkscan handler to stay honest.
+	 */
+	{
+		int link = 0;
+
+		if (bcm_port_link_status_get(tap_unit, t->port, &link) ==
+		    BCM_E_NONE && !link) {
+			t->tx_nolink++;
+			return -1;
+		}
+	}
 
 	/*
 	 * A full ring means every packet is still with the DMA engine. Drop
@@ -858,10 +889,10 @@ void nosaic_tap_stats(void)
 
 			printf("port: %s (port %d) link=%d lb=%d fmax=%d "
 			       "intf=%d ability=%#x tx-ok=%lu tx-err=%lu "
-			       "tx-nobuf=%lu",
+			       "tx-nobuf=%lu tx-nolink=%lu",
 			       taps[i].name, taps[i].port, link, lb, fmax,
 			       (int)intf, (unsigned)fd,
-			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf);
+			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf, taps[i].tx_nolink);
 		}
 		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {
 			uint64 v;

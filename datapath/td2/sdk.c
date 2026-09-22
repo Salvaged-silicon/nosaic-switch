@@ -31,6 +31,7 @@
 #include "bde.h"
 #include "mmio.h"
 #include "props.h"
+#include "phy.h"
 #include "sdk.h"
 
 /* The SDK's own headers. Included last: they define types with names general
@@ -45,6 +46,7 @@
 #include <soc/error.h>
 #include <bcm/init.h>
 #include <bcm/port.h>
+#include <soc/phyctrl.h>
 #include <bcm/vlan.h>
 #include <bcm/link.h>
 #include <bcm/stat.h>
@@ -714,6 +716,29 @@ static void report_delta(bcm_port_t port, const struct pcounters *a,
 		printf("         clean: %llu frames arrived intact, so this lane is the\n"
 		       "         right way round.\n", dpkt);
 }
+/* Is this MAC interface one a 40G cage can actually run on?
+ *
+ * The list is every 40G attachment the SDK names, fibre and copper, because
+ * which one is right depends on the optic in the cage and not on us. XGMII is
+ * deliberately absent: it is the 10-Gigabit interface, and setting it here is
+ * what kept every cage on this board dark.
+ */
+static int if_is_40g(bcm_port_if_t f)
+{
+	switch (f) {
+	case BCM_PORT_IF_XLAUI:
+	case BCM_PORT_IF_XLAUI2:
+	case BCM_PORT_IF_CR4:
+	case BCM_PORT_IF_SR4:
+	case BCM_PORT_IF_LR4:
+	case BCM_PORT_IF_KR4:
+	case BCM_PORT_IF_CAUI:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 /*
  * A 40G port needs its interface and speed set through the API, not merely
  * declared in the port map.
@@ -815,30 +840,72 @@ static void bring_up_40g(int unit, bcm_port_t port)
 		bcm_port_if_t have_if;
 		int have_speed = 0, have_duplex = 0, have_an = 0, wrote = 0;
 
-		/* Bind a PHY driver to the port before asking it anything.
+		/*
+		 * ⚠ DO NOT bcm_port_probe A CAGE HERE. IT UNDOES THE FIRMWARE.
 		 *
-		 * The board's working configuration runs this as the first step of
-		 * its per-port bring-up, and nothing here did. It is cheap and it is
-		 * idempotent: on a direct-SerDes cage it re-binds the internal
-		 * driver the chip already chose.
+		 * This used to probe each cage first, on the reasoning that the
+		 * board's working configuration probes as the first step of its
+		 * per-port bring-up and that a probe is cheap and idempotent.
+		 * Neither half survives contact with an external PHY that runs
+		 * microcode.
+		 *
+		 * A BCM84328 has no firmware of its own until the SDK downloads
+		 * it, and the download is a BROADCAST sequence over MDIO -- setup,
+		 * enable, load, end -- run once for the whole chip, with every
+		 * participating PHY held in broadcast mode for the duration.
+		 * Probing a port re-initialises its PHY, and re-initialising one
+		 * BCM84328 re-runs that sequence for that port alone. Six probes,
+		 * six single-port broadcasts, after the chip-wide one had already
+		 * run:
+		 *
+		 *   entered soc_phyctrl_mdio_ucode_bcst: unit 0, pbmp 0x1ff..ffe
+		 *   entered soc_phyctrl_mdio_ucode_bcst: unit 0, pbmp 0x2000000000000
+		 *   ... one per cage, bits 49 53 57 61 65 69 ...
+		 *
+		 * and never, anywhere in the log, the driver's own
+		 * "PHY84328 Firmware revID=0x...". The part answers MDIO, reports
+		 * its device ID out of hardwired registers, and reads zero for
+		 * every register that firmware is supposed to populate -- signal
+		 * detect included. The visible result is a cage that configures
+		 * cleanly, reports SR4 and 40000, transmits well enough that the
+		 * far end links, and never receives.
+		 *
+		 * The probe is not idempotent on a part that has to be told who it
+		 * is. Leave the chip-wide download alone.
 		 */
-		{
-			bcm_pbmp_t want, okay;
 
-			BCM_PBMP_CLEAR(want);
-			BCM_PBMP_CLEAR(okay);
-			BCM_PBMP_PORT_ADD(want, port);
-			rv = bcm_port_probe(unit, want, &okay);
-			if (rv < 0 || !BCM_PBMP_MEMBER(okay, port))
-				printf("port %d: bcm_port_probe rv=%d, probed=%d\n",
-				       port, rv, BCM_PBMP_MEMBER(okay, port) ? 1 : 0);
-		}
-
+		/*
+		 * ⚠ XGMII IS THE 10-GIGABIT INTERFACE. DO NOT SET IT ON A 40G CAGE.
+		 *
+		 * This used to read `have_if != BCM_PORT_IF_XGMII` and force XGMII,
+		 * which is the right shape -- write only on a genuine mismatch --
+		 * against the wrong target. On this board the chip brings a cage up
+		 * as SR4 (28), which is correct and is what serdes_fiber_pref_<port>
+		 * in the port map asks for, and every cage was then rewritten to a
+		 * 10G interface. The visible result was a cage that configured
+		 * cleanly, reported speed 40000, and never linked:
+		 *
+		 *     port 69: interface 28 -> XGMII (rv 0)
+		 *     port 69: 40G cage, speed 40000, 1 setting(s) applied
+		 *     2 of 54 ports have link.          <- both of them copper
+		 *
+		 * A 40G cage wants a 40G interface and the chip has already chosen
+		 * one from the port map's ":40". Any of these is right and none of
+		 * them is ours to second-guess; the sibling board reached the same
+		 * conclusion the hard way and stopped writing this at all.
+		 */
 		if (bcm_port_interface_get(unit, port, &have_if) == BCM_E_NONE &&
-		    have_if != BCM_PORT_IF_XGMII) {
-			rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_XGMII);
-			printf("port %d: interface %d -> XGMII (rv %d)\n", port, have_if, rv);
+		    !if_is_40g(have_if)) {
+			/* Not a 40G interface at all, which is a real mismatch. SR4
+			 * rather than a generic choice because that is what this
+			 * board's own serdes_fiber_pref says the cages are. */
+			rv = bcm_port_interface_set(unit, port, BCM_PORT_IF_SR4);
+			printf("port %d: interface %d is not 40G -> SR4 (rv %d)\n",
+			       port, have_if, rv);
 			wrote++;
+		} else {
+			printf("port %d: interface %d is 40G already, left alone\n",
+			       port, have_if);
 		}
 		if (bcm_port_speed_get(unit, port, &have_speed) == BCM_E_NONE &&
 		    have_speed != 40000) {
@@ -861,13 +928,43 @@ static void bring_up_40g(int unit, bcm_port_t port)
 			wrote++;
 		}
 
+		/* The retimer's own enable, last, once the port's speed and
+		 * interface are settled. See nosaic_phy_cage_enable. */
+		if (nosaic_phy_cage_enable(unit, port) == 0)
+			wrote++;
+
 		if (bcm_port_speed_get(unit, port, &rv) == BCM_E_NONE)
 			printf("port %d: 40G cage, speed %d, %d setting(s) applied\n",
 			       port, rv, wrote);
 	}
 }
 
+/* What the SDK believes is attached to this port, and where.
+ *
+ * ⚠ THE COPPER HALF OF THIS BOARD HIDES A DEAD MDIO BUS COMPLETELY.
+ *
+ * A BCM84848 autonegotiates 10GBASE-T on its own, so ports 1-48 link whether
+ * or not the SDK ever speaks to them. The six cages are BCM84328 repeaters,
+ * which carry nothing until configured. So an MDIO path that does not work
+ * presents as "the copper is fine and the optics are broken" -- which is a
+ * cabling fault, and is not what it is. A day went into fibres and modules
+ * before anybody asked the SDK what it had found.
+ *
+ * This is the same thing the vendor's `phy info` prints: the driver the SDK
+ * bound and the address it used. "no external PHY" here against BCM84848 or
+ * BCM84328 on the vendor's OS, at the very same addresses out of this
+ * board's own port map, is the whole fault in one line.
+ */
+static void report_phy(int unit, int port, const char *what)
+{
+	const char *name = soc_phyctrl_drv_name(unit, port);
+	uint16 addr = 0;
 
+	soc_phy_cfg_addr_get(unit, port, 0, &addr);
+	printf("phy: port %d (%s) addr %#04x driver %s\n",
+	       port, what, addr,
+	       (name != NULL && *name != '\0') ? name : "NONE -- no external PHY bound");
+}
 
 int nosaic_sdk_ports(int unit)
 {
@@ -938,6 +1035,11 @@ int nosaic_sdk_ports(int unit)
 		 * comes up, not corrected afterwards. */
 		if (port_is_40g(unit, port))
 			bring_up_40g(unit, port);
+
+		/* Every port, not just the cages: the copper half is the control.
+		 * If bus 0 answers and bus 2 does not, the fault is one MDIO bus
+		 * and not the board. */
+		report_phy(unit, port, port_is_40g(unit, port) ? "cage" : "copper");
 
 		erv = bcm_port_enable_set(unit, port, 1);
 
