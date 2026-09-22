@@ -232,7 +232,24 @@ Ordered so each step's failure is diagnosable with the one before it working.
       tuning -- so the datapath side of the cages is finished, not merely
       linking.
 
-      ⚠ `eth1_53` IS PATCHED TO THE AS5610's `swp50`, NOT `swp49`, and
+      **Both 40G links now carry traffic.** `eth1_53` to the AS5610 and
+      `eth1_54` to the 7050SX2 each hold a Full OSPF adjacency and ping
+      clean -- 1.28 ms and 0.44 ms average -- with four adjacencies total
+      once the two copper uplinks are counted. Nothing on this board needed
+      changing for either; both were far-end configuration.
+
+      Resolved on the AS5610 by moving its Nexus-facing configuration from
+      swp49 to swp50, where the fibre actually is: a `tap_swp50=50:3350` in
+      its taps.conf (it had none, so the interface did not exist at all),
+      the address and the OSPF cost stanza moved, and the stale address
+      deleted from swp49 by hand because its apply-network.sh only ever adds.
+
+      ⚠ Its `/mnt/data/config/network.conf` is the file that WINS -- the
+      copy in /etc/nosaic and a network.site.conf beside it are both read
+      first and both overridden, so editing either looks correct and changes
+      nothing. That cost three apply-and-test cycles.
+
+      ⚠ `eth1_53` WAS PATCHED TO THE AS5610's `swp50`, NOT `swp49`, and
       swp50 is not configured on that box at all -- absent from its
       network.conf and frr.conf, and not even listed by `nosaic show ports`.
       Its config expects us on swp49 (`# swp49 is the uplink to the Cisco
