@@ -9,21 +9,23 @@ installer environment, no ODM reference design to lean on, and no documentation
 — so the whole of this directory came out of reverse engineering the running
 machine and its firmware.
 
-**Nothing here has been built or booted.** NOSaic has never run on a 3172TQ.
-The one attempt at running *any* of our own code on it — a mainline 6.6 kernel
-with a busybox initramfs, wrapped in the vendor loader's own container format —
-loaded, validated, and reset the board.
+**NOSaic runs on this board.** It netboots through the vendor loader's own
+TFTP to userspace, drives the fans off the ASIC die temperature, brings up all
+48 copper ports and all six 40G cages, and routes: four OSPF adjacencies, two
+over copper to the 7050TX-64 and two over 40G to the 7050SX2 and the AS5610,
+each pinging under 1.3 ms.
 
-What exists is a board directory whose facts were read off the hardware rather
-than guessed, and a boot path that steps around the thing that failed.
+Everything here was read off the hardware rather than guessed — there is no
+ONIE, no installer environment, no reference design and no documentation for
+this machine.
 
 | | Where | State |
 |---|---|---|
 | Boot backend | [`internal/boot/uefi.go`](../../internal/boot/uefi.go) | new; written, never run against hardware |
 | EFI system partition | [`internal/imgbuild/disk.go`](../../internal/imgbuild/disk.go) | new; `buildESP` |
 | Kernel config | [`recipes/linux/config/x86_64.fragment`](../../recipes/linux/config/x86_64.fragment) | three symbols added, all three settled |
-| Datapath | [`datapath/td2/`](../../datapath/td2/) | **unchanged** — same driver family as the 7050TX-64 |
-| Platform HAL | — | none. See [todo.md](docs/todo.md#7-a-platform-hal) |
+| Datapath | [`datapath/td2/`](../../datapath/td2/) | same driver family as the 7050TX-64, plus the BCM84328 cage bring-up the cages need |
+| Platform HAL | [`internal/platformhal/n3172tq/`](../../internal/platformhal/n3172tq/) | fans, sensors, PSUs, board id from PROM, ASIC die temperature |
 
 | | |
 |---|---|
@@ -37,22 +39,24 @@ than guessed, and a boot path that steps around the thing that failed.
 | Console | `ttyS0` @ **9600** |
 | Board codename | **`quickzinc2`** (`qz2`) — Cisco's, and it is how the firmware refers to this board throughout |
 | Vendor OS | NX-OS 7.0(3)I7(9) |
-| Status | **planned** — not built, not booted |
+| Status | **bringup** — boots, cools, routes; 48 copper and 6 × 40G up |
 
 - **[Hardware reference](docs/hardware.md)** — the block diagram, the boot
   chain, the port map, the four platform transports, and the quirks
-- **[Build](docs/build.md)** — building an image, and the two generators you
+- **[Build](docs/build.md)** — building an image, and the three generators you
   have to run against your own switch
 - **[Install](docs/install.md)** — getting it onto the switch, and getting back
 - **[Todo](docs/todo.md)** — the ordered path from here, and it starts with the
   fans
 
 > **Start over the network, not with an install.** The vendor loader's own TFTP
-> boots an `mknbi-linux` NBI container, and ours now gets all the way through:
-> kernel loaded, initramfs loaded, command line accepted, `big_linux_boot` —
-> and then the board resets at the handoff with no kernel output. That is the
-> one remaining blocker and it is narrow; three causes are already eliminated.
-> See [install.md](docs/install.md#netbooting-use-the-loaders-tftp-not-ipxe).
+> boots an `mknbi-linux` NBI container and ours goes all the way to userspace.
+> Three loader defects had to be worked around to get there — a 512-byte first
+> segment, a padded tail, and a cleared EFI loader signature — and all three
+> are written up in
+> [install.md](docs/install.md#netbooting-use-the-loaders-tftp-not-ipxe).
+> Nothing is written to the switch and nothing survives the reboot, which is
+> what makes it the right way to work on this board.
 >
 > ⚠ **Not the embedded iPXE**, which is a different path and a dead end: it
 > fetches our kernel and has no loader that will execute it.
@@ -62,17 +66,11 @@ than guessed, and a boot path that steps around the thing that failed.
 > boot menu. That cost a recovery on 2026-09-17 and is written up in
 > [install.md](docs/install.md#-do-not-run-ipxe-at-the-loader-prompt).
 >
-> ⚠ **And do not run `ipxe` at the loader prompt.** It is a persistent
-> boot-mode change with no undo from the loader; the escape is the BIOS TAB
-> boot menu. That cost a recovery on 2026-09-17 and is written up in
-> [install.md](docs/install.md#-do-not-run-ipxe-at-the-loader-prompt).
->
-> **And read [todo.md](docs/todo.md) before walking away from it.** NOSaic
-> declares no platform HAL for this board, so it does not drive the fans.
-> Measured under the vendor OS at idle: fan zone duty `0x28`, ASIC die 56 °C
-> against a minor threshold of 100. So the vendor does not run them flat out
-> and the margin is large — but what they do with *nobody* driving them has
-> never been observed.
+> **The fans are driven.** `nosaic platform thermal` tracks the ASIC's own die
+> temperature — the hottest thing in the box, and the only sensor no i2c part
+> can see — and regulates against a 55-90 °C band. The three board diodes idle
+> between 31 and 38 °C while the die sits near 57, which is why regulating on
+> them ran the fans at 83 % duty for no reason.
 
 ## Why this board
 
@@ -100,7 +98,7 @@ run anything but its vendor's software.
 
 **It is a working reference implementation of the thing we are building.** Two
 metres away from the 7050TX-64, on the same generation of silicon, with a
-vendor OS that drives all 72 logical ports while NOSaic drives 8. When
+vendor OS to compare against register by register when ours misbehaves. When
 `datapath/td2` asks the SDK for a field group and gets an answer that looks
 wrong, this box shows what the same chip reports when it is working: `fp show`
 prints the qsets, the select codes, the slice assignment and the meter

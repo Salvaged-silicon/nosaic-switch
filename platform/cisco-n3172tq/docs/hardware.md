@@ -39,28 +39,44 @@ graph TD
     MUX --> CCTRL["CCTRL — Cisco's board controller<br/>sensors, fan zones, PSUs, SPROM"]
     PLX --> EPLD["programmable logic<br/>chassis LEDs, board control"]
 
+    MUX --> EXP["3 x PCA9539 expanders<br/>0x74, 0x76 on ch5; 0x75 on ch1<br/>QSFP ResetL / ModSelL / LPMode"]
+
     ASIC -->|MDIO| PHY48["48 x BCM84848<br/>10GBASE-T"]
     ASIC -->|MDIO| PHY6["6 x BCM84328<br/>40G retimers"]
-    ASIC -->|"CMIC I2C"| CAGE["6 x QSFP+ cages<br/>SFF-8636 EEPROM"]
 
     PHY48 --> RJ["48 x RJ45"]
-    PHY6 --> CAGE
+    PHY6 --> CAGE["6 x QSFP+ cages<br/>SFF-8636 EEPROM"]
+    EXP -.->|control lines| CAGE
 ```
 
-Four things in that picture are worth stating in words, because each of them
-contradicts an assumption carried over from the Arista boards.
+Three things in that picture are worth stating in words, because each of them
+contradicts an assumption carried over from the Arista boards — and one of
+them was carried wrong in this file for a while.
 
-**There is no single platform bus.** Four transports, three owners: MDIO for the
-PHYs (owned by the SDK), ~~the ASIC's own CMIC I²C for the optic EEPROMs~~
-(⚠ WRONG, see below -- the optics are on the platform SMBus), the
-PCH's SMBus behind CCTRL for sensors/fans/PSUs, and 32-bit MMIO over a
-PLX-bridged local bus for chassis LEDs and board control. On the 7050TX-64 the
-SCD is a single place to go for almost all of that.
+**There is no single platform bus.** Three transports, three owners: MDIO for
+the PHYs and the cage retimers, owned by the SDK; the PCH's SMBus behind a mux
+for sensors, fans, PSUs, the board SPROM and the QSFP control expanders; and
+32-bit MMIO over a PLX-bridged local bus for chassis LEDs and board control. On
+the 7050TX-64 the SCD is a single place to go for almost all of that.
 
-**The optic bus is on the ASIC side, not the board-controller side.** This is
-the inverse of the Arista arrangement and it is the easiest thing here to get
-backwards. The vendor reaches a QSFP page/byte through its user-space switch
-driver, not through CCTRL.
+⚠ The SMBus is SMBus-only. The i801 controller these parts hang off does not
+do plain i²c transfers, and answers one with `operation not supported` — which
+reads like a permission or driver problem rather than a missing capability.
+Use SMBus read-byte-data; `nosaic platform i2c` does.
+
+⚠ **The optic bus is NOT on the ASIC side.** An earlier version of this page
+said it was, called it "the inverse of the Arista arrangement", and drew the
+cages hanging off the ASIC's CMIC I²C. That is wrong and it was measured
+wrong: under NX-OS with a module fitted and readable by the vendor's own
+tooling, `bcm-shell.0> i2c probe` answers `I2C: detected 0 devices`. The
+cages are on the platform SMBus like everything else, and their control lines
+are on the three PCA9539 expanders above.
+
+⚠ A scan of every mux channel finds no `0x50` either, and that is not a
+contradiction: a QSFP only answers its two-wire bus while `ModSelL` is
+asserted, and nothing in NOSaic asserts it yet. See
+[todo.md](todo.md) — the cages are still unreadable from our side, which is
+why `nosaic platform transceivers` refuses on this board.
 
 **The 40G cages are retimed.** Six BCM84328s sit between the ASIC SerDes and
 the cages, one per cage on the first lane of each group of four. That is why

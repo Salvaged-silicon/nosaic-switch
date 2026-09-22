@@ -3,13 +3,19 @@
 Written for somebody holding the switch. Assume a console cable and nothing
 else.
 
-> **NOTHING BELOW HAS BEEN DONE ON THIS BOARD.** NOSaic has never booted on a
-> 3172TQ. Every step is built out of a mechanism that *was* exercised on this
-> hardware — the recovery shell, the loader's TFTP transfer, the EFI shell, the
-> UEFI boot policy — but the sequence as a whole is unproven, and the board's
-> status is `planned` for exactly that reason. Read
-> [hardware.md](hardware.md) first. If you are the first person through here,
-> [todo.md](todo.md) is the order to do it in.
+> ⚠ **NETBOOT IS PROVEN; THE DISK INSTALL BELOW IS NOT.** NOSaic runs on this
+> board — it boots to userspace over the loader's own TFTP, cools itself,
+> brings up all 54 front-panel ports and routes over four OSPF adjacencies.
+> All of that has been done repeatedly over
+> [netboot](#netbooting-use-the-loaders-tftp-not-ipxe), which writes nothing to
+> the switch and survives no reboot.
+>
+> Installing to the eUSB flash is a different sequence, and it is the part that
+> has not been exercised end to end. Every step of it is built out of a
+> mechanism that *was* — the recovery shell, the loader's TFTP transfer, the
+> EFI shell, the UEFI boot policy — but as a whole it is unproven, and it
+> erases the vendor's disk. Netboot first. Read [hardware.md](hardware.md)
+> before either, and [todo.md](todo.md) for what is left.
 
 ## Before you start
 
@@ -292,10 +298,11 @@ cat /proc/partitions           # expect sda, 1990656 blocks, with sda1..sda6
 ip -o link | grep -i b4:de:31:3f:a5:c0
 ls /sys/bus/pci/devices/0000:01:00.1/net/
 
-# 3. The fans, which is the item that should stop you walking away. Under the
-#    vendor OS this chassis idles at fan zone duty 0x28 with the ASIC die at
-#    56 C. NOSaic drives the fans not at all, so what they do here is whatever
-#    the hardware leaves them at -- and that has never been observed.
+# 3. The fans. NOSaic drives all four off the ASIC die temperature and settles
+#    around 29% duty with the die near 57 C. For comparison the vendor OS
+#    idles this chassis at fan zone duty 0x28 with the die at 56 C, so the two
+#    agree. `nosaic platform thermal` fails to full cooling and leaves the
+#    fans at full on exit.
 
 # 4. The platform i2c bus, which no NOSaic board has reached on this hardware
 #    and which cannot be probed from NX-OS -- it has i2cdetect but no
@@ -480,9 +487,15 @@ map generated from a switch running the vendor's OS, and until you have done
 that it reports itself unconfigured rather than guessing. See
 [build.md](build.md#the-port-map-you-have-to-generate).
 
-⚠ **Check the fans.** NOSaic does not drive them — there is no platform HAL
-for this board yet — so they sit at whatever the hardware leaves them at, and
-that has never been observed.
+**The fans are driven.** `nosaic platform thermal` regulates all four off the
+ASIC's own die temperature, which is the hottest thing in the box and the only
+sensor no i2c part on this board can see. It fails to full cooling and leaves
+them at full on exit, so a crash is loud rather than hot.
+
+⚠ **Regulate on the die, not on the board diodes.** The three ADT7462 remote
+channels idle between 31 and 38 °C while the die sits near 57. A band chosen
+for the diodes — 38-52 °C — reads as a hot switch and holds the fans at 83 %
+duty for no reason; the same loop against the die at 55-90 °C settles at 29 %.
 
 For comparison, measured on this chassis under the vendor OS at idle:
 

@@ -194,15 +194,22 @@ strange failure:
 nosd-td2: no port map, so the chip would initialise and reach no front-panel cage
 ```
 
-Two files, both read off a switch running the vendor's OS, both landing in
-`config/`, both gitignored:
+Three files, all read off a switch running the vendor's OS, all landing in
+`config/`, all gitignored:
 
 | generator | produces | without it |
 |---|---|---|
 | `tools/mkportmap.sh` | `portmap.conf` — which physical lane reaches which logical port, and each PHY's MDIO address | the datapath refuses to start |
 | `tools/mkpolarity.sh` | `polarity.conf` — which lanes the PCB inverts, and the per-core lane swizzle | ports link and carry zero frames, with no error at either end |
+| `tools/mkretimer.sh` | `retimer.conf` — the BCM84328 retimers' per-board conditioning | the cages link and run on the part's power-up defaults: a working link and an untuned one |
 
-Both read the same capture, so take it once. On the switch, with root
+⚠ **`mkretimer.sh` is the odd one out and does not read the same capture.** It
+talks to the vendor's SDK shell directly, one register read at a time, because
+what it wants is not in `config show` — it is in the part, and only while the
+cage is UP. It also has to run under NX-OS rather than against it. Its own
+header has the procedure.
+
+The first two read the same capture, so take it once. On the switch, with root
 (see [install.md](install.md#getting-root-on-the-switch)):
 
 ```
@@ -221,13 +228,17 @@ mv portmap.conf polarity.conf platform/cisco-n3172tq/config/
 `config show` is a show command; it writes nothing to the switch, which may be
 carrying traffic while you run it.
 
-**There is no `serdes.conf` or `retimer.conf` generator on this board, and that
-is a real difference rather than an omission.** Every front-panel port has a
-PHY in front of it — the 40G cages are retimed through BCM84328s, not
-direct-attach — so nothing drives a channel off the ASIC SerDes and there are
-no preemphasis or TX-FIR coefficients anywhere in the vendor's configuration to
-capture. The Arista sibling needs four generators; this board needs two.
+**There is no `serdes.conf` on this board, and that is a real difference
+rather than an omission.** Every front-panel port has a PHY in front of it —
+the 40G cages are retimed through BCM84328s, not direct-attach — so nothing
+drives a channel off the ASIC SerDes and there are no preemphasis or TX-FIR
+coefficients anywhere in the vendor's configuration to capture.
 See [hardware.md](hardware.md#no-serdes-tuning).
+
+⚠ That argument was once used to say this board needed no `retimer.conf`
+either, and that was wrong. The ASIC has no channel to tune, but the *retimer*
+does, and its conditioning is per-PCB in exactly the way the Arista sibling's
+repeater is. The Arista needs four generators; this board needs three.
 
 ### Why generated and not committed
 
