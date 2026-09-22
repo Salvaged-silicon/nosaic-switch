@@ -225,6 +225,24 @@ Ordered so each step's failure is diagnosable with the one before it working.
       `ModSelL` is asserted and nothing asserts it. That makes the PCA9539s
       — the inverse of the Arista arrangement, and the easiest thing here to
       implement backwards.
+- [x] **PROVEN END TO END: 40G carries traffic.** `eth1_54` to the 7050SX2's
+      `et49` holds a Full OSPF adjacency and pings 4/4 at 0.55 ms average,
+      with counters moving in both directions. That exercises the whole
+      chain -- retimer enable, firmware download, lane maps, polarity and
+      tuning -- so the datapath side of the cages is finished, not merely
+      linking.
+
+      ⚠ `eth1_53` to the AS5610's `swp49` is still ONE-WAY, and the
+      direction that works is ours. The AS5610 receives us: its `in-nuc`
+      advances +8 per 90s, which is our OSPF hello rate to the packet. We
+      receive nothing from it at all -- `in-uc=0 in-nuc=0 in-err=0` -- while
+      its own `out-nuc` climbs, so its MAC believes it is transmitting.
+      That board's cages power up with `TX_DISABLE` asserted and its
+      retimers unprogrammed, both handled by its `front-panel-init.sh`;
+      whether that ran for `swp49` on the current boot could not be
+      confirmed, because nothing keeps its output. Since the SX2 link on the
+      identical local configuration is perfect, this one is not ours.
+
 - [x] **SOLVED: no 40G cage linked, and it was one bit in the retimer.**
       `1.0xc8e4` bit 15 -- the BCM84328 powers up with it clear, NX-OS
       sets it, we did not. Set at the end of cage bring-up now; both
