@@ -151,6 +151,7 @@ static const char *const datapath_conf[] = {
 	"portmap.conf",   /* generated: which lane reaches which cage */
 	"polarity.conf",  /* generated: which lanes the PCB inverts */
 	"serdes.conf",    /* generated: this board's transmit equalisation */
+	"retimer.conf",   /* generated: tuning for a retimer in front of a cage */
 	"portmode.conf",  /* shipped: which QSFP cages run as 4x10G */
 };
 
