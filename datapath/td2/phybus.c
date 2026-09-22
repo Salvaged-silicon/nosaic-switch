@@ -81,6 +81,7 @@ static volatile uint32_t *phybus_bar;
  * reachable. A zero here on a board with copper ports says the SDK never
  * routed a single access our way, whatever the property file says. */
 static unsigned long phybus_reads, phybus_writes, phybus_errors;
+static int phybus_installed;
 static struct nosaic_mdio phybus_accel[MDIO_ACCELS];
 
 /*
@@ -146,6 +147,21 @@ static int phybus_wr(int unit, uint32 phy_id, uint32 reg, uint16 data)
 
 void nosaic_phybus_report(void)
 {
+	/*
+	 * ⚠ SAY NOTHING ON A BOARD THAT HAS NO SUCH BUS.
+	 *
+	 * This whole file is the route to external PHYs hanging off an Arista
+	 * SCD's MDIO accelerators. A board with no scd_pci -- the Nexus
+	 * 3172TQ, whose PHYs are on the ASIC's own MDIO and belong to the SDK
+	 * -- never installs it, and reporting zero transactions there produced
+	 * "the external PHYs were not reached, whatever else reported success"
+	 * on a board where that is neither true nor possible. It reads as a
+	 * root cause and it is not one; it cost real time during that board's
+	 * cage bring-up.
+	 */
+	if (!phybus_installed)
+		return;
+
 	printf("phybus: %lu read(s), %lu write(s), %lu failure(s) through the "
 	       "copper PHY bus\n", phybus_reads, phybus_writes, phybus_errors);
 	{
@@ -182,6 +198,7 @@ int nosaic_phybus_install(int unit, const char *scd_bdf)
 
 	if (scd_bdf == NULL || *scd_bdf == '\0')
 		return 0;   /* No controller stated: nothing to install. */
+	phybus_installed = 1;
 
 	/*
 	 * ⚠ /dev/mem AT THE BAR'S PHYSICAL ADDRESS, NOT THE sysfs resource FILE.

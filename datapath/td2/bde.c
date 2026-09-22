@@ -73,6 +73,62 @@ static uint64_t env_u64(const char *name, uint64_t fallback)
 	return strtoull(v, NULL, 0);
 }
 
+/*
+ * Where the reservation actually is, read off the running kernel.
+ *
+ * The board states it once, in kernel_params:
+ *
+ *     memmap=64M$0xb0000000 iomem=relaxed
+ *
+ * and that statement is sitting on /proc/cmdline by the time this runs.
+ * Reading it there rather than keeping a second copy in a constant means the
+ * two cannot disagree -- and disagreeing is not a benign failure. A base that
+ * is not memory maps through /dev/mem SUCCESSFULLY and reads back all-ones, so
+ * the pool's first list head is 0xffffffffffffffff, which is not NULL, passes
+ * the pool's own NULL check, and the datapath dies writing through it. That is
+ * how a compiled-in 0xd0000000 behaved on a board whose RAM stops at
+ * 0xbf791fff.
+ *
+ * Only the `$` form is ours: memmap=nn@ss marks a range usable, nn#ss ACPI,
+ * nn!ss persistent. The first reservation wins; a board wanting a different
+ * one of several sets NOSAIC_DMA_BASE, which still overrides this.
+ */
+static int dma_from_cmdline(uint64_t *base, size_t *len)
+{
+	char buf[4096];
+	const char *p;
+	FILE *f = fopen("/proc/cmdline", "r");
+	size_t n;
+
+	if (f == NULL)
+		return -1;
+	n = fread(buf, 1, sizeof(buf) - 1, f);
+	fclose(f);
+	buf[n] = '\0';
+
+	for (p = buf; (p = strstr(p, "memmap=")) != NULL; p += 7) {
+		char *end;
+		unsigned long long sz = strtoull(p + 7, &end, 0);
+
+		if (end == p + 7)
+			continue;
+		switch (*end) {
+		case 'G': case 'g': sz <<= 30; end++; break;
+		case 'M': case 'm': sz <<= 20; end++; break;
+		case 'K': case 'k': sz <<= 10; end++; break;
+		default: break;
+		}
+		if (*end != '$' || sz == 0)
+			continue;              /* @ # and ! are somebody else's */
+		*base = strtoull(end + 1, &end, 0);
+		if (*base == 0)
+			continue;
+		*len = (size_t)sz;
+		return 0;
+	}
+	return -1;
+}
+
 int nosaic_bde_open(struct nosaic_bde *b, const char *bdf)
 {
 	char path[256];
@@ -110,6 +166,19 @@ int nosaic_bde_open(struct nosaic_bde *b, const char *bdf)
 	}
 
 	/*
+	 * What it actually is. The caller may have found this device by
+	 * scanning rather than by name, and even when it did not, the SDK
+	 * matches on device and revision -- so read them off the device rather
+	 * than trusting a compiled-in pair.
+	 */
+	{
+		uint32_t id = nosaic_bde_cfg_read(b, 0x00);
+		b->vendor_id = (uint16_t)(id & 0xffff);
+		b->dev_id    = (uint16_t)(id >> 16);
+		b->rev_id    = (uint8_t)(nosaic_bde_cfg_read(b, 0x08) & 0xff);
+	}
+
+	/*
 	 * Bus mastering, so the chip can reach host memory.
 	 *
 	 * The SDK programs most tables through SBUS DMA: it builds a descriptor
@@ -126,25 +195,56 @@ int nosaic_bde_open(struct nosaic_bde *b, const char *bdf)
 	 * decoding only, because letting a chip that has not been initialised
 	 * write host memory is not a good default. This is the point at which
 	 * something genuinely needs it.
+	 *
+	 * MEMORY SPACE is set here too, and that is not belt and braces. The
+	 * reset path is the SCD driver on the Arista boards, and a board that
+	 * has no platform HAL has nothing that does it -- on the Nexus 3172TQ
+	 * the chip's COMMAND reads 0x0004 and /sys/.../enable reads 0, so BAR0
+	 * is never decoded. A PCI device that is not decoding memory answers
+	 * every read with all-ones, and that is not reported as an error
+	 * anywhere; it arrives as nonsense much later:
+	 *
+	 *   Unit 0 CMIC_SBUS_RING_MAP_0_7 mismatch:ffffffff
+	 *   nosd-td2: soc_reset_init(0) returned -15 (Invalid configuration)
+	 *
+	 * which reads as a configuration problem rather than a dark window.
+	 * This is the code that maps BAR0 and then reads through it, so this is
+	 * where decoding has to be on. Setting a bit that is already set costs
+	 * nothing on the boards whose reset path got there first.
 	 */
 	{
 		uint16_t cmd = (uint16_t)nosaic_bde_cfg_read(b, 0x04);
+		uint16_t want = cmd | (1 << 1) | (1 << 2);   /* memory space, bus master */
 
-		if (!(cmd & (1 << 2))) {
-			nosaic_bde_cfg_write(b, 0x04, cmd | (1 << 2));
-			if (!(nosaic_bde_cfg_read(b, 0x04) & (1 << 2))) {
-				fprintf(stderr, "nosd-td2: bus mastering did not enable; "
-					"COMMAND reads %#06x\n",
-					(unsigned)nosaic_bde_cfg_read(b, 0x04));
+		if (cmd != want) {
+			nosaic_bde_cfg_write(b, 0x04, want);
+			cmd = (uint16_t)nosaic_bde_cfg_read(b, 0x04);
+			if ((cmd & ((1 << 1) | (1 << 2))) != ((1 << 1) | (1 << 2))) {
+				fprintf(stderr, "nosd-td2: %s: memory decoding and bus "
+					"mastering did not both enable; COMMAND reads %#06x\n",
+					b->bdf, (unsigned)cmd);
 				return -1;
 			}
 		}
 	}
 
 	/* The DMA pool. Not allocated -- claimed, from a region the kernel was
-	 * told to leave alone. */
-	b->dma_phys = env_u64("NOSAIC_DMA_BASE", DMA_BASE_DEFAULT);
-	b->dma_len  = (size_t)env_u64("NOSAIC_DMA_SIZE", DMA_SIZE_DEFAULT);
+	 * told to leave alone. Preferring what the kernel was actually told over
+	 * a constant, and an explicit override over both. */
+	{
+		uint64_t cbase = 0;
+		size_t   clen  = 0;
+		int found = dma_from_cmdline(&cbase, &clen) == 0;
+
+		b->dma_phys = env_u64("NOSAIC_DMA_BASE",
+				      found ? cbase : DMA_BASE_DEFAULT);
+		b->dma_len  = (size_t)env_u64("NOSAIC_DMA_SIZE",
+					      found ? clen : DMA_SIZE_DEFAULT);
+		printf("dma        %zu bytes at %#llx (%s)\n",
+		       b->dma_len, (unsigned long long)b->dma_phys,
+		       found ? "reserved on the kernel command line"
+			     : "no memmap= on /proc/cmdline -- built-in default");
+	}
 	b->mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
 	if (b->mem_fd < 0) {
 		fprintf(stderr, "nosd-td2: /dev/mem: %s\n", strerror(errno));

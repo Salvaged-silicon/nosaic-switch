@@ -225,8 +225,11 @@ var (
 func checkBootTools(res *Result, root string) {
 	// tool name -> the Debian package that provides it, where they differ.
 	pkgFor := map[string]string{
-		"mkimage": "u-boot-tools",
-		"dtc":     "device-tree-compiler",
+		"mkimage":   "u-boot-tools",
+		"dtc":       "device-tree-compiler",
+		"mkfs.vfat": "dosfstools",
+		"mcopy":     "mtools",
+		"mmd":       "mtools",
 	}
 	df := filepath.Join(root, "builder", "Dockerfile.build")
 	b, err := os.ReadFile(df)

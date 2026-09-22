@@ -22,6 +22,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include "bde.h"
 #include "props.h"
@@ -150,11 +151,76 @@ static const char *const datapath_conf[] = {
 	"portmap.conf",   /* generated: which lane reaches which cage */
 	"polarity.conf",  /* generated: which lanes the PCB inverts */
 	"serdes.conf",    /* generated: this board's transmit equalisation */
+	"retimer.conf",   /* generated: tuning for a retimer in front of a cage */
 	"portmode.conf",  /* shipped: which QSFP cages run as 4x10G */
 };
 
-/* Where the switch chip appears once the board controller releases it. */
+/* Where the switch chip appears once the board controller releases it.
+ *
+ * A fallback, not an answer. led_map_scd already makes the argument for the
+ * SCD -- "its PCI address is not fixed ... so it is found by vendor id rather
+ * than named" -- and the ASIC needs it more, because the address is not the
+ * only thing that moves:
+ *
+ *   7050TX-64      0000:01:00.0   14e4:b855 rev 0x03
+ *   Nexus 3172TQ   0000:02:00.0   14e4:b854 rev 0x02
+ *
+ * Both are Trident II and both attach through the same SDK driver, but the SDK
+ * matches on device and revision, so a compiled-in pair is right for exactly
+ * one board and silently wrong on the next. */
 #define DEFAULT_ASIC_BDF "0000:01:00.0"
+
+/* Trident II covers BCM56850 through BCM5685f. Narrow enough that nothing else
+ * Broadcom on a switch answers to it, wide enough to cover the variants. */
+#define TD2_DEVICE_FIRST 0xb850
+#define TD2_DEVICE_LAST  0xb85f
+
+/* Find the switch chip on the PCI bus.
+ *
+ * Returns 0 and fills bdf on success, -1 if nothing matched -- which is not
+ * fatal on its own: the caller falls back to the compiled-in address so a
+ * board whose chip is hidden behind something this cannot see still gets the
+ * old behaviour rather than no behaviour.
+ */
+static int td2_find(char *bdf, size_t bdflen)
+{
+	DIR *d = opendir("/sys/bus/pci/devices");
+	struct dirent *e;
+
+	if (d == NULL)
+		return -1;
+	while ((e = readdir(d)) != NULL) {
+		unsigned vendor = 0, device = 0;
+		char path[256];
+		FILE *f;
+
+		if (e->d_name[0] == '.')
+			continue;
+		snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/vendor", e->d_name);
+		if ((f = fopen(path, "r")) == NULL)
+			continue;
+		if (fscanf(f, "%x", &vendor) != 1)
+			vendor = 0;
+		fclose(f);
+		if (vendor != TD2_VENDOR)
+			continue;
+
+		snprintf(path, sizeof(path), "/sys/bus/pci/devices/%s/device", e->d_name);
+		if ((f = fopen(path, "r")) == NULL)
+			continue;
+		if (fscanf(f, "%x", &device) != 1)
+			device = 0;
+		fclose(f);
+		if (device < TD2_DEVICE_FIRST || device > TD2_DEVICE_LAST)
+			continue;
+
+		snprintf(bdf, bdflen, "%s", e->d_name);
+		closedir(d);
+		return 0;
+	}
+	closedir(d);
+	return -1;
+}
 
 /* How long --attach holds the device before exiting. Long enough for the SDK's
  * own threads to run and fault if they are going to. */
@@ -195,7 +261,8 @@ static int probe(const char *bdf)
 	if (nosaic_bde_open(&b, bdf) != 0)
 		return 1;
 
-	printf("device      %s\n", b.bdf);
+	printf("device      %s  %04x:%04x rev %#04x\n",
+	       b.bdf, b.vendor_id, b.dev_id, b.rev_id);
 	printf("BAR0        %zu bytes mapped\n", b.bar_len);
 	printf("DMA         %zu bytes at %#llx\n", b.dma_len,
 	       (unsigned long long)b.dma_phys);
@@ -291,7 +358,7 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
 		return 1;
 	}
 
-	unit = nosaic_sdk_attach(b, TD2_DEVICE, TD2_REVISION);
+	unit = nosaic_sdk_attach(b, b->dev_id, b->rev_id);
 	if (unit < 0) {
 		nosaic_bde_close(b);
 		return 1;
@@ -354,6 +421,40 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
  * reporting that as success is how a switch looks healthy and forwards
  * nothing. Better to fail here, where the service log says why.
  */
+/*
+ * Is this the value of a tap declaration: <port>[:vlan[:mtu]], all decimal,
+ * port >= 1?
+ *
+ * ⚠ CHECKING ONLY THE FIRST NUMBER IS NOT ENOUGH, AND THAT IS NOT HYPOTHETICAL.
+ *
+ * The first attempt at this guard tested atoi(val) <= 0, which rejects a MAC
+ * beginning 00: and ACCEPTS one beginning 44: -- 44:4c:a8:eb:93:f6 parses as
+ * port 44 and would have built a silent bogus tap colliding with tap_et44. One
+ * board's address happened to be caught and another board's would not have
+ * been. So the whole value is validated, not its first field.
+ */
+static int tap_decl_valid(const char *v)
+{
+	const char *start = v;
+	int fields = 1, digits = 0;
+
+	if (v == NULL || *v == '\0')
+		return 0;
+	for (; *v != '\0'; v++) {
+		if (*v == ':') {
+			if (digits == 0 || ++fields > 3)
+				return 0;
+			digits = 0;
+			continue;
+		}
+		if (*v < '0' || *v > '9')
+			return 0;
+		digits++;
+	}
+	/* Well-formed is not enough: port 0 is the CPU, never a front panel. */
+	return digits > 0 && atoi(start) >= 1;
+}
+
 static int run_daemon(const char *bdf, char **confs, int nconf)
 {
 	struct nosaic_bde *b = &attached_dev;
@@ -416,7 +517,7 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	if (nosaic_portmode_apply(0) < 0)
 		return 1;
 
-	unit = nosaic_sdk_attach(b, TD2_DEVICE, TD2_REVISION);
+	unit = nosaic_sdk_attach(b, b->dev_id, b->rev_id);
 	if (unit < 0)
 		return 1;
 	if (nosaic_sdk_soc_init(unit) != 0)
@@ -486,16 +587,58 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	 * against and the value is the logical port behind it.
 	 */
 	{
-		struct tap_spec specs[8];
-		char names[8][32];
-		int ntap = 0, i;
+		struct tap_spec specs[NOSAIC_MAX_TAPS];
+		char names[NOSAIC_MAX_TAPS][32];
+		int ntap = 0, i, declared = 0;
 
-		for (i = 0; i < nosaic_props_count() && ntap < 8; i++) {
+		/* ⚠ COUNT WHAT THE BOARD ASKED FOR, NOT WHAT FITS.
+		 *
+		 * This array was 8 while tapbridge's limit was 64, so a board
+		 * declaring 52 ports got the first 8 of them and was told
+		 * nothing at all -- the ports simply did not exist, and the
+		 * obvious reading was that the declarations had not loaded.
+		 * Counting separately is what makes the difference sayable. */
+		for (i = 0; i < nosaic_props_count(); i++) {
+			if (nosaic_props_name(i) != NULL &&
+			    strncmp(nosaic_props_name(i), "tap_", 4) == 0)
+				declared++;
+		}
+		if (declared > NOSAIC_MAX_TAPS)
+			fprintf(stderr, "nosd: %d tap_<name> properties but at most %d "
+				"can be built; the rest are ignored and their ports "
+				"will not appear\n", declared, NOSAIC_MAX_TAPS);
+
+		for (i = 0; i < nosaic_props_count() && ntap < NOSAIC_MAX_TAPS; i++) {
 			const char *name = nosaic_props_name(i);
 			const char *val = nosaic_props_value(i);
 
 			if (name == NULL || strncmp(name, "tap_", 4) != 0)
 				continue;
+			/*
+			 * ⚠ `tap_` IS A NAMESPACE, NOT A GUARANTEE.
+			 *
+			 * A declaration is tap_<ifname>=<port>[:vlan[:mtu]], and a
+			 * front-panel port is never 0 -- port 0 is the CPU. Anything
+			 * else beginning tap_ parses into nonsense here and is then
+			 * acted on: a board-level tap_mac_base=00:1c:73:da:fe:7a
+			 * became a tap called "mac_base" on port 0 with an MTU of
+			 * 73, bcm_port_frame_max_set refused it, the whole bring-up
+			 * failed with "could not bridge ports to Linux", and the
+			 * supervisor retried that for ever. Four restarts before
+			 * anybody looked, with all 52 taps built and torn down each
+			 * time.
+			 *
+			 * So a value that is not a port is skipped and NAMED. The
+			 * daemon still starts: one unreadable property is not a
+			 * reason to leave every port off the Linux stack, and the
+			 * message says which property rather than which symptom.
+			 */
+			if (!tap_decl_valid(val)) {
+				fprintf(stderr, "nosd: %s=%s is not a tap declaration "
+					"(expected tap_<name>=<port>[:vlan[:mtu]] with "
+					"port >= 1); ignoring it\n", name, val);
+				continue;
+			}
 			snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
 			specs[ntap].name = names[ntap];
 			/* "<port>", "<port>:<vlan>" or "<port>:<vlan>:<mtu>" */
@@ -542,7 +685,10 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				       "interface\n", name);
 				continue;
 			}
-			nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
+			if (nosaic_l3_add_intf(unit, name, port, vlan, mac,
+					       mtu) != 0)
+				fprintf(stderr, "l3: no router interface for %s; "
+					"routes via it cannot be programmed\n", name);
 		}
 
 		/* The front panel. Not fatal if it fails: a switch with a dark
@@ -658,7 +804,16 @@ int main(int argc, char **argv)
 			(char *)"/etc/nosaic/portmap.conf",
 			(char *)"/etc/nosaic/polarity.conf",
 		};
-		return run_daemon(DEFAULT_ASIC_BDF, confs,
+		char found[32];
+		const char *bdf = DEFAULT_ASIC_BDF;
+
+		if (td2_find(found, sizeof(found)) == 0)
+			bdf = found;
+		else
+			fprintf(stderr, "nosd: no %04x:%04x-%04x on the PCI bus; "
+				"trying %s\n", TD2_VENDOR, TD2_DEVICE_FIRST,
+				TD2_DEVICE_LAST, bdf);
+		return run_daemon(bdf, confs,
 				  (int)(sizeof(confs) / sizeof(confs[0])));
 	}
 

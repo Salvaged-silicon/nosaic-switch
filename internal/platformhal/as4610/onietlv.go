@@ -16,12 +16,17 @@ import (
 // switch can say what it is from its own EEPROM, the way the Arista boards
 // read a prefdl.
 //
-// ⚠ NOT YET READ OFF THIS BOARD. The device tree calls the part at i2c-9 0x50
-// "board_eeprom" and it is a 24c04, which is the size and place ONIE's own
-// tooling expects; that it holds TlvInfo is inference from the box being an
-// ONIE whitebox, not observation. If it turns out to hold something else, the
-// header check below fails cleanly and says what it found rather than
-// returning a plausible model name made of the wrong bytes.
+// Confirmed on the hardware, 2026-09-16. This was written against an inference
+// -- the part at i2c-9 0x50 is a 24c04 in the place ONIE's tooling expects, so
+// TlvInfo was the reasonable guess -- and the spare unit's U-Boot prints
+//
+//	EEPROM: TlvInfo v1 len=160
+//
+// during boot, which settles both the format and the version this decodes.
+//
+// The header check below still fails cleanly and says what it found rather
+// than returning a plausible model name made of the wrong bytes, because one
+// unit having it proves nothing about a variant that does not.
 const (
 	onieHeaderID   = "TlvInfo\x00"
 	onieHeaderLen  = 11 // 8 bytes of id, one version, two of length

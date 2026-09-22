@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	// for a driver gets one only if it is here, which keeps board data
 	// honest about what exists.
 	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/as4610"
+	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/n3172tq" // registers the "n3172tq" driver
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/scd"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/sff"
 )
@@ -32,6 +34,11 @@ const platformUsage = `usage: nosaic platform <command>
                        run the cooling loop: fans track the hottest sensor,
                        fail to full cooling, and are left at full on exit
   beacon [on|off]      the blue locator, for finding this box in a rack
+  linkmap              which ports the chip will actually egress to
+  i2c <bus> <addr> <reg> [count]
+                       read raw i2c registers
+  i2c write <bus> <addr> <reg> <value>
+                       write one -- bring-up only, and read the warning
   schan selftest       prove S-Channel reaches the chip (read-only)
   schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed
@@ -73,8 +80,17 @@ func platformCmd(args []string) error {
 		return releaseASIC(hal)
 	case "asic":
 		return probeASIC(hal)
+	case "smbus":
+		return smbusCmd(hal, rest[1:])
+	case "linkmap":
+		return linkmapCmd(b, args[1:])
 	case "schan":
 		return schanCmd(b, rest[1:])
+	case "i2c":
+		// Read-only, and deliberately not part of any board's driver: it
+		// is the instrument the cage-expander map is derived WITH, not a
+		// capability a board has. See i2craw.go.
+		return i2cReadCmd(rest[1:])
 	case "retimer":
 		// The repeater between the ASIC and the cages behind it. Reports by
 		// default and programs only when asked, because the values it writes
@@ -152,11 +168,12 @@ var installedBoardFile = "/etc/nosaic/board.yml"
 
 func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
 	hal, err := platformhal.Open(b.PlatformHAL.Driver, platformhal.Config{
-		PCI:     b.PlatformHAL.PCI,
-		ASICPCI: b.PlatformHAL.ASICPCI,
-		SMBus:   b.PlatformHAL.SMBus,
-		Cages:   b.PlatformHAL.Cages,
-		Resets:  b.PlatformHAL.Resets,
+		PCI:       b.PlatformHAL.PCI,
+		ASICPCI:   b.PlatformHAL.ASICPCI,
+		SMBus:     b.PlatformHAL.SMBus,
+		Cages:     b.PlatformHAL.Cages,
+		Resets:    b.PlatformHAL.Resets,
+		BoardData: b.PlatformHAL.N3172TQ,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -301,6 +318,18 @@ func releaseASIC(hal platformhal.HAL) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := hal.ReleaseSwitchChip(ctx); err != nil {
+		// ⚠ A BOARD THAT HAS NOTHING TO RELEASE IS NOT A FAILURE.
+		//
+		// The HAL contract says every method may answer ErrUnsupported, and a
+		// board whose switch chip is already on the PCI bus -- with nothing we
+		// can reach holding it in reset -- answers exactly that. This runs as
+		// a generated oneshot that nosd depends on, so returning the refusal
+		// takes the service database down with it and the datapath never
+		// starts: the truthful answer would brick the boot.
+		if errors.Is(err, platformhal.ErrUnsupported) {
+			fmt.Println("this board's switch chip needs no releasing; nothing to do.")
+			return nil
+		}
 		return err
 	}
 	fmt.Println("the switch chip is on the bus.")
@@ -666,10 +695,11 @@ func showModule(hal platformhal.HAL, cage int) error {
 	if m.SerialNumber != "" {
 		fmt.Fprintf(w, "serial\t%s\n", m.SerialNumber)
 	}
-	if m.TempOK {
+	dead := m.DiagnosticsAllZero()
+	if m.TempOK && !dead {
 		fmt.Fprintf(w, "temperature\t%.1f C\n", float64(m.TempMilliC)/1000)
 	}
-	if m.VccOK {
+	if m.VccOK && !dead {
 		fmt.Fprintf(w, "supply\t%.2f V\n", float64(m.VccMV)/1000)
 	}
 	if err := w.Flush(); err != nil {
@@ -678,6 +708,13 @@ func showModule(hal platformhal.HAL, cage int) error {
 	if len(m.Lanes) == 0 {
 		fmt.Println("\nthis module reports no diagnostics")
 		return nil
+	}
+
+	if dead {
+		fmt.Println("\nthis module implements diagnostics and reports all zeroes in")
+		fmt.Println("them, temperature included -- so no light level is available.")
+		fmt.Println("The zeroes below are what it says, not a measurement, and say")
+		fmt.Println("nothing about the link. Use `nosaic show ports` for that.")
 	}
 
 	fmt.Println()
@@ -724,6 +761,75 @@ func dumpModule(hal platformhal.HAL, cage int) error {
 			}
 			fmt.Println()
 		}
+	}
+	return nil
+}
+
+// smbusCmd reads one register off the board controller's SMBus.
+//
+// Reads only. There is no write here on purpose: the devices on this bus are
+// sensors, power controllers and signal conditioners on a switch that is
+// forwarding, and a diagnostic that can only look cannot be the thing that
+// took the box down.
+func smbusCmd(hal platformhal.HAL, args []string) error {
+	r, ok := hal.(interface {
+		SMBusReadReg(accel, bus, addr, reg int) (byte, error)
+	})
+	if !ok {
+		return fmt.Errorf("%w: this board has no SMBus to read", platformhal.ErrUnsupported)
+	}
+	if len(args) < 4 || args[0] != "read" {
+		return fmt.Errorf("usage: nosaic platform smbus read <accel> <bus> <addr> <reg> [count]\n" +
+			"  addr and reg are hex; count defaults to 1\n" +
+			"  e.g. smbus read 1 7 0x58 0x00 8")
+	}
+	num := func(s string) (int, error) {
+		return func() (int, error) {
+			var v int64
+			var err error
+			if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+				v, err = strconv.ParseInt(s[2:], 16, 32)
+			} else {
+				v, err = strconv.ParseInt(s, 10, 32)
+			}
+			return int(v), err
+		}()
+	}
+	accel, err := num(args[1])
+	if err != nil {
+		return fmt.Errorf("accelerator %q: %w", args[1], err)
+	}
+	bus, err := num(args[2])
+	if err != nil {
+		return fmt.Errorf("bus %q: %w", args[2], err)
+	}
+	addr, err := num(args[3])
+	if err != nil {
+		return fmt.Errorf("address %q: %w", args[3], err)
+	}
+	reg := 0
+	if len(args) > 4 {
+		if reg, err = num(args[4]); err != nil {
+			return fmt.Errorf("register %q: %w", args[4], err)
+		}
+	}
+	count := 1
+	if len(args) > 5 {
+		if count, err = num(args[5]); err != nil {
+			return fmt.Errorf("count %q: %w", args[5], err)
+		}
+	}
+
+	for i := 0; i < count; i++ {
+		v, err := r.SMBusReadReg(accel, bus, addr, reg+i)
+		if err != nil {
+			// Reported per register rather than aborting: on a bus where the
+			// question is whether anything answers at all, which registers
+			// failed is the answer.
+			fmt.Printf("accel %d bus %d %#02x reg %#02x: %v\n", accel, bus, addr, reg+i, err)
+			continue
+		}
+		fmt.Printf("accel %d bus %d %#02x reg %#02x = %#02x\n", accel, bus, addr, reg+i, v)
 	}
 	return nil
 }

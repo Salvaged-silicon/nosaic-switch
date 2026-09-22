@@ -97,6 +97,6 @@ phybus.o: phybus.c phybus.h ../scdmdio/scdmdio.h
 ../common/props.o: ../common/props.c ../common/props.h
 
 clean:
-	rm -f nosd-td2 *.o ../scdmdio/*.o
+	rm -f nosd-td2 *.o ../common/*.o ../scdmdio/*.o
 
 .PHONY: clean strip

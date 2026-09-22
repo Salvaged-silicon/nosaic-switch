@@ -127,8 +127,13 @@ interrupt    armed; none in 100 ms, which is expected on an idle chip
 
 It touches no chip state, so it is safe on a switch that is running, and it
 answers the four questions that have to be yes before the SDK is worth
-involving. The chip line above is what the register *should* say — `0xb340` is
-Helix4's device id — and is the one line in that block nobody has seen.
+involving.
+
+The chip line is the one to watch, and as of 2026-09-16 the number in it is no
+longer a guess: the spare unit's own boot prints `SKU: BCM56340 (0xb340)` and
+`Dev 0xb340 rev 0x01, BCM56340_A0`. So `0xb340` is what this hardware really
+reports — what remains unseen is whether *our* BDE can read it back out of the
+CMIC window.
 
 The chip support behind it is already there. OpenBCM 6.5.24 — the same recipe
 the other three datapath packages use — carries Helix4:

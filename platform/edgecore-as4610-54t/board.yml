@@ -215,6 +215,13 @@ thermal:
   max_c: 70
   slew_down_percent: 5
 
+# ⚠ The two units in this lab do not have the same memory. This file and the
+# device tree state 768 MB, measured on the racked unit; the spare's kernel
+# reports about 2 GB. Same model, same U-Boot, different fitment -- so nothing
+# here should infer a memory size from the model. The reserved DMA region at
+# 0x88000000 is inside both, which is why it is stated as an address rather
+# than as a fraction of RAM.
+
 notes: >
   The CPU is inside the switch chip. A BCM56340's iProc block is two Cortex-A9
   cores, and the CMIC they reach the rest of the chip through is a platform

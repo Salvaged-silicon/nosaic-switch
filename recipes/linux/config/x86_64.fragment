@@ -34,3 +34,183 @@ CONFIG_EEPROM_AT24=y
 # configuration check is what caught it -- a symbol asked for and not set
 # produces a kernel that boots and cannot do the thing you configured.
 CONFIG_MMC_SDHCI_ACPI=y
+
+# --- booting as an EFI application ---------------------------------------
+#
+# Asked for explicitly although x86_64_defconfig already sets both, because on
+# a board with no vendor bootloader these are not a convenience: they are the
+# whole boot path. CONFIG_EFI_STUB is what makes a bzImage a valid PE32+
+# application, so the firmware can launch the kernel itself and there is no
+# bootloader on the disk to install, configure or corrupt.
+#
+# A symbol that silently stops being set is exactly what the fragment check
+# exists to catch. Without the stub the image builds, the disk lays out, the
+# EFI system partition is populated -- and the firmware reports the kernel as
+# not a valid image, which reads as a corrupt file rather than as a kernel
+# built without a feature.
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+
+# ⚠ EFI_MIXED IS LEFT ON, AND THAT IS A BISECT RESULT RATHER THAN A PREFERENCE.
+#
+# Turning it off is tempting: the option exists only for 32-bit firmware
+# loading a 64-bit kernel, which is not any boot NOSaic does, and it puts a
+# branch on the last instruction before long mode whose fallback loads %esp
+# from efi32_boot_sp -- a stack pointer only ever set when the 32-bit EFI stub
+# was the entry. On the Nexus 3172TQ that branch was taken for real, because
+# its loader was overwriting the tail of .data and efi_is64 stopped reading 1.
+#
+# But the cure for that was on the NBI side (pad the segment so the loader's
+# params page lands clear of .data), and with that in place efi_is64 reads
+# correctly and the branch is never taken. Turning the option off as well
+# changed head_64.S codegen -- which is exactly where the NBI shim patches --
+# and the resulting kernel hung in early boot, mid-line in the e820 user-table
+# print, with no reset and nothing further on the console. The shim's own
+# asserts passed, so nothing detected a mismatch.
+#
+# So: left at its default until somebody understands that hang. It is not
+# load-bearing either way, and a config change that costs a boot for no
+# benefit is not worth carrying.
+
+# The variable store, writable, so the switch can name itself in the firmware's
+# boot order once it is running.
+#
+# On a board installed over a vendor OS there was no EFI system partition
+# before ours, so there is no boot entry pointing at one: the first boot goes
+# through the firmware's own shell. Creating a permanent entry from a console
+# session is fiddly and has to be redone after a firmware reset; doing it from
+# the running switch is a command. Without this there is no /sys/firmware/efi/
+# efivars and nothing can be written at all.
+CONFIG_EFIVAR_FS=y
+
+# Intel igb, for the DH89xxCC "Cave Creek" integrated GbE.
+#
+# ⚠ NOT IN x86_64_defconfig, unlike e1000e and tg3. A board whose management
+# port is one of these comes up with no management interface at all, and
+# nothing in dmesg mentions a network device -- so the obvious reading is a
+# dead port.
+#
+# The Cisco Nexus 3172TQ has four of them on the PCH at 01:00.1-.4. Two are
+# 8086:0438, which is E1000_DEV_ID_DH89XXCC_SGMII and is in igb's table. Two
+# are 8086:0436, which is in no Intel driver's table in 6.12 -- see
+# platform/cisco-n3172tq/docs/hardware.md, because which of the four is the
+# management port is not yet established.
+CONFIG_IGB=y
+
+# --- environmentals: reaching the board's sensors, fans and PSUs -----------
+#
+# ⚠ THE SMBus CONTROLLER ON A CISCO NEXUS IS THE i801, NOT THE PIIX4.
+#
+# Both are Intel and they are different drivers. I2C_PIIX4 above is for the
+# AMD FCH on the Arista boards; the DH89xxCC "Cave Creek" PCH on the Nexus
+# 3172TQ is an i801 at 00:1f.3, and the vendor's own kernel says so:
+#
+#     i801_smbus 0000:00:1f.3: enabling device (0001 -> 0003)
+#
+# x86_64_defconfig happens to set this, which is the only reason the board was
+# not found to have no platform bus at all. Stated here because it is the
+# entire environmental path on that switch: without it there is no adapter, no
+# mux behind it, and nothing to read a temperature from.
+CONFIG_I2C_I801=y
+
+# ⚠ AND EVERYTHING IS BEHIND ONE MUX, SO THE MUX IS NOT OPTIONAL.
+#
+# The Nexus exposes a single i2c adapter and puts the sensors, the fan
+# controller, the PSUs and the board SPROM behind a mux at 0x70, selected per
+# access. Caught in the vendor's own log:
+#
+#     pfmclnt - failed to set mux addr 0x70 ch 2 err I2C_ERR_NO_RESPONSE
+#
+# ⚠ AND ON x86 THE DRIVER WILL NOT BIND BY ITSELF, WHICH IS NOT WHAT THE
+#   POWERPC FRAGMENT'S COPY OF THIS PAIR IMPLIES.
+#
+# A PowerPC or ARM board describes its i2c devices in the device tree, so the
+# mux is instantiated at boot and its channels appear as further adapters. x86
+# describes itself through ACPI, and nothing in this board's ACPI mentions an
+# i2c mux -- so the driver is present, matches nothing, and no per-channel
+# adapter is created.
+#
+# That is fine for both things we need:
+#
+#   * probing is done over i2c-dev by writing the channel select to 0x70 by
+#     hand, which needs no mux driver at all -- see
+#     platform/cisco-n3172tq/tools/mki2cmap.sh;
+#   * a platform HAL instantiates the mux explicitly, through
+#     /sys/bus/i2c/devices/i2c-0/new_device, and THEN it needs this driver.
+#
+# So the driver ships for the second, and its absence would be discovered at
+# exactly the wrong moment -- when the HAL exists and the channels do not
+# appear.
+CONFIG_I2C_MUX=y
+CONFIG_I2C_MUX_PCA954x=y
+
+# ⚠ AND THE MUX DRIVER NEEDS GPIOLIB ON x86, WHICH NO x86 DEFCONFIG SETS.
+#
+# i2c-mux-pca954x depends on GPIOLIB -- it can drive a reset line -- and so
+# does the pca953x expander below. On an embedded architecture GPIOLIB comes
+# with the defconfig and the dependency is invisible; x86_64_defconfig does not
+# set it, and the powerpc fragment beside this one gets away with asking for
+# the same two drivers for exactly that reason.
+#
+# Found by the fragment check rather than on hardware, which is the whole
+# argument for that check: without it both drivers are dropped silently,
+# nothing binds to the mux, and the board presents as having one i2c device on
+# it -- the mux itself -- and no sensors behind it. That is indistinguishable
+# from a board whose sensors are somewhere else entirely, and it is the
+# conclusion a bring-up would have reached.
+CONFIG_GPIOLIB=y
+
+# The hwmon core, so a bound sensor appears as something to read rather than
+# as a bare i2c address.
+CONFIG_HWMON=y
+
+# ⚠ A SHORTLIST, NOT AN IDENTIFICATION, AND AS MODULES FOR THAT REASON.
+#
+# The Nexus's four sensors are enumerated by Cisco's own board controller
+# rather than probed, so the vendor's software never names the parts and
+# neither does anything else we have. What the chips actually are has to be
+# read off the bus, and the only time that bus is both reachable and not owned
+# by somebody else's driver is a netboot -- see
+# platform/cisco-n3172tq/docs/todo.md.
+#
+# These are the families that turn up on this class of board, including the
+# two the sibling PowerPC board actually has. As modules they cost nothing in
+# the image and let identification proceed by binding one and seeing whether
+# the readings are sane, instead of by guessing in a kernel rebuild each time.
+# ADT7462 -- the one that matters on the Nexus 3172TQ, and it is not a guess.
+#
+# NX-OS's own i2c transaction history names it. /proc/i2c_evhist_dev is a
+# directory of per-device-type histories, and the live ones say:
+#
+#   NUOVA_I2C_ADT7462   bus 1  addr 0x58
+#   NUOVA_I2C_AT24C512  bus 1  addr 0x52    (board ID PROM)
+#   NUOVA_I2C_PS        bus 3 and 4  0x5b   (the two supplies, PMBus with PEC)
+#   NUOVA_I2C_PS_SPROM  bus 3 and 4  0x53
+#   NUOVA_I2C_PCA9539   0x74 / 0x76         (GPIO expanders)
+#
+# The ADT7462 is a thermal monitor AND a fan controller in one part -- four
+# temperature channels, four PWM outputs, eight tach inputs -- so it is both
+# the Front-Left/Front-Right/Back sensors `show environment temperature`
+# reports and the fan zone it drives. Its address range is 0x58-0x5c, which is
+# why probing 0x48-0x4f for an LM75 finds nothing on this board and why 0x58
+# looks like a phantom to a register-0 read: the vendor reads it at 0x98-0x9b.
+CONFIG_SENSORS_ADT7462=m
+CONFIG_SENSORS_LM75=m
+CONFIG_SENSORS_LM90=m
+CONFIG_SENSORS_LM77=m
+CONFIG_SENSORS_MAX6697=m
+CONFIG_SENSORS_TMP102=m
+CONFIG_SENSORS_TMP401=m
+CONFIG_SENSORS_TMP421=m
+
+# PMBus, which is how a modern hot-swap PSU reports voltage, current and its
+# own fan. The Nexus models PSU presence, health, redundancy mode AND the
+# PSU's own fan separately, and that detail has to come from the supply
+# itself; presence alone is a GPIO bit.
+CONFIG_PMBUS=m
+CONFIG_SENSORS_PMBUS=m
+
+# GPIO expanders, which is where PSU presence and board control lines sit on a
+# board that has no FPGA -- and this one has none: no IOFPGA, no MIFPGA, all
+# three FPGA BAR parameters read 0.
+CONFIG_GPIO_PCA953X=m

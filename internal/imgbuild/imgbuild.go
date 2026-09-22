@@ -177,7 +177,11 @@ func Build(o Options) (*Result, error) {
 		return nil, err
 	}
 
-	disk, fitOff, err := BuildDisk(o, sqsh)
+	// The kernel and the initramfs go to BuildDisk as well as to the output
+	// directory. On a board whose firmware is the bootloader they are not
+	// deployed beside the image -- they are files inside its first partition,
+	// because that partition is what UEFI reads.
+	disk, fitOff, err := BuildDisk(o, sqsh, kernel, initramfs)
 	if err != nil {
 		return nil, err
 	}
@@ -823,6 +827,40 @@ poweroff -f
 			After:   netAfter,
 			Restart: "never",
 		})
+
+		/*
+		 * And a reconciler, because the edge above is not enough.
+		 *
+		 * The `after nosd` edge works when s6-rc drives the transition --
+		 * `s6-rc -u change default` stops network-config with the datapath
+		 * and re-runs it after. It does nothing for the case that actually
+		 * happens unattended: nosd is supervised with restart:always, so
+		 * when it crashes the SUPERVISOR restarts it directly and s6-rc is
+		 * never involved. The taps are destroyed and recreated bare, the
+		 * loopback address goes with them, and the oneshot that would put
+		 * them back is still marked done from boot.
+		 *
+		 * A switch in that state boots correctly, runs for days, and then
+		 * silently stops routing at a moment nothing logged -- which is how
+		 * it was found: twice, both times read as something else.
+		 *
+		 * So this asks what the state IS on a timer rather than waiting for
+		 * an event, which is the same conclusion the 7050TX-64's port
+		 * hotplug reached: an event can be missed entirely, and reacting to
+		 * one is not enough on its own.
+		 *
+		 * NOSAIC_NET_WAIT=0 because the waiting was the boot-time job and
+		 * is already over; this converges in one pass and then reconciles.
+		 * A pass with nothing to do prints nothing, so a healthy switch
+		 * shows no periodic noise in its log.
+		 */
+		services = append(services, svcgen.Service{
+			Name: "network-reconcile",
+			Exec: "/bin/sh -c \"NOSAIC_NET_RECONCILE=30 NOSAIC_NET_WAIT=0 " +
+				"/etc/nosaic/apply-network.sh\"",
+			After:   []string{"network-config"},
+			Restart: "always",
+		})
 	}
 
 	// Confirming a trial boot, which is what makes a bad upgrade roll back
@@ -898,6 +936,23 @@ poweroff -f
 		})
 	}
 
+	// The board's i2c parts, declared because x86 has no device tree to
+	// declare them. Before the datapath and before anything that reads a
+	// sensor: a hwmon entry that appears late is indistinguishable from one
+	// that never appears. See i2cDevicesScript.
+	haveI2C := false
+	if script := i2cDevicesScript(o.Board); script != "" {
+		if err := writeFile(rootfs, "/etc/nosaic/i2c-devices.sh", script, 0o755); err != nil {
+			return err
+		}
+		services = append(services, svcgen.Service{
+			Name:    "i2c-devices",
+			Exec:    "/etc/nosaic/i2c-devices.sh",
+			Restart: "never",
+		})
+		haveI2C = true
+	}
+
 	// The switch chip, released from the board controller's reset.
 	//
 	// A separate oneshot rather than something the datapath does for itself,
@@ -967,7 +1022,14 @@ poweroff -f
 	// Separate from asic-release because it is a different question -- one
 	// concerns the switch chip, the other the optics in front of it -- and a
 	// board might well want one without the other.
-	if haveGoCLI && o.Board.PlatformHAL.Driver != "" {
+	//
+	// ⚠ GATED ON THE CAGE TABLE, NOT JUST ON HAVING A DRIVER. A board that
+	// declares a HAL but no cages has no transmitters to turn on and no
+	// repeater in front of them, so `nosaic platform tx all on` answers
+	// ErrUnsupported -- and an oneshot that exits non-zero here takes nosd
+	// with it, exactly as the repeater comment below describes. Declaring a
+	// HAL driver must not cost a board its datapath.
+	if haveGoCLI && o.Board.PlatformHAL.Driver != "" && o.Board.PlatformHAL.Cages != nil {
 		// The signal repeater in front of some cages, before the cages.
 		//
 		// A board with none says so and this is a no-op; a board with one and
@@ -1059,13 +1121,18 @@ poweroff -f
 		if o.Board.PlatformHAL.ASICPCI != "" {
 			after = append(after, "asic-irq")
 		}
+		// The board's sensors before the datapath, so a fan controller that
+		// exists is driving fans by the time the chip starts making heat.
+		if haveI2C {
+			after = append(after, "i2c-devices")
+		}
 		// The optics before the datapath: nosd reads link state as it brings
 		// ports up, and every port reads down until the transmitters are on.
 		//
 		// The repeater before both, and this ordering is not cosmetic: the
 		// SerDes trains when the datapath brings a port up, and a repeater
 		// programmed afterwards conditions a link that has already given up.
-		if haveGoCLI && o.Board.PlatformHAL.Driver != "" {
+		if haveGoCLI && o.Board.PlatformHAL.Driver != "" && o.Board.PlatformHAL.Cages != nil {
 			after = append(after, "retimer", "transceivers")
 		} else if o.Board.FrontPanelInit != "" {
 			after = append(after, "transceivers")

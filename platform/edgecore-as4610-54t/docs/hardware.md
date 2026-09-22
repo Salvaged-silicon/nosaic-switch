@@ -444,6 +444,59 @@ decoded as its lower one — plausible numbers rather than an error. The driver
 refuses a page select by name. SFPs report everything; QSFPs lose their vendor
 strings and keep their light levels.
 
+## The PoE variant, and what it changes
+
+⚠ **The unit in this lab is a `4610-54P-OI-AC-F` — the PoE model — and this board
+directory is named `-54t`.** That is a naming question still open; see
+[todo.md](todo.md). What follows is the technical delta, which is small and
+bounded.
+
+Open Network Linux and BISDN both build the two from one base and differ in
+exactly two places. Diffing their `arm-accton-as4610-54t.dts` against
+`arm-accton-as4610-54p.dts` gives the whole of it:
+
+1. the `model` and `compatible` strings — `accton,as4610_54T` against
+   `accton,as4610_54P`
+2. a `poe-pse` node, 48 ports across 7 PSE devices
+
+Everything else — the ASIC, the CPU, the i2c topology, the optics, the flash
+layout, the boot chain — is identical. **The ONIE platform string is the same
+for both**, `arm-accton_as4610_54-r0`, which is what BISDN's machine
+configuration supports and what `onie-sysinfo -p` reports. So the installer
+path in [install.md](install.md) is unaffected.
+
+The PoE node looks like this, one entry per front-panel port:
+
+```
+&uart2 {
+	poe-pse {
+		compatible = "accton,as4610-poe-pse";
+		port@0 { reg = <0>; brcm,device = <6>; brcm,primary-channel = <6>; };
+		...
+		port@47 { ... };
+	};
+};
+```
+
+### ⚠ It hangs off uart2, which this port disables
+
+That is the detail worth catching early. `poe-pse` is a child of **`&uart2`** —
+`serial@18037000` — and this board's device tree disables that node, because
+mainline has no driver for the SoC's AXI clock tree and an unclocked UART does
+not probe.
+
+So PoE here is blocked behind the same missing clock driver as the QSPI and the
+watchdog, and the fix is the same one: BISDN's
+`10-06-clk-clk-xgs-iproc.patch`. There is no separate PoE blocker to find.
+
+Beyond the clock, PoE would additionally need the PSE controller driver —
+`bcm591xx-poe-mcu-mod` in BISDN's machine configuration, which is out of
+mainline — and the port map above. **None of it is needed to boot or to
+forward**, so it belongs in the platform HAL later rather than in bring-up.
+
+The one thing to be careful about physically: a `-54P` has a much larger power
+supply than a `-54T`, and its PSU rating has not been read off this unit.
+
 ## Quirks
 
 **The real-time clock is deliberately disabled, and enabling it can stop the
@@ -487,6 +540,40 @@ the U-Boot environment, and the U-Boot binary's capabilities (dumped from
 `mtd0` and read). The FIT addresses and digest come from the vendor's own
 `arm-accton-as4610-54-r0.itb`, and the device tree in this directory is derived
 from the DTB extracted out of it.
+
+**Measured a second time, on the spare unit's console**, 2026-09-16 — a full
+boot captured at 115200 on the lab's console server. It confirms four things
+this port had derived rather than observed:
+
+| | What the boot prints |
+|---|---|
+| kernel load and entry | `Load Address: 61008000   Entry Point: 61008000` |
+| the chip and its device id | `SKU: BCM56340 (0xb340)`, `Dev 0xb340 rev 0x01, BCM56340_A0` |
+| the board EEPROM's format | `EEPROM: TlvInfo v1 len=160` |
+| the CPU | `CPU: ARMv7 Processor`, `maxcpus=2`, `Machine: Broadcom iProc` |
+
+`0xb340` is what `nosd-helix4 --probe` expects to read back out of the CMIC's
+id register, and it had never been seen from this hardware before. The TlvInfo
+line settles what the identity EEPROM holds, which the HAL's decoder had been
+written against an inference.
+
+⚠ **The two units do not have the same memory.** This board's `board.yml` and
+device tree state 768 MB, measured on the racked unit. The spare's kernel
+reports `Memory: 1984164k/1984164k available` — about 2 GB. Same model, same
+U-Boot, different fitment. Anything that assumes a memory size from the model
+is wrong on one of them, and the reserved DMA region at `0x88000000` sits
+inside both.
+
+Two more observations from the stock software, worth having when ours misbehaves
+in the same places. Its BDE takes a **16 MiB** DMA pool where this port reserves
+64 MiB, and its kernel reserves CMA at `0x7f800000`. And it logs
+
+```
+BUG: mapping for 0x18000000 at 0xf0000000 out of vmalloc space
+```
+
+— the iProc peripheral window, which is exactly the region `datapath/helix4/sdk.c`
+refuses to map and reports by address instead.
 
 **Read out of upstream source**: which mainline drivers exist and what they
 match, from Linux 6.12.105; the SDK's Helix4 support and its iProc platform

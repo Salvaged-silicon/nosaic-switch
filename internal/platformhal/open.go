@@ -28,6 +28,16 @@ type Config struct {
 	// exclusive with SMBus in practice, though nothing enforces that: a
 	// driver asks for the one it needs and says so when it is absent.
 	I2C *I2CMap
+
+	// BoardData is whatever one board's own driver needs, in that driver's
+	// own type.
+	//
+	// An `any` rather than a typed field per board, deliberately. SMBus and
+	// Cages above are here because two Arista boards genuinely share a shape;
+	// a field per board is how a third board's sensor table becomes a shape
+	// two boards then have to agree on. A driver asserts its own type out of
+	// this and a mismatch is that driver's error to report, by name.
+	BoardData any
 }
 
 // Opener constructs a board's HAL from its configuration.
