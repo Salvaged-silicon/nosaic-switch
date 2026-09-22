@@ -48,6 +48,41 @@ and how it was proven is in
 
 ## Required — the switch does not come up working without these
 
+### A port can link and carry nothing until the datapath is restarted
+
+Caught in the act on 2026-09-22, on Ethernet49, by the detector in
+`tapbridge.c` — the first specimen with numbers rather than a recollection.
+
+```
+et49  link=1  tx-ok=12596  tx-err=0  out-uc=0  out-nuc=0  in-uc=0  in-nuc=0
+                                     in-err=0  out-disc=0
+et52  link=1  tx-ok=13524  tx-err=0  out-uc=137 out-nuc=13401   (the control)
+```
+
+On the healthy port `out-uc + out-nuc` tracks `tx-ok` exactly. On Ethernet49
+the chip accepted **12,596 frames and egressed none**, reporting no transmit
+error and no discard. The VLAN was right (`vid 1049 members 0 49 untagged 49`),
+the address and route were installed, OSPF was up on the interface and sending
+hellos, and the module reported no LOS. Nothing above the chip was wrong.
+
+A `nosaic show ports` and log capture was taken first, as the detector's
+message asks. Restarting the datapath cleared it immediately and completely:
+the same port went to `in-uc=38 in-nuc=45 out-uc=42 out-nuc=54`, ARP resolved,
+ping ran 4/4 at 0.44 ms, and OSPF reached Full.
+
+**A new observation worth chasing.** This port was initialised in a state no
+working port was: its cage was **empty at boot** — the optic went in afterwards
+— and the far end was also down at the time, so it had neither a module nor a
+link when the datapath came up. That is the same shape as the 7050TX-64's
+late-cabled ports, which were fixed by making the bring-up level-triggered and
+reconciled rather than done once at init. Worth testing directly: boot with a
+cage empty, insert the optic, and see whether the port can ever transmit
+without a restart.
+
+Until then the detector is the mitigation — it names the port and says the
+restart clears it, which is the difference between a five-minute fix and the
+day this cost when it was mistaken for a dead far end.
+
 ### The control plane's ceiling is unmeasured
 
 **This was the top item on this list and is largely solved.** It is kept
