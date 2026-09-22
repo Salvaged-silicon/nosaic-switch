@@ -1,0 +1,99 @@
+# Arista DCS-7150S-52 — Intel/Fulcrum FM6000 "Alta" (SID "SantaRosa", platform "raven").
+#
+# The first board in this tree that is not Broadcom. Nothing in datapath/ applies
+# to it: there is no CMIC, no BDE, no openbcm SDK, and no SDK of any kind that
+# may be linked -- libFocalpointSDK.so is proprietary and stays out of this
+# repository. The datapath for this chip is register-level code we write.
+#
+# STATUS: planned. Nothing here has been built or booted. What is recorded below
+# was read off the running unit (EOS 4.16.8M, hostname sw7150-lab) during the
+# reverse engineering that precedes this port, and is transcribed rather than
+# re-derived -- see docs/hardware.md for what is measured and what is assumed.
+
+id: arista-7150s-52
+vendor: arista
+model: 7150s-52
+
+arch: x86_64
+asic: fm6000
+boot: aboot
+
+# Read off this chassis's own prefdl on 2026-09-22: HwEpoch 01.00.
+aboot_max_hwepoch: "1"
+
+# Console. 9600 is what Aboot and EOS use here (CONSOLESPEED=9600 console=ttyS0
+# on the live kernel command line), and a getty at any other speed makes
+# everything after it unreadable.
+console: ttyS0
+console_baud: 9600
+
+# minimal, matching the sibling Arista board: s6 rather than systemd. Not yet
+# built for this board, so this is the intent and not a measurement.
+profile: minimal
+kernel: ""
+
+# Flash layout. /dev/sda1 is 1.5 GB with 511 MB free as of 2026-09-22, after
+# twenty-five old EdgeNOS builds came off it. EOS-4.16.8M.swi is 416 MB of what
+# remains and stays: it is the only way back and the last EOS that supports this
+# platform.
+#
+# The sibling 7050SX2 gives each A/B slot 768 MiB, which does not fit here even
+# once. The numbers below are left unset until a minimal x86_64 image has been
+# built for this board and measured -- choosing them from an estimate is how the
+# sibling board ended up declaring a profile it was not running. There is about
+# another 530 MB reclaimable from reverse-engineering traces if two slots and a
+# data partition do not fit in 511 MB.
+# boot_mib:
+# slot_mib:
+# data_mib:
+
+# Deliberately not stated yet:
+#
+#   kernel_params  EOS passes dmamem=48M on this platform and the box has no
+#                  IOMMU (BIOS-disabled, zero iommu_groups), so the FM6000's
+#                  packet DMA needs a reserved region the same way the Broadcom
+#                  boards do. The address that region can live at depends on
+#                  where this board's ~3978 MB of RAM ends, and guessing it
+#                  produces a kernel that dies before the console is up.
+#
+#   platform_hal   The SCD is an Arastra 3475:0001 at 04:00.0 with a 256 KiB
+#                  BAR0, and internal/platformhal/scd already carries the note
+#                  that its version register is the one "the 7150 uses". Its
+#                  reset, LED and SMBus layout on THIS board is not the sibling
+#                  boards' layout and none of it has been driven by our code.
+#                  A wrong reset bit here holds the ASIC down or lets it go at
+#                  the wrong time.
+#
+#   thermal        No sensor has been read by our code on this box.
+
+status: planned
+
+notes: >
+  The FM6000 is held in reset by the SCD from power-on and does not enumerate on
+  a bare kernel. Until the SCD is told to release it, 02:00.0 is not on the bus
+  to be found -- a kernel that sees no ASIC here is the expected state, not a
+  fault.
+
+  The chip is 8086:155b (Fulcrum 1823:1770) behind the RS780's PCIe port 0, with
+  its own BAR0; the packet DMA block is at BAR0 byte offset 0x5000. The SCD is
+  a separate endpoint at 04:00.0, BAR0 at 0xe1000000, 256 KiB, word-addressed.
+
+  This board reboots badly. EOS does not use the hardware reset at all -- it
+  kexecs, and its halt script says so in as many words. Every hardware reset
+  path tried from a bare kernel on this box hangs. Plan on the power controller
+  for recovery and treat a working software reboot as an open question rather
+  than a given.
+
+  The management NIC is a BCM5785 southbridge function (14e4:1699, tg3) behind
+  a BCM50610 PHY on RGMII. Arista's own boot0 carries a bug note that ma1 loses
+  its MAC mailbox across a kexec from EOS, so a MAC read after one is not the
+  board's. The real one is in prefdl, and on this chassis it reads
+  MacAddrBase 44:4c:a8:31:5d:aa.
+
+  prefdl also carries FdlVariables {'AltaVdd':1.01,'AltaVdds':1.0} -- the
+  ASIC's core supply voltages, which are per-board data and not a constant.
+  Whatever sets the Alta rails has to read them from here rather than assume.
+
+  The front panel is 52 SFP+ cages, all 10G, numbered 1..52. There are no
+  QSFP cages and no external PHYs to load firmware into: every port is direct
+  serdes off the FM6000.
