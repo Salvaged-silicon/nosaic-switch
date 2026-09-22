@@ -36,8 +36,9 @@ const schanUsage = `usage: nosaic platform schan <command>
 
   selftest             read TOP_DEV_REV_ID and check it against the known value
   read <addr>          issue one READ_REG_CMD and print the response
+  readmem <addr>       issue one READ_MEM_CMD and print the response
 
-options for read:
+options for read/readmem:
   --block N            target block id (default %d, TOP)
   --acc N              access/ring field (default %d)
   --dlen N             bytes to read (default 4)
@@ -72,7 +73,9 @@ func schanCmd(b *board.Board, args []string) error {
 	case "selftest":
 		return schanSelftest(c, want)
 	case "read":
-		return schanRead(c, args[1:])
+		return schanRead(c, args[1:], scd.OpcodeReadReg)
+	case "readmem":
+		return schanRead(c, args[1:], scd.OpcodeReadMem)
 	}
 	return fmt.Errorf("unknown schan command %q", args[0])
 }
@@ -82,6 +85,20 @@ func schanCmd(b *board.Board, args []string) error {
 // trying and reports what worked rather than this being an assumption nobody
 // ever checks.
 const defaultACC = 5
+
+// Defaults for a memory read, taken from the chip's own memory description
+// (bcm56860-memories.json): EPC_LINK_BMAP reports schan_block 1, acc_type 3
+// and four data words. Every IPIPE memory shares the first two, so they are
+// the right defaults rather than one memory's specifics.
+//
+// They are defaults and not truths. The access field is the one part of the
+// header no capture pins down -- the same reason schanSelftest sweeps it --
+// so `linkmap` sweeps rather than trusting these, and --block/--acc exist for
+// when a memory disagrees.
+const (
+	ipipeBlock = 1
+	memACC     = 3
+)
 
 func schanSelftest(c *scd.SChan, topDevRevWant uint32) error {
 	fmt.Printf("reading TOP_DEV_REV_ID (block %d, %#08x); expecting %#08x\n\n",
@@ -148,8 +165,18 @@ func schanSelftest(c *scd.SChan, topDevRevWant uint32) error {
 		"that the chip is released and memory-enabled with `nosaic platform asic`")
 }
 
-func schanRead(c *scd.SChan, args []string) error {
+// schanRead issues one read of either kind.
+//
+// A memory is not a register with a different address: it lives in a pipeline
+// block rather than in TOP, answers on its own access field, and returns as
+// many words as it is wide. So the defaults move with the opcode -- keeping
+// the register defaults for a memory read produces a timeout, which is
+// indistinguishable from the block being absent.
+func schanRead(c *scd.SChan, args []string, opc uint32) error {
 	block, acc, dlen, words := uint32(topBlock), uint32(defaultACC), uint32(4), 2
+	if opc == scd.OpcodeReadMem {
+		block, acc, dlen, words = ipipeBlock, memACC, 16, 5
+	}
 	var addrArg string
 	for i := 0; i < len(args); i++ {
 		next := func() string {
@@ -180,7 +207,7 @@ func schanRead(c *scd.SChan, args []string) error {
 		return fmt.Errorf("%q is not a 32-bit hex address", addrArg)
 	}
 
-	r, err := c.Read(scd.OpcodeReadReg, block, acc, dlen, uint32(addr), words, time.Second)
+	r, err := c.Read(opc, block, acc, dlen, uint32(addr), words, time.Second)
 	if err != nil {
 		return err
 	}

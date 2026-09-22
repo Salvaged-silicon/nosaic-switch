@@ -28,6 +28,7 @@ const platformUsage = `usage: nosaic platform <command>
                        run the cooling loop: fans track the hottest sensor,
                        fail to full cooling, and are left at full on exit
   beacon [on|off]      the blue locator, for finding this box in a rack
+  linkmap              which ports the chip will actually egress to
   schan selftest       prove S-Channel reaches the chip (read-only)
   schan read <addr>    one register read over S-Channel
   watchdog status      whether the hardware watchdog is armed
@@ -71,6 +72,8 @@ func platformCmd(args []string) error {
 		return probeASIC(hal)
 	case "smbus":
 		return smbusCmd(hal, rest[1:])
+	case "linkmap":
+		return linkmapCmd(b, args[1:])
 	case "schan":
 		return schanCmd(b, rest[1:])
 	case "retimer":

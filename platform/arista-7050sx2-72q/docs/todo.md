@@ -79,6 +79,29 @@ reconciled rather than done once at init. Worth testing directly: boot with a
 cage empty, insert the optic, and see whether the port can ever transmit
 without a restart.
 
+**One theory tested and refuted, 2026-09-22.** The tapbridge header says the
+transmit path ANDs its port bitmap with a link bitmap and "returns success
+having built no descriptor", and `soc/common/link.c:soc_link_fwd_set`
+maintains that as `EPC_LINK_BMAP` — a hardware memory in IPIPE that gates
+egress. A port missing from it would produce this exact signature: descriptor
+built, `tx-ok` counted, frame discarded before the MAC, no counter anywhere.
+
+`nosaic platform linkmap` was written to read it, and it does:
+
+```
+EPC_LINK_BMAP = ffffffff 2223ffff 00000022 00000200
+  -> logical {0..49} + {53,57,61,65,69} + 105
+```
+
+**Every configured port is set, including two cages with no module and no
+link.** The bitmap is not maintained per-link on this board, so no bit is ever
+missing and a missing bit cannot be the cause. The theory is dead, measured
+rather than argued.
+
+That leaves the empty-cage-at-boot circumstance above as the live hypothesis,
+and `linkmap` as a standing check: if a port ever IS absent from the bitmap
+while its interface reports up, the fault is named outright.
+
 Until then the detector is the mitigation — it names the port and says the
 restart clears it, which is the difference between a five-minute fix and the
 day this cost when it was mistaken for a dead far end.
