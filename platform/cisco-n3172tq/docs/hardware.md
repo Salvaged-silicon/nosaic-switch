@@ -67,6 +67,43 @@ the cages, one per cage on the first lane of each group of four. That is why
 there is no SerDes tuning data anywhere for this board (see
 [No SerDes tuning](#no-serdes-tuning)).
 
+⚠ **A RETIMER DOES NOT PASS TRAFFIC BECAUSE IT IS POWERED AND OUT OF RESET.**
+This part powers up with PMA vendor register `1.0xc8e4` bit 15 clear, and with
+it clear a cage configures cleanly, reports SR4 and 40000, loads its firmware,
+passes a PHY local loopback at full rate, and never links. The datapath sets
+it at the end of cage bring-up.
+
+This is the third board in the tree to need an explicit act of enabling on the
+path between the ASIC and a cage, and all three learned it the hard way, so
+treat it as the default expectation on a new board rather than a surprise:
+
+| board | what sits in the path | what it needs |
+|---|---|---|
+| this one | six BCM84328 on MDIO | `1.0xc8e4` bit 15 set |
+| arista-7050tx-64 | one TI DS100KR800 on SMBus, in front of the last two cages | reset released **and** register-mode programming |
+| edgecore-as5610-52x | retimers, plus cages that power up with `TX_DISABLE` asserted | `scripts/sfp-init.sh` |
+| arista-7050sx2-72q | nothing — direct SerDes | nothing, which is why it is a misleading reference |
+
+The TX-64's `board.yml` had already written down what this failure looks like,
+in terms that describe this board's symptoms almost exactly: *"invisible from
+this end. The ASIC transmits, its MAC counters climb, and this side locks onto
+the far end's light and reports the port up at 40000 with no error anywhere."*
+Its repeater driver adds the half that matters most: *"releasing its reset is
+not enough; out of reset and unconfigured it still conditions nothing."* Read
+those two before debugging a dark cage on any board here.
+
+**Tuning is a second, separate thing, and this board has none yet.** The
+enable above is the same bit on every board carrying the part, so it is
+compiled in. How the part is conditioned for *this* PCB's trace lengths is
+vendor data, read by `tools/mkretimer.sh` into a gitignored
+`config/retimer.conf`, exactly like the port map and the polarity. With no
+file the datapath programs nothing and says nothing: the cages run the part's
+power-up defaults, which is a working link and an untuned one. Three registers
+are known to differ from the vendor's values with the link up on both sides --
+`0xc80e`, `0xc876` and `0xc87c` -- and the Arista repeater driver's warning
+applies to all of them: unprogrammed is a fault you can see, wrongly
+programmed is a link that works until it does not.
+
 **The disk is USB.** Not SATA, despite two IDE-class controllers being present
 on the PCH. A kernel without USB mass storage built in reaches userspace and
 has no root filesystem.

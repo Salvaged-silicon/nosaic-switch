@@ -44,7 +44,7 @@ switch:
   Run them once against a switch running the vendor's OS, drop the output
   in [config/](../platform/arista-7050tx-64/config/), and it ships in every image you build for that
   board. Full instructions are in that board's README.
-- **cisco-n3172tq** — [tools/](../platform/cisco-n3172tq/tools/): `mki2cmap.sh`, `mkpolarity.sh`, `mkportmap.sh`, `nxcon.py`
+- **cisco-n3172tq** — [tools/](../platform/cisco-n3172tq/tools/): `mki2cmap.sh`, `mkpolarity.sh`, `mkportmap.sh`, `mkretimer.sh`, `nxcon.py`
   Run them once against a switch running the vendor's OS, drop the output
   in [config/](../platform/cisco-n3172tq/config/), and it ships in every image you build for that
   board. Full instructions are in that board's README.

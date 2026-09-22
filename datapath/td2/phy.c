@@ -63,6 +63,7 @@
  */
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include <bcm/port.h>
 #include <bcm/error.h>
@@ -464,6 +465,8 @@ void nosaic_phy_write(FILE *out, int port, int devad, int reg, int val)
  * Read-modify-write, and bit 15 only. The rest of the register differs
  * between cages and is not ours to invent.
  */
+static void phy_cage_tune(int unit, int port, uint16 addr);
+
 #define PHY_84328_CAGE_ENABLE_REG 0xc8e4
 #define PHY_84328_CAGE_ENABLE_BIT 0x8000
 
@@ -481,7 +484,8 @@ int nosaic_phy_cage_enable(int unit, int port)
 		return -1;
 	}
 	if ((v & PHY_84328_CAGE_ENABLE_BIT) != 0) {
-		return 0;                       /* already set: nothing to do */
+		phy_cage_tune(unit, port, addr);
+		return 0;                       /* already on: tune and go */
 	}
 	if (soc_miimc45_write(unit, addr, 1, PHY_84328_CAGE_ENABLE_REG,
 			      (uint16)(v | PHY_84328_CAGE_ENABLE_BIT)) < 0) {
@@ -500,7 +504,69 @@ int nosaic_phy_cage_enable(int unit, int port)
 		fflush(stdout);
 		return -1;
 	}
+	phy_cage_tune(unit, port, addr);
 	return 0;
+}
+
+/*
+ * This board's own tuning for the part, if the board brought any.
+ *
+ * ⚠ ABSENT IS A VALID ANSWER AND MUST NOT BE GUESSED AT.
+ *
+ * The enable above is the same bit on every board carrying a BCM84328, so it
+ * is compiled in. These are not: they are per-PCB values the board vendor
+ * established for one set of trace lengths, they are read from a file
+ * generated on the switch by tools/mkretimer.sh, and they are not ours to
+ * invent. A cage with no lines runs the part's power-up defaults, which is a
+ * working link and an untuned one -- so this says nothing and does nothing
+ * rather than reaching for a number. The sibling Arista boards' repeater
+ * driver reached the same conclusion for the same reason: unprogrammed is a
+ * fault you can see, and wrongly programmed is a link that works until it
+ * does not.
+ *
+ * Keyed by logical port, because nothing guarantees six cages on one board
+ * want the same values -- the SerDes polarity on this board does not.
+ */
+static void phy_cage_tune(int unit, int port, uint16 addr)
+{
+	static const uint16 regs[] = { 0xc80e, 0xc876, 0xc87c };
+	size_t k;
+	int n = 0;
+
+	for (k = 0; k < sizeof(regs) / sizeof(regs[0]); k++) {
+		char key[48];
+		const char *val;
+		uint16 want, back = 0;
+
+		snprintf(key, sizeof(key), "retimer_84328_%d_%#06x", port, regs[k]);
+		val = nosaic_props_get_unit(key, unit);
+		if (val == NULL) {
+			continue;
+		}
+		want = (uint16)strtoul(val, NULL, 0);
+		if (soc_miimc45_write(unit, addr, 1, regs[k], want) < 0) {
+			printf("phy: port %d: retimer %#06x would not take %#06x\n",
+			       port, regs[k], want);
+			fflush(stdout);
+			continue;
+		}
+		/* Two of the registers in this block are read-only status that
+		 * accept a write and keep their own value. Saying so beats
+		 * believing the tuning landed. */
+		if (soc_miimc45_read(unit, addr, 1, regs[k], &back) >= 0 &&
+		    back != want) {
+			printf("phy: port %d: retimer %#06x kept %#06x, not the "
+			       "%#06x asked for\n", port, regs[k], back, want);
+			fflush(stdout);
+			continue;
+		}
+		n++;
+	}
+	if (n > 0) {
+		printf("phy: port %d: retimer tuned, %d register(s) from the "
+		       "board's own values\n", port, n);
+		fflush(stdout);
+	}
 }
 
 /* Drive one copper port's LED. One MDIO write, only on a change of state. */
