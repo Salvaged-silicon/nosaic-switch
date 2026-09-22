@@ -120,6 +120,24 @@ while read -r kind name rest; do
     mtu=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
     mac=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="mac") print $(i+1)}')
 
+    # "mac auto" means ask the board, and it is what makes an image generic.
+    #
+    # A management NIC whose own EEPROM was never programmed comes up with a
+    # vendor OUI and an all-zero suffix, so every unit of that model presents
+    # the SAME address. Writing the right one into this file fixes one switch
+    # and makes the image wrong for every other: the next unit built from it
+    # then presents the first one's identity. The board's identity PROM knows
+    # its own allocated block, so "auto" reads it from there.
+    #
+    # Resolved once per pass rather than cached: this script is retried until
+    # the datapath's ports exist, and on an early pass the i2c device may not
+    # be instantiated yet. Failing quietly and trying again next pass is
+    # right; the interface keeps whatever it has until the answer arrives.
+    if [ "$mac" = "auto" ]; then
+        mac=$(nosaic platform mac 2>/dev/null) || mac=""
+        [ -z "$mac" ] && say "$name mac auto: the board cannot say yet"
+    fi
+
     if ! ip link show "$name" >/dev/null 2>&1; then
         missing=$((missing + 1))
         echo "$name" >> "$ABSENT"
