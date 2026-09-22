@@ -232,16 +232,28 @@ Ordered so each step's failure is diagnosable with the one before it working.
       tuning -- so the datapath side of the cages is finished, not merely
       linking.
 
-      ⚠ `eth1_53` to the AS5610's `swp49` is still ONE-WAY, and the
-      direction that works is ours. The AS5610 receives us: its `in-nuc`
-      advances +8 per 90s, which is our OSPF hello rate to the packet. We
-      receive nothing from it at all -- `in-uc=0 in-nuc=0 in-err=0` -- while
-      its own `out-nuc` climbs, so its MAC believes it is transmitting.
-      That board's cages power up with `TX_DISABLE` asserted and its
-      retimers unprogrammed, both handled by its `front-panel-init.sh`;
-      whether that ran for `swp49` on the current boot could not be
-      confirmed, because nothing keeps its output. Since the SX2 link on the
-      identical local configuration is perfect, this one is not ours.
+      ⚠ `eth1_53` IS PATCHED TO THE AS5610's `swp50`, NOT `swp49`, and
+      swp50 is not configured on that box at all -- absent from its
+      network.conf and frr.conf, and not even listed by `nosaic show ports`.
+      Its config expects us on swp49 (`# swp49 is the uplink to the Cisco
+      Nexus`, `iface swp49 10.101.101.18/29`), so the cable and the
+      configuration disagree. Either move the fibre to swp49 or configure
+      swp50; nothing on our side needs to change.
+
+      How to identify which far-end cage a fibre lands in, without touching
+      the rack: disable our transmitter (`show phywrite <port> 1 0x09 1`) and
+      read the QSFP LOS byte on every candidate cage at the far end -- byte 3
+      of page 0, read TWICE because it latches. Exactly one goes to 0x0f. Our
+      eth1_53 lights bus 67, which is cage 1, which is swp50. Restoring the
+      transmitter clears it. The reverse check is also worth knowing: the
+      far end's LINK STATE is not a reliable witness (the AS5610's swp49 held
+      `up` throughout with its own laser disabled), but LOS at the module is.
+
+      Superseded reading, kept because it was confident and wrong: this was
+      recorded as one-way with the AS5610's `swp49`, on the strength of its
+      in-nuc advancing at our OSPF hello rate. That was coincidence --
+      swp49's own background traffic -- and swp49 is patched to something
+      else entirely.
 
 - [x] **SOLVED: no 40G cage linked, and it was one bit in the retimer.**
       `1.0xc8e4` bit 15 -- the BCM84328 powers up with it clear, NX-OS
