@@ -48,6 +48,64 @@ and how it was proven is in
 
 ## Required — the switch does not come up working without these
 
+### A port can link and carry nothing until the datapath is restarted
+
+Caught in the act on 2026-09-22, on Ethernet49, by the detector in
+`tapbridge.c` — the first specimen with numbers rather than a recollection.
+
+```
+et49  link=1  tx-ok=12596  tx-err=0  out-uc=0  out-nuc=0  in-uc=0  in-nuc=0
+                                     in-err=0  out-disc=0
+et52  link=1  tx-ok=13524  tx-err=0  out-uc=137 out-nuc=13401   (the control)
+```
+
+On the healthy port `out-uc + out-nuc` tracks `tx-ok` exactly. On Ethernet49
+the chip accepted **12,596 frames and egressed none**, reporting no transmit
+error and no discard. The VLAN was right (`vid 1049 members 0 49 untagged 49`),
+the address and route were installed, OSPF was up on the interface and sending
+hellos, and the module reported no LOS. Nothing above the chip was wrong.
+
+A `nosaic show ports` and log capture was taken first, as the detector's
+message asks. Restarting the datapath cleared it immediately and completely:
+the same port went to `in-uc=38 in-nuc=45 out-uc=42 out-nuc=54`, ARP resolved,
+ping ran 4/4 at 0.44 ms, and OSPF reached Full.
+
+**A new observation worth chasing.** This port was initialised in a state no
+working port was: its cage was **empty at boot** — the optic went in afterwards
+— and the far end was also down at the time, so it had neither a module nor a
+link when the datapath came up. That is the same shape as the 7050TX-64's
+late-cabled ports, which were fixed by making the bring-up level-triggered and
+reconciled rather than done once at init. Worth testing directly: boot with a
+cage empty, insert the optic, and see whether the port can ever transmit
+without a restart.
+
+**One theory tested and refuted, 2026-09-22.** The tapbridge header says the
+transmit path ANDs its port bitmap with a link bitmap and "returns success
+having built no descriptor", and `soc/common/link.c:soc_link_fwd_set`
+maintains that as `EPC_LINK_BMAP` — a hardware memory in IPIPE that gates
+egress. A port missing from it would produce this exact signature: descriptor
+built, `tx-ok` counted, frame discarded before the MAC, no counter anywhere.
+
+`nosaic platform linkmap` was written to read it, and it does:
+
+```
+EPC_LINK_BMAP = ffffffff 2223ffff 00000022 00000200
+  -> logical {0..49} + {53,57,61,65,69} + 105
+```
+
+**Every configured port is set, including two cages with no module and no
+link.** The bitmap is not maintained per-link on this board, so no bit is ever
+missing and a missing bit cannot be the cause. The theory is dead, measured
+rather than argued.
+
+That leaves the empty-cage-at-boot circumstance above as the live hypothesis,
+and `linkmap` as a standing check: if a port ever IS absent from the bitmap
+while its interface reports up, the fault is named outright.
+
+Until then the detector is the mitigation — it names the port and says the
+restart clears it, which is the difference between a five-minute fix and the
+day this cost when it was mistaken for a dead far end.
+
 ### The control plane's ceiling is unmeasured
 
 **This was the top item on this list and is largely solved.** It is kept
@@ -246,6 +304,31 @@ The split is per-flow and hashes on the destination, so it is lumpy with few
 flows and evens out with more -- at the halfway mark this run stood at 35/10
 and finished at 35/40. Do not read a small sample as a broken hash.
 
+### The signal repeater is never programmed, and works anyway
+
+The board carries one TI repeater — the FDL gives `repeaterSmbus` at accel 1
+bus 7 and `repeaterInfo = [ ( 'qsfpDS125BR401R1', 0x58 ) ]` — and it sits in
+front of the **last two QSFP cages**, Ethernet53 and Ethernet54, the same
+arrangement the 7050TX-64 uses for its DS100KR800.
+
+NOSaic has the machinery: an s6 `retimer` service and
+`nosaic platform retimer --program`. It runs at every boot and does nothing,
+because `/etc/nosaic/retimer.conf` does not exist and this board has no
+`mkretimer.sh` to generate one. The 7050TX-64 has both — copy its generator.
+
+Measured on 2026-09-20: the part is populated and holds `EQ=0x2f`,
+`amplitude=0xad`, `de-emphasis=0x82` on every channel base. Those do **not**
+match the FDL's own `repeaterSettings` (`rxEqualization=0`,
+`outputAmplitude=168`, `txDeEmphasis=0`), so they are most likely the
+power-on defaults rather than anything EOS left behind — an earlier note
+claiming they were EOS's was not supported by the numbers.
+
+Both cages it serves carry Full adjacencies, so this is **unobserved rather
+than broken**. It is still worth closing: two of the six 40G cages depend on
+configuration that nothing in this codebase owns or can reproduce, and the
+failure mode if it ever resets is the silent one — a cage that links and
+carries nothing.
+
 ### The watchdog is not armed
 
 Every boot says so:
@@ -262,11 +345,61 @@ should happen when it fires — is the actual work.
 s6 restarts it immediately, forever, when the reason it exited will not change
 by trying again. It should back off and say so once.
 
-### Two QSFP macros are left at the global lane map
+### ~~Two QSFP macros are left at the global lane map~~ — resolved 2026-09-21
 
-Macros 42 and 45 use `xgxs_tx_lane_map_core` rather than a per-macro exception.
-Two derived exceptions were tried and refuted. Neither cage is cabled, so this
-is unobserved rather than known-good.
+Every one of the 18 cores now carries an explicit per-port lane map and no
+global key remains. See *Fixed on 2026-09-21* below: the exceptions that were
+"tried and refuted" were correct values under a key the SDK never asked for.
+
+## Fixed on 2026-09-21
+
+- **The SerDes lane map key hardcoded core 0, and two cages never got one.**
+  `tsce.c` reads the lane map with `soc_property_port_suffix_num_get(unit,
+  port, core_num, spn_XGXS_TX_LANE_MAP, "core", 0x3210)`, which builds
+  `<name>_core<CORE_NUM>_<port>` and falls back to `<name>_<port>`. Every key
+  in `asic.conf` was written `_core0_`, which is right only for ports whose
+  core number really is 0. Logical 49 and 53 — Ethernet49 and Ethernet50 — ran
+  on the SDK's own default map while the other four 40G cages got the values
+  meant for them. The values were never wrong; the key reached four ports of
+  six. Re-keyed without the infix, the way EOS writes it, which is correct
+  whatever the core number is.
+
+  **The symptom is why this took a day.** A wrong RX lane map brings the link
+  UP — the lanes lock individually — and then nothing reassembles. `in-nuc`
+  sat at 0 with `in-err` also at 0: not one corrupt frame, because nothing got
+  far enough to be called a frame. From outside that is indistinguishable from
+  a far end which is not transmitting, and the search went to the far end of
+  the fibre, then the optics, then the retimer. The Nexus 3172 on the other
+  side had been transmitting the whole time.
+
+  **The daemon had been saying so at every boot.** `config N of M properties
+  were NEVER read by the SDK` named `xgxs_tx/rx_lane_map_core0_49` and `_53`,
+  and only those two of the six cages. That list is the first thing to read
+  when a port links and carries nothing.
+
+  Localised by booting EOS 4.18.3 on the same board, cage, optic and fibre:
+  it brought Ethernet50 up at 40G where we received nothing, which cleared the
+  hardware, the fibre and the far end in one step. Its `config show` then gave
+  both the values and — the half that mattered — their correct spelling.
+
+- **`tools/mkpolarity.sh` now captures the lane maps and firmware modes**, not
+  just polarity, so this cannot drift again. Its absence is warned about
+  separately, because a board with no lane maps still produces a file that
+  looks complete. The 7050TX-64's generator already did this; ours did not.
+
+- **The QSFP polarity table was wrong for four of six cages.** The generator
+  that made it read lane 0 only, so cages whose lane 0 is not inverted were
+  absent entirely — and absent reads as "no flip needed" rather than "never
+  measured". The value is a bitmask over the cage's four lanes. Corrected and
+  confirmed three independent ways: a live EOS register sweep, the board's own
+  FDL, and EOS's running SDK config. This was a real latent bug but it was
+  *not* what kept Ethernet49 and Ethernet50 dark.
+
+- **`nosaic platform transceivers` reported "no signal" on working links.**
+  These CISCO-AVAGO BiDi modules advertise receive-power monitoring in
+  SFF-8636 byte 220 and then populate none of it. EOS reads the same zeroes on
+  a link that is up, so it is the module, not our decode. An all-zero
+  diagnostic block is now called what it is.
 
 ## Fixed on 2026-09-11
 
@@ -439,6 +572,73 @@ is unobserved rather than known-good.
   Left over: the far side of et52 (`10.101.101.82`) is not configured yet.
   `et1` and `et2` were also carrying addresses and OSPF networks for links
   whose far ends had never answered; those were removed on 2026-09-11.
+
+- **~~Two taps with the same name crash-loop the daemon~~ — fixed.**
+  `/etc/nosaic/asic.conf` and `/mnt/data/config/asic.conf` are layers where the
+  second overrides the first *per key*. Lookups always worked that way --
+  `nosaic_props_get()` searches the table backwards -- but the table was
+  append-only, so every caller that ENUMERATES it walked forwards and saw both
+  copies. The same `tap_et52=` in each file therefore created the tap twice,
+  the second `TUNSETIFF` returned `EBUSY`, the daemon exited, and s6 restarted
+  it into the same wall eleven times.
+
+  It bit because a persistent override was written for a tap the image did not
+  yet ship, and the next image *did* ship it -- the ordinary lifecycle of an
+  override, not a mistake anyone would notice making.
+
+  Fixed in `datapath/common/props.c`: a redefined name now replaces the earlier
+  entry at load time rather than being appended beside it, so every consumer
+  gets last-wins for free and a new enumerator cannot reintroduce the bug by
+  forgetting. `datapath/common/props_test.c` covers it and was checked against
+  the unfixed file first -- three of its five assertions fail there.
+
+  ⚠ Worth remembering how it presented, because none of it pointed at config:
+  the log ends mid-startup with no error line, every cycle looks like a normal
+  boot, and `nosaic show ports` reports only that `/run/nosd.sock` is missing --
+  which reads as the chip failing to come up. `grep TUNSETIFF` was the only
+  thing that said otherwise.
+
+- **~~`upgrade install` writes the slot where the bootloader cannot find it~~ —
+  already fixed; this board was running an old CLI.** With no `--disk` it wrote
+  `/mnt/data/nosaic-slot-b.sqsh`, while the initramfs looks for a partition
+  label, then `$FLASH/<slot>.sqsh`, and only then `/mnt/data`. With a stale slot
+  file already on flash the new image is silently ignored and the box boots the
+  old one.
+
+  This was **fixed in `0b7b105` on 2026-09-12** -- `Local()` now asks where the
+  slot it is RUNNING FROM lives and installs beside it. The failure was seen
+  here only because the switch was running the CLI from slot a's image, built
+  2026-09-11, one day earlier. The image now in slot b carries the fix.
+
+  No code change. Recorded because the workaround is worth knowing if an old
+  CLI is ever in play again: compare the install's output path against
+  `slotdev=` in `/mnt/data/boot/log` before rebooting, and copy the image to
+  `/mnt/flash/nosaic-slot-<x>.sqsh` if they disagree.
+
+- **~~A datapath restart leaves the switch with no interface addresses~~ —
+  fixed.** The taps belong to `nosd`; when it restarts they are destroyed and
+  recreated **bare**, and `lo`'s own address goes with them.
+
+  `network-config` is ordered `after nosd` precisely so s6-rc stops and re-runs
+  it with the datapath -- and that works, for an `s6-rc` transition. It does
+  nothing for the case that actually happens unattended: `nosd` is supervised
+  with `restart: always`, so after a crash the **supervisor** restarts it
+  directly and s6-rc is never involved. The oneshot stays marked done from boot
+  while every address it configured has gone.
+
+  A switch in that state boots correctly, runs for days, and silently stops
+  routing at a moment nothing logged. Observed twice, read as something else
+  both times -- once as expected behaviour, because
+  [the walkthrough](walkthrough.md) describes the manual case as though it were
+  the whole story.
+
+  Fixed with a `network-reconcile` longrun: `apply-network.sh` gained a
+  `NOSAIC_NET_RECONCILE` mode that keeps asking what the state IS and puts back
+  whatever is missing, rather than waiting for an event that the supervisor
+  never emits. Same conclusion the 7050TX-64's port hotplug reached --
+  level-triggered, and reconcile on a timer, because an event can be missed
+  entirely and the state cannot. A pass with nothing to do prints nothing, so a
+  healthy switch shows no periodic noise.
 
 ## Features — what this board could do and does not yet
 

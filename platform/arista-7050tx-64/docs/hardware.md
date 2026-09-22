@@ -1,0 +1,305 @@
+# Arista DCS-7050TX-64 — hardware reference
+
+How this switch is built and how NOSaic drives it. Everything below was read off
+a running unit; where a value has not been measured yet it says so rather than
+carrying a plausible number.
+
+NOSaic boots on this board and drives the chip; what it does not do yet is
+forward. Measurements marked as EdgeNOS's come from the predecessor project,
+which does forward here — see [todo.md](todo.md) for the split.
+
+## At a glance
+
+| | |
+|---|---|
+| ASIC | Broadcom BCM56855, Trident2 — PCI `14e4:b855` at `0000:01:00.0` |
+| CPU / arch | AMD GX-420CA SOC, x86_64 |
+| RAM | 3839 MB |
+| Front panel | 48x 10GBASE-T (external BCM84848 PHYs) + 4x QSFP+ 40G |
+| Management | 1x RJ45, tg3 |
+| Platform controller | Arista SCD FPGA — PCI `3475:0001` at `0000:02:00.0` |
+| Bootloader | Aboot 4.0.7, unsigned SWIs accepted |
+| Console | `ttyS0`, 9600 8N1 |
+| Board id | `sid=Yreka64`, `platform=crow` (from Aboot's kernel command line) |
+
+## Block diagram
+
+The two paths that matter are separate: the CPU reaches the **ASIC** directly
+over PCIe, but reaches the **front-panel copper PHYs** only through the SCD.
+
+```mermaid
+graph TD
+    CPU["AMD GX-420CA<br/>x86_64, 3839 MB"]
+    CPU -->|PCIe 01:00.0| ASIC["BCM56855 Trident2<br/>14e4:b855"]
+    CPU -->|PCIe 02:00.0| SCD["Arista SCD FPGA<br/>3475:0001"]
+    CPU -->|PCIe| MGMT["tg3<br/>management RJ45"]
+
+    SCD -->|holds in reset| ASIC
+    SCD -->|MDIO| PHY["48x BCM84848<br/>10GBASE-T PHY"]
+    SCD -->|i2c bus 9,10,11,12| QSFP["4x QSFP+ cage<br/>EEPROM 0x50"]
+    SCD --> SENS["sensors, PSUs,<br/>fans, status LEDs"]
+
+    ASIC -->|XFI / SGMII| PHY
+    PHY --> COPPER["Et1..Et48<br/>10GBASE-T"]
+    ASIC -->|serdes| QSFP
+    QSFP --> Q["Et49..Et52<br/>40G"]
+```
+
+⚠ **The SCD holds the Trident2 in reset from power-on.** Until it is told to let
+go, `01:00.0` is not on the bus to be discovered. This is why the ASIC's address
+is declared in `board.yml` rather than probed for.
+
+The copper ports therefore need *two* things the QSFP ports do not: the PHY
+firmware loaded over the SCD's MDIO, and the ASIC's MAC-side interface set to
+match whatever the PHY negotiates on the wire.
+
+## Boot chain
+
+```mermaid
+graph LR
+    A["Aboot 4.0.7"] --> B["boot0<br/>(shell script, ours)"]
+    B --> C["kexec<br/>kernel + initramfs"]
+    C --> D["slot select"]
+    D --> E["overlay assembled"]
+    E --> F["init"]
+```
+
+Aboot enforces no signing here and `boot0` is a shell script we control, so an
+unsigned SWI boots. `boot flash:/<image>.swi` at the Aboot prompt is a
+**one-shot**: `boot-config` is never modified, so the next power cycle returns to
+the vendor OS by itself. That is the recovery path and the reason the EOS images
+stay on flash.
+
+Two things `boot0` does that the kernel cannot do for itself:
+
+- **Reads the management MAC** and passes it on the command line. `tg3` comes up as the unprogrammed Broadcom default `00:10:18:00:00:00` across a kexec, so the address has to come from Aboot.
+- **Reserves the DMA pool** via `memmap=64M$0xd0000000`. `0xd0000000` and not `0x100000000`: this board has 3839 MB, so 4 GB is past the end of memory.
+
+## Port map
+
+⚠ **This translation is defined here and nowhere else, and the rule is not
+uniform across cage types.**
+
+The 48 copper ports are regular:
+
+```
+front panel EtN  =  SDK port N  =  diag/tap name xe(N-1)
+Et48             =  SDK port 48 =  xe47
+```
+
+The four QSFP cages are **not**. Each is the first lane of a group of four, so
+the SDK numbers skip, while the Linux taps stay consecutive:
+
+| front panel | SDK port | tap | i2c bus (EEPROM) |
+|---|---|---|---|
+| Et49 | 49 | `xe48` | 9 |
+| Et50 | 53 | `xe52` | 10 |
+| Et51 | 57 | `xe56` | 11 |
+| Et52 | 61 | `xe60` | 12 |
+
+Code that assumes one rule for both mis-maps the QSFP capacity, and it presents
+as a dead port rather than as a wrong index.
+
+⚠ **A port map read off this switch is unit-suffixed, and an exact-match lookup
+misses every line of it.** The vendor's configuration spells the property
+`portmap_1.0`, where the `.0` is the SDK unit. All 278 port-map properties and
+all 104 polarity properties loaded, were counted, were printed on the console,
+and were then invisible to every lookup — `no port map` appeared on the line
+directly below `278 properties from /etc/nosaic/portmap.conf`. Resolve
+`name.<unit>` before `name`, the way the SDK's own configuration layer does.
+
+The i2c bus numbers were measured by reading the SFF identifier byte (`0x00`) at
+address `0x50` on each bus and seeing which answered `0x0d` (QSFP+).
+
+⚠ **The ASIC-level port map itself is not in this repository.** The logical-to-
+physical map and SerDes polarity were read out of the running vendor OS and are
+not ours to distribute. `tools/` ships the generator; `config/portmap.conf` and
+`config/polarity.conf` are gitignored, and the board reports the feature
+unconfigured until somebody generates them against their own switch. A guessed
+map satisfies every bandwidth rule the chip enforces and reaches none of the
+right cages.
+
+## Register and memory regions
+
+| region | what NOSaic uses it for |
+|---|---|
+| ASIC BAR0 (`01:00.0` `resource0`) | the whole SDK register/memory space, mmap'd by the userspace BDE |
+| `memmap=64M$0xd0000000` | DMA pool the BDE hands to the SDK |
+| SCD `0x4000` | switch reset block — releasing the Trident2 |
+| SCD `0x5000` | PSU presence and status GPIO (bit 0 = PSU1, bit 1 = PSU2) |
+| SCD `0x6050`–`0x6080` | chassis status LEDs (status, fan, PSU1, PSU2) |
+| SCD `0xA000` + n×`0x10` | per-QSFP-cage LEDs, per lane |
+| SCD `0xA100`+ | QSFP transceiver control — **note the boundary**: the LED block ends at `0xA0F0`, and an off-by-one walks into transceiver control |
+| SCD i2c adapters | 13 buses exposed to Linux by the `scd` driver; QSFP EEPROMs on 9–12 |
+| SCD SMBus accelerator 0 `0x8000` | bus 0 the switch card, **bus 1 the CPU card** |
+| BCM84848 MMD 1 / 7 | per-PHY control and autonegotiation, over SCD MDIO |
+
+The SCD register layout is architecturally consistent across Arista platforms and
+these offsets also appear in Arista's own published SONiC platform tree, so they
+are public facts about the hardware rather than anything derived from a vendor
+binary.
+
+⚠ **Consistent layout is not identical placement, and the difference is where
+this board has cost the most time.** Six things sit somewhere else here than on
+the sibling 7050SX2, and every one was found only after the wrong one had been
+driven:
+
+| | 7050SX2-72Q | this board |
+|---|---|---|
+| fan CPLD `0x60` | accelerator 0, **bus 0** | accelerator 0, **bus 1** (CPU card) |
+| fan PWM full scale | 255 | **180**, measured |
+| cage control table | **54** entries at `0xa010` | **4** at `0xa100` |
+| cage EEPROMs | accel 2–8 | accel 1, buses 0–3 |
+| SMBus accelerator 1 | `0x8080` (regular `0x80` stride) | **`0x9400`** |
+| chassis lamps | colour **bits** in a byte on the fan CPLD, over SMBus | whole **32-bit words** written to the SCD at `0x6050`–`0x6090` |
+
+None of these fail loudly. The wrong SMBus bus is a fan controller that refuses
+every command while being in perfect health; the wrong full scale clamps the
+top third of the cooling curve to one speed; the wrong cage table writes 54
+entries from `0xa010`, straight through this board's per-cage LED block, and
+leaves the real cages held in reset and low power — a module that answers
+nothing and emits nothing while the switch chip reports an enabled port at
+40000 with no error anywhere.
+
+The accelerator base is the quietest of the lot: it only breaks reads nothing
+depends on, so every attempt to read a module's own EEPROM returned `no
+response, cs=0x00000000` while the SCD's cage register answered perfectly and
+made the optics look fully accounted for. The board could not see a
+transceiver's view of itself — identifier, TX disable, TX fault, loss of signal
+— for as long as that was wrong.
+
+The lamp difference is worse than a wrong address: it is a wrong *mechanism*.
+Driving this board the sibling's way sends an SMBus byte to a device that is
+not listening, so the panel stays dark and nothing reports an error.
+
+All six are now board data — `platform_hal` in `board.yml`, and
+`config/statusleds.conf` for the lamps — rather than constants in the driver.
+
+## The QSFP signal repeater
+
+⚠ **Et51 and Et52 are not wired straight to the SerDes. Et49 and Et50 are.**
+
+A TI **DS100KR800** sits between the switch chip and the last two QSFP cages.
+Eight channels: two ports' worth of four lanes, **in the host-to-module
+direction only**.
+
+That asymmetry is the whole reason it is hard to spot. A cage behind an
+unprepared repeater receives its neighbour perfectly — that path does not go
+through the part — and transmits nothing. So this end locks onto the far end's
+light and reports the port **up at 40000 with no error anywhere**, while the
+far end reports no link at all.
+
+Two separate things must happen, and doing only the first is not enough:
+
+| | where | what happens without it |
+|---|---|---|
+| **Release its reset** | SCD reset block, **bit 8** — `platform_hal.resets` in `board.yml` | held in reset from power-on; a live read at bring-up is `0x000001ff`, nine bits implemented and every one asserted |
+| **Program it** | SMBus `0x58` on accelerator 0 bus 0 — `platform_hal.smbus.retimer` | out of reset and unconfigured it still conditions nothing |
+
+⚠ The tuning values are **not in this repository**. Output amplitude and
+de-emphasis are per-trace-length numbers from the board's own description file;
+`tools/mkretimer.sh` generates `config/retimer.conf` from your own switch, and
+the driver refuses to program rather than guess. The register offsets are
+public — TI's SNLS340E Table 6 — and live in the driver.
+
+Two details that cost real time:
+
+- **The per-channel register bases are not a uniform stride.** `0x0f 0x16 0x1d 0x24 0x2c 0x33 0x3a 0x41` — channels 0–3 step by 7, then there is an eight-byte gap at the bank boundary. Computing them with a stride puts three of the eight channels at the wrong address.
+- **De-emphasis reads back with bit 7 set by the hardware**, so a byte written as `0x01` reads `0x81` and looks wrong.
+
+## Datapath
+
+`nosd-td2`, derived from `datapath/td2p/` — same CMICm generation, same
+architecture, same userspace BDE over an mmap of BAR0 — reusing
+`datapath/common/` rather than forking it. It runs on this board: the chip
+reaches `init complete`, 52 ports are created from the generated map, and the
+three cabled 40G cages forward and route.
+
+What differs from the sibling:
+
+- PCI device `0xb855` at revision `0x03`, both read off the board. The SDK matches on the pair.
+- `datapath/td2/phy.c`, which has no counterpart on either existing board.
+
+**The PHY layer.** The SDK owns the BCM84848 itself: its `phy8481` driver
+downloads the firmware and runs link training, given `load_firmware` and
+`phy_bus_i2c_<n>` from `asic.conf`. What it does not do is keep the switch
+chip's MAC side agreeing with what the PHY negotiated on the wire, and that gap
+is the "links but bridges nothing" failure in the quirks below. `phy.c` closes
+it, and three things about how are deliberate:
+
+- It writes **only on a genuine mismatch**. `bcm_port_interface_set` takes the MAC through reset, and on the sibling board re-applying a setting a port already had correctly left both 40G ports linked at the PCS and deaf at the MAC — the same zero-frames signature, from the opposite direction.
+- Ports are found from the **properties**, not a port-number range, so a board declaring no external PHYs runs the same code and does nothing.
+- The **MDIO budget is bounded** to four speed reads a second, round robin. Link state comes from `bcm_port_link_status_get`, which is software state linkscan maintains and costs no bus transaction.
+
+A port is matched once and left alone until its link drops, which is the event
+that can change the negotiated speed.
+
+EdgeNOS drives this chip through Broadcom's OpenBCM SDK with a userspace BDE
+over an mmap of BAR0 — the same shape NOSaic uses — and reaches hardware
+forwarding for IPv4 and IPv6, OSPFv2/v3 adjacencies, and ECMP programmed as a
+shared `bcm_l3_egress_ecmp` group. None of that is NOSaic code yet.
+
+## Platform HAL
+
+`driver: scd`, which NOSaic already implements for the 7050SX2. Expected to
+carry over with different bit assignments: ASIC reset, temperature sensors, PSU
+presence and status, status LEDs, watchdog, and the i2c adapters that reach the
+QSFP EEPROMs.
+
+Not yet established on this board: which reset bits, whether `fanread` is
+trustworthy here (it is not on the SX2), and whether the prefdl SEEPROM can be
+read for the management MAC and hardware epoch.
+
+⚠ **Transceiver diagnostics may read as all zeros and that is not a fault.** The
+QSFP+ modules in this box are Avago `AFBR-79EBPZ-CS2` active optical cables.
+They carry an EEPROM and identify correctly, but populate no DOM: temperature,
+voltage and per-lane RX power all read `0x00` — including on cages that are
+linked at 40G and passing traffic. Treat zeros as "not reported", never as "no
+light".
+
+## Quirks
+
+**A link with no speed is not a link.** Every *unconnected* copper port reports
+`Link Up with Speed 0M`. Code that believes it configures all 48 ports as though
+they were cabled.
+
+**The MAC interface must follow the negotiated speed.** SGMII at or below 2.5G,
+XFI at 10G. A 10GBASE-T port left at its XFI default while the copper side
+negotiates 1G gives a PHY with a real link on *both* sides that bridges nothing,
+in both directions, with zero errors on either end.
+
+**MDIO is shared, and the datapath depends on it.** Polling
+`bcm_port_speed_get` across all 48 PHYs every two seconds starved the bus and
+killed copper RECEIVE on every port, while the direct-serdes 40G ports carried on
+working. Cache link state from linkscan; bound every sweep.
+
+**The PHY firmware handshake fails transiently on cold start.** One boot here
+logged 40 handshake warnings and no copper port linked. Restarting the datapath
+agent cleared it with zero warnings on the rerun, nothing else changed. It is a
+transient of the firmware download, not a configuration fault — but a port that
+never comes into service looks exactly like a dead cable.
+
+**A port configured only at startup is a port that dies when cabled later.** The
+predecessor configured ports in a single pass shortly after enabling them, so a
+cable plugged in afterwards got no MAC interface, no VLAN and no L3 interface.
+The symptom is indistinguishable from a broken cable: the link negotiates, both
+ends transmit, neither receives, and there are zero errors on both sides.
+Diagnose it by reading MMD `7.19`, the link-partner ability — `0x0000` on a port
+whose neighbour reports carrier means our PHY was never brought into service,
+not that a pair is broken.
+
+**`boot flash:` is a one-shot.** A plain reboot returns to the vendor OS. That
+is the safety property, not a bug, but it means "reboot the switch" and "reboot
+into our image" are different operations.
+
+## Reverse engineering
+
+The investigation behind this page — traces, register captures, eliminated
+theories, and anything derived from the vendor's own files — lives in a
+**private** repository, `td2-7050tx64-reverse-engineering`, one per switch. It
+is not public: it contains material read out of the running vendor OS.
+
+What is *not* here and is in there: the SDK configuration capture, the board
+description file and everything extracted from it (the cooling curve and the
+retimer tuning), the port map and polarity values, and the full record of how
+each finding above was established.

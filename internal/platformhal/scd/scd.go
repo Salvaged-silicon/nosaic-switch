@@ -142,6 +142,19 @@ type SCD struct {
 	asic  string
 	close func() error
 
+	// smbusMap is where this board's sensors and fan controller sit. Nil
+	// where the board states none, which is an answer rather than a default:
+	// see platformhal.SMBusMap.
+	smbusMap *platformhal.SMBusMap
+
+	// cages is the board's front-panel transceiver table. Nil where the board
+	// states none, which is an answer: this board has no cages to drive.
+	cages *platformhal.CageTable
+
+	// resets are the board's own reset lines, released during bring-up
+	// alongside the switch chip's.
+	resets []platformhal.ResetLine
+
 	// lamps is the board's chassis-lamp map, loaded once on first use from a
 	// generated file. Cached including the failure: a board without the map
 	// should say so quickly every time rather than stat a missing file on
@@ -158,9 +171,14 @@ func (s *SCD) trace(f string, a ...any) {
 	}
 }
 
-// Open maps the SCD's BAR0. pciAddr is the SCD's PCI address, asicAddr the
-// address the switch chip will appear at once released.
-func Open(pciAddr, asicAddr string) (*SCD, error) {
+// Open maps the SCD's BAR0.
+//
+// cfg carries the SCD's own PCI address, the address the switch chip will
+// appear at once released, and where the board's sensors and fan controller
+// sit on the SMBus. The last of those has no default on purpose -- see the
+// note on SMBusMap.
+func Open(cfg platformhal.Config) (*SCD, error) {
+	pciAddr, asicAddr := cfg.PCI, cfg.ASICPCI
 	path := fmt.Sprintf("/sys/bus/pci/devices/%s/resource0", pciAddr)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_SYNC, 0)
 	if err != nil {
@@ -184,8 +202,27 @@ func Open(pciAddr, asicAddr string) (*SCD, error) {
 	}
 	return &SCD{
 		bar: bar, pci: pciAddr, asic: asicAddr,
+		smbusMap: cfg.SMBus, cages: cfg.Cages, resets: cfg.Resets,
 		close: func() error { munmapFile(bar); return f.Close() },
 	}, nil
+}
+
+// releaseBoardResets clears the board's own reset lines -- anything it holds
+// besides the switch chip.
+//
+// Nothing is released that the board has not named. These are bits on the FPGA
+// that owns every reset line on the machine, and a bit nobody has accounted
+// for is not one to write on the strength of a pattern.
+func (s *SCD) releaseBoardResets(before uint32) {
+	for _, r := range s.resets {
+		if before&(1<<r.Bit) == 0 {
+			s.trace("board reset %q (bit %d) is already released", r.Name, r.Bit)
+			continue
+		}
+		s.write32(resetClear, 1<<r.Bit)
+		s.trace("released board reset %q (bit %d): %#08x",
+			r.Name, r.Bit, s.read32(resetBase))
+	}
 }
 
 // Close unmaps the device.
@@ -223,6 +260,17 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 	// owns the reset lines.
 	before := s.read32(resetBase)
 	s.trace("reset register before: %#08x", before)
+
+	// The board's other reset lines first.
+	//
+	// ⚠ RELEASED BEFORE THE CHIP, NOT AFTER. What these gate on this board is
+	// a retimer sitting between the ASIC's SerDes and two of the QSFP cages;
+	// it has to be passing signal by the time the datapath trains those ports,
+	// and the datapath starts as soon as the chip appears.
+	//
+	// Held ones only: writing the clear port for a line already released is
+	// harmless, but saying so in the log makes it look like this did something.
+	s.releaseBoardResets(before)
 
 	// An already-released chip is not an error, and must not be driven
 	// through the release sequence again: the writes would be no-ops, the

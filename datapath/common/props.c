@@ -76,23 +76,43 @@ int nosaic_props_load(const char *path)
 		if (*name == '\0')
 			continue;
 
-		if (nprops >= MAX_PROPS) {
-			fprintf(stderr, "nosd-td2p: more than %d properties in %s; "
-				"the rest are ignored\n", MAX_PROPS, path);
+		/* Stored through nosaic_props_set(), so a name defined again
+		 * REPLACES the earlier definition rather than being appended
+		 * beside it.
+		 *
+		 * nosaic_props_get() already searched backwards, so lookups
+		 * always saw the last definition and the documented layering --
+		 * /etc/nosaic first, then /mnt/data/config overriding it --
+		 * appeared to work. What did not work is every caller that
+		 * ENUMERATES the array: those walk forwards and saw both copies.
+		 *
+		 * That is not theoretical. A tap defined in both files made nosd
+		 * create it twice; the second TUNSETIFF returned EBUSY, the
+		 * daemon exited, and s6 restarted it into the same wall eleven
+		 * times. The log ends mid-startup with no error line, and
+		 * `nosaic show ports` reports only that the socket is missing,
+		 * which reads as the chip failing to come up.
+		 *
+		 * Going through the same setter the derived properties use --
+		 * the QSFP port mode rewrites the port map through it -- rather
+		 * than deduplicating separately here. One implementation of
+		 * "last definition wins" means a file and a derived value cannot
+		 * disagree about what that phrase means, and a new enumerator
+		 * cannot reintroduce the bug by forgetting.
+		 */
+		if (nosaic_props_set(name, value) < 0) {
+			fprintf(stderr, "nosd-td2p: cannot store %s from %s "
+				"(more than %d properties, or out of memory); "
+				"the rest of the file is ignored\n",
+				name, path, MAX_PROPS);
 			break;
 		}
-		props[nprops].name = strdup(name);
-		props[nprops].value = strdup(value);
-		if (props[nprops].name == NULL || props[nprops].value == NULL) {
-			fprintf(stderr, "nosd-td2p: out of memory reading %s\n", path);
-			break;
-		}
-		nprops++;
 		n++;
 	}
 	fclose(f);
 	return n;
 }
+
 
 /*
  * Look up a property. The LAST definition wins.
@@ -103,6 +123,51 @@ int nosaic_props_load(const char *path)
  * the first match instead would mean a later file could be loaded, counted,
  * and quietly ignored.
  */
+int nosaic_props_set(const char *name, const char *value)
+{
+	int i;
+
+	for (i = 0; i < nprops; i++) {
+		if (strcmp(props[i].name, name) == 0) {
+			char *v = strdup(value);
+
+			if (v == NULL)
+				return -1;
+			free(props[i].value);
+			props[i].value = v;
+			return 0;
+		}
+	}
+	if (nprops >= MAX_PROPS)
+		return -1;
+	props[nprops].name  = strdup(name);
+	props[nprops].value = strdup(value);
+	if (props[nprops].name == NULL || props[nprops].value == NULL) {
+		free(props[nprops].name);
+		free(props[nprops].value);
+		return -1;
+	}
+	props[nprops].used = 0;
+	nprops++;
+	return 0;
+}
+
+int nosaic_props_unset(const char *name)
+{
+	int i;
+
+	for (i = 0; i < nprops; i++) {
+		if (strcmp(props[i].name, name) == 0) {
+			free(props[i].name);
+			free(props[i].value);
+			props[i] = props[nprops - 1];
+			nprops--;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 const char *nosaic_props_get(const char *name)
 {
 	int i;
@@ -113,6 +178,31 @@ const char *nosaic_props_get(const char *name)
 			return props[i].value;
 		}
 	return NULL;
+}
+
+/*
+ * The SDK's own name resolution.
+ *
+ * soc_property_get("portmap_1") on unit 0 means "portmap_1.0 if it exists,
+ * otherwise portmap_1". The suffixed form is what a configuration read off a
+ * real switch contains, so a lookup that does not try it finds nothing in the
+ * one file that matters most.
+ *
+ * A name that already carries a suffix is passed through: the caller has
+ * resolved it itself, and appending a second one would look for
+ * "portmap_1.0.0".
+ */
+const char *nosaic_props_get_unit(const char *name, int unit)
+{
+	char key[192];
+	const char *v;
+
+	if (strchr(name, '.') == NULL) {
+		snprintf(key, sizeof(key), "%s.%d", name, unit);
+		if ((v = nosaic_props_get(key)) != NULL)
+			return v;
+	}
+	return nosaic_props_get(name);
 }
 
 /*

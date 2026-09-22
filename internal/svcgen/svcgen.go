@@ -349,7 +349,16 @@ func logRedirect(s Service) string {
 func oneshotLine(s Service) string {
 	if s.Verbose {
 		path := "/var/log/" + bareName(s.Name) + ".log"
-		return "redirfd -w 1 " + path + " fdmove -c 2 1 " + s.Exec + "\n"
+		// ⚠ MAKE THE DIRECTORY FIRST. redirfd cannot create one, so on a board
+		// where nothing else has made /var/log yet this redirection fails, the
+		// oneshot fails with it, and `s6-rc change` returns non-zero -- which
+		// this init treats as "the service database did not come up" and
+		// answers with a rescue shell. A verbose oneshot could therefore cost
+		// the whole boot: no network, no datapath, and an unauthenticated
+		// shell reading the console. The longrun path above already does this;
+		// this one did not.
+		return "foreground { mkdir -p /var/log } " +
+			"redirfd -w 1 " + path + " fdmove -c 2 1 " + s.Exec + "\n"
 	}
 	// redirfd and fdmove send its output to the same place a longrun's would
 	// go, so a oneshot is not silently quieter than the service beside it.

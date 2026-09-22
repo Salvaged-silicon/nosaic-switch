@@ -34,6 +34,15 @@ local.mk
 /platform/*/config/portmap.conf
 /platform/*/config/polarity.conf
 /platform/*/config/statusleds.conf
+
+# ⚠ One exception, and the reason is the provenance rather than the filename.
+# The 7050TX-64's lamps are on the SCD rather than the fan CPLD, so its map is
+# register offsets that are already public facts in that board's hardware.md
+# plus the palette from Arista's published GPL scd-led driver. None of it is
+# read out of a vendor file, so there is nothing to keep out of the tree -- and
+# shipping it means the panel works on a fresh install rather than waiting for
+# somebody to run a generator against a switch.
+!/platform/arista-7050tx-64/config/statusleds.conf
 /platform/*/config/authorized_keys
 
 # Site configuration: real addressing that belongs to a particular lab rather
@@ -63,3 +72,10 @@ cli/nosaic
 # between calls. It is a local operator tool, not part of the build.
 /con.py
 refs/
+
+# The repeater's tuning is per-board, comes from the board's own description
+# file, and is the vendor's rather than ours -- same rule as the port map.
+/platform/*/config/retimer.conf
+
+# SerDes transmit equalisation: per-trace tuning from the board description.
+/platform/*/config/serdes.conf

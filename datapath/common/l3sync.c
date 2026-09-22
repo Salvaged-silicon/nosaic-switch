@@ -110,8 +110,21 @@
 
 #include "l3sync.h"
 #include "props.h"
+#include "tapbridge.h"
 
-#define MAX_IF   8
+/* One router interface per tap, so this tracks the bridge's own limit.
+ *
+ * ⚠ THIS WAS 8, AND IT SILENTLY DECIDED WHICH PORTS COULD ROUTE.
+ *
+ * nosaic_l3_add_intf() returns -1 past the limit and its caller ignored the
+ * result, so on a board declaring 54 taps the first 8 got a router interface
+ * and the other 46 got nothing. Every route the kernel learned via one of
+ * them was then skipped as "not a router interface" -- counted, but with the
+ * explanatory printf rate-limited to four lines that were all spent on eth0,
+ * which legitimately has none. The visible symptom was a switch with full
+ * OSPF adjacencies, a correct RIB, and CHIP route 0/15360.
+ */
+#define MAX_IF   NOSAIC_MAX_TAPS
 #define MAX_NH   64
 #define MAX_RT   1024
 #define MAX_HOST 256
@@ -1526,8 +1539,14 @@ int nosaic_l3_add_intf(int unit, const char *ifname, int port, int vlan,
 	struct l3if *ifp;
 	int rv;
 
-	if (nif >= MAX_IF)
+	if (nif >= MAX_IF) {
+		/* Loud, because the consequence is a port that links, addresses
+		 * and peers normally and then routes nothing. */
+		printf("l3: %s gets NO ROUTER INTERFACE: %d is all this datapath "
+		       "supports, and routes via it will be skipped\n",
+		       ifname, MAX_IF);
 		return -1;
+	}
 	l3_unit = unit;
 
 	if (nif == 0) {

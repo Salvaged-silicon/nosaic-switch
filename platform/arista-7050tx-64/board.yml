@@ -1,0 +1,281 @@
+# Arista DCS-7050TX-64 — Trident2 (BCM56855), 48x 10GBASE-T + 4x QSFP+.
+#
+# STATE: bringup. Nothing in NOSaic has booted on this board yet. Everything
+# recorded here was read off the running switch under EdgeNOS, the predecessor
+# project, which does boot it and forwards in hardware.
+#
+# What makes this board different from arista-7050sx2-72q, and why it was
+# deferred behind it: the 48 front-panel ports are 10GBASE-T copper behind
+# external BCM84848 PHYs that need firmware loaded over MDIO before a port will
+# link. The SX2's SFP+/QSFP+ cages are direct serdes and need none of that. The
+# PHY layer is the work here; almost everything else has a sibling to copy.
+
+id: arista-7050tx-64
+vendor: arista
+model: 7050tx-64
+
+arch: x86_64
+asic: td2
+boot: aboot
+
+# Not yet read off this board. prefdl lives under EOS, so capture it before the
+# vendor OS is displaced. Left blank rather than copying the SX2's 1: Aboot
+# refuses a board whose epoch is higher than the image claims, and guessing it
+# turns a working image into one that will not load.
+# aboot_max_hwepoch: ""
+
+profile: minimal
+kernel: ""
+
+status: bringup
+
+# Read off the running switch, not guessed: a wrong baud rate
+# makes a working board look hung.
+console: "ttyS0"
+console_baud: 9600
+
+# Flash layout. Provisional -- carried from the SX2 and NOT yet sized against
+# this board. /mnt/flash is 3.4 GB with ~1.3 GB free, and it holds two EOS SWIs
+# (4.14 at 364 MB and 4.20 at 629 MB) which are this box's way back. Confirm
+# before the first install; boot_mib and slot_mib are unused if the slots end up
+# as files on Aboot's FAT the way the SX2's are.
+boot_mib: 64
+slot_mib: 768
+data_mib: 512
+
+# Read off the running switch, not assumed.
+#
+# memmap reserves the DMA pool the userspace BDE claims. 0xd0000000 rather than
+# 0x100000000 because this board has 3839 MB and 4 GB is past the end of memory.
+#
+# iomem=relaxed is required, and the reason is worth stating because EdgeNOS
+# does NOT pass it on this board and its datapath works anyway.
+#
+# The two projects reach the chip differently. EdgeNOS maps BAR0 through
+# /sys/bus/pci/.../resource0, which needs no relaxation. NOSaic's BDE maps BAR0
+# the same way but claims its DMA pool through /dev/mem (datapath/td2/bde.c),
+# and CONFIG_STRICT_DEVMEM refuses that mapping without iomem=relaxed -- it
+# fails silently, which is the worst way for it to fail.
+#
+# So this is not carried over from the SX2 on the assumption that two Arista
+# boards are alike. It is here because of which path this tree's BDE takes.
+kernel_params: "console=ttyS0,9600n8 panic=10 reboot=p memmap=64M$0xd0000000 iomem=relaxed"
+
+# Arista's SCD, an FPGA on the PCI bus, owns the board's own hardware -- reset
+# lines, watchdog, sensors, LEDs, and the MDIO bus the copper PHYs hang off. It
+# holds the Trident2 in reset from power-on, which is why the ASIC's address is
+# stated here: until the SCD is told to let go, 01:00.0 is not on the bus to be
+# discovered.
+#
+# Both addresses read from the running board: 01:00.0 is 14e4:b855 (BCM56855)
+# and 02:00.0 is 3475:0001 (Arista SCD).
+platform_hal:
+  driver: scd
+  pci: "0000:02:00.0"
+  asic_pci: "0000:01:00.0"
+
+  # ⚠ THE SWITCH CHIP IS NOT THE ONLY THING THIS BOARD HOLDS IN RESET.
+  #
+  # A TI DS100KR800 retimer sits between the ASIC's SerDes and the LAST TWO
+  # QSFP cages -- Et51 and Et52 -- and the board holds it in reset from
+  # power-on on bit 8 of the same block as the switch chip. Et49 and Et50 are
+  # direct SerDes and do not pass through it, which is exactly the line between
+  # the cages that worked here and the one that did not.
+  #
+  # Leaving it asserted is invisible from this end. The ASIC transmits, its MAC
+  # counters climb, and this side locks onto the far end's light and reports
+  # the port up at 40000 with no error anywhere -- while the module reports
+  # loss of signal on all four transmit lanes, because nothing electrical ever
+  # reaches it, and the neighbour never links at all.
+  #
+  # Bit 8 is from this board's own description file, which names it
+  # `ds100Kr.resetGpo = resetGpoBlock[0].newBit(8)`. A live read of the block
+  # at bring-up is 0x000001ff: nine bits implemented, every one asserted.
+  resets:
+    - {name: qsfp-retimer, bit: 8}
+
+    # ⚠ THE 48 COPPER PHY RESETS ARE BITS 2-7, AND THEY ARE DELIBERATELY NOT
+    # RELEASED HERE YET.
+    #
+    # The board's description file names only three bits in this block -- the
+    # switch chip, the security chip and the retimer -- and leaves 2 to 7
+    # unexplained. They are the BCM84848 resets, grouped eight ports to a bit:
+    # six bits for forty-eight ports, which is exactly what this register
+    # implements and nothing else claims. Releasing them was proved on the
+    # hardware -- all 48 PHYs then answer 0x600d on a scan of every
+    # accelerator, bus and address, where none answered before.
+    #
+    # ⚠ THE FIRST BOOT AFTER THIS IS SLOW. Forty-eight PHYs load firmware
+    # before any copper port can link, and the predecessor measures that at
+    # around five minutes. A handshake warning per port is a documented
+    # transient of the download rather than a failure -- it is LOG_WARN in the
+    # SDK and initialisation continues past it. Do not conclude the datapath
+    # has hung until it has had well over ten minutes.
+    #
+    - {name: copper-phy-1-8,   bit: 2}
+    - {name: copper-phy-9-16,  bit: 3}
+    - {name: copper-phy-17-24, bit: 4}
+    - {name: copper-phy-25-32, bit: 5}
+    - {name: copper-phy-33-40, bit: 6}
+    - {name: copper-phy-41-48, bit: 7}
+
+  # Where the platform devices sit on the SCD's SMBus accelerator 0.
+  #
+  # ⚠ THIS IS NOT THE SAME LAYOUT AS THE SIBLING BOARD, AND THE DIFFERENCE IS
+  # NOT COSMETIC.
+  #
+  # The driver used to carry the 7050SX2's placement as a constant for every
+  # Arista board: fan CPLD at accelerator 0, bus 0. Here the CPLD is on bus 1,
+  # the CPU card's bus, and a write to bus 0 reaches a bus with nothing at
+  # 0x60. NOSaic's first boot on this switch flooded the console with
+  #
+  #   cannot command the fans at all (4 of 4 refused):
+  #   setting fan 1 to 100%: SMBus 0x60 reg 0x10: write not acknowledged
+  #
+  # from a fan controller that was working perfectly and simply never heard
+  # from us. Nothing in that message says "wrong bus".
+  #
+  # Placement is from the board's own description file, by way of the
+  # predecessor project, and both buses are confirmed by their readings rather
+  # than by their names: bus 0 gave 39.0/34.2 °C against EOS's Board 41 °C and
+  # Front-panel 35 °C, bus 1 gave 32.0/30.0 °C against EOS's CPU board 32 °C
+  # and Back-panel 30 °C.
+  smbus:
+    # ⚠ THE ACCELERATORS ARE NOT AT A REGULAR STRIDE ON THIS BOARD.
+    #
+    # Accelerator 0 is at 0x8000 and carries the platform: sensors, the fan
+    # CPLD, the power controllers. Accelerator 1 carries one bus per QSFP cage
+    # and is at 0x9400 -- NOT at 0x8080, which is what a 0x80 stride computes
+    # and what the driver assumed from the sibling board.
+    #
+    # The cost of that was invisible because it only breaks reads that nothing
+    # depends on: every attempt to read a module's own EEPROM returned "no
+    # response, cs=0x00000000", so this board could never see a transceiver's
+    # view of itself -- identifier, TX disable, TX fault, loss of signal --
+    # while the SCD's cage register at 0xA100 answered perfectly and made the
+    # optics look fully accounted for.
+    accelerators: [0x8000, 0x9400]
+
+    # Two MAX6658s, one per card, each with a local diode and one remote. They
+    # share address 0x4c and are told apart only by which bus they are on --
+    # which is exactly the mistake this section exists to prevent.
+    sensors:
+      - {name: board,        part: max6658,        accel: 0, bus: 0, addr: 0x4c}
+      - {name: front-panel,  part: max6658-remote, accel: 0, bus: 0, addr: 0x4c}
+      - {name: cpu-board,    part: max6658,        accel: 0, bus: 1, addr: 0x4c}
+      - {name: back-panel,   part: max6658-remote, accel: 0, bus: 1, addr: 0x4c}
+
+    # The StandbyCpld, which Arista's own tree calls "murder". Four bays.
+    #
+    # ⚠ max_pwm IS 180 AND NOT 255, MEASURED. Arista's published driver defines
+    # the register as 0-255, but EOS on this chassis reports "Configured Speed
+    # 71%" while the register holds 127, and 71% of 180 is 127.8. Scaling by
+    # 255 commands about 140% of full scale for anything above 70%, so the top
+    # third of the curve clamps to one speed and the fans stop responding to
+    # temperature at exactly the point where that matters.
+    #
+    # ⚠ floor_percent is 60 because that is the lowest the board's OWN curve
+    # ever asks for on this chassis -- level 2, at 25 °C inlet. It is not a
+    # number chosen for comfort: it is "never quieter than the vendor's own
+    # policy". Measured headroom exists (dropping the trays from 73% to 53%
+    # for six minutes moved board temperature by 1 °C at 31 °C ambient), and
+    # it is deliberately not spent.
+    # The TI DS100KR800 repeater, on the general bus. Eight channels: Et51 and
+    # Et52's four lanes each, in the host-to-module direction only -- which is
+    # why a cage behind it receives perfectly and transmits nothing until it is
+    # programmed. Its tuning is per-trace-length, comes from this board's own
+    # description file, and is generated rather than shipped: see
+    # tools/mkretimer.sh.
+    retimer: {accel: 0, bus: 0, addr: 0x58}
+
+    fans: {part: crow-cpld, accel: 0, bus: 1, addr: 0x60, count: 4, max_pwm: 180, floor_percent: 60}
+
+  # The front-panel transceiver cages.
+  #
+  # ⚠ FOUR CAGES AT 0xA100, NOT FIFTY-FOUR AT 0xA010.
+  #
+  # The sibling board is 48 SFP+ plus 6 QSFP+ and its control table starts at
+  # 0xa010. This board's first 48 ports are RJ45 and have no cage at all, so
+  # the table is four QSFP+ entries at 0xa100 -- and the sibling's numbers,
+  # which the driver used to carry as constants, write 54 entries from 0xa010
+  # straight through this board's per-QSFP-cage LED block at 0xa000..0xa0f0
+  # and out the far side.
+  #
+  # The boundary is why hardware.md flags it: the LED block ends at 0xa0f0 and
+  # transceiver control begins at 0xa100, so an off-by-one in either direction
+  # lands on the other thing.
+  #
+  # Getting this wrong is what a dark cage looks like. A QSFP module held in
+  # low power and reset answers nothing and emits nothing, while the switch
+  # chip reports a port that is enabled, at 40000, with the right lane map and
+  # polarity, and no error anywhere.
+  cages:
+    base: 0xA100
+    stride: 0x10
+    count: 4
+    sfp_count: 0
+    # Et49..Et52 are accelerator 1, buses 0..3 -- measured by reading the SFF
+    # identifier byte at 0x50 on each bus and seeing which answered 0x0d.
+    qsfp_eeprom: {accel_base: 1, buses_per_accel: 8}
+
+# The cooling curve. At or below 25 °C the fans sit at the controller's floor;
+# at or above 40 °C they are flat out.
+#
+# Established on this board by EdgeNOS, whose controller works in five discrete
+# steps (45, 60, 75, 90, 100 percent) with thresholds at 25, 31.66, 36.66 and
+# 40 °C. NOSaic's model is a band rather than a step table, so what carries over
+# is the two ends of it -- the floor below which nothing is gained by spinning
+# up, and the ceiling above which there is nothing left to give.
+#
+# A narrower band than the SX2's 35-65, and deliberately: 48 copper PHYs
+# dissipate considerably more than 48 SFP+ cages, and the vendor's own policy
+# for this board starts ramping ten degrees earlier.
+#
+# Falling duty is limited because reacting instantly downward makes the fans
+# oscillate around a threshold; rising is immediate because the opposite
+# asymmetry is a thermal risk.
+thermal:
+  min_c: 25
+  max_c: 40
+  slew_down_percent: 5
+  interval_seconds: 10
+
+notes: >
+  Aboot boots unsigned SWIs here: boot0 is a shell script we control and no
+  signing is enforced. Console is ttyS0 at 9600. The CPU is an AMD GX-420CA with
+  3839 MB of RAM.
+
+  The management port is driven by tg3 and comes up as the unprogrammed
+  Broadcom default 00:10:18:00:00:00 across a kexec, so the real MAC is read in
+  Aboot and passed on the kernel command line. The SX2 has the same problem and
+  solves it from a configuration file instead.
+
+  The front panel is 48 ports of 10GBASE-T plus four QSFP+ cages. Front-panel
+  EtN is SDK port N and diag name xeN-1, so Et48 is SDK port 48 and xe47. The
+  QSFP cages break that pattern: they are SDK ports 49, 53, 57 and 61, each the
+  first lane of a group of four, and their Linux taps are xe48, xe52, xe56 and
+  xe60. Code that assumes one rule for both mis-maps the QSFP capacity, and it
+  presents as a dead port rather than as a wrong index.
+
+  Each QSFP cage's transceiver EEPROM is on its own i2c bus off the SCD -- buses
+  9, 10, 11 and 12 for front-panel 49, 50, 51 and 52, at address 0x50. Measured
+  by reading the identifier byte on each bus.
+
+  ⚠ Every unconnected copper port reports "Link Up with Speed 0M". A link with
+  no speed is not a link, and code that believes it will configure all 48 ports
+  as though they were cabled.
+
+  ⚠ The MAC interface must follow the negotiated speed -- SGMII at or below
+  2.5G, XFI at 10G. A 10GBASE-T port left at its XFI default while the copper
+  side negotiates 1G gives a PHY with a real link on both sides that bridges
+  nothing, in both directions, with zero errors on either end.
+
+  ⚠ MDIO is a shared bus and the datapath depends on it. Reading
+  bcm_port_speed_get across all 48 PHYs on a two-second timer starved it and
+  killed copper RECEIVE on every port, while the direct-serdes 40G ports kept
+  working. Cache link state from linkscan and bound any sweep.
+
+  The PHY firmware handshake fails noisily on some cold starts -- 40 warnings on
+  one boot here, and no copper port linked -- and restarting the datapath agent
+  cleared it with zero warnings on the rerun. It is a transient of the firmware
+  download, not a configuration fault.

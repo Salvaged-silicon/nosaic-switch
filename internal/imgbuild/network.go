@@ -47,8 +47,44 @@ CONF=/etc/nosaic/network.conf
 [ -r "$CONF" ] || exit 0
 
 # How long to wait for the datapath to create its interfaces.
-WAIT_SECS=${NOSAIC_NET_WAIT:-600}
+# ⚠ LONG ENOUGH FOR THE SLOWEST DATAPATH, NOT FOR A TYPICAL ONE.
+#
+# This waits for interfaces the datapath creates, so the ceiling has to clear
+# however long that takes. On a board with 48 external PHYs it takes about
+# eleven minutes: Broadcom's driver downloads firmware to every one of them
+# over MDIO -- 1.8 million register writes -- before the chip reports its
+# ports. At the old ten-minute ceiling that board configured eth0, gave up on
+# the rest, and came up with no transit addressing at all, which reads as a
+# dead data plane rather than as a timeout.
+#
+# Nothing is lost by the higher ceiling: a board whose interfaces appear in
+# seconds stops waiting the moment they do.
+WAIT_SECS=${NOSAIC_NET_WAIT:-1500}
 POLL_SECS=5
+
+# Reconcile, because the interfaces this configures are destroyed and recreated
+# underneath it.
+#
+# The taps belong to the datapath daemon. When it restarts -- and it is
+# supervised with restart:always, so it restarts on its own after a crash --
+# every tap is destroyed and recreated BARE. The loopback's own address goes
+# with them. Configuring once at boot therefore leaves a switch that has
+# addresses only until the first time the daemon exits, and an operator sees a
+# box that boots correctly and later routes nothing, with no event to point at.
+#
+# So the answer is a timer rather than an event: ask what the state IS and put
+# back whatever is missing. That is the same conclusion the 7050TX-64's
+# hotplug work reached about ports -- level-triggered, not edge-triggered,
+# because the event can be missed entirely and the state cannot.
+#
+# Re-running is free by construction. apply_ifaces() skips anything already in
+# the state the file asks for -- that test is load-bearing and documented
+# below -- and apply_routes() skips a route already installed, so a pass with
+# nothing to do prints nothing and touches nothing.
+#
+# Unset means converge once and exit, which is what the boot-time oneshot
+# wants. A number means keep going, that many seconds apart.
+RECONCILE_SECS=${NOSAIC_NET_RECONCILE:-0}
 
 say() { echo "NOSAIC-NET $*"; }
 
@@ -217,6 +253,18 @@ rm -f "$ABSENT_FINAL"
 apply_routes
 
 say done
+
+if [ "$RECONCILE_SECS" -gt 0 ] 2>/dev/null; then
+    say "reconciling every ${RECONCILE_SECS}s"
+    while : ; do
+        sleep "$RECONCILE_SECS"
+        # NOT silenced. A pass with nothing to do already prints nothing,
+        # so anything this says is an address or a route that had gone --
+        # which is the one thing an operator needs to see in the log.
+        apply_ifaces || :
+        apply_routes
+    done
+fi
 `
 
 func writeNetwork(o Options, rootfs string) (bool, error) {

@@ -70,3 +70,29 @@ CONFIG_FINDFS=y
 # ~590 bytes and a faster sha1sum, which no switch is waiting on.
 # CONFIG_SHA1_HWACCEL is not set
 # CONFIG_SHA256_HWACCEL is not set
+
+# The i2c applets, so a switch can be asked what is on its own platform bus.
+#
+# ⚠ THESE ARE A BRING-UP TOOL AND THE REASON THEY SHIP IS THAT THERE IS NO
+#   SECOND CHANCE TO USE THEM.
+#
+# On a board whose sensors, fans and PSUs hang off an i2c mux nobody has
+# mapped, the channel-to-device table has to be read off the hardware -- and
+# the only moment that bus is both reachable and not owned by the vendor's own
+# driver is while our image is running. The Cisco Nexus 3172TQ is the case in
+# point: it HAS i2cdetect under NX-OS and no /dev/i2c-* nodes to use it on,
+# because its board-controller module owns the bus.
+#
+# So the tools travel in the image rather than being fetched when wanted. They
+# are a few kilobytes inside a binary that is already there, and the
+# alternative is discovering they are missing during the one session that
+# could have used them.
+#
+# i2ctransfer is the one to have beyond the obvious three: selecting a mux
+# channel and reading a device behind it is a combined write-then-read, which
+# i2cget cannot express.
+CONFIG_I2CDETECT=y
+CONFIG_I2CGET=y
+CONFIG_I2CSET=y
+CONFIG_I2CDUMP=y
+CONFIG_I2CTRANSFER=y

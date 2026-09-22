@@ -38,13 +38,43 @@
  * pings and every one arrived as all-zero MACs and "802.3, length 0". Allocate
  * with bcm_pkt_alloc and copy into pkt_data[0].data.
  *
- * ALLOCATE THAT BUFFER ONCE. The BDE's salloc is a bump allocator with no
+ * ALLOCATE THOSE BUFFERS ONCE. The BDE's salloc is a bump allocator with no
  * free, so bcm_pkt_free returns nothing to it. EdgeNOS allocated per frame and
  * after ~2400 transmits the 64 MB pool was exhausted, transmit stopped, and an
  * OSPF adjacency fell back to Init -- the far end stopped hearing our Hellos
- * while we still heard its. bcm_tx is synchronous here (no async flag, NULL
- * cookie) and the pump loop is single threaded, so one buffer is safe to reuse
- * across every port.
+ * while we still heard its. So the ring below is allocated at startup and
+ * reused for ever; nothing here ever calls bcm_pkt_free.
+ *
+ * ⚠ TRANSMIT ASYNCHRONOUSLY, OR ONE LOST COMPLETION KILLS THE CONTROL PLANE.
+ *
+ * This used to hold a single packet and call bcm_tx with no callback, which is
+ * safe only while every transmit completes. It is the pump thread -- the ONLY
+ * thread that drains the taps -- that makes the call, so a transmit that never
+ * finishes takes the whole Linux-to-wire direction with it, permanently.
+ *
+ * That is not hypothetical. The sibling 7050SX2 sat in exactly that state for
+ * nearly two days: the pump parked in an untimed wait, tx_packets frozen on
+ * every tap while tx_dropped climbed at the Hello rate, and all three OSPF
+ * neighbours stuck in Init -- it heard everyone and nobody heard it.
+ *
+ * What makes it so hard to see is that NOTHING ELSE FAILS. Receive keeps
+ * punting, the counters keep updating, the query socket keeps answering, the
+ * DMA pool reads 12% used with zero failed allocations, and `show ports`
+ * reports every port up at full speed. Every local health check passes while
+ * the switch is mute. It presents as a receive fault at the FAR end, and that
+ * is where the investigation goes.
+ *
+ * The SDK decides synchronous versus asynchronous from the packet itself --
+ * `async = pkt->call_back != NULL` in src/bcm/common/tx.c:2680. With no
+ * callback it takes the sync branch of _bcm_tx_chain_send and lands in
+ * soc_dma_wait, which is soc_dma_wait_timeout(..., sal_sem_FOREVER) at
+ * src/soc/common/dma.c:4048. There is no timeout and no way to pass one.
+ * With a callback set it calls soc_dma_start instead and returns immediately.
+ *
+ * So every packet here carries a callback. The cost is that a packet belongs
+ * to the DMA engine until that callback fires, so one buffer is no longer
+ * enough -- hence a ring, and a frame dropped and counted when the ring is
+ * empty. Dropping a Hello is recoverable; parking the pump is not.
  *
  * THE FRAME HANDED TO bcm_tx MUST CARRY A VLAN TAG. The transmit path assumes
  * a tag at offset 12, and because tx_upbmp marks the egress port untagged it
@@ -66,6 +96,8 @@
 #include <net/if_arp.h>
 #include <sys/socket.h>
 #include <poll.h>
+#include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -82,6 +114,7 @@
 #include <bcm/stat.h>
 #include <bcm/stg.h>
 
+#include "props.h"
 #include "tapbridge.h"
 
 #define TAP_MTU        9216
@@ -89,7 +122,7 @@
 /* Enough for every front-panel port on the largest board here, which is 52.
  * It was 8, sized for a two-port test on the 7050SX2, and a board asking for
  * ten got eight without being told -- see the refusal below. */
-#define MAX_TAPS       64
+#define MAX_TAPS       NOSAIC_MAX_TAPS
 #define RX_PRIORITY    100
 
 struct tap {
@@ -101,12 +134,115 @@ struct tap {
 	unsigned char mac[6];
 	unsigned long tx_ok;
 	unsigned long tx_err;
+	unsigned long tx_nobuf;   /* dropped: no free packet in the ring */
+	/* Consecutive stats intervals with link and no traffic either way.
+	 * Counted so a port that has just come up is not accused of being
+	 * dead for the first moment it is legitimately quiet. */
+	int silent;
+	unsigned long tx_nolink;  /* dropped: the port has no link to send on */
 };
 
 static struct tap taps[MAX_TAPS];
+
+/* The board's "really has link" test; see nosaic_tap_link_filter(). */
+static int (*tap_link_real)(int port);
+
+void nosaic_tap_link_filter(int (*fn)(int port))
+{
+	tap_link_real = fn;
+}
 static int ntaps;
 static int tap_unit;
-static bcm_pkt_t *tx_pkt;   /* allocated once; see the header comment */
+
+/*
+ * The transmit ring. See the header comment for why this is not one buffer.
+ *
+ * Depth is for a control plane, not a data plane: nothing here forwards, it
+ * carries Hellos, ARP, and the odd ping. Sixty-four in flight is far more than
+ * FRR can produce between one DMA completion and the next, and it costs about
+ * 590 KB of a 64 MB pool that otherwise runs at 12%.
+ *
+ * Free slots are a stack rather than a queue on purpose: reusing the most
+ * recently completed packet keeps the working set small and, more usefully,
+ * means a slot whose callback never fires simply sinks out of rotation instead
+ * of being retried in order.
+ */
+/* How many stats intervals a port may have link and carry nothing before
+ * it is worth saying so. The table is printed about once a minute, so
+ * this is a few minutes of genuine silence rather than a port that has
+ * just linked and not yet been spoken to. */
+#define TAP_SILENT_INTERVALS 3
+
+#define TX_RING 64
+
+static bcm_pkt_t *tx_ring[TX_RING];
+static int        tx_free[TX_RING];       /* stack of free slot indices */
+static int        tx_nfree;
+static char       tx_busy[TX_RING];       /* slot is with the DMA engine */
+static pthread_mutex_t tx_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* How many packets are with the DMA engine right now. Reported because a
+ * count pinned at TX_RING is the signature this ring exists to survive:
+ * completions have stopped arriving and transmit is being dropped rather
+ * than blocking the pump. */
+static int tap_tx_inflight(void)
+{
+	int n;
+
+	pthread_mutex_lock(&tx_lock);
+	n = TX_RING - tx_nfree;
+	pthread_mutex_unlock(&tx_lock);
+	return n;
+}
+
+/*
+ * A transmit finished; give the slot back.
+ *
+ * Runs on the SDK's own completion thread, not the pump, which is why the
+ * free stack is locked. Guarded against a double return: the dv_vcnt == 0
+ * path in _bcm_tx invokes the callback inline and still reports success, so
+ * this can run before bcm_tx has returned to the caller.
+ */
+static void tap_tx_done(int unit, bcm_pkt_t *pkt, void *cookie)
+{
+	int slot = (int)(intptr_t)cookie;
+
+	(void)unit;
+	(void)pkt;
+	if (slot < 0 || slot >= TX_RING)
+		return;
+	pthread_mutex_lock(&tx_lock);
+	if (tx_busy[slot]) {
+		tx_busy[slot] = 0;
+		tx_free[tx_nfree++] = slot;
+	}
+	pthread_mutex_unlock(&tx_lock);
+}
+
+/* Take a free slot, or -1 when every packet is still with the engine. */
+static int tap_tx_slot(void)
+{
+	int slot = -1;
+
+	pthread_mutex_lock(&tx_lock);
+	if (tx_nfree > 0) {
+		slot = tx_free[--tx_nfree];
+		tx_busy[slot] = 1;
+	}
+	pthread_mutex_unlock(&tx_lock);
+	return slot;
+}
+
+/* Hand a slot back that was never given to the engine. */
+static void tap_tx_unslot(int slot)
+{
+	pthread_mutex_lock(&tx_lock);
+	if (slot >= 0 && slot < TX_RING && tx_busy[slot]) {
+		tx_busy[slot] = 0;
+		tx_free[tx_nfree++] = slot;
+	}
+	pthread_mutex_unlock(&tx_lock);
+}
 
 /*
  * wire -> Linux.
@@ -257,10 +393,53 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 {
 	unsigned char *frame;
-	int rv;
+	bcm_pkt_t *tx_pkt;
+	int slot, rv;
 
-	if (tx_pkt == NULL || len < 12 || len + 4 > TAP_MTU)
+	if (tx_ring[0] == NULL || len < 12 || len + 4 > TAP_MTU)
 		return -1;
+
+	/*
+	 * Don't hand a frame to a port with no link.
+	 *
+	 * bcm_tx ANDs the packet's port bitmap with the bitmap linkscan
+	 * maintains, so a dark port yields no descriptor. The SDK then prints
+	 * "Could not send pkt with dv_vcnt = 0", invokes the completion
+	 * callback inline, AND RETURNS SUCCESS -- so without this the frame is
+	 * counted in tx_ok as though it went out, and the log fills up.
+	 *
+	 * This only became visible when this board declared a tap for all 54
+	 * of its ports rather than only the cabled ones. Linux sends router
+	 * solicitations and MLD out of every interface it has, so 52 dark
+	 * ports produced a steady drip of failed transmits reported as
+	 * successes. Declaring every port is right -- a cable plugged in later
+	 * should just work -- so the transmit path has to tolerate dark ones.
+	 *
+	 * Checked per frame rather than cached: this is the CPU-originated
+	 * slow path at a few frames a second, and a cached copy would need a
+	 * linkscan handler to stay honest.
+	 */
+	{
+		int link = 0;
+
+		if (bcm_port_link_status_get(tap_unit, t->port, &link) ==
+		    BCM_E_NONE && !link) {
+			t->tx_nolink++;
+			return -1;
+		}
+	}
+
+	/*
+	 * A full ring means every packet is still with the DMA engine. Drop
+	 * this frame and say so: the alternative is to wait, and waiting here
+	 * is the failure this whole arrangement exists to prevent.
+	 */
+	slot = tap_tx_slot();
+	if (slot < 0) {
+		t->tx_nobuf++;
+		return -1;
+	}
+	tx_pkt = tx_ring[slot];
 
 	frame = tx_pkt->pkt_data[0].data;
 	memcpy(frame, buf, 12);                     /* destination + source MAC */
@@ -288,8 +467,15 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 	BCM_PBMP_CLEAR(tx_pkt->tx_upbmp);
 	BCM_PBMP_PORT_ADD(tx_pkt->tx_upbmp, t->port);  /* leave the wire untagged */
 
-	rv = bcm_tx(tap_unit, tx_pkt, NULL);
+	/*
+	 * The cookie is the slot, and pkt->call_back -- set once at allocation
+	 * -- is what makes this asynchronous. On success the packet belongs to
+	 * the engine until tap_tx_done runs; on failure the callback is never
+	 * invoked, so the slot has to come back here.
+	 */
+	rv = bcm_tx(tap_unit, tx_pkt, (void *)(intptr_t)slot);
 	if (rv != BCM_E_NONE) {
+		tap_tx_unslot(slot);
 		t->tx_err++;
 		return -1;
 	}
@@ -322,11 +508,66 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sock >= 0) {
-		/* A distinct locally-administered MAC per port. */
+		/*
+		 * A locally-administered MAC, distinct per port AND per switch.
+		 *
+		 * It used to be 02:00:00:00:00:<0x50+index>, with nothing in it
+		 * derived from the board -- so every NOSaic switch handed out the
+		 * same addresses in the same order. That is not theoretical: on
+		 * this bench a 7050SX2's et1 and a 7050TX-64's et49 both held
+		 * 02:00:00:00:00:50, and et2 and et50 both held ...:51.
+		 *
+		 * Nothing broke, because each tap sits in its own VLAN and the
+		 * chip's L2 table is keyed on VLAN+MAC, so the duplicates never
+		 * met. That is a thinner margin than it looks. Until very
+		 * recently every port was also left in VLAN 1 -- one chip-wide
+		 * flood domain -- where two ports carrying the same address WOULD
+		 * have collided and the table would have flapped it between them.
+		 * Anything that puts two ports in a shared VLAN brings it back,
+		 * and two NOSaic switches on one segment collide outright with no
+		 * VLAN to separate them.
+		 *
+		 * So the middle four bytes come from a base the board supplies,
+		 * `tap_mac_base`, which is the switch's own address -- unique per
+		 * machine and already known to it. The last byte stays the port
+		 * index, which is what makes it distinct within the switch.
+		 *
+		 * Without the property the old constant is used, because a board
+		 * that has not been told its own address still has to bring its
+		 * ports up. It says so once: silently reverting to addresses
+		 * shared with every other switch is the kind of default that is
+		 * only discovered by two boxes fighting over an address.
+		 */
 		memset(&ifr, 0, sizeof(ifr));
 		snprintf(ifr.ifr_name, IFNAMSIZ, "%s", name);
 		ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
 		ifr.ifr_hwaddr.sa_data[0] = 0x02;
+		{
+			unsigned b[6];
+			const char *base = nosaic_props_get("tap_mac_base");
+			static int warned;
+
+			if (base != NULL && sscanf(base, "%x:%x:%x:%x:%x:%x",
+						   &b[0], &b[1], &b[2], &b[3],
+						   &b[4], &b[5]) == 6) {
+				/* The low four bytes of the board's address: the
+				 * top two are a vendor OUI shared by every unit of
+				 * the model, so they carry no per-switch
+				 * information worth spending a byte on. */
+				ifr.ifr_hwaddr.sa_data[1] = (char)(b[2] & 0xff);
+				ifr.ifr_hwaddr.sa_data[2] = (char)(b[3] & 0xff);
+				ifr.ifr_hwaddr.sa_data[3] = (char)(b[4] & 0xff);
+				ifr.ifr_hwaddr.sa_data[4] = (char)(b[5] & 0xff);
+			} else if (!warned) {
+				warned = 1;
+				fprintf(stderr,
+					"tap: no usable tap_mac_base, so tap addresses are "
+					"02:00:00:00:00:xx -- the SAME on every NOSaic "
+					"switch. Two of them on one segment, or two ports "
+					"of either in one VLAN, will collide. Set "
+					"tap_mac_base to this board's own MAC.\n");
+			}
+		}
 		ifr.ifr_hwaddr.sa_data[5] = (char)(0x50 + index);
 		ioctl(sock, SIOCSIFHWADDR, &ifr);
 		memcpy(t->mac, ifr.ifr_hwaddr.sa_data, 6);
@@ -427,6 +668,36 @@ static int tap_vlan_setup(int unit, struct tap *t, int vid)
 		return -1;
 	}
 
+	/*
+	 * ⚠ AND OUT OF VLAN 1, WHICH IS A CHIP-WIDE BROADCAST DOMAIN.
+	 *
+	 * The chip puts every port in the default VLAN at init and adding one to
+	 * a second VLAN does not take it out of the first. Leaving it there
+	 * keeps every port of the switch in one flood domain, alongside the
+	 * per-port VLANs built above -- so the isolation this function's header
+	 * describes was never actually in place.
+	 *
+	 * It is invisible until two front-panel ports can reach each other. On
+	 * this board two copper ports were patched together for a link test, and
+	 * the first boot on which copper could transmit produced a broadcast
+	 * storm in VLAN 1: 320 million frames each way across the patch in
+	 * minutes, mirrored exactly between the two ports, and flooded out of
+	 * every other member -- 1.2 billion frames at a 40G neighbour that had
+	 * nothing to do with the test.
+	 *
+	 * The predecessor removes the port from VLAN 1 here and never saw this.
+	 *
+	 * Failure is reported and not fatal: a port that keeps its own VLAN still
+	 * routes, and refusing to start over it would be worse than the flooding
+	 * it risks. But it is said out loud, because the consequence is a storm.
+	 */
+	rv = bcm_vlan_port_remove(unit, 1, pbm);
+	if (rv != BCM_E_NONE)
+		fprintf(stderr, "tap: %s stays in VLAN 1 (bcm_vlan_port_remove: %d); "
+			"it shares a broadcast domain with every other port, and two "
+			"front-panel ports that can reach each other will storm\n",
+			t->name, rv);
+
 	/* What an untagged frame arriving on this port is taken to belong to. */
 	rv = bcm_port_untagged_vlan_set(unit, t->port, (bcm_vlan_t)vid);
 	if (rv != BCM_E_NONE) {
@@ -502,11 +773,25 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 	}
 	tap_unit = unit;
 
-	rv = bcm_pkt_alloc(unit, TAP_MTU + 8, BCM_TX_CRC_APPEND, &tx_pkt);
-	if (rv != BCM_E_NONE || tx_pkt == NULL) {
-		fprintf(stderr, "tap: bcm_pkt_alloc: %d\n", rv);
-		return -1;
+	/*
+	 * The whole transmit ring, up front and never freed. The callback is
+	 * set here rather than per frame because it is what selects the SDK's
+	 * asynchronous path, and a packet that lost it would silently park the
+	 * pump thread again.
+	 */
+	for (i = 0; i < TX_RING; i++) {
+		rv = bcm_pkt_alloc(unit, TAP_MTU + 8, BCM_TX_CRC_APPEND,
+				   &tx_ring[i]);
+		if (rv != BCM_E_NONE || tx_ring[i] == NULL) {
+			fprintf(stderr, "tap: bcm_pkt_alloc %d of %d: %d\n",
+				i + 1, TX_RING, rv);
+			return -1;
+		}
+		tx_ring[i]->call_back = tap_tx_done;
+		tx_busy[i] = 0;
+		tx_free[i] = i;
 	}
+	tx_nfree = TX_RING;
 
 	for (i = 0; i < n; i++) {
 		if (tap_open(&taps[ntaps], specs[i].name, specs[i].port, ntaps,
@@ -615,7 +900,7 @@ void nosaic_tap_stats(void)
 		{ "in-err",   snmpIfInErrors },
 		{ "out-err",  snmpIfOutErrors },
 	};
-	int i, j;
+	int i, j, traffic;
 
 	bcm_stat_sync(tap_unit);
 	for (i = 0; i < ntaps; i++) {
@@ -642,16 +927,51 @@ void nosaic_tap_stats(void)
 		 */
 		{
 			int lb = -1, fmax = -1;
+			bcm_port_if_t intf = 0;
+			bcm_port_ability_t ab;
+			uint32 fd = 0;
 
 			bcm_port_loopback_get(tap_unit, taps[i].port, &lb);
 			bcm_port_frame_max_get(tap_unit, taps[i].port, &fmax);
+
+			/*
+			 * What the PHY says it can do, and how the MAC is
+			 * currently wired to it.
+			 *
+			 * ⚠ THIS IS THE ONLY THING HERE THAT PROVES A PHY IS
+			 * ALIVE ON A PORT WITH NO CARRIER.
+			 *
+			 * Every other field on this line looks identical on a
+			 * board whose external PHY is dead or was never bound:
+			 * the VLAN is still built, the tap still exists, frames
+			 * still leave the MAC, and the counters still read zero
+			 * in. bcm_port_ability_local_get cannot be answered
+			 * from the switch chip alone -- for a port behind an
+			 * external PHY the SDK has to reach the part over MDIO
+			 * -- so a copper ability mask on a dark port is
+			 * evidence that the whole path to the PHY works and is
+			 * merely waiting for a neighbour.
+			 *
+			 * A 10GBASE-T port reports the copper speeds it can
+			 * negotiate. A bare SerDes port reports its one speed.
+			 * The difference is the diagnosis.
+			 */
+			bcm_port_interface_get(tap_unit, taps[i].port, &intf);
+			memset(&ab, 0, sizeof(ab));
+			if (bcm_port_ability_local_get(tap_unit, taps[i].port, &ab) == BCM_E_NONE)
+				fd = (uint32)ab.speed_full_duplex;
+
 			printf("port: %s (port %d) link=%d lb=%d fmax=%d "
-			       "tx-ok=%lu tx-err=%lu",
+			       "intf=%d ability=%#x tx-ok=%lu tx-err=%lu "
+			       "tx-nobuf=%lu tx-nolink=%lu",
 			       taps[i].name, taps[i].port, link, lb, fmax,
-			       taps[i].tx_ok, taps[i].tx_err);
+			       (int)intf, (unsigned)fd,
+			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf, taps[i].tx_nolink);
 		}
+		traffic = 0;
 		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {
 			uint64 v;
+			unsigned long long n;
 			int rv;
 
 			/* A counter this chip does not keep is reported, not skipped.
@@ -661,13 +981,96 @@ void nosaic_tap_stats(void)
 			rv = bcm_stat_get(tap_unit, taps[i].port, want[j].val, &v);
 			if (rv != BCM_E_NONE) {
 				printf("  %s=?(%d)", want[j].name, rv);
+				/* Unreadable is not the same as zero. A port whose
+				 * counters cannot be read must not be accused of
+				 * carrying nothing. */
+				traffic = -1;
 				continue;
 			}
-			printf("  %s=%llu", want[j].name,
-			       (unsigned long long)COMPILER_64_LO(v) |
-			       ((unsigned long long)COMPILER_64_HI(v) << 32));
+			n = (unsigned long long)COMPILER_64_LO(v) |
+			    ((unsigned long long)COMPILER_64_HI(v) << 32);
+			printf("  %s=%llu", want[j].name, n);
+			if (traffic >= 0 && n != 0 && want[j].val != snmpIfInDiscards &&
+			    want[j].val != snmpIfOutDiscards &&
+			    want[j].val != snmpIfInErrors &&
+			    want[j].val != snmpIfOutErrors)
+				traffic = 1;
 		}
 		printf("\n");
+
+		/*
+		 * A port with link and nothing on it, in either direction.
+		 *
+		 * This is a real state and it has cost two days on this fleet. The
+		 * port reports link, the tap is bound, the VLAN and STP state are
+		 * right, the per-port bring-up ran with the same values as a port
+		 * that works, and not one frame moves either way -- with no errors
+		 * and no discards, because nothing was ever attempted badly enough
+		 * to count. Every diagnostic says the port is healthy.
+		 *
+		 * It is distinguishable from the ordinary cases, which is why it is
+		 * worth saying:
+		 *
+		 *   link down            obvious, and reported by OPER already
+		 *   far end dark         we still transmit, so out-nuc climbs
+		 *   wrong polarity       frames arrive and fail to decode; errors
+		 *   nothing to talk to   a routed port still sends its own hellos
+		 *
+		 * All of those move a counter. Only this one leaves every counter
+		 * at zero while the link is up.
+		 *
+		 * Not fatal, and deliberately not acted on: the cause is not yet
+		 * known -- reproducing it needs the far end to go away while this
+		 * daemon restarts, which has not been reproducible on demand -- and
+		 * a remedy for a fault nobody understands is how a switch acquires
+		 * behaviour nobody can explain. This says what it sees and leaves
+		 * the decision to a person.
+		 *
+		 * Counted rather than announced every interval: a port that has
+		 * only just come up is legitimately silent for a moment, and a
+		 * warning that fires on every fresh link is one nobody reads.
+		 */
+		/* ★ LINK AND A REAL SPEED, NOT LINK.
+		 *
+		 * Without this the detector is unusable on a board with external
+		 * PHYs, where every unconnected copper port reports link. The
+		 * board's filter is the only thing that can tell those apart. */
+		if (link == 1 && tap_link_real != NULL && !tap_link_real(taps[i].port))
+			link = 0;
+
+		if (link == 1 && traffic == 0) {
+			if (++taps[i].silent == TAP_SILENT_INTERVALS)
+				printf("tap: %s (port %d) has link and has carried NOTHING "
+				       "in either direction for %d intervals -- not a "
+				       "counter that failed to read, and not a far end "
+				       "that is merely quiet, because this port's own "
+				       "transmits are not reaching the wire either. "
+				       "Restarting the datapath has cleared this before; "
+				       "the cause is not understood, so capture "
+				       "`nosaic show ports` and this log before doing so.\n",
+				       taps[i].name, taps[i].port, TAP_SILENT_INTERVALS);
+		} else {
+			taps[i].silent = 0;
+		}
+	}
+
+	/*
+	 * Say it out loud when the ring is exhausted.
+	 *
+	 * This is the one condition that used to be invisible: before the ring
+	 * existed the pump simply stopped, every other diagnostic kept
+	 * answering normally, and the switch looked healthy while it was mute.
+	 * Now transmit degrades instead of stopping, which is only an
+	 * improvement if somebody is told.
+	 */
+	{
+		int inflight = tap_tx_inflight();
+
+		if (inflight >= TX_RING)
+			printf("tap: transmit ring full (%d/%d in flight) -- the "
+			       "SDK has stopped completing transmits; frames are "
+			       "being dropped rather than blocking the pump\n",
+			       inflight, TX_RING);
 	}
 
 	printf("tap: %lu punted frame(s) matched no tap\n", rx_unmatched);

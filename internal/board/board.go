@@ -16,6 +16,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/boot"
+	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
+	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/n3172tq"
 )
 
 // Status is how far a port has got, and it is stated rather than filtered on.
@@ -144,6 +146,13 @@ type Board struct {
 
 	// KernelParams are appended to the kernel command line by the board's
 	// installer. Board data because they describe this box's memory map.
+	//
+	// Rendered by the aboot backend into its boot-config, and by the uefi
+	// backend into the startup script on the EFI system partition -- there
+	// because the EFI stub takes its command line from the firmware and a
+	// plain boot entry carries none. A U-Boot board is handed its command
+	// line by its own boot command, so its parameters belong in
+	// u_boot_nos_bootcmd instead.
 	KernelParams string `yaml:"kernel_params"`
 
 	// Console is the serial device and speed a login is offered on. Board data
@@ -237,6 +246,18 @@ func (b *Board) ConsolePort() (dev string, baud int) {
 
 // Layout returns the flash layout in MiB, with defaults for anything the board
 // does not state.
+// WantsESP says whether this board's first partition must be an EFI system
+// partition rather than the small ext2 filesystem every other board uses.
+//
+// Derived from the bootloader rather than stated, for the same reason
+// DatapathPackage is derived from the ASIC: it is not an independent choice. A
+// board whose firmware is itself the loader has to be handed a FAT partition
+// with a PE32+ application in the place UEFI looks, and a board with a vendor
+// bootloader in front of it must not be -- so there is nothing for a board
+// port to decide, and a field for it would only be a field that can disagree
+// with boot:.
+func (b *Board) WantsESP() bool { return b.Boot == "uefi" }
+
 // PartTable is the partition table type this board's firmware can read.
 func (b *Board) PartTable() string {
 	if b.PartitionTable == "" {
@@ -293,6 +314,26 @@ func (b *Board) Validate(root string) []string {
 	if boot, slot, data := b.Layout(); slot < boot {
 		bad("flash layout looks transposed: boot %d MiB is larger than a %d MiB slot (data %d MiB)",
 			boot, slot, data)
+	}
+
+	// An SMBus address that cannot be right is caught here rather than at the
+	// bus: a wrong one does not fail loudly, it reads a device that is not
+	// there and reports a controller that refuses every command.
+	if err := b.PlatformHAL.SMBus.Validate(); err != nil {
+		bad("platform_hal.smbus: %s", err)
+	}
+	if err := b.PlatformHAL.Cages.Validate(); err != nil {
+		bad("platform_hal.%s", err)
+	}
+	if err := platformhal.ValidateResets(b.PlatformHAL.Resets); err != nil {
+		bad("platform_hal.resets: %s", err)
+	}
+
+	// This board's own platform data, for the same reason as the SMBus map
+	// above: a wrong address does not fail, it binds a driver onto nothing
+	// and the board boots with no sensors and no complaint.
+	if err := b.PlatformHAL.N3172TQ.Validate(); err != nil {
+		bad("platform_hal.n3172tq: %s", err)
 	}
 
 	// Checked here rather than at build time: a U-Boot board with no load
@@ -360,6 +401,23 @@ type PlatformHAL struct {
 	// is absent from the bus until then, which is why it is stated here
 	// rather than discovered.
 	ASICPCI string `yaml:"asic_pci"`
+	// SMBus is where the board's sensors and fan controller sit on the
+	// controller's SMBus. Optional, because a board may have none -- but a
+	// driver that needs it refuses to guess, which is the point: the same
+	// hardcoded placement is right for one Arista board and silently wrong
+	// for the next.
+	SMBus *platformhal.SMBusMap `yaml:"smbus"`
+	// Cages is the front-panel transceiver table: where the SCD's per-cage
+	// control words are and how many there are. Also per-board, and also
+	// something a wrong value writes registers for rather than failing.
+	Cages *platformhal.CageTable `yaml:"cages"`
+	// Resets are board reset lines released during bring-up beyond the switch
+	// chip's own -- a retimer in front of some cages, for instance.
+	Resets []platformhal.ResetLine `yaml:"resets"`
+	// N3172TQ is the Cisco Nexus 3172TQ's own platform data, in its own
+	// driver's type. Board-specific on purpose: nothing here is shared with
+	// another board's HAL, so neither board constrains the other.
+	N3172TQ *n3172tq.Data `yaml:"n3172tq"`
 }
 
 // Thermal is a board's cooling curve.

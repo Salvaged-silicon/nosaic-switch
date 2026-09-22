@@ -87,6 +87,19 @@ type Lamps interface {
 
 // Hottest returns the highest sensor reading in whole degrees, or -1 if
 // nothing could be read.
+//
+// "Hottest" means the hottest thing the HAL can measure, which on every board
+// so far is a set of board sensors on an i2c monitor. It is not the hottest
+// thing in the box: the switch ASIC's own die is typically the largest heat
+// source by a wide margin, and no board's HAL reports it yet, so this loop has
+// never seen it. Boards compensate with a conservative band -- margin standing
+// in for a missing sensor, not headroom to spend.
+//
+// The die belongs behind the HAL like every other sensor, with each board
+// implementing its own way to reach it (the SDK over PCIe on one board is not
+// the answer on the next). Nothing changes in this loop when that lands: it
+// arrives through Temperatures() and is simply another reading to be hottest.
+// What does want revisiting is each board's band, which was set blind to it.
 func Hottest(s Sensors) (int, map[string]int) {
 	temps, err := s.Temperatures()
 	if err != nil && len(temps) == 0 {
@@ -111,6 +124,7 @@ func Run(ctx context.Context, c platformhal.Cooling, s Sensors, curve Curve, onc
 	curve = curve.WithDefaults()
 	floor := c.FanFloorPercent()
 
+	lastLampErr := ""
 	cur := 100
 	if refused, err := c.SetFanPercent(cur); err != nil {
 		return fmt.Errorf("cannot command the fans at all (%d of %d refused): %w",
@@ -169,7 +183,15 @@ func Run(ctx context.Context, c platformhal.Cooling, s Sensors, curve Curve, onc
 		if l, ok := c.(Lamps); ok {
 			fans, fanErr := c.Fans()
 			if err := l.HealthLamps(fans, hot, curve.MaxC, fanErr); err != nil {
-				fmt.Fprintf(log, "thermal: chassis lamps: %v\n", err)
+				// Once per distinct fault, not once per sweep. A board with no
+				// lamp map is in a steady state, and repeating it every
+				// interval for ever is how a log stops being read.
+				if s := err.Error(); s != lastLampErr {
+					fmt.Fprintf(log, "thermal: chassis lamps: %v\n", err)
+					lastLampErr = s
+				}
+			} else {
+				lastLampErr = ""
 			}
 		}
 

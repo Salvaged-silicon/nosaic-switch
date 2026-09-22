@@ -159,13 +159,51 @@ mount_flash() {
         FLASH=/mnt/flash
         return 0
     fi
-    for _d in /dev/mmcblk0p1 /dev/sda1 /dev/vda1; do
-        [ -b "$_d" ] || continue
-        mkdir -p /mnt/flash
-        mount -t vfat "$_d" /mnt/flash 2>/dev/null || continue
-        FLASH=/mnt/flash
-        return 0
+    # ⚠ WAIT FOR THE DEVICE. IT MAY NOT EXIST YET.
+    #
+    # On a board whose flash is eMMC or virtio the node is there before /init
+    # runs, because the kernel enumerates those synchronously. On one whose
+    # flash is a USB stick -- which is what an Arista 7050TX-64 has -- it is
+    # not: the USB stack finds the device a second or two later, and probing
+    # once finds nothing.
+    #
+    # The failure is not a message about storage. Every candidate is skipped,
+    # no slot file is found, and the boot stops at "unknown slot 'a'" with the
+    # disk arriving in the log immediately afterwards. That reads as a bad
+    # image or a bad slot, and it is neither.
+    #
+    # Bounded, and it costs nothing where the device is already present: the
+    # first pass returns immediately on such a board, and only a board with no
+    # usable flash at all waits out the timeout -- which is a boot that is
+    # going to fail regardless, and is better for having said so slowly.
+    _waited=0
+    while :; do
+        for _d in /dev/mmcblk0p1 /dev/sda1 /dev/vda1; do
+            [ -b "$_d" ] || continue
+            mkdir -p /mnt/flash
+            mount -t vfat "$_d" /mnt/flash 2>/dev/null || continue
+            FLASH=/mnt/flash
+            # ⚠ NOT STDOUT. This function is called from inside slotdev(),
+            # whose stdout IS its return value, so anything printed here is
+            # captured as the slot's device path. A board with no flash
+            # filesystem then tries to mount a warning message as squashfs and
+            # fails with "slot a does not contain a mountable image", which
+            # names the slot and says nothing about the real cause.
+            [ "$_waited" -gt 0 ] && \
+                echo "NOSAIC-INITRAMFS flash appeared after ${_waited}s ($_d)" >&2
+            return 0
+        done
+        # A board whose state is already on a real partition does not have
+        # its slots in files on a bootloader filesystem, so there is nothing
+        # to wait for: waiting adds the timeout to every boot of every
+        # partitioned board to no purpose.
+        [ "${FLASH_OPTIONAL:-no}" = yes ] && break
+        [ "$_waited" -ge 15 ] && break
+        _waited=$((_waited + 1))
+        sleep 1
     done
+    [ "${FLASH_OPTIONAL:-no}" = yes ] || \
+        echo "NOSAIC-INITRAMFS-WARN no flash filesystem after ${_waited}s" >&2
     return 1
 }
 
@@ -173,6 +211,9 @@ PERSIST=no
 DATA="$(findfs LABEL=nosaic-data 2>/dev/null || echo /dev/vda4)"
 if mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
     echo "NOSAIC-INITRAMFS data partition mounted ($DATA)"
+    # This board keeps its state in partitions, so its slots are partitions
+    # too and no bootloader filesystem needs waiting for.
+    FLASH_OPTIONAL=yes
     mkdir -p /mnt/data/config /mnt/data/secrets
     PERSIST=yes
 elif mount_flash && [ -f "$FLASH/nosaic-data.img" ] \
@@ -199,8 +240,28 @@ blog() {
 }
 
 mkdir -p /mnt/boot
-BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null || echo /dev/vda1)"
-if mount -t ext2 "$BOOTDEV" /mnt/boot 2>/dev/null; then
+
+# ⚠ THE LABEL IS LOOKED FOR IN BOTH CASES, BECAUSE FAT HAS NO LOWERCASE.
+#
+# On a board whose firmware is its own bootloader this partition is the EFI
+# system partition, so it is FAT -- and a FAT label is stored uppercase
+# whatever was asked for. findfs compares exactly, so LABEL=nosaic-boot
+# matches the ext2 boards and misses the UEFI ones, which then fall through to
+# the /dev/vda1 guess and boot slot A stateless for ever: A/B keeps appearing
+# to work and no upgrade is ever reversible.
+#
+# PARTLABEL is tried after both, for a disk whose filesystem label was lost but
+# whose GPT names survive.
+BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null \
+        || findfs LABEL=NOSAIC-BOOT 2>/dev/null \
+        || findfs PARTLABEL=nosaic-boot 2>/dev/null \
+        || echo /dev/vda1)"
+
+# ext2 first, then vfat. Tried rather than derived: the initramfs is one script
+# for every board and it does not know which kind of boot partition this disk
+# has, and letting mount name the wrong type first costs nothing.
+if mount -t ext2 "$BOOTDEV" /mnt/boot 2>/dev/null \
+   || mount -t vfat "$BOOTDEV" /mnt/boot 2>/dev/null; then
     B=/mnt/boot/boot
     mkdir -p $B
 elif [ "$PERSIST" = yes ]; then
@@ -249,6 +310,23 @@ slotdev() {
     # is worse than one that finds nothing.
     if mount_flash && [ -f "$FLASH/$want.sqsh" ]; then
         echo "$FLASH/$want.sqsh"
+        return
+    fi
+
+    # The data filesystem, as a fallback and with a warning.
+    #
+    # This is NOT where a slot belongs -- the bootloader cannot read it, and
+    # the per-slot overlays it does hold have to share the space. It is checked
+    # because an installer that put a slot here once, and a slot file that
+    # exists and is silently ignored is the worst of the available outcomes: an
+    # upgrade that writes its image, marks its trial, rolls back for want of a
+    # file that is right there, and comes up healthy on the old slot with every
+    # signal saying it worked.
+    if [ -f "/mnt/data/$want.sqsh" ]; then
+        echo "NOSAIC-BOOT-WARN slot file found on the data filesystem" \
+             "(/mnt/data/$want.sqsh), which is not where the installer should" \
+             "put it" >&2
+        echo "/mnt/data/$want.sqsh"
         return
     fi
 

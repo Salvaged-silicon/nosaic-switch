@@ -118,6 +118,136 @@ func (c *Client) DMAPool() (DMAPool, error) {
 	return out, err
 }
 
+// ASICTemperature is one of the switch die's own temperature monitors.
+//
+// Millidegrees, like hwmon and like the platform HAL, converted from the
+// SDK's 0.1 C by the datapath so there is exactly one place that knows.
+type ASICTemperature struct {
+	Index      int
+	MilliC     int
+	PeakMilliC int
+}
+
+// ASICTemperatures reads the switch die.
+//
+// Not part of the switchapi contract, for the same reason DMAPool is not: a
+// die sensor is a property of a datapath driving real silicon. It lives here
+// rather than in a board's HAL because the only path to it is the SDK over
+// PCIe -- no i2c part on any of these boards can see the die, which is why
+// every board's cooling loop has so far been regulating on sensors sited
+// near the ASIC rather than on it.
+//
+// An empty slice with no error means the chip has no monitors. That is
+// different from a failure, and a cooling loop has to tell them apart.
+func (c *Client) ASICTemperatures() ([]ASICTemperature, error) {
+	var out []ASICTemperature
+	err := c.call("asic.temp", nil, &out)
+	return out, err
+}
+
+// PHYRegs is one external PHY's status registers, read straight off the MDIO
+// bus by address rather than through whatever driver the SDK bound.
+//
+// Regs is left as the raw register name to value map the datapath sent, with
+// a nil value for a read that failed. Nothing is decoded here: which part
+// answers depends on the board, and a decode that assumes the wrong one is
+// worse than the number.
+type PHYRegs struct {
+	Port   int
+	Addr   uint16
+	Driver string
+	Regs   map[string]*uint16
+}
+
+// PHYs reads every external PHY's status registers.
+//
+// A diagnostic, like DMAPool: it exists because a 40G cage that transmits
+// correctly and never receives looks exactly like a bad fibre from anything
+// the switch API reports, and telling those apart means asking the PHY which
+// layer is unhappy.
+func (c *Client) PHYs() ([]PHYRegs, error) {
+	var out []PHYRegs
+	err := c.call("phy.dump", nil, &out)
+	return out, err
+}
+
+// PHYReg is one register read: Value is nil when the read itself failed,
+// which is a different answer from a register that holds zero.
+type PHYReg struct {
+	Reg   int
+	Value *uint16
+	// ViaDriver says which path answered. False means the raw MIIM bus by
+	// address, which on a BCM84328 returns 0 for signal detect even on a
+	// linked port -- see the note in datapath/td2/phy.c. A raw answer is
+	// not necessarily wrong, but it is not to be trusted on its own.
+	ViaDriver bool
+}
+
+// PHYRead reads count consecutive registers from one port's external PHY.
+//
+// devad is the Clause 45 MMD. Takes a range because the useful questions of a
+// part that is only half awake -- which MMDs it implements, what it calls
+// itself, whether its firmware is running -- are not known one at a time.
+func (c *Client) PHYRead(port, devad, reg, count int) ([]PHYReg, error) {
+	var out []PHYReg
+	err := c.call("phy.read", map[string]int{
+		"port": port, "devad": devad, "reg": reg, "count": count,
+	}, &out)
+	return out, err
+}
+
+// PHYWrite is the result of writing one register: Value is the read-back, so
+// a register that ignored the write shows as a Value that is not Wrote.
+type PHYWrite struct {
+	Reg   int
+	Wrote int
+	Value *uint16
+	Ok    bool
+}
+
+// PHYWriteReg writes one register of a port's external PHY and reads it back.
+//
+// A bring-up tool: it can take a working port down. It exists because some
+// questions have no read-only form -- whether a far end's link actually
+// depends on our transmitter, for one, which needs our transmitter turned off.
+func (c *Client) PHYWriteReg(port, devad, reg, val int) ([]PHYWrite, error) {
+	var out []PHYWrite
+	err := c.call("phy.write", map[string]int{
+		"port": port, "devad": devad, "reg": reg, "value": val,
+	}, &out)
+	return out, err
+}
+
+// Loopback is one port's loopback mode, as the chip reports it back.
+type Loopback struct {
+	Port int
+	Mode int
+}
+
+// SetLoopback puts a port into one of the chip's loopbacks, or with mode < 0
+// only reads the current one. Modes are the SDK's: 0 none, 1 MAC, 2 PHY,
+// 3 PHY remote, 4 MAC remote, 5 EDB.
+//
+// A bring-up tool: it breaks traffic on the port. It exists because a port
+// that transmits correctly and never receives looks the same from every API
+// the switch offers, and a loopback is what splits that path in two.
+func (c *Client) SetLoopback(port, mode int) (Loopback, error) {
+	var out Loopback
+	err := c.call("port.loopback", map[string]int{"port": port, "mode": mode}, &out)
+	return out, err
+}
+
+// SetDeadline bounds every subsequent call on this connection.
+//
+// ⚠ THERE IS NO DEFAULT DEADLINE, AND ONE CALLER CANNOT AFFORD THAT.
+//
+// call() writes a request and blocks reading the reply. A nosd that is alive
+// enough to accept the connection but wedged before answering leaves the
+// caller blocked for ever. For the CLI that is a hang somebody can Ctrl-C;
+// for the cooling loop, which asks this daemon for the die temperature every
+// interval, it is fans frozen at their last duty with nothing logged.
+func (c *Client) SetDeadline(t time.Time) error { return c.conn.SetDeadline(t) }
+
 func (c *Client) Start() error { return nil }
 func (c *Client) Close() error { return c.conn.Close() }
 

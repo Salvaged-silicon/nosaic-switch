@@ -327,6 +327,40 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
  * reporting that as success is how a switch looks healthy and forwards
  * nothing. Better to fail here, where the service log says why.
  */
+/*
+ * Is this the value of a tap declaration: <port>[:vlan[:mtu]], all decimal,
+ * port >= 1?
+ *
+ * ⚠ CHECKING ONLY THE FIRST NUMBER IS NOT ENOUGH, AND THAT IS NOT HYPOTHETICAL.
+ *
+ * The first attempt at this guard tested atoi(val) <= 0, which rejects a MAC
+ * beginning 00: and ACCEPTS one beginning 44: -- 44:4c:a8:eb:93:f6 parses as
+ * port 44 and would have built a silent bogus tap colliding with tap_et44. One
+ * board's address happened to be caught and another board's would not have
+ * been. So the whole value is validated, not its first field.
+ */
+static int tap_decl_valid(const char *v)
+{
+	const char *start = v;
+	int fields = 1, digits = 0;
+
+	if (v == NULL || *v == '\0')
+		return 0;
+	for (; *v != '\0'; v++) {
+		if (*v == ':') {
+			if (digits == 0 || ++fields > 3)
+				return 0;
+			digits = 0;
+			continue;
+		}
+		if (*v < '0' || *v > '9')
+			return 0;
+		digits++;
+	}
+	/* Well-formed is not enough: port 0 is the CPU, never a front panel. */
+	return digits > 0 && atoi(start) >= 1;
+}
+
 static int run_daemon(const char *bdf, char **confs, int nconf)
 {
 	struct nosaic_bde *b = &attached_dev;
@@ -421,16 +455,47 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 	 * against and the value is the logical port behind it.
 	 */
 	{
-		struct tap_spec specs[8];
-		char names[8][32];
-		int ntap = 0, i;
+		struct tap_spec specs[NOSAIC_MAX_TAPS];
+		char names[NOSAIC_MAX_TAPS][32];
+		int ntap = 0, i, declared = 0;
 
-		for (i = 0; i < nosaic_props_count() && ntap < 8; i++) {
-			const char *name = nosaic_props_name(i);
+		/* ⚠ COUNT WHAT THE BOARD ASKED FOR, NOT WHAT FITS.
+		 *
+		 * This array was 8 while tapbridge's limit was 64, so a board
+		 * declaring more ports than that got the first eight of them and
+		 * was told nothing at all -- the rest simply did not exist, and
+		 * the obvious reading was that the declarations had not loaded.
+		 * Counting separately is what makes the difference sayable. */
+		for (i = 0; i < nosaic_props_count(); i++) {			const char *name = nosaic_props_name(i);
 			const char *val = nosaic_props_value(i);
 
 			if (name == NULL || strncmp(name, "tap_", 4) != 0)
 				continue;
+			/*
+			 * ⚠ `tap_` IS A NAMESPACE, NOT A GUARANTEE.
+			 *
+			 * A declaration is tap_<ifname>=<port>[:vlan[:mtu]], and a
+			 * front-panel port is never 0 -- port 0 is the CPU. Anything
+			 * else beginning tap_ parses into nonsense here and is then
+			 * acted on: a board-level tap_mac_base=00:1c:73:da:fe:7a
+			 * became a tap called "mac_base" on port 0 with an MTU of
+			 * 73, bcm_port_frame_max_set refused it, the whole bring-up
+			 * failed with "could not bridge ports to Linux", and the
+			 * supervisor retried that for ever. Four restarts before
+			 * anybody looked, with all 52 taps built and torn down each
+			 * time.
+			 *
+			 * So a value that is not a port is skipped and NAMED. The
+			 * daemon still starts: one unreadable property is not a
+			 * reason to leave every port off the Linux stack, and the
+			 * message says which property rather than which symptom.
+			 */
+			if (!tap_decl_valid(val)) {
+				fprintf(stderr, "nosd: %s=%s is not a tap declaration "
+					"(expected tap_<name>=<port>[:vlan[:mtu]] with "
+					"port >= 1); ignoring it\n", name, val);
+				continue;
+			}
 			snprintf(names[ntap], sizeof(names[ntap]), "%s", name + 4);
 			specs[ntap].name = names[ntap];
 			/* "<port>", "<port>:<vlan>" or "<port>:<vlan>:<mtu>" */
@@ -447,9 +512,17 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 						specs[ntap].mtu = atoi(colon + 1);
 				}
 			}
-			ntap++;
+			declared++;
+			if (ntap < NOSAIC_MAX_TAPS)
+				ntap++;
 		}
 
+		if (declared > ntap)
+			fprintf(stderr,
+				"nosd-td2p: %d tap_<name> properties declared and only "
+				"%d can be built (NOSAIC_MAX_TAPS); the rest are "
+				"IGNORED and those ports will not exist\n",
+				declared, ntap);
 		if (ntap == 0) {
 			printf("nosd: no tap_<name>=<port> properties, so no port is on "
 			       "the Linux stack.\n"
@@ -477,7 +550,10 @@ static int run_daemon(const char *bdf, char **confs, int nconf)
 				       "interface\n", name);
 				continue;
 			}
-			nosaic_l3_add_intf(unit, name, port, vlan, mac, mtu);
+			if (nosaic_l3_add_intf(unit, name, port, vlan, mac,
+					       mtu) != 0)
+				fprintf(stderr, "l3: no router interface for %s; "
+					"routes via it cannot be programmed\n", name);
 		}
 
 		/* After the taps, because a rule may name a port; after the

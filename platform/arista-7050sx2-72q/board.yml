@@ -110,6 +110,39 @@ platform_hal:
   pci: "0000:05:00.0"
   asic_pci: "0000:01:00.0"
 
+  # Where the platform devices sit on the SCD's SMBus.
+  #
+  # These values were constants in the SCD driver until the 7050TX-64 arrived
+  # and turned out to put its fan CPLD on a different bus, so they are stated
+  # here unchanged rather than rewritten: this is what has been running on this
+  # board, transcribed, not re-derived.
+  #
+  # ⚠ The fan numbers are the ones this board has always used and they are the
+  # least verified thing in this file -- see the note below about fanread. A
+  # full scale of 255 is Arista's published driver's definition; the sibling
+  # board measured its own to be 180, so if fan duty here ever looks wrong at
+  # the top of the range, this is the first line to doubt.
+  smbus:
+    sensors:
+      - {name: front-panel, part: lm73,    accel: 0, bus: 0, addr: 0x4a}
+      - {name: board,       part: max6658, accel: 1, bus: 0, addr: 0x4c}
+    fans: {part: crow-cpld, accel: 0, bus: 0, addr: 0x60, count: 4, max_pwm: 255, floor_percent: 30}
+
+  # The front-panel transceiver cages: 48 SFP+ then 6 QSFP+, in panel order.
+  #
+  # These were constants in the SCD driver and are stated here unchanged. The
+  # SFP+ cages are spread eight to an accelerator from accelerator 2; the six
+  # QSFP+ cages share accelerator 8. Both come from this board's FDL, and cage
+  # 1 agrees with the one coordinate found independently, by a blind scan under
+  # EdgeNOS that turned up an EEPROM pair at accelerator 2 bus 0.
+  cages:
+    base: 0xa010
+    stride: 0x10
+    count: 54
+    sfp_count: 48
+    sfp_eeprom:  {accel_base: 2, buses_per_accel: 8}
+    qsfp_eeprom: {accel_base: 8, buses_per_accel: 8}
+
 # The cooling curve. Established on this board by EdgeNOS: at or below 35 °C
 # the fans sit at the controller's floor, at or above 65 °C they are flat out.
 #

@@ -1,0 +1,547 @@
+# Cisco Nexus 3172TQ (N3K-C3172TQ-10GT) -- Broadcom BCM56854 (Trident II),
+# 48 x 10GBASE-T + 6 x 40G QSFP+, board codename `quickzinc2`.
+#
+# The first NOSaic board that is not a whitebox. There is no ONIE here, no
+# Aboot and no ODM heritage to lean on: the box shipped with NX-OS, and
+# everything in this file was recovered by reverse engineering the running
+# switch and its firmware. The repository holding that work is linked from
+# README.md.
+#
+# It is also the first board whose firmware is its own bootloader. See
+# `boot:` below, and docs/hardware.md for the boot chain.
+#
+# ⚠ SILICON SIBLING, NOT TWIN. The Arista 7050TX-64 is BCM56855 and this is
+# BCM56854 -- two bins of one part, same A2 stepping, same BCM56850_A0 driver,
+# and 48 ports of 10GBASE-T behind BCM84848 PHYs on both. That is why this
+# port exists at all: nearly everything datapath/td2 learned on the Arista
+# applies here. What differs is the 40G side (retimed through BCM84328 rather
+# than direct SerDes), the platform controller (Cisco CCTRL rather than an
+# Arista SCD) and the boot chain (UEFI rather than Aboot).
+
+id: cisco-n3172tq
+vendor: cisco
+model: n3172tq
+
+arch: x86_64
+asic: td2
+
+# ── The firmware is the bootloader, and the vendor loader is stepped around ──
+#
+# This box has a vendor loader -- Cisco's `loader>` is a customised GNU GRUB 2
+# built as a PE32+ EFI application and stored inside the BIOS flash, not on
+# the disk. It is deliberately not in NOSaic's path, for one measured reason:
+# it boots only an `mknbi-linux` NBI container, and an image built in its exact
+# four-descriptor shape transfers, passes the load-address check, prints
+# `CardIndex = 11091` and then resets the board. Nobody has established why.
+#
+# Underneath it the firmware will launch a kernel directly, and there is
+# nothing in the way: no Platform Key, no `db`/`dbx`, no TCG protocol, no
+# SecureBootDxe, and SecurityStubDxe -- EDK2's no-op policy -- is what is
+# shipped. UEFI Secure Boot is not switched off on this board, the machinery
+# was never built into the firmware, so it cannot be enabled. Checked four
+# independent ways rather than assumed; see docs/hardware.md.
+#
+# So: `boot: uefi`. The kernel is the boot image, CONFIG_EFI_STUB makes it a
+# valid PE32+ application, and it lives on an EFI system partition as
+# \EFI\BOOT\BOOTX64.EFI. Nothing of ours needs the NBI format, and the NBI
+# reset is somebody else's problem to finish.
+boot: uefi
+
+# The kernel command line, rendered into startup.nsh on the EFI system
+# partition. The console is stated here as well as in `console:` below because
+# these two are different consumers: this string is what the kernel is told,
+# and `console:` is what getty is handed afterwards.
+#
+# `ignore_loglevel` is not decoration. The one thing this board had never done
+# was boot our code, and the attempts died between the loader printing
+# CardIndex and the kernel printing anything at all -- so the only question
+# that mattered was whether the kernel started, and a quiet kernel is
+# indistinguishable from a kernel that never ran.
+#
+# memmap reserves the DMA pool the userspace BDE claims through /dev/mem, and
+# the address is read off this board's own e820 rather than carried over from
+# the Arista boards. Its firmware reports
+#
+#   BIOS-e820: [mem 0x0000000000100000-0x00000000bf791fff] usable
+#
+# and nothing above that until 0x100000000. The datapath's compiled-in default
+# is 0xd0000000, which is right on the 7050TX-64 and is in the PCI hole here --
+# and mapping the PCI hole through /dev/mem SUCCEEDS and reads back all-ones.
+# The DMA pool's first list head is then 0xffffffffffffffff, which is not NULL,
+# so it passes the pool's own NULL check and nosd dies writing through it:
+#
+#   nosd[169]: segfault at 17 ip 0000000000406e7c ... in nosd-td2
+#
+# A wrong reservation is worse than none: it surfaces as a segfault in the
+# datapath rather than as a mapping error. NOSAIC_DMA_BASE has to agree with
+# whatever is set here.
+#
+# iomem=relaxed for the same reason as on the 7050TX-64: CONFIG_STRICT_DEVMEM
+# refuses that /dev/mem mapping without it, and refuses it silently.
+kernel_params: "ignore_loglevel memmap=64M$0xb0000000 iomem=relaxed"
+
+
+
+# ── Console ──────────────────────────────────────────────────────────────────
+#
+# 9600, which is what this chassis runs and what the BIOS, the loader and
+# NX-OS all use. Read off the box, not assumed: the sibling AS4610 in this lab
+# runs 115200 and the two look identical from the front.
+#
+# The lab reaches it as front-panel port 31 on the console server --
+# `telnet 10.10.25.2 2030`.
+console: ttyS0
+console_baud: 9600
+
+# ── Disk ─────────────────────────────────────────────────────────────────────
+#
+# ⚠ THE DISK IS AN INTERNAL eUSB FLASH, AND IT IS SMALL.
+#
+# 1,990,656 KiB -- 1944 MiB, about 2.04 GB -- behind the PCH's EHCI controller
+# at 00:1d.0, not on the SATA/IDE ports. The EFI shell's device path says so
+# plainly: PciRoot(0x0)/Pci(0x1D,0x0)/USB(0x0,0x0)/USB(0x0,0x0). NX-OS's own
+# layout on it is MBR with `sda3` (1.6 GiB, ext3) as `bootflash:`.
+#
+# Two consequences. First, the kernel must have USB mass storage built in or
+# it has no root filesystem at all -- x86_64_defconfig does, which is the only
+# reason this is not a patch. Second, the layout below has to fit in 1944 MiB
+# rather than the tens of gigabytes the whitebox boards have.
+#
+# 64 + 2*512 + 512 + 8 GPT overhead = 1608 MiB, leaving 336 MiB spare. The
+# spare is deliberate: a slot that cannot be grown without repartitioning a
+# switch in somebody's rack is a slot that will be the wrong size one day.
+#
+# boot_mib is 64 rather than the default 32 because on this board the boot
+# partition is the EFI system partition: it carries the kernel and the
+# initramfs as files, not just the slot pointer.
+boot_mib: 64
+slot_mib: 512
+data_mib: 512
+
+# GPT, which is the default and is stated here only to record that it is a
+# decision rather than an inheritance. UEFI enumerates EFI system partitions
+# by GPT type GUID; the DOS-table path exists for firmware that cannot read a
+# GPT, and this firmware reads nothing else by preference.
+#
+# ⚠ It also means the vendor's MBR layout is gone after an install, and with
+# it `bootflash:`. Getting back to NX-OS is a network boot of the kickstart
+# image followed by the vendor installer rebuilding its own partitions. That
+# is the whole of docs/install.md's last section and it is not optional
+# reading.
+partition_table: gpt
+
+# x86 describes itself through ACPI, so there is no device tree.
+
+# How long the network service waits for interfaces named in network.conf.
+#
+# ⚠ NOT SET, WHICH MEANS THE DEFAULT, AND THE DEFAULT IS THE POINT.
+#
+# This was 60 while the port map did not exist: the front-panel interfaces
+# come from nosd-td2, nosd-td2 would not start without a map, so the wait was
+# for something that could not appear and a short one was honest.
+#
+# Both halves of that are now false -- the map is generated, nosd-td2 starts,
+# and the taps do appear. 60 seconds is far too short for when they appear:
+# this board has 48 external PHYs and Broadcom's driver downloads firmware to
+# every one of them over MDIO before the chip reports its ports, which is
+# minutes, not seconds. Leaving the override in place would mean eth0 gets
+# configured, every front-panel address is silently skipped, and the box comes
+# up with no transit addressing at all -- which reads as a dead data plane
+# rather than as a timeout.
+
+# minimal, which is what the two boards that actually boot NOSaic run.
+#
+# Not a flash-size decision here -- 512 MiB slots have room for the full
+# profile. It is that `full` is systemd and `minimal` is s6, and the 7050SX2
+# demonstrated what happens when a board declares the tier it has never run:
+# an image that reached "Started ospf6d" and then came up with no management,
+# no datapath and no console prompt. The tier a board declares should be the
+# tier somebody has booted on it.
+profile: minimal
+kernel: ""
+
+
+# ── Status ───────────────────────────────────────────────────────────────────
+#
+# bringup. NOSaic boots on this switch, over the vendor loader's own TFTP and
+# its NBI container, with nothing installed: kernel, initramfs, s6-rc, a login
+# prompt, FRR -- and nosd attaches the Trident II and runs through the SDK's
+# chip bring-up (soc_reset_init, soc_misc_init, soc_mmu_init, bcm_attach,
+# bcm_init). It is not installed, and no port has been brought up yet.
+#
+# Getting there meant working around five defects in that loader, all of them
+# read out of its own modules and written up in the RE repository's
+# notes/loader_linux_handoff.md. Each one reset the board four seconds after
+# the handoff with nothing printed, because the decompressor's console is VGA
+# unless the command line carries earlyprintk= and this loader's command line
+# is not ours to set. They are handled in cisco-re/tools/nbi_build.py:
+#
+#   * vtag 17 has to be exactly the 512-byte boot sector -- the loader checks
+#     0xAA55 at the end of whatever that segment holds.
+#   * vtag 20's tail has to be padded past (setup_sects+1)*512, or the
+#     loader's params page lands in the kernel's own .data and corrupts
+#     efi_is64, pgtable_l5_enabled and the PTE mask -- three separate silent
+#     resets from one cause.
+#   * efi_loader_signature has to be cleared: the loader advertises "EL64"
+#     while writing efi_systab with a 32-bit load and never writing
+#     efi_systab_hi, so get_rsdp_addr() walks half a pointer.
+#   * the last segment needs a sector of slack, because the loader reads
+#     512 + sum(lengths) from a file that is 1024 + sum.
+#   * nokaslr, because physical KASLR decompresses over the initrd the loader
+#     placed.
+#
+# The board facts here were read off the running machine and out of its
+# firmware rather than guessed -- the ASIC part and stepping, the whole
+# 72-entry SDK port map, the PHY inventory and MDIO addressing, the PCI
+# topology, the eUSB flash layout, the UEFI boot policy and variable store,
+# the four platform transports, the thermal thresholds -- and the boot has now
+# confirmed the ones it touches: 14e4:b854 at 02:00.0 with BAR0 at 0xc4800000,
+# igb on 01:00.1, 01:00.2 failing to probe exactly as predicted below, and the
+# eUSB at sda with the vendor's four partitions intact.
+status: bringup
+
+# ── Management ───────────────────────────────────────────────────────────────
+#
+# mgmt0 is PCI 01:00.1, an 8086:0438 DH8900CC Gigabit Network Connection, MAC
+# b4:de:31:3f:a5:c0. Read off the running switch: it is the only one of the
+# four functions at 01:00.x with a driver bound, and the driver is igb.
+#
+# ⚠ TWO OF THOSE FOUR ARE NOT PORTS. 01:00.3 and 01:00.4 are 8086:0436, which
+# is DH8900CC Null Device -- a placeholder the PCH exposes. They report class
+# 0x020000, Ethernet controller, which is what the EFI shell prints and what
+# made this look like four ports with two of them unsupported. No driver claims
+# them and none should.
+#
+# ⚠ AND NOSaic WILL BIND TWO igb INTERFACES WHERE NX-OS BINDS ONE. 01:00.2 is a
+# genuine second 8086:0438 that goes nowhere; the vendor leaves it unbound and
+# igb will not. Which kernel name each gets depends on probe order, so anything
+# naming the management interface must be confirmed against the MAC above
+# rather than assumed -- and `mgmt0` is the vendor's presentation name, not the
+# kernel's. Under NX-OS the kernel calls it eth1, inside a separate netns.
+
+# ── The board's own hardware ─────────────────────────────────────────────────
+#
+# There IS a platform_hal driver now, and it is this board's own.
+#
+# ⚠ Board-specific on purpose, not for want of a shared one. The Edgecore
+# AS4610 has platform_hal.i2c and internal/platformhal/i2cmap.go for what looks
+# like the same job, and it does not fit here: I2CMap validates a `controller`
+# unconditionally -- on that board a CPLD carrying fan duty, tachometers and
+# PSU status -- and this board's equivalent IS CCTRL, the one thing we cannot
+# reach. Declaring one would mean inventing an address for a part that is not
+# there, which is the failure its own comment warns about. Its rule that bus
+# numbers are stated rather than discovered does not carry over either: the
+# AS4610's buses are SoC controllers fixed by device tree, while every bus here
+# is a channel of a mux WE instantiate, numbered from the first free adapter at
+# bind time.
+#
+# So: separate types, separate driver, duplication accepted. What is shared is
+# the HAL interface -- platformhal.HAL and Cooling -- which is the thing that
+# makes `nosaic platform status` and `thermal` work the same on every board.
+#
+# Everything auxiliary on this board hangs off Cisco's own board controller --
+# CCTRL, their equivalent of the Arista SCD -- and the vendor reaches it
+# through a 2.4 MB kernel module we have neither the source nor the register
+# map for.
+#
+# ⚠ BUT CCTRL IS A SOFTWARE LAYER, NOT A CHIP WE CANNOT REACH. That is the
+# thing to get straight before concluding the board is closed. The four
+# sensors, the fan controller, both power supplies and the SPROM carrying the
+# thermal thresholds are ordinary i2c devices behind an ordinary mux on the
+# PCH's Intel i801 SMBus at 00:1f.3; CCTRL is the vendor's abstraction over
+# them, and Linux can address the same parts directly.
+#
+# The kernel NOSaic builds now carries that path -- I2C_I801, I2C_MUX_PCA954x,
+# GPIOLIB (which the mux driver needs and no x86 defconfig sets), HWMON, a
+# shortlist of sensor drivers as modules -- and the image carries busybox's
+# i2c* applets. So the environmentals are buildable; what is missing is which
+# device sits behind which mux channel.
+#
+# That cannot be guessed and it cannot be read from the vendor's OS: NX-OS has
+# i2cdetect and deliberately no /dev/i2c-* nodes, because klm_cctrli owns the
+# bus. Only channels 2 and 4 have ever been observed, both as NO_RESPONSE
+# failures -- which is what an empty socket looks like on a chassis with no
+# optics fitted and a dead PSU 1 -- because successful selections are not
+# logged.
+#
+# tools/mki2cmap.sh walks the mux under a netboot, where the bus is idle and
+# ours. Until it has been run, no i2c map is declared here, because one would
+# be a guess that reads a device that is not there.
+#
+# ⚠ And the shape it will be declared in does not exist on this branch yet:
+# platform_hal.i2c and internal/platformhal/i2cmap.go were written for the
+# Edgecore AS4610 and live on board/edgecore-as4610-54t. Two boards now want
+# it, which is the argument for landing it on main.
+#
+# ⚠ THE UNMANAGED DUTY IS STILL UNOBSERVED.
+#
+# Declaring a driver is what starts NOSaic's cooling loop, so until this had
+# one the fans sat wherever the hardware left them at power-on. The vendor's
+# managed idle is measured (below) and reassuring; what the hardware does with
+# NOBODY driving it has still never been watched, and a netboot is the only
+# place to watch it. The floor below exists for that reason: a controller that
+# can be told to stop is one a bug will eventually tell to stop.
+
+platform_hal:
+  driver: n3172tq
+
+# ── The board's i2c parts ────────────────────────────────────────────────────
+#
+# x86 has no device tree, so nothing declares these and the drivers have
+# nothing to bind to. Without this block the switch boots with `acpitz` and two
+# CPU thermal zones, and no board sensors, no fan readings and no PSU state --
+# which is what it did.
+#
+# ⚠ EVERY ADDRESS HERE IS READ OFF THE VENDOR, NOT GUESSED. NX-OS keeps a
+# per-device i2c transaction history in /proc/i2c_evhist_dev -- a directory of
+# ~79 device types, five of which have live traffic on this board -- and the
+# columns are Bus and Addr:
+#
+#   NUOVA_I2C_AT24C512  bus 1        0x52
+#   NUOVA_I2C_ADT7462   bus 1        0x58
+#   NUOVA_I2C_PS        bus 3 and 4  0x5b
+#   NUOVA_I2C_PS_SPROM  bus 3 and 4  0x53
+#   NUOVA_I2C_PCA9539   bus 2 / 1    0x74 / 0x76
+#
+# NX-OS's "bus N" is the kernel's i2c-N, which is mux channel N-1. Buses 3 and
+# 4 scan identically because they are the two supplies.
+#
+# ⚠ THE SENSORS ARE NOT WHERE A SCAN LOOKS FOR THEM. There is no discrete
+# temperature sensor on this board: NUOVA_I2C_TMP_SENS has no traffic at all.
+# The ADT7462 is one part doing both jobs -- four temperature channels and four
+# PWM outputs -- so Front-Left/Front-Right/Back AND `Fan Zone Speed: Zone 1`
+# are the same chip. Its address range is 0x58-0x5c, which is why probing
+# 0x48-0x4f for an LM75 finds nothing, and why 0x58 looks like a phantom to a
+# register-0 read: the vendor only ever touches 0x98-0x9b.
+  n3172tq:
+    i2c:
+      # Matched by name. Adapter numbers come from probe order, and the mux adds
+      # eight more the moment its driver binds.
+      adapter: "SMBus I801 adapter"
+
+      mux:
+        driver: pca9548
+        address: 0x70
+        note: "the board mux -- everything auxiliary is behind it"
+
+      devices:
+        # Temperatures and fans, in one part.
+        - driver: adt7462
+          address: 0x58
+          channel: 0
+          note: "board temperatures (D1/D2/D3) and the fan zone"
+
+        # The board ID PROM. Same EEPROM the loader reads for CardIndex = 11091.
+        - driver: 24c512
+          address: 0x52
+          channel: 0
+          note: "board ID PROM"
+
+        # The two supplies. PMBus, and the vendor reads them with PEC -- a plain
+        # word read is refused, which is what makes 0x5b look like a non-device.
+        # Channel 2 is PS2 and channel 3 is PS1, not the other way round; see
+        # the psus: block below for how that was established.
+        - driver: pmbus
+          address: 0x5b
+          channel: 2
+          note: "power supply 2"
+        - driver: pmbus
+          address: 0x5b
+          channel: 3
+          note: "power supply 1"
+
+# Deliberately absent, and each for a reason rather than an oversight:
+#
+#   * The PSU SPROMs at 0x53. An at24 needs its size declaring and guessing it
+#     wrong either truncates the FRU data or reads off the end; the vendor's
+#     type name does not say which part it is.
+#   * The PCA9539 GPIO expanders -- but the reason has changed, and they are
+#     now the most interesting thing on this bus. A full scan of every mux
+#     channel puts them on channels 1 and 5, not the vendor's "bus 2 / 1", so
+#     the disagreement that held this up is resolved in favour of the scan:
+#     0x74 and 0x76 on channel 5, 0x75 on channel 1.
+#
+#     ⚠ They are expanders, NOT the cascaded muxes this file used to call
+#     them. 0x74-0x77 is both the PCA954x and the PCA9539 range; reading all
+#     eight registers settles it, because a mux has none. 0x76 has ALL
+#     SIXTEEN LINES CONFIGURED AS OUTPUTS and is driving 0x83/0xfe, and the
+#     platform firmware -- not us, and not NX-OS residue, these are readings
+#     after a cold power cycle -- is what sets them that way.
+#
+#     Six QSFP cages want ResetL, LPMode and ModSelL out and ModPrsL and IntL
+#     in: 30 lines against the 32 here. 0x76 port 0 reads 0x83, so bits 2-6
+#     are low, which on active-low resets is five cages held down. That is a
+#     hypothesis and not a map.
+#
+#     ⚠ DO NOT DECLARE OR DRIVE THEM UNTIL THE MAP IS KNOWN. Sixteen live
+#     outputs on an unmapped expander include, somewhere, whatever else this
+#     board gates. The safe route is a correlation rather than a poke: boot
+#     NX-OS, which drives these cages successfully, read the same three
+#     devices and diff against the values in the RE notes. See docs/todo.md.
+
+    # Which chip and channel is which location. "temp1" is not a place on a
+    # chassis; these names are the vendor's own, so a thermal log read beside
+    # `show environment temperature` says the same thing.
+    #
+    # The channel numbers are the ADT7462 driver's, and they are NOT 1:1 with
+    # the vendor's D1/D2/D3. temp1 is the chip's own *local* die; the board
+    # diodes are remote1/2/3 on temp2/temp3/temp4 (drivers/hwmon/adt7462.c,
+    # temp_label()). Naming them 1/2/3 put every board sensor one place to the
+    # left and never read D3 at all. The chip's own labels and the vendor's
+    # recorded idle temperatures agree on the corrected mapping:
+    #
+    #   sysfs  label    reads   vendor sensor      vendor idle
+    #   temp1  local     33.8   (the ADT7462 die)      --
+    #   temp2  remote1   39.5   D1 Front-Left          38
+    #   temp3  remote2   40.5   D2 Front-Right         37
+    #   temp4  remote3   32.5   D3 Back                31
+    hwmon:
+      sensors:
+        - {name: Front-Left,  chip: adt7462, channel: 2}
+        - {name: Front-Right, chip: adt7462, channel: 3}
+        - {name: Back,        chip: adt7462, channel: 4}
+        # The controller's own die. The vendor does not name or trip on it, so
+        # it has no threshold below; it is listed because it is a real
+        # temperature in the box and because it reads coolest of the four, so
+        # it never drives the curve -- if it ever did, that is worth seeing.
+        - {name: Fan-Ctrl,    chip: adt7462, channel: 1}
+
+      # The same ADT7462. Four bays; the vendor idles them at 0x28 of 255,
+      # which is 16%, so a 25% floor is above what the vendor considers
+      # adequate and well below anything audible.
+      fans:
+        chip: adt7462
+        count: 4
+        floor_percent: 25
+
+      # Two identical parts at one address, told apart only by mux channel.
+      #
+      # The channel-to-bay mapping is measured, not assumed, and it is not the
+      # order you would guess: channel 2 is PSU2 and channel 3 is PSU1. This
+      # chassis has one supply energised, and NX-OS's own inventory names it --
+      #
+      #   1   --              -- --   --      fail/not-powered-up
+      #   2   NXA-PAC-500W    AC  504.00      ok
+      #
+      # -- while our kernel reads in1_input 120500 on channel 2 (i2c-3) and 0 on
+      # channel 3 (i2c-4). The live rail is therefore channel 2, and the live
+      # bay is PS2. Naming them the other way round would have reported the
+      # dead supply's silence against the healthy one's label.
+      psus:
+        - {name: PSU1, chip: pmbus, address: 0x5b, channel: 3}
+        - {name: PSU2, chip: pmbus, address: 0x5b, channel: 2}
+#
+# The thresholds the vendor uses, and what the box actually idles at. Two-tier
+# on this platform: generic defaults compiled into the card-config library,
+# per-board actuals from the SPROM. These are the SPROM's, read off the running
+# box -- note the three board sensors have three different minor trip points,
+# which is how we know they are not the compiled defaults (those are 50/60 for
+# all three).
+#
+#   sensor              minor / major   idle
+#   ASIC (die)            100 / 110      56    read through the BCM USD
+#   Front-Left  (D1)       60 / 70       38
+#   Front-Right (D2)       56 / 70       37
+#   Back        (D3)       46 / 70       31
+#
+# At that idle the fan zone duty is 0x28, so the vendor does NOT run these fans
+# flat out and the margin is large -- the tightest sensor is 15 C below its
+# minor threshold. Measured with no datapath running, though, and nosd will
+# make the die hotter.
+#
+# The band, now that the HAL reads these. `thermal` drives off the single
+# hottest sensor, and with the mapping corrected the hottest is D2 Front-Right
+# at 40.5, whose minor trip is 56 -- not D3 Back, which idles 8 C cooler than
+# Front-Right despite having the tightest trip at 46.
+#
+# So the band is keyed to Front-Right and still protects Back: max_c 52 means
+# flat out 4 C before Front-Right's own minor, and at that point Back is around
+# 44 on the observed offset, under its 46. min_c 38 is just above every board
+# diode's idle, so the fans sit at the floor when nothing is happening.
+#
+# At today's 40.5 this yields 35%. The vendor runs 16% here, so this is louder
+# than the vendor and a long way from audible -- deliberately, because nosd
+# will make the die hotter than any of these no-datapath measurements.
+#
+# The cooling band, keyed to the ASIC die.
+#
+# The die is in the loop now (internal/platformhal/n3172tq/asictemp.go reads
+# it from nosd, which is the only process that can), and it changes what this
+# band has to be. Measured on this chassis with the datapath running:
+#
+#   ASIC         49.3    minor 100, major 110
+#   Front-Right  35.0    minor  56, major  70
+#   Front-Left   34.8    minor  60, major  70
+#   Fan-Ctrl     31.2    (the controller's own die, no vendor threshold)
+#   Back         30.2    minor  46, major  70
+#
+# The die runs 14 C above anything else and has twice their headroom. The
+# first band here was 38-52, chosen when the diodes were all we could see;
+# with the die included that put the fans at 83% on an idle switch. The
+# vendor runs these fans at 16% with the die at 56, so 83% at 49 is not a
+# safety margin, it is a wrong question.
+#
+# 55 is just above where the die idles, so a quiet box sits at the floor. 90
+# is ten below the die's own minor trip, so the fans are flat out well before
+# anything the vendor considers a fault.
+#
+# ⚠ THE BOARD DIODES NO LONGER DRIVE THIS LOOP, AND THAT IS A REAL GAP.
+#
+# `thermal` takes the single hottest reading, and on this board that is
+# always the die. With min_c at 55, the Back diode could reach its own 46 C
+# minor trip while the fans sat at the floor, because 46 is below the band.
+# That is tolerable today only because of the measured offset -- the die runs
+# hotter than Back by about 19 C, so Back reaching 46 implies a die around
+# 65, which this band answers at roughly 46% duty. It is an inference from
+# one set of readings, not a guarantee, and it stops being true the moment
+# something heats the front of the chassis without heating the ASIC: a failed
+# fan, a blocked intake, a hot PSU.
+#
+# The real fix is per-sensor thresholds rather than one band against the
+# hottest reading -- sensors whose trip points differ by a factor of two do
+# not share a scale. That is shared code in internal/thermal and is recorded
+# in docs/todo.md.
+thermal:
+  min_c: 55
+  max_c: 90
+  slew_down_percent: 5
+  interval_seconds: 10
+
+notes: >
+  Reverse engineered rather than ported. This is a vendor switch with a vendor
+  NOS, and the entire boot path, port map, PHY inventory and platform topology
+  in docs/hardware.md was recovered from the running machine and its firmware.
+  Read docs/hardware.md before touching anything, and the RE repository linked
+  from README.md before disagreeing with it.
+
+  ⚠ The vendor loader is not in our boot path and must not be put back in it
+  casually. It boots only an mknbi-linux NBI container, and our own image in
+  that container resets the board after the loader prints CardIndex. The
+  firmware underneath boots a CONFIG_EFI_STUB kernel with nothing in the way,
+  which is the path this port takes.
+
+  ⚠ There is no hardware root of trust on this board at all. No IOFPGA, no
+  MIFPGA, no ACT2 -- all three FPGA BAR module parameters read 0 -- and no
+  Secure Boot machinery in the firmware. Cisco's own trust anchor here is
+  software. That is why running our own code is a packaging problem rather
+  than a signing problem, and it is worth knowing it is a property of this
+  platform and not of the family: the N9K's IO FPGA is its secure-boot
+  enforcer.
+
+  ⚠ Every front-panel port has a PHY, including the QSFP cages. 1-48 are
+  BCM84848 10GBASE-T; 49-72 are BCM84328, one per cage on the first lane of
+  each group of four. So the 40G cages are retimed, not direct-attach -- which
+  is why no preemphasis or TX-FIR coefficients appear anywhere in the vendor's
+  configuration, and why this board ships no serdes.conf generator when its
+  Arista sibling needs one. The board buys its way out of SerDes tuning.
+
+  ⚠ MDIO addresses are swapped in pairs: xe0 answers at 1, xe1 at 0, xe2 at 3,
+  xe3 at 2. Physical lane numbering is not contiguous either -- the 48 copper
+  ports occupy lanes 13-16, 21-32 and 45-76, skipping 17-20 and 33-44, and the
+  six cage masters are 77, 81, 97, 101, 105 and 109, skipping 85-96. Both facts
+  are in the generated port map and neither is guessable.
+
+  PSU 1 in the lab unit is dead (NXA-PAC-500W, serial DCB2146L0KN), so that
+  chassis is single-supplied. It is a property of the unit, not the model, and
+  it means a power event during a bring-up session takes the box down with no
+  redundancy to hide it.
