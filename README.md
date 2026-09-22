@@ -280,6 +280,21 @@ also requires that **every distributed copy reproduce all proprietary notices**,
 so those ship in the image's NOTICE. No SDK source is copied into this
 repository; it is referenced by `file:line`.
 
+### Silicon with no usable SDK
+
+Not every chip has one that may be shipped, and the answer is not to skip the
+chip. The [7150S-52](platform/arista-7150s-52/)'s Intel FM6000 has exactly one
+SDK — `libFocalpointSDK.so`, which is proprietary and will not be linked,
+shipped or copied here — so that board's datapath is **register-level code
+written against the published datasheet**, with no SDK underneath it at all.
+
+That turns out to be less of a handicap than it sounds, because Intel documented
+the parts that matter: the parser's microcode encoding, the ordered cold-boot
+sequence, the packet DMA engine and its descriptor format. It also makes that
+board the only one whose datapath a contributor can build in full with nothing
+fetched. Where a chip is microcoded and the vendor's microcode is not
+redistributable, NOSaic generates its own rather than shipping theirs.
+
 ## License
 
 Apache 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

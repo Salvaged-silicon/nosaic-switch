@@ -26,11 +26,16 @@ to compare our own programming against — outside this repository.
 **The parser microcode is generated, not shipped.** The FM6000's parser is
 microcoded, and NOSaic emits that microcode from its own generator rather than
 carrying Arista's — the instruction encoding is public (Intel document
-331496-002, Table 5-3), so there is nothing here that cannot be built from this
-tree. No vendor blob is fetched, staged or installed, and an image for this
-board is as publishable as any other.
+331496-002, Table 5-3). No vendor parser blob is fetched, staged or installed.
 
-See [hardware.md](hardware.md#the-parser-is-microcoded-and-we-write-the-microcode).
+**One firmware question is open**, and it is the one that decides whether an
+image for this board is publishable: SerDes bring-up goes through a SPICO
+microcontroller, and whether its code is a separate vendor file, is embedded in
+the proprietary SDK, or is unnecessary on this part is not yet known. If it
+turns out to be a required vendor blob, this board gets a
+`redistributable: false` recipe for it and its images stop being publishable.
+
+See [hardware.md](hardware.md#the-serdes-firmware-question-is-not-settled).
 
 ## Board state
 

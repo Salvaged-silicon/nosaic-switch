@@ -9,9 +9,15 @@ Each table says where its numbers come from:
 
 | Mark | Means |
 |---|---|
-| **live** | read off the running unit (`sw7150-lab`, EOS 4.16.8M) with `lspci`, `/proc/cmdline` or a BAR0 probe |
+| **live** | read off the running unit (`sw7150-lab`, EOS 4.16.8M) with `lspci`, `/proc/cmdline`, `prefdl` or a BAR0 probe |
+| **documented** | in the Intel datasheet, cited by section or table |
 | **derived** | worked out from the investigation and believed, but not confirmed from a second direction |
 | **assumed** | stated so it can be checked; not evidence |
+
+Every datasheet citation on this page is to **331496-002, revision 3.4** (352
+pages). The only copy `make datasheets` can fetch is 331496-001 revision 3.3,
+which is two pages longer and does not necessarily number things the same way —
+see [docs/datasheets.md](../../../docs/datasheets.md).
 
 ## Confirmed on the bench, 2026-09-22
 
@@ -88,25 +94,61 @@ They are evidence rather than clutter, so they stay until that is needed.
 ## The board
 
 ```
-              AMD Family-10h (x86_64, ~4 GiB)
-                        |
-        +---------------+----------------+
-        |                                |
-   RS780 northbridge                SB700/SB800 south
-        |                                |
-   PCIe port 0 (00:04.0)           00:14.6  BCM5785 GbE  -> ma1 (tg3)
-        |                           00:11.0 SATA -> USB DOM /dev/sda
-   02:00.0  FM6000 "Alta"           00:12.x/13.x USB
-            8086:155b               SMBus 1002:4385
-            BAR0, packet DMA
-            at BAR0+0x5000
-                                   PCIe port 5 (00:05.0)
-                                        |
-                                   04:00.0  SCD FPGA  3475:0001
-                                            BAR0 0xe1000000, 256 KiB
-                                            holds the FM6000 in reset
+        ┌──────────────────────────────────────────────────────────────┐
+        │  AMD Family-10h embedded, x86_64, 3978148 kB                 │
+        │  00:18.0-4  HyperTransport config  1022:1200..1204           │
+        └───────────────┬──────────────────────────┬───────────────────┘
+                        │                          │
+             RS780 northbridge            SB700/SB800 southbridge
+             1022:9601                    │
+                        │                 ├─ 00:14.6  BCM5785 GbE  14e4:1699
+        ┌───────────────┴──────────┐      │             └─ BCM50610 PHY, RGMII
+        │                          │      │                └─▶ ma1  (mgmt)
+   PCIe port 0               PCIe port 5  ├─ 00:11.0  SATA 1002:4390
+   00:04.0 (1022:9604)       00:05.0      │             └─▶ USB DOM /dev/sda
+        │                    (1022:9609)  │                  sda1 FAT32 /mnt/flash
+        │                          │      ├─ 00:12.x/13.x USB  1002:4396/4397
+        ▼                          ▼      ├─ SMBus   1002:4385
+  ╔═════════════════╗     ┌─────────────────────┐
+  ║ 02:00.0         ║     │ 04:00.0             │  LPC 1002:439d
+  ║ FM6000 "Alta"   ║◀────│ SCD FPGA "Saguaro"  │
+  ║ 8086:155b       ║ held│ 3475:0001           │
+  ║                 ║  in │                     │
+  ║ BAR0 0xe2000000 ║reset│ BAR0 0xe1000000 256K│──▶ LEDs, SFP TX_DISABLE,
+  ║      32 MB      ║     │ BAR1 0xe0000000 16M │    resets, watchdog,
+  ╚════════╤════════╝     └─────────────────────┘    SMBus to cages + sensors
+           │
+           ▼
+   52 × SFP+ 10G, direct serdes, no external PHYs
 ```
-*(live — `lspci -nn` on the running unit.)*
+*(live — `lspci -v` on the running unit, 2026-09-22. The 16 MB second SCD BAR
+is real and unexplained.)*
+
+### Who holds what in reset
+
+The single most confusing thing about this board, drawn out:
+
+```
+  power on
+     │
+     ▼
+  SCD comes up          FM6000 is HELD IN RESET by the SCD
+     │                  02:00.0 is NOT on the PCI bus
+     │                  lspci shows nothing, and nothing says why
+     ▼
+  "NorCal initialization"   ◀── EOS's name for it, visible in its boot
+     │                          This is the step NOSaic has to replace
+     ▼
+  SCD reset block 0x4000: release
+     │
+     ▼
+  02:00.0 appears          ◀── the kernel already enumerated and found
+     │                         nothing, so it must be told to rescan
+     ▼
+  BAR0 mappable at 0xe2000000
+```
+
+A bare kernel that sees no ASIC here is the **expected** state, not a fault.
 
 | Function | PCI | ID | BARs | Notes |
 |---|---|---|---|---|
@@ -125,18 +167,31 @@ Board names as the vendor uses them: platform **raven**, board **Santa Rosa**,
 SCD family **Bodega**, SMBus **Pluto**. They show up in vendor scripts and in
 the SID lists, and are worth recognising.
 
-## The first thing that will confuse you
+## This box does not reboot
 
-**The ASIC is held in reset by the SCD from power-on.** A bare kernel boots,
-`lspci` shows no `02:00.0`, and nothing anywhere says why. That is the normal
-state of this board, not a fault — the SCD's reset GPO (`0x4000` region) has to
-be driven before the chip appears. *(derived.)*
+The reset picture above is only half of it. The other half is that there is no
+reliable way to restart this chassis from software:
 
-The second thing: **this box does not reboot.** EOS does not use the hardware
-reset here at all; its halt script tries `kexec` and only falls back to a reset
-it does not trust. Every hardware reset path tried from a bare kernel on this
-chassis has hung. Until that is solved, recovery is the power controller.
-*(live, for EOS's behaviour; derived for ours.)*
+```
+   reboot from Linux
+        │
+        ├─ hardware reset (reboot=p / =t / =h)  ─────▶  HANGS.  every path
+        │                                               tried on a bare kernel
+        │
+        └─ kexec  ─────────────────────────────────▶  what EOS actually does.
+                                                       Its halt script tries
+                                                       kexec first and calls the
+                                                       hardware reset "the old
+                                                       way" it falls back to
+   recovery that does work:
+        PDU  ──▶ apc1 outlet 6         (a human, or a script, but not the box)
+        SCD watchdog 0x0120, action 2  ──▶ power cycle    (see below — NOT
+                                                            armed at handover)
+```
+
+*(live for EOS's behaviour; derived for ours.)* Plan every bring-up iteration
+around a four-minute cold cycle, and treat "it will reboot into the other slot"
+as a claim to be demonstrated rather than assumed — A/B rollback rests on it.
 
 ## Boot chain
 
@@ -172,6 +227,29 @@ spanning consecutive words — so an address in the tables below is multiplied b
 block, which is at BAR0 **byte** offset `0x5000`. Getting that wrong reads a
 different block and looks like the chip lying to you. *(derived.)*
 
+```
+  BAR0  0xe2000000 ─ 0xe3ffffff        32 MB = 8M words of 32 bits
+  ┌──────────────────────────────────────────────────────────┐
+  │ byte 0x005000   PACKET DMA   ◀── BYTE offset, not a word  │
+  ├──────────────────────────────────────────────────────────┤
+  │ word 0x01C000   MGMT    clocks, BOOT_CTRL 0x1C022,        │
+  │                         scan chain 0x1C039..0x1C03D,      │
+  │                         block clocks 0x1C03A/3B,          │
+  │                         sweeper 0x1C048                   │
+  │ word 0x01F000   CRM     memory-fill engine (optional)     │
+  │ word 0x0E3000   EPL     per-port MAC/PCS                  │
+  │                         EPL_CFG_B 0xE3B02 = PCS type      │
+  │ word 0x110000   CM      congestion management (largest)   │
+  │ word 0x150000   MOD     egress modify  ⚠ off-buses a cold │
+  │        ..0x15FFFF       chip if written too early         │
+  │ word 0x180000   L2F     dmask table at 0x180000 + 4*idx   │
+  │ word 0x200000   STATS      ⎫                              │
+  │ word 0x240000   MCAST_MID  ⎬ ECC bank memories — see below│
+  │ word 0x260000   MCAST_POST ⎭ ⚠ THESE BITE                 │
+  └──────────────────────────────────────────────────────────┘
+   word address × 4 = byte offset.  0x7FFFFF is the last word.
+```
+
 Blocks that are known to matter, by word address *(derived — from probing the
 running chip, not from a datasheet)*:
 
@@ -186,7 +264,7 @@ running chip, not from a datasheet)*:
 | `0x200000` | STATS | repairable bank memory |
 | `0x240000` | MCAST_MID | repairable bank memory |
 | `0x260000` | MCAST_POST | repairable bank memory |
-| BAR0+`0x5000` | packet DMA | TX/RX descriptor rings (byte offset, not word) |
+| BAR0+`0x5000` | packet DMA | TX/RX descriptor rings (byte offset, not word) — the engine itself is **documented**, §7.11 |
 
 ### The documented boot sequence
 
@@ -205,6 +283,39 @@ twelve ordered steps. Paraphrased, with the ones that matter to us:
 | 10 | `BOOT_CTRL:Command` = **Initialize All Scheduler Freelists**, poll `CommandDone` |
 | 11 | set up the PCIe SerDes and take PCIe out of reset |
 | 12 | **initialise memory** — either program the CRM and launch it, *or* "software writes memory manually" |
+
+```
+   CHIP_RESET_N released
+        │
+   1-3  ▼ boot controller runs: fusebox contents ─▶ each module
+        │                       BOOT_MODE pins sampled
+   4    ▼ boot from serial ROM?  ──no──▶  STALL, waiting for the CPU
+        │                                 to drive BOOT_CTRL   ◀── ours
+   5    ▼ SCAN_CHAIN_DATA_IN = 0xFFFFFFFF
+        │   core logic + EPLs ─▶ normal operating mode
+   6    ▼ PLL init, wait for lock            (<=80 ms, poll PLL_STATUS)
+        │
+   7    ▼ SOFT_RESET: release EPL, PCIe, MSB, SPICO/SBUS
+        │   (its default is ALL MODULES HELD)
+        │
+   8    ▼ BOOT_CTRL:Command = 1  Initialize FFU Slice Numbers
+        │   └─ poll BOOT_STATUS:CommandDone
+   9    ▼ BOOT_CTRL:Command = 2  Apply Bank Memory Repairs
+        │   └─ poll CommandDone
+  10    ▼ BOOT_CTRL:Command = 3  Initialize All Scheduler Freelists
+        │   └─ poll CommandDone        (4..7 do individual freelists)
+        │
+  11    ▼ PCIe SerDes up, PCIe out of reset
+        │
+  12    ▼ initialise memory:  CRM program + launch + wait
+        │                     ── OR ── software writes memory manually
+        ▼
+   ╔══════════════════════════════════════════════════════════════╗
+   ║  ONLY NOW is it safe to touch STATS / MCAST_MID / MCAST_POST ║
+   ║  Before this, ONE read of an uninitialised word takes the    ║
+   ║  chip off the PCIe bus and the host just hangs.              ║
+   ╚══════════════════════════════════════════════════════════════╝
+```
 
 The `BOOT` command codes are documented too: 1 = initialize FFU slice numbers,
 2 = apply bank memory repairs, 3 = initialize all scheduler freelists, and 4–7
@@ -245,6 +356,125 @@ So they must be ECC-initialised before anything touches them, and the
 initialisation itself must not read them. *(derived, and the single most
 expensive thing learned about this chip.)*
 
+### How a frame goes through the chip
+
+The FlexPipe pipeline, in the datasheet's own section order (§5.5 to §5.22).
+Worth having in front of you, because almost every block in it is a thing this
+port has to configure:
+
+```
+   wire ─▶ EPL (MAC/PCS) ─▶ ingress
+                              │
+              §5.5  PARSER ───┤  microcoded. unrolled slices, 4 bytes each.
+                              │  out: FIELDS 88 B, FLAGS 40 b, CHECKSUM
+                              ▼
+              §5.6  MAPPER      SRC_PORT_TABLE, VID, L2/L3 CAM/RAM,
+                              │ L4 ports, SCENARIO_FLAGS, FFU action data
+                              ▼
+              §5.7  FFU         TCAM slices. keys, scenarios, action chains
+                              │ ── this is where ACLs live
+                              ▼
+              §5.8  HASHING ──▶ §5.9 NEXT HOP ──▶ §5.10 L3 ACTION RESOLUTION
+                              │
+                              ▼
+              §5.11 L2 LOOKUP ──▶ §5.12 ALU ──▶ §5.13 POLICERS
+                              │
+                              ▼
+              §5.14 GloRT LOOKUP        the chip's own destination namespace
+                              ▼
+              §5.15 DESTINATION MASK GENERATION      (L2F dmask table)
+                              ▼
+              §5.16 EGRESS ACLs ──▶ §5.17 L2 ACTION RESOLUTION
+                              ▼
+              §5.18 CONGESTION MGMT ──▶ §5.19 REPLICATION ──▶ §5.20 SCHEDULER
+                              ▼
+              §5.21 EGRESS MODIFICATION   (MOD block — rewrites on the way out)
+                              ▼
+                            EPL ─▶ wire
+                                      and §5.22 STATISTICS off to the side
+```
+*(documented — the order is the datasheet's own.)*
+
+Two things follow from this picture. The **parser is the only microcoded stage**
+— everything downstream is tables and registers, which is why generating parser
+microcode is the whole of the firmware problem. And **the CPU is just another
+port**: frames to and from the host go through the same pipeline, entering and
+leaving at the packet DMA rather than at an EPL.
+
+### The packet DMA engine is documented
+
+§7.11 describes the engine that replaces Arista's proprietary `fpdma`: TX and
+RX **buffer-descriptor rings**, power-of-two sized and 32-byte aligned, with a
+**16-byte descriptor** — Table 7-5 gives it as Status / Length / Buffer-Addr-Lo
+/ Buffer-Addr-Hi — plus scatter-gather and the PCIe and pause behaviour around
+it. §3.3.5 covers the DMA interface pins and §8.6 its timing.
+
+```
+   BAR0 + 0x5000
+   ┌────────────────────────────────────────────────┐
+   │ TX ring (power-of-2 entries, 32-byte aligned)  │
+   │  ┌──────────────┬──────────────┬────────────┐  │
+   │  │ Status       │ Length       │ BufAddrLo  │  │  16 bytes per
+   │  │              │              │ BufAddrHi  │  │  descriptor
+   │  └──────┬───────┴──────────────┴─────┬──────┘  │  (Table 7-5)
+   │         │                            │         │
+   │ RX ring │                            ▼         │
+   │  ┌──────┴───────┐              host buffer     │
+   │  │  ... same    │              (physical addr  │
+   │  └──────────────┘               — no IOMMU)    │
+   └────────────────────────────────────────────────┘
+
+   order matters on TX:  TX_STOP  (resets the descriptor index)
+                            ▼
+                         write descriptors READY
+                            ▼
+                         TX_START
+   TX_START on an empty ring puts the processor Idle, and TX_POST
+   does NOT wake it.  RX is the mirror image.        (derived)
+```
+
+So M5 is implementation from a specification rather than reverse engineering,
+which is not true of much else on this chip. *(documented.)*
+
+**Table 7-8 gives the internal frame tag**: the F64/ISL tag, 7 bytes at L2
+offset 12, carrying DGLORT, SGLORT, SWPRI, USER and FTYPE.
+
+```
+   offset  0        6        12                     19/20
+           ┌────────┬────────┬──────────────────────┬──────────────┐
+           │  DMAC  │  SMAC  │   F64 / ISL tag      │ ethertype .. │
+           │  6 B   │  6 B   │   7 B?  or  8 B?     │   payload    │
+           └────────┴────────┴──────────────────────┴──────────────┘
+                              DGLORT SGLORT SWPRI USER FTYPE
+                              ▲
+                              the tag is INLINE in the frame, not in
+                              the descriptor's field that looks like it
+                              — and the length includes it
+```
+ Note that the prior
+investigation on this chassis recorded it as **8** bytes at that offset when it
+snooped a working transmit — `DMAC(6) | SMAC(6) | F64 tag(8) | ethertype`. One
+of those is wrong, or the eighth byte is padding to a 4-byte boundary. It is a
+cheap thing to settle on the bench and an expensive thing to get wrong, because
+a tag off by one byte produces a frame the chip accepts and misparses.
+
+### The SerDes firmware question is not settled
+
+The parser microcode problem is solved below, but it is not the only firmware on
+this chip. SerDes bring-up goes through a **SPICO** microcontroller, and whether
+its code is a separate vendor firmware file, is embedded in the proprietary
+`libFocalpointSDK.so`, or is not needed at all on this part **has not been
+established**.
+
+This is the open risk to the claim that images for this board stay publishable.
+If SPICO code turns out to be a required vendor blob, then either the ports do
+not come up, or the board acquires exactly the non-redistributable dependency
+the parser decision avoided. Nothing on this page should be read as saying that
+question is answered.
+
+Settling it is M4 work and it should be settled early, because it can invalidate
+the licensing shape of the whole port.
+
 ### The parser is microcoded, and we write the microcode
 
 This was going to be the licensing problem on this board, and it is not one.
@@ -271,6 +501,36 @@ slice has an Action SRAM, and Table 5-3 of the Intel FM5000/FM6000 datasheet
 | `ShiftNextSlice` | 3 | advance the next slice's parsing window by 0..7 bytes, mod 8 |
 | `LegalPadding` | 2 | bytes of the four this slice requires; failing it sets `IncompleteHeader` (bit 37) |
 
+```
+   frame bytes ──▶ │ 4 B │ 4 B │ 4 B │ 4 B │ 4 B │ ...
+                     │     │     │     │     │
+                     ▼     ▼     ▼     ▼     ▼
+                  ┌─────┬─────┬─────┬─────┬─────┐
+   STATE 32 b ───▶│ sl0 │ sl1 │ sl2 │ sl3 │ ... │──▶ (threaded slice to slice,
+                  └──┬──┴──┬──┴──┬──┴──┬──┴──┬──┘     plus a 3-bit window shift)
+                     │     │     │     │     │
+     each slice:     ▼     ▼     ▼     ▼     ▼
+     ┌──────────────────────────────────────────────┐
+     │ Action SRAM entry  (~107 documented bits)     │
+     │  StateOp0..3 / StateValue0..3  StateFrameRot  │
+     │  SetFlags 38b                                 │
+     │  Halfword{0,1}Dest 6b  Rot 2b  Byte{0..3}En   │
+     │  Halfword{0,1}Add   ShiftNextSlice  LegalPad  │
+     └───────────────┬───────────────────────────────┘
+                     ▼
+        FIELDS 88 B  ·  FLAGS 40 b  ·  CHECKSUM 16 b
+                     │
+                     ▼   Table 5-5 fixes which FIELDS channels the
+              downstream pipeline reads; §5.5.9 fixes which FLAGS
+              the fixed-function logic acts on. That pair is the
+              contract our microcode must meet. Everything else
+              about the parse is ours to choose.
+```
+
+The pipeline is **unrolled**: there is no branch instruction and no program
+counter, so a parser "program" is a table with one action per slice, and all
+conditional behaviour is carried by `STATE` and the window shift.
+
 That is about 107 bits of documented fields per slice, against the roughly 128
 bits the block diagram shows. There are no branches to implement: the pipeline
 is unrolled, so a parser "program" is a **table** — one action per slice — and
@@ -289,10 +549,13 @@ are *configuration*, generated from a port map and a rule set the way every
 other board's forwarding tables are. Calling them microcode makes the job sound
 like something it is not.
 
-So: **no vendor blob, at any point.** NOSaic writes a parser microcode generator
-and emits the Action SRAM itself. What it parses is then our decision rather
+So: **no vendor parser microcode.** NOSaic writes a generator and emits the
+Action SRAM itself. That settles the parser and it does not settle the SerDes —
+see the SPICO question above. What it parses is then our decision rather
 than Arista's — and a switch that needs Ethernet, VLAN, IPv4, IPv6 and TCP/UDP
 needs a good deal less parser than a vendor image that supports everything.
+Arista's own blobs make the point: their standard pipeline, a PDP variant and a
+tap-aggregation build are three *different programs* for the same silicon.
 
 The generator is Apache-2.0 code in this repository like anything else.
 Knowledge taken from a datasheet is not vendor code: the datasheet itself is
@@ -305,9 +568,26 @@ SRAM is indexed by state. The encoding is documented; its address is not.
 
 ## Front panel
 
+```
+   ┌────────────────────────────────────────────────────── ARISTA 7150S-52 ──┐
+   │  1  3  5  7 ...                                             ... 49  51  │
+   │ ┌─┐┌─┐┌─┐┌─┐                                                 ┌─┐┌─┐     │
+   │ └─┘└─┘└─┘└─┘   52 × SFP+  10G   (top row odd, bottom even)   └─┘└─┘     │
+   │ ┌─┐┌─┐┌─┐┌─┐                                                 ┌─┐┌─┐     │
+   │  2  4  6  8 ...                                             ... 50  52  │
+   └──────────────────────────────────────────────────────────────────────────┘
+        no QSFP · no external PHYs · every port direct serdes off the FM6000
+
+   front panel N  ──?──▶  EPL instance  ──?──▶  serdes lane
+                    ▲                     ▲
+                    └── THIS MAPPING DOES NOT EXIST YET ──┘
+```
+
 52 SFP+ cages, 10G, numbered 1..52 on the silkscreen. No QSFP, and no external
 PHYs — every port is direct serdes off the FM6000, so there is none of the PHY
-firmware loading the 7050TX-64 and AS4610 need.
+firmware loading the 7050TX-64 and AS4610 need. *(The odd-above-even panel
+layout is the usual Arista arrangement and is `assumed` until someone looks at
+the box.)*
 
 **The port map does not exist yet.** Front-panel number to EPL instance to
 serdes lane is the first table this board needs and the first thing the datapath
@@ -316,14 +596,87 @@ builds theirs from a `config.bcm`; there is no equivalent file here, so this one
 is measured — light one cage at a time and see which EPL's `PORT_STATUS`
 changes.
 
-## Transceivers, LEDs, sensors
+## The SCD, and the watchdog that is this board's only real recovery
 
-All behind the SCD, as on the sibling Arista boards: LEDs from `0x5010` (clearing
-bit 6 of `0x5010` is what turns an SFP laser on), reset at `0x4000`, interrupts
-at `0x3000`/`0x3030`/`0x3060`. The cage EEPROM and sensor layout for *this*
-board — which accelerator, which bus, which address — is not known, and the
-sibling boards' layout is not transferable. *(derived for the LED and reset
-regions; unknown for the rest.)*
+All of the board's own hardware is behind the SCD: LEDs from `0x5010` (clearing
+bit 6 turns an SFP laser on), the switch reset block at `0x4000`, interrupts at
+`0x3000`/`0x3030`/`0x3060`. The cage EEPROM and sensor layout for *this* board —
+which accelerator, which bus, which address — is not known, and the sibling
+boards' layout is not transferable. *(derived for the LED and reset regions;
+unknown for the rest.)*
+
+`internal/platformhal/scd` already drives this FPGA family for the sibling
+Arista boards, and its layout is architecturally fixed across Arista platforms:
+the switch reset block is at `0x4000` everywhere from Trident2 to Tomahawk4, and
+**the watchdog is at `0x0120`** — a register that file already documents as the
+one this board uses. Only the bit assignments vary by platform, and this board's
+have not been checked.
+
+That watchdog matters more here than on any other board in the tree. Bit 31
+enables it; bits `[30:29]` select the action, and **2 is a power cycle** rather
+than a warm reset. On a board whose hardware reset hangs and whose vendor OS
+reboots by `kexec`, a watchdog that power-cycles is the only recovery path that
+does not involve a human at the PDU — and it is the difference between an A/B
+rollback that can work here and one that cannot.
+
+**It is not armed when a NOS starts.** Aboot punches it during boot and hands
+over with it disarmed, so an image begins with no recovery net at all. The
+7050SX2 records learning that the expensive way.
+
+## How NOSaic fits on top, and what has to be written
+
+Nothing here runs yet. This is the shape it has to take, drawn beside a working
+Broadcom board so the difference is visible rather than implied:
+
+```
+        every other board                      arista-7150s-52
+        ────────────────                       ───────────────
+
+   nosaic CLI                             nosaic CLI
+       │ newline-delimited JSON               │  ── SAME SOCKET, SAME
+       ▼ /run/nosd.sock                       ▼     PROTOCOL, unchanged
+   ┌──────────────────┐                   ┌──────────────────┐
+   │ nosd-td2 / -td2p │                   │  nosd-fm6000     │
+   │ -tdp / -helix4   │                   │                  │
+   ├──────────────────┤                   ├──────────────────┤
+   │ openbcm SDK      │  ◀── 874 MB of    │  (nothing here)  │
+   │ bcm_* / soc_*    │      vendor code  │                  │
+   ├──────────────────┤                   ├──────────────────┤
+   │ userspace BDE    │                   │ our register code│
+   │ over mmap(BAR0)  │                   │ over mmap(BAR0)  │
+   └────────┬─────────┘                   └────────┬─────────┘
+            │ CMIC                                 │ no CMIC
+            ▼                                      ▼
+        Broadcom ASIC                          FM6000
+
+   Linux side is identical on both:
+        taps swp1..swpN ◀──▶ tapbridge poller ◀──▶ chip CPU port
+                │
+                ▼
+        Linux IP stack ──▶ FRR (OSPFv2 / OSPFv3)
+```
+
+**The socket is the contract**, and it does not change: the CLI, the config
+model and the HAL above it never learn which silicon answered.
+
+What that costs, concretely — of the shared code in `datapath/common/`, only
+some is chip-agnostic:
+
+| File | Reusable here? |
+|---|---|
+| `mmio.h`, `props.c`, `portmode.c` | **yes** — no chip calls in them |
+| `dmapool.c` | probably, it is a physical-memory allocator |
+| `tapbridge.c` | **no** — built on `bcm_tx` / `bcm_rx` |
+| `query.c` | **no** — answers from `bcm_port_*`, `bcm_vlan_*`, `bcm_l3_*` |
+| `l3sync.c`, `acl.c` | **no** — same reason |
+
+So `datapath/fm6000/` needs its own packet path, its own socket server, its own
+FIB mirror and its own ACL programming. They must speak the **same JSON** as the
+Broadcom ones, which is what `internal/nosd/proto` and
+`internal/switchapi` define — those are the specification, not `query.c`.
+
+The build is simpler than any other board's, though: no SDK to stage, no vendor
+tree to fetch, `-lpthread` and libc.
 
 ## What NOSaic actually drives today
 

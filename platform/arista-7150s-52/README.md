@@ -13,7 +13,16 @@ every other board in this tree has a Broadcom chip.
 | Status | **planned** — nothing has been built or booted for this board yet |
 
 - [Installing](docs/install.md) · [Building](docs/build.md) ·
-  [Hardware reference](docs/hardware.md) · [What is left](docs/todo.md)
+  [Hardware reference](docs/hardware.md) · [What is left](docs/todo.md) ·
+  [What the prior work established](docs/edgenos-prior-art.md)
+
+```
+   nosaic CLI ──JSON──▶ /run/nosd.sock ──▶ nosd-fm6000 ──▶ mmap(BAR0) ──▶ FM6000
+                                              ▲                │
+   FRR ──▶ Linux IP stack ──▶ swp1..swp52 ────┘                │
+                                     taps                      ▼
+                        no SDK · no BDE · no CMIC · no vendor blob in the image
+```
 
 ## Why this board is not like the others
 
@@ -59,12 +68,22 @@ the obvious move was to ship Arista's blob under a non-redistributable recipe �
 which would have made this the one board whose images could never be published.
 It turns out not to be necessary: the parser's instruction encoding is public
 (Intel document 331496-002, Table 5-3), so NOSaic **generates its own parser
-microcode** and the blob is never in the picture. See
+microcode** and that blob is never in the picture. See
 [docs/hardware.md](docs/hardware.md#the-parser-is-microcoded-and-we-write-the-microcode).
+
+One firmware question is still open and could change this: SerDes bring-up goes
+through a **SPICO** microcontroller, and whether its code is a separate vendor
+file, lives inside the proprietary SDK, or is not needed on this part has not
+been established. Until it is, "publishable" is the intent rather than a
+demonstrated property.
 
 ## Reverse engineering
 
-The investigation lives outside this repository, per
+[docs/edgenos-prior-art.md](docs/edgenos-prior-art.md) records what the earlier
+work on this chassis established, what NOSaic takes from it, and the two things
+it deliberately does not.
+
+The investigation itself lives outside this repository, per
 [CONTRIBUTING](../../CONTRIBUTING.md): traces, disassembly, eliminated leads and
 anything derived from vendor binaries stay there.
 `docs/hardware.md` here documents the board **as NOSaic drives it** — and while

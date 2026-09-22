@@ -117,12 +117,21 @@ has a reason, in code, parameterised by the board.
 - [ ] `EPL_CFG_B` PCS select set to 10GBASE-R and one cage links to a known-good
       far end
 - [ ] SFP laser enable through the SCD, and cage presence/EEPROM
+- [ ] **settle the SPICO question early** — is SerDes microcontroller code a
+      separate vendor firmware file, embedded in the proprietary SDK, or not
+      needed on this part? It decides whether images for this board can be
+      published, so it invalidates licensing decisions if left late
 
 ## M5 — packets reach the CPU
 
-- [ ] packet DMA ring at BAR0+`0x5000`, TX and RX, without an IOMMU
-- [ ] the CPU port's frame format — including where the internal tag actually
-      goes, which is not where the descriptor suggests
+- [ ] packet DMA ring at BAR0+`0x5000`, TX and RX, without an IOMMU. **This is
+      implementation from a specification**: §7.11 documents the engine and
+      Table 7-5 the 16-byte descriptor (Status / Length / Buffer-Addr-Lo /
+      Buffer-Addr-Hi), power-of-two rings, 32-byte aligned
+- [ ] the CPU port's frame format. Table 7-8 gives the F64/ISL tag as **7 bytes
+      at L2 offset 12** (DGLORT/SGLORT/SWPRI/USER/FTYPE); the prior work on this
+      chassis measured **8** there. Settle which on the bench — the tag goes
+      inline in the frame, not in the descriptor field that looks like it
 - [ ] a tap per front-panel port, bridged the way `datapath/common/tapbridge.c`
       does it for every other board
 
@@ -135,10 +144,27 @@ has a reason, in code, parameterised by the board.
 
 ## M7 — the board, not the chip
 
+- [ ] **arm the watchdog**, and check this board's bit assignments for it.
+      `0x0120`, bit 31 enables, `[30:29]` = 2 is a power cycle. Aboot hands over
+      with it disarmed. On a board that cannot hardware-reset this is the only
+      recovery that is not a human at the PDU, so it gates whether A/B rollback
+      means anything here — see M0's reboot question
 - [ ] LEDs, including the chassis status lamps
 - [ ] sensors and a cooling curve measured on this chassis
 - [ ] transceiver presence and EEPROM for 52 cages
 - [ ] A/B install and rollback — gated on M0's reboot question
+
+## Worth taking from elsewhere rather than writing
+
+- [ ] **`aristanetworks/sonic`** carries a GPL `scd` driver plus **`raven`**
+      board support — this board's platform layer — and the sysfs documentation
+      for it. Reference for M1; GPL, so it is referenced or packaged, never
+      pasted into this tree
+- [ ] **`aristanetworks/swi-tools`** is Arista's own SWI/SWIX packaging tooling.
+      M0 should use it rather than hand-rolling the zip and `boot0`
+- [ ] there is **no FM6000 SAI and the 7150 is not a SONiC platform** — Fulcrum
+      was EOL around 2016. Nothing to borrow on the dataplane side, which is
+      why this port writes one
 
 ## Not blocking, but write it down when it is learned
 
