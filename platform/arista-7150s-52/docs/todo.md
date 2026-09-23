@@ -40,9 +40,26 @@ committed, as on every other board.
       old EdgeNOS builds removed. EOS stays. About 530 MB more is reclaimable
       from RE traces if two slots will not fit. See
       [hardware.md](hardware.md#flash-space)
-- [ ] build a minimal x86_64 image for this board and **measure it**, then set
-      `boot_mib` / `slot_mib` / `data_mib` from what it actually costs
-- [ ] a NOSaic x86_64 kernel boots from Aboot on this chassis to a console prompt
+- [x] **the image builds.** Minimal x86_64, 2026-09-23: rootfs 43.4 MiB, kernel
+      13.6 MiB, installable SWI 14.8 MiB, RAM-boot SWI 58 MiB. `nosd-fm6000` is
+      in it, so `asic: fm6000` resolves to its provider
+- [x] **a RAM-bootable SWI exists.** The aboot backend had no `Netboot`, so
+      `--ram-boot` produced a kernel and an initramfs and nothing Aboot could be
+      pointed at. It does now, and the bundle ships a README
+- [x] **a NOSaic kernel boots on this chassis** — RAM-booted 2026-09-23 to a
+      `nosaic login:` prompt. See
+      [hardware.md](hardware.md#nosaic-booted-on-this-switch-2026-09-23)
+- [x] **`config/network.conf` added** so it comes up with its management address
+      and real MAC. (An earlier note claimed the image could not be logged into;
+      that was wrong — `root` is locked by design, the account is `admin`, no
+      password, console only)
+- [x] **`nosd` no longer restart-storms** — it waits up to 30s for the chip
+      (`--wait`) then exits non-zero, keeping the A/B semantics
+- [x] **`boot0` dry-run bug fixed** — the `ma1` cycle ran before the `testonly`
+      exit, so a dry run left the interface down and broke the next netboot
+- [ ] `config/authorized_keys` for network login — gitignored and per-operator,
+      so created on the machine that builds, not committed
+- [ ] set `boot_mib` / `slot_mib` / `data_mib` from what was measured
 - [ ] `ma1` comes up with the board's real MAC, read from prefdl rather than
       configured — `MacAddrBase 44:4c:a8:31:5d:aa` on this chassis, and the
       prefdl parser is shared work with the 7050SX2, which has the same gap
@@ -64,7 +81,20 @@ committed, as on every other board.
       either. Leading hypothesis is the **ASIC core rails** — prefdl carries
       `AltaVdd 1.01` / `AltaVdds 1.0`, the regulator is presumably on the SCD
       SMBus, and the sibling board's notes already say prefdl gates this.
-      **This is now the M1 blocker and it blocks everything after it**
+      **This is the M1 blocker and it blocks everything after it**
+- [x] cold-vs-warm SCD diff taken 2026-09-23 — it ruled the reset block **out**:
+      warm reads `0x000`, the exact state we produced by hand. Note an SMBus
+      write to a regulator would leave no trace in a register diff at all
+- [x] **the four devices are mapped** — `saguaro` is the SCD; `prickle` (v42)
+      and `quill` (v85) are read through SCD `0x160`/`0x170`; **`thorn` (v34) is
+      an Altera EPM240 CPLD on the host southbridge SMBus at `/sb/1` addr
+      `0x23`**. See
+      [hardware.md](hardware.md#the-four-devices-and-where-each-one-lives)
+- [ ] **read `thorn` cold versus warm.** A 240-element MAX II CPLD on the CPU's
+      own i2c bus is the part and the placement of a power sequencer, and the
+      best candidate for what holds the Alta unpowered. Reachable with
+      `i2c-piix4` on the SB700 — no vendor path needed. Do it from our own image
+      or Aboot: under a running EOS the read returns "Smbus transaction failed"
 - [ ] SCD support for *this* board in `internal/platformhal/scd`, once the above
       is known: same FPGA family as the sibling Arista boards, different layout
 - [ ] then release the FM6000 and have `02:00.0` enumerate
