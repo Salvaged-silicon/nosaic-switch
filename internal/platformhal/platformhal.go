@@ -16,6 +16,7 @@ package platformhal
 import (
 	"context"
 	"errors"
+	"net"
 )
 
 // ErrUnsupported is returned by a board that cannot do something, rather than
@@ -138,4 +139,19 @@ type Identity struct {
 	// SID is the vendor's own board identifier, which is what their tooling
 	// and documentation are keyed on.
 	SID string
+
+	// MAC is the base address of the block allocated to this board, and
+	// MACCount is how many follow it. Empty when the board's identity
+	// structure does not carry one.
+	//
+	// ⚠ THIS IS WHAT MAKES AN IMAGE GENERIC.
+	//
+	// A management NIC whose own EEPROM was never programmed comes up with a
+	// vendor OUI and an all-zero suffix -- every unit of that model presenting
+	// the same address. Stating the right one in a board's network.conf fixes
+	// exactly one switch and makes the image wrong for every other, because
+	// the next unit then presents the first one's identity. The board knows
+	// its own address; ask it.
+	MAC      net.HardwareAddr
+	MACCount int
 }

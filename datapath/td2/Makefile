@@ -93,9 +93,14 @@ sdk.o: sdk.c bde.h sdk.h ../common/props.h
 phy.o: phy.c phy.h ../common/props.h
 phybus.o: phybus.c phybus.h ../scdmdio/scdmdio.h
 ../scdmdio/scdmdio.o: ../scdmdio/scdmdio.c ../scdmdio/scdmdio.h
-../common/acl.o: ../common/acl.c ../common/acl.h ../common/props.h ../common/tapbridge.h
 ../common/tapbridge.o: ../common/tapbridge.c ../common/tapbridge.h
 ../common/l3sync.o: ../common/l3sync.c ../common/l3sync.h ../common/props.h
+# Linked, not called. query.c is shared by every datapath and asks the access
+# list module for its capability unconditionally, so a datapath that does not
+# link acl.o does not link at all. Starting it is a separate step and is not
+# done here: see feature/acl-td2, which adds the calls and has never run on
+# this chip.
+../common/acl.o: ../common/acl.c ../common/acl.h ../common/props.h ../common/tapbridge.h
 ../common/props.o: ../common/props.c ../common/props.h
 
 clean:
