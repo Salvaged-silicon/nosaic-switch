@@ -359,6 +359,10 @@ that way on 2026-09-17, after doing it the wrong way round first.
 // thing that replaces the switch's disk; this produces the thing that proves
 // the image first, on a board where the first of those is not reversible
 // without the vendor image.
+func (u uefi) NetbootDescribe() string {
+	return "serve this directory over TFTP, then follow its README"
+}
+
 func (u uefi) Netboot(img Image, outDir string, log io.Writer) (string, error) {
 	if img.Kernel == "" || img.Initramfs == "" {
 		return "", fmt.Errorf("a netboot bundle needs a kernel and an initramfs")

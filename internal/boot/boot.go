@@ -141,6 +141,13 @@ type Backend interface {
 // document somebody has to find.
 type Netbooter interface {
 	Netboot(img Image, outDir string, log io.Writer) (string, error)
+
+	// NetbootDescribe says in one line how to serve the bundle, because how
+	// differs by bootloader: Arista's Aboot fetches a SWI over HTTP, a UEFI
+	// board is handed files over TFTP. This used to be one hard-coded line in
+	// the build command naming TFTP, which was wrong for every board that
+	// does not use it.
+	NetbootDescribe() string
 }
 
 var backends = map[string]Backend{}

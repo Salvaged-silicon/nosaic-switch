@@ -131,9 +131,133 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	}
 	fmt.Fprintf(log, "==> building the Aboot SWI\n")
 
-	work, err := os.MkdirTemp("", "nosaic-swi-")
+	out, err := filepath.Abs(filepath.Join(outDir,
+		fmt.Sprintf("NOSaic-%s-%s.swi", img.Version, img.Board)))
 	if err != nil {
 		return "", err
+	}
+	if err := buildSWI(img, out); err != nil {
+		return "", err
+	}
+
+	// The line that tells Aboot to boot it. Written alongside rather than
+	// inside, because it lives in flash, not in the image.
+	bc := filepath.Join(outDir, "boot-config")
+	if err := os.WriteFile(bc,
+		[]byte(fmt.Sprintf("SWI=flash:/%s\n", filepath.Base(out))), 0o644); err != nil {
+		return "", err
+	}
+	fmt.Fprintf(log, "    %s\n    %s (copy both to flash)\n", out, bc)
+	return out, nil
+}
+
+/*
+Netboot writes a SWI that Aboot fetches into RAM and runs without touching the
+disk.
+
+Separate from Wrap because it answers a different question. Wrap produces the
+thing that replaces the switch's flash; this produces the thing that proves an
+image before anyone does that -- and on these boards the difference is stark.
+Arista's own bootloader will download a SWI over HTTP, FTP, TFTP or NFS, run
+its boot0 and kexec, writing NOTHING: boot-config is untouched, the vendor's
+SWI is untouched, and a kernel that panics is recovered by power-cycling into
+exactly the state the board was in before. That makes it the one way to try a
+new OS on a switch whose vendor image is the only way back.
+
+The artifact is the same SWI Wrap builds. What differs is what is inside the
+initramfs -- see the RAMBoot guard below -- and that no boot-config is written,
+because nothing here is going into flash.
+*/
+func (a aboot) NetbootDescribe() string {
+	return "serve this directory over HTTP, then follow its README"
+}
+
+func (a aboot) Netboot(img Image, outDir string, log io.Writer) (string, error) {
+	if img.Kernel == "" || img.Initramfs == "" {
+		return "", fmt.Errorf("a netboot SWI needs a kernel and an initramfs")
+	}
+	// The same guard the UEFI backend carries, for the same reason: an image
+	// booted from RAM has no disk of ours to mount, so without the root
+	// filesystem inside the initramfs it comes up, hunts for an A/B slot that
+	// does not exist and stops in a rescue shell -- on a switch in a rack,
+	// after a transfer that looked like it worked.
+	if !img.RAMBoot {
+		return "", fmt.Errorf("a netboot SWI must carry its root filesystem in the " +
+			"initramfs, or it will boot to a rescue shell looking for a disk slot " +
+			"that does not exist.\n       Rebuild with --ram-boot")
+	}
+
+	dir := filepath.Join(outDir, "netboot")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	out, err := filepath.Abs(filepath.Join(dir,
+		fmt.Sprintf("NOSaic-%s-%s-ramboot.swi", img.Version, img.Board)))
+	if err != nil {
+		return "", err
+	}
+	// A different filename from the installable SWI on purpose. The two are
+	// not interchangeable -- this one carries a whole root filesystem and that
+	// one expects to find a slot -- and they would otherwise differ only by
+	// which directory somebody copied from.
+	if err := buildSWI(img, out); err != nil {
+		return "", err
+	}
+
+	readme := fmt.Sprintf(`NOSaic %s for %s -- RAM boot, over Aboot
+
+This SWI carries its own root filesystem. Aboot downloads it to RAM, runs its
+boot0 and kexecs. NOTHING IS WRITTEN TO THE SWITCH: boot-config is untouched,
+the vendor's SWI is untouched, and a kernel that hangs is undone by cutting
+power. That is what makes this the way to try an image on a box whose vendor
+OS is the only way back.
+
+1. Serve this directory over HTTP from a host the switch can reach.
+
+2. Catch Aboot on the console. It prints
+
+       Press Control-C now to enter Aboot shell
+
+   and the window is short -- send Ctrl-C repeatedly from the moment you power
+   the board on, until you see the Aboot# prompt.
+
+3. Stage it first, which proves the download, the unpack and the command line
+   without jumping:
+
+       boot --testonly http://<host>/%s
+
+   Expect "NOSaic: staged, not booting (testonly)".
+
+4. Then boot it for real:
+
+       boot http://<host>/%s
+
+To get the board back, power-cycle it. It returns to whatever boot-config
+already said, which this has not changed.
+
+DO NOT run "recover" or "fullrecover" at the Aboot prompt. Those wipe the
+switch to factory defaults, and neither is needed to undo anything here.
+`, img.Version, img.Board, filepath.Base(out), filepath.Base(out))
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte(readme), 0o644); err != nil {
+		return "", err
+	}
+
+	fmt.Fprintf(log, "==> netboot SWI for Aboot\n    %s\n", out)
+	fmt.Fprintf(log, "    serve it over HTTP, then at the Aboot prompt:\n")
+	fmt.Fprintf(log, "        boot --testonly http://<host>/%s   (stage it, do not jump)\n",
+		filepath.Base(out))
+	fmt.Fprintf(log, "        boot http://<host>/%s\n", filepath.Base(out))
+	fmt.Fprintf(log, "    nothing is written to flash; power-cycle to get the board back\n")
+	return dir, nil
+}
+
+// buildSWI assembles the archive itself. Shared by Wrap and Netboot because
+// the SWI format is the SWI format: the two differ in what goes in the
+// initramfs and in what is written beside the result, not in how it is packed.
+func buildSWI(img Image, out string) error {
+	work, err := os.MkdirTemp("", "nosaic-swi-")
+	if err != nil {
+		return err
 	}
 	defer os.RemoveAll(work)
 
@@ -144,10 +268,10 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	for name, src := range files {
 		b, err := os.ReadFile(src)
 		if err != nil {
-			return "", err
+			return err
 		}
 		if err := os.WriteFile(filepath.Join(work, name), b, 0o644); err != nil {
-			return "", err
+			return err
 		}
 	}
 	// The board's own kernel arguments, which boot0 appends. Written as a
@@ -157,13 +281,13 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	if img.KernelParams != "" {
 		if err := os.WriteFile(filepath.Join(work, "kernel-params"),
 			[]byte(img.KernelParams+"\n"), 0o644); err != nil {
-			return "", err
+			return err
 		}
 	}
 
 	boot0 := fmt.Sprintf(abootBoot0, img.Version, img.Board)
 	if err := os.WriteFile(filepath.Join(work, "boot0"), []byte(boot0), 0o755); err != nil {
-		return "", err
+		return err
 	}
 	// Read off two EOS SWIs from the flash of a real switch rather than
 	// guessed. BLESSED=1 is the load-bearing one: it is what lets Aboot boot a
@@ -202,14 +326,9 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 			"NOSAIC_VERSION=%s\nNOSAIC_BOARD=%s\n",
 		abootSWIVersion, img.Version, epoch, img.Version, img.Board)
 	if err := os.WriteFile(filepath.Join(work, "version"), []byte(version), 0o644); err != nil {
-		return "", err
+		return err
 	}
 
-	out, err := filepath.Abs(filepath.Join(outDir,
-		fmt.Sprintf("NOSaic-%s-%s.swi", img.Version, img.Board)))
-	if err != nil {
-		return "", err
-	}
 	_ = os.Remove(out)
 
 	// -0 stores rather than deflates. The vendor's own SWI is stored, and
@@ -223,16 +342,8 @@ func (a aboot) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 	cmd := exec.Command("zip", append([]string{"-0", "-q", "-X", out}, members...)...)
 	cmd.Dir = work
 	if b, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("building the SWI: %v\n%s", err, b)
+		return fmt.Errorf("building the SWI: %v\n%s", err, b)
 	}
 
-	// The line that tells Aboot to boot it. Written alongside rather than
-	// inside, because it lives in flash, not in the image.
-	bc := filepath.Join(outDir, "boot-config")
-	if err := os.WriteFile(bc,
-		[]byte(fmt.Sprintf("SWI=flash:/%s\n", filepath.Base(out))), 0o644); err != nil {
-		return "", err
-	}
-	fmt.Fprintf(log, "    %s\n    %s (copy both to flash)\n", out, bc)
-	return out, nil
+	return nil
 }

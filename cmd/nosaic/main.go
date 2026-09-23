@@ -520,7 +520,9 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 		// PXE-only, after which the firmware skips the loader and there is no
 		// prompt left to undo it from. The bundle's README says what to do on
 		// the board it was built for, warnings included.
-		fmt.Printf("  serve this directory over TFTP, then follow its README\n")
+		if nb, ok := backend.(boot.Netbooter); ok {
+			fmt.Printf("  %s\n", nb.NetbootDescribe())
+		}
 		fmt.Printf("  %s\n", netbootDir)
 		fmt.Printf("  nothing is written to the switch, and nothing survives the reboot\n")
 	}
