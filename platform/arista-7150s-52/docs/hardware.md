@@ -126,7 +126,59 @@ is real and unexplained.)*
 
 ### Who holds what in reset
 
-The single most confusing thing about this board, drawn out:
+**Measured 2026-09-23, on this board, from the Aboot shell on a cold chip.**
+This was `derived` before; it is now the strongest kind of live evidence,
+because it was tested by releasing the resets and watching what happened.
+
+```
+  Aboot shell, cold board:
+    /sys/bus/pci/devices/     0000:04:00.0 present   (SCD)
+                              0000:02:00.0 ABSENT    (FM6000)
+                              0000:00:04.0 present   (the bridge it lives behind)
+
+    SCD reset block 0xe1004000 = 0x00000106     bits 1, 2 and 8 HELD
+    SCD reset status 0xe1004020 = 0x00000000
+    SCD version      0xe1000100 = 0x00217361     as predicted
+```
+
+⚠ **Unimplemented reset bits read as ZERO on this board.** The sibling 7050SX2
+reads `0xfffffffc` with its ASIC running, because there unimplemented bits read
+as *one* — and its driver's comment warns that taking another platform's bit
+number would be silently fatal. The polarity convention is inverted here, so
+that warning applies in reverse: on this board a bit reading 0 tells you
+nothing, and only the three set bits are real.
+
+### Releasing the resets is necessary and NOT sufficient
+
+The experiment, run from Aboot with `devmem`:
+
+```
+  devmem 0xe1004010 32 0x2     ->  0x4000 = 0x00000104     bit 1 cleared
+  devmem 0xe1004010 32 0x4     ->  0x4000 = 0x00000100     bit 2 cleared
+  devmem 0xe1004010 32 0x100   ->  0x4000 = 0x00000000     bit 8 cleared
+  echo 1 > /sys/bus/pci/rescan                  ->  02:00.0 still absent
+  echo 1 > .../0000:00:04.0/rescan              ->  02:00.0 still absent
+```
+
+So the **clear port at `0x4010` works on this board** — the reset register moved
+exactly as asked, three times — and with **every reset bit released the FM6000
+still does not appear on the PCI bus.** A bridge-level rescan does not find it
+either, so this is not the kernel having enumerated an empty bus at boot.
+
+**Something in EOS's "NorCal initialization" does more than release resets.**
+
+The leading hypothesis is **power**: prefdl carries `AltaVdd 1.01` and
+`AltaVdds 1.0`, which are this board's ASIC core rails, and the sibling
+7050SX2's notes already say that reading prefdl "gates the ASIC core voltage".
+A chip whose core supply has not been programmed would behave exactly like
+this — out of reset, and not training a PCIe link. The regulator is presumably
+on the SCD's SMBus.
+
+That is a hypothesis with evidence behind it and it is not yet tested. What is
+established is the negative: reset release alone is not what brings this chip
+onto the bus.
+
+### The old picture, for orientation
 
 ```
   power on

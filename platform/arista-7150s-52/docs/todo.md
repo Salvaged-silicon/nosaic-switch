@@ -55,9 +55,19 @@ committed, as on every other board.
 
 ## M1 — the ASIC is on the bus
 
-- [ ] SCD support for *this* board in `internal/platformhal/scd`: it is the same
-      FPGA family as the sibling Arista boards and not the same layout
-- [ ] release the FM6000 from reset and have `02:00.0` enumerate
+- [x] **the SCD reset block is mapped and works** — measured from Aboot
+      2026-09-23. Cold it reads `0x106` (bits 1, 2, 8 held); the clear port at
+      `0x4010` drove it to `0x000` in three writes. Unimplemented bits read as
+      **zero** here, the opposite of the 7050SX2
+- [ ] **find out what else NorCal init does.** With every reset bit cleared the
+      FM6000 still does not enumerate, and a bridge rescan does not find it
+      either. Leading hypothesis is the **ASIC core rails** — prefdl carries
+      `AltaVdd 1.01` / `AltaVdds 1.0`, the regulator is presumably on the SCD
+      SMBus, and the sibling board's notes already say prefdl gates this.
+      **This is now the M1 blocker and it blocks everything after it**
+- [ ] SCD support for *this* board in `internal/platformhal/scd`, once the above
+      is known: same FPGA family as the sibling Arista boards, different layout
+- [ ] then release the FM6000 and have `02:00.0` enumerate
 - [x] map BAR0 (`0xe2000000`, 32 MB) and read something that identifies the
       chip — `fm6000-probe` does, over sysfs `resource0`, needing no
       `iomem=relaxed`
@@ -81,6 +91,9 @@ hang rather than an error.
       space, latches, and refuses everything afterwards; `nosd-fm6000` reports
       the transition once, loudly; `fm6000-probe` names the exact word that did
       it
+- [ ] the cold MGMT dump, diffed against the warm fingerprint in
+      [hardware.md](hardware.md) — needs the chip on the bus first, so it is
+      blocked behind M1
 - [ ] **run the documented boot sequence in the documented order** (331496-002
       Table 4-1, reproduced in [hardware.md](hardware.md#the-documented-boot-sequence)):
       scan chain → PLL → modules out of reset → FFU slice numbers → **bank
