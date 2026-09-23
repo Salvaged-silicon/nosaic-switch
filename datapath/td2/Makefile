@@ -67,7 +67,8 @@ CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"td2\" -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/
 # problem nobody has solved and does not need solving.
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
-OBJS    += sdk.o ../common/tapbridge.o ../common/l3sync.o ../common/acl.o ../common/query.o led.o phy.o \
+OBJS    += sdk.o ../common/tapbridge.o ../common/l3sync.o ../common/acl.o \
+	   ../common/query.o led.o phy.o \
            phybus.o ../scdmdio/scdmdio.o
 endif
 
