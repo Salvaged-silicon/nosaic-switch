@@ -1,0 +1,78 @@
+Let a board force the BCM PHY's internal RGMII delays, and do it for BCM50610.
+
+The Arista 7150S-52's management NIC is a BCM5785 (tg3) behind a BCM50610 on
+RGMII, and on a stock 6.12 it does not come up at all:
+
+    tg3 0000:00:14.6: No PHY devices
+    tg3 0000:00:14.6: Problem fetching invariants of chip, aborting
+
+The board needs the PHY to supply BOTH internal clock delays -- RX and TX --
+which older kernels happened to provide by leaving the PHY's power-on defaults
+alone. Since the internal delays were made explicit, bcm54xx_config_clock_delay
+ACTIVELY DISABLES both of them for plain PHY_INTERFACE_MODE_RGMII, and this
+board is then left with a PHY whose clocking does not match the MAC.
+
+The obvious fix is not available. Saying PHY_INTERFACE_MODE_RGMII_ID would ask
+for exactly the right thing, and tg3_phy_init rejects any interface mode other
+than plain RGMII with -EINVAL, so the interface mode has to stay as it is. What
+is left is to keep the mode and ask for the delays separately, which is what
+the other PHY_BRCM_* dev_flags in this driver already exist to do.
+
+So: a new dev_flag that means "supply both internal delays regardless of the
+interface mode", honoured in the two places that enable the skews, and set by
+tg3 for the BCM50610. The flag is additive -- it only ever turns a delay on --
+so no board that works today changes behaviour.
+
+The name says delays rather than RXID because it governs both; a flag called
+RXID that also drives the TX shadow register is the kind of thing that gets
+half-applied by the next person to touch it.
+
+--- a/include/linux/brcmphy.h
++++ b/include/linux/brcmphy.h
+@@ -72,6 +72,12 @@
+ #define PHY_BRCM_DIS_TXCRXC_NOENRGY	0x00000008
+ #define PHY_BRCM_EN_MASTER_MODE		0x00000010
+ #define PHY_BRCM_IDDQ_SUSPEND		0x00000020
++/* Supply the PHY's internal RGMII clock delays on BOTH RX and TX, whatever the
++ * interface mode says. For a board that needs RGMII_ID behaviour but whose MAC
++ * driver will not accept an RGMII_ID interface mode -- tg3 rejects anything
++ * other than plain RGMII in tg3_phy_init().
++ */
++#define PHY_BRCM_FORCE_RGMII_DELAYS	0x00000040
+ 
+ /* Broadcom BCM7xxx specific workarounds */
+ #define PHY_BRCM_7XXX_REV(x)		(((x) >> 8) & 0xff)
+--- a/drivers/net/phy/broadcom.c
++++ b/drivers/net/phy/broadcom.c
+@@ -83,7 +83,8 @@
+ 		val &= ~MII_BCM54XX_AUXCTL_SHDWSEL_MISC_RGMII_SKEW_EN;
+ 	}
+ 	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_ID ||
+-	    phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID) {
++	    phydev->interface == PHY_INTERFACE_MODE_RGMII_RXID ||
++	    (phydev->dev_flags & PHY_BRCM_FORCE_RGMII_DELAYS)) {
+ 		/* Enable RGMII RXC-RXD skew */
+ 		val |= MII_BCM54XX_AUXCTL_SHDWSEL_MISC_RGMII_SKEW_EN;
+ 	}
+@@ -100,7 +101,8 @@
+ 		val &= ~BCM54810_SHD_CLK_CTL_GTXCLK_EN;
+ 	}
+ 	if (phydev->interface == PHY_INTERFACE_MODE_RGMII_ID ||
+-	    phydev->interface == PHY_INTERFACE_MODE_RGMII_TXID) {
++	    phydev->interface == PHY_INTERFACE_MODE_RGMII_TXID ||
++	    (phydev->dev_flags & PHY_BRCM_FORCE_RGMII_DELAYS)) {
+ 		/* Enable internal TX clock delay */
+ 		val |= BCM54810_SHD_CLK_CTL_GTXCLK_EN;
+ 	}
+--- a/drivers/net/ethernet/broadcom/tg3.c
++++ b/drivers/net/ethernet/broadcom/tg3.c
+@@ -1581,7 +1581,8 @@
+ 		phydev->dev_flags |= PHY_BRCM_CLEAR_RGMII_MODE |
+ 				     PHY_BRCM_RX_REFCLK_UNUSED |
+ 				     PHY_BRCM_DIS_TXCRXC_NOENRGY |
+-				     PHY_BRCM_AUTO_PWRDWN_ENABLE;
++				     PHY_BRCM_AUTO_PWRDWN_ENABLE |
++				     PHY_BRCM_FORCE_RGMII_DELAYS;
+ 		fallthrough;
+ 	case PHY_ID_RTL8211C:
+ 		phydev->interface = PHY_INTERFACE_MODE_RGMII;

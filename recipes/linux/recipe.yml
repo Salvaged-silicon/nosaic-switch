@@ -27,6 +27,7 @@ source:
 patches:
   - patches/0001-tg3-probe-without-an-nvram-address.patch
   - patches/0002-x86-boot-reload-the-data-segments-at-startup_32.patch
+  - patches/0003-phy-broadcom-force-rgmii-internal-delays-for-tg3.patch
 
 build:
   system: kernel

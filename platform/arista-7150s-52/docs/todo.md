@@ -60,7 +60,14 @@ committed, as on every other board.
 - [ ] `config/authorized_keys` for network login — gitignored and per-operator,
       so created on the machine that builds, not committed
 - [ ] set `boot_mib` / `slot_mib` / `data_mib` from what was measured
-- [ ] `ma1` comes up with the board's real MAC, read from prefdl rather than
+- [ ] **the management NIC does not come up yet.** `tg3: No PHY devices` — the
+      BCM50610 never answers on MDIO. Two causes found and both fixed in the
+      tree, neither yet confirmed on hardware: `CONFIG_BROADCOM_PHY` was missing
+      from the x86_64 kernel fragment, and the kernel disables the PHY's
+      internal RGMII delays for the only interface mode tg3 accepts. See
+      `recipes/linux/patches/0003-...` and
+      [hardware.md](hardware.md#0-the-management-nic-does-not-come-up)
+- [ ] `eth0` comes up with the board's real MAC, read from prefdl rather than
       configured — `MacAddrBase 44:4c:a8:31:5d:aa` on this chassis, and the
       prefdl parser is shared work with the 7050SX2, which has the same gap
 - [ ] choose the reserved DMA region and prove the kernel survives it — the
@@ -90,7 +97,11 @@ committed, as on every other board.
       an Altera EPM240 CPLD on the host southbridge SMBus at `/sb/1` addr
       `0x23`**. See
       [hardware.md](hardware.md#the-four-devices-and-where-each-one-lives)
-- [ ] **read `thorn` cold versus warm.** A 240-element MAX II CPLD on the CPU's
+- [ ] **read `thorn` cold versus warm.** `spike/thorn-read.c` is written and
+      builds; it walks every `/dev/i2c-*` and reads address `0x23` register 1.
+      Getting it onto a RAM-booted switch is blocked behind the management NIC
+      above — the first attempt could not fetch it because `eth0` never
+      appeared. A 240-element MAX II CPLD on the CPU's
       own i2c bus is the part and the placement of a power sequencer, and the
       best candidate for what holds the Alta unpowered. Reachable with
       `i2c-piix4` on the SB700 — no vendor path needed. Do it from our own image

@@ -760,6 +760,42 @@ nosaic login:
 
 **M0's build-and-boot half is done.** Three things it exposed:
 
+### 0. The management NIC does not come up
+
+```
+tg3 0000:00:14.6: No PHY devices
+tg3 0000:00:14.6: Problem fetching invariants of chip, aborting
+NOSAIC-NET route default via 10.10.33.1 FAILED
+NOSAIC-NET waiting for: eth0
+```
+
+Not the MAC problem the sibling 7050SX2 has — that one is already patched and
+this board gets past it. This is **PHY discovery**: the BCM50610 in front of the
+BCM5785 never answers on the MDIO bus, so tg3 gives up before there is an
+interface at all.
+
+Two causes, and both were real:
+
+- **`CONFIG_BROADCOM_PHY` was not set on x86_64.** It is in the armhf fragment
+  and was never in this one, so `drivers/net/phy/broadcom.c` was not built and
+  the BCM50610 had no driver on this architecture at all.
+- **The kernel actively disables the PHY's internal RGMII clock delays.** This
+  board needs the PHY to supply *both* the RX and TX internal delays. Older
+  kernels left the PHY's power-on defaults alone; since the delays became
+  explicit, `bcm54xx_config_clock_delay()` turns both **off** for plain
+  `PHY_INTERFACE_MODE_RGMII`, which is the only mode tg3 will accept —
+  `tg3_phy_init()` returns `-EINVAL` for anything else, so simply asking for
+  `RGMII_ID` is not available.
+
+Fixed by `recipes/linux/patches/0003-...`: a `PHY_BRCM_FORCE_RGMII_DELAYS`
+dev_flag that means "supply both internal delays whatever the interface mode
+says", honoured where the skews are enabled and set by tg3 for the BCM50610.
+Additive, so it only ever turns a delay on and no board that works today
+changes behaviour.
+
+**Not yet confirmed on hardware** — the kernel carrying it has not been booted
+on the switch at the time of writing.
+
 ### 1. The login works — I used the wrong account
 
 Recorded because the wrong version of this was written down first, and a note

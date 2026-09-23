@@ -22,6 +22,11 @@ CONFIG_SERIAL_8250_CONSOLE=y
 #
 # The same bus reaches the fan CPLD, which is documented as unreachable without
 # this driver.
+# The BCM50610 in front of the 7150S-52's management NIC. Without this there is
+# no Broadcom PHY driver at all on x86_64 -- drivers/net/phy/broadcom.c is not
+# even built -- so the PHY gets no clock-delay handling and tg3 reports "No PHY
+# devices" and aborts. BCM_NET_PHYLIB comes with it and is not listed.
+CONFIG_BROADCOM_PHY=y
 CONFIG_I2C_PIIX4=y
 CONFIG_I2C_CHARDEV=y
 CONFIG_EEPROM_AT24=y
