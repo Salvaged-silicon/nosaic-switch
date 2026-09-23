@@ -1,3 +1,19 @@
+# EXAMPLE ONLY -- this file is NOT shipped in the image and is NOT read by
+# anything. It is the shape of the file plus the reasoning behind it.
+#
+# Every address, MAC and router-id below has been replaced by a placeholder.
+# Put your own in
+#
+#     /mnt/data/config/network.conf
+#
+# which lives on the data partition, so it survives an upgrade, a rollback and
+# a reinstall -- and is never overwritten by an image built for this model.
+#
+# ⚠ THIS FILE USED TO CARRY ONE PHYSICAL SWITCH'S IDENTITY, IN A PUBLIC REPO.
+# An image built from it made a second switch a duplicate of the first: same
+# management address, same MAC, same OSPF router-id in the same area. Keep real
+# values in <name>.site.conf, which .gitignore excludes, or on the switch.
+#
 # Network configuration for this board, copied from the EdgeNOS installation
 # it replaces so the two can be compared directly.
 #
@@ -17,18 +33,18 @@
 # This is a stopgap and should disappear: once the prefdl reader exists, the
 # board supplies its own address and no configuration file should be asserting
 # hardware identity.
-iface eth0 10.10.32.2/24 mac 44:4c:a8:eb:93:f6
-route default via 10.10.32.1
+iface eth0 <address>/<prefix> mac <this switch's MAC>
+route default via <address>
 
 # The loopback carries the OSPF router-id. It is a loopback precisely so the
 # id does not move when a front-panel port goes down.
-iface lo 10.101.255.53/32
+iface lo <address>/<prefix>
 
-# et1 and et2 are gone, and were 10.101.101.42/29 and .57/29.
+# et1 and et2 are gone, and were <address>/<prefix> and .<host>/<prefix>.
 #
 # They came over from the EdgeNOS capture and described links that do not
 # exist here: both ports were admin up with an address and no carrier, and
-# neither far end -- 10.101.101.41 and .58 -- has ever answered. A switch
+# neither far end -- <address> and .58 -- has ever answered. A switch
 # carrying addresses for links that are not there is a switch whose
 # configuration lies about the topology, and it lies in the most expensive
 # direction: `show ports` and `ip addr` both look like a cabling fault on two
@@ -43,9 +59,9 @@ iface lo 10.101.255.53/32
 # permanent claim that the links existed.
 
 # The two 40G cages. Each /29 follows the same one-subnet-per-link pattern
-# as the 10G links above; .64/29 and .72/29 were the next free blocks.
+# as the 10G links above; .<host>/<prefix> and .<host>/<prefix> were the next free blocks.
 #
-#   et54  <->  AS5610 swp51        (10.101.101.66 on the far side)
+#   et54  <->  AS5610 swp51        (<address> on the far side)
 #   et53  <->  7050TX-64 port 50   (far side not yet configured)
 #
 # Configured here and NOT yet carrying traffic. Both cages link at 40G and
@@ -54,12 +70,12 @@ iface lo 10.101.255.53/32
 # is an open fault, written up in docs/todo.md. These lines are here
 # because the addressing is settled and correct; when the datapath fault is
 # fixed the links come up with no further configuration.
-# et52 <-> 7050TX-64 port 49. The next free /29 after et53's .72/29; this box
+# et52 <-> 7050TX-64 port 49. The next free /29 after et53's .<host>/<prefix>; this box
 # takes the lower address and the far side .82, the same way round as et53 and
 # et54.
-iface et52 10.101.101.81/29 mtu 1600
-iface et53 10.101.101.73/29 mtu 1600
-iface et54 10.101.101.65/29 mtu 1600
+iface et52 <address>/<prefix> mtu 1600
+iface et53 <address>/<prefix> mtu 1600
+iface et54 <address>/<prefix> mtu 1600
 
 # Keep management traffic on the management port.
 #
@@ -77,7 +93,7 @@ iface et54 10.101.101.65/29 mtu 1600
 #
 # A static route has metric 0 and OSPF's has 20, so this wins at equal prefix
 # length. The real answer is a management VRF, which is in docs/todo.md.
-route 10.22.1.0/24 via 10.10.32.1 dev eth0
+route <address>/<prefix> via <address> dev eth0
 
 # IPv6 on the management port.
 #
@@ -86,5 +102,5 @@ route 10.22.1.0/24 via 10.10.32.1 dev eth0
 # names, and the already-correct test is per address, so re-running stays free.
 # The MAC is not repeated here -- it is set by the line above, and a second
 # place to state it is a second place for it to drift.
-iface eth0 2001:470:882d:32::2/64
-route default via 2001:470:882d:32::1
+iface eth0 <ipv6-address>/<prefix>
+route default via <ipv6-address>/<prefix>

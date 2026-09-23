@@ -1,3 +1,19 @@
+# EXAMPLE ONLY -- this file is NOT shipped in the image and is NOT read by
+# anything. It is the shape of the file plus the reasoning behind it.
+#
+# Every address, MAC and router-id below has been replaced by a placeholder.
+# Put your own in
+#
+#     /mnt/data/config/network.conf
+#
+# which lives on the data partition, so it survives an upgrade, a rollback and
+# a reinstall -- and is never overwritten by an image built for this model.
+#
+# ⚠ THIS FILE USED TO CARRY ONE PHYSICAL SWITCH'S IDENTITY, IN A PUBLIC REPO.
+# An image built from it made a second switch a duplicate of the first: same
+# management address, same MAC, same OSPF router-id in the same area. Keep real
+# values in <name>.site.conf, which .gitignore excludes, or on the switch.
+#
 # Network configuration for the Cisco Nexus 3172TQ.
 #
 # Addresses for one physical switch in one lab. Shipped rather than generated
@@ -14,7 +30,7 @@
 #
 # eth0 comes up as 00:a0:c9:00:00:00 -- Intel's OUI with an all-zero suffix,
 # which is an unprogrammed NIC EEPROM -- while the board's real address is
-# b4:de:31:3f:a5:c0. Without this line the switch presents a different
+# <this switch's MAC>. Without this line the switch presents a different
 # identity from the one on its own label, and one shared by every other board
 # whose NIC EEPROM was never written.
 #
@@ -29,17 +45,17 @@
 # that whichever OS is running can be reached without disturbing the other's
 # ARP state upstream. Both present the same MAC, which is fine -- one address
 # per OS, one MAC for the board.
-iface eth0 10.10.39.3/24 mac b4:de:31:3f:a5:c0
-route default via 10.10.39.1
+iface eth0 <address>/<prefix> mac <this switch's MAC>
+route default via <address>
 # The build host, which is also the TFTP server every netboot comes from.
-route 10.22.1.0/24 via 10.10.39.1 dev eth0
+route <address>/<prefix> via <address> dev eth0
 
 # ── Routing identity ───────────────────────────────────────────────────────
 #
 # A stable address that does not belong to any one link, so a neighbour losing
 # an interface does not lose the router. .50 and .53 are the Aristas, .241 is
 # the Edgecore.
-iface lo 10.101.255.54/32
+iface lo <address>/<prefix>
 
 # ── Transit: the two copper ports patched to the Arista 7050TX-64 ──────────
 #
@@ -48,16 +64,16 @@ iface lo 10.101.255.54/32
 # neither board had a routing neighbour -- so this pair is the first real
 # traffic test for both of them.
 #
-# /29 per link, from the lab's 10.101.101.0/24 transit range. Blocks .40-.47,
+# /29 per link, from the lab's <address>/<prefix> transit range. Blocks .40-.47,
 # .48-.55, .56-.63, .64-.71, .72-.79 and .80-.87 are already spoken for by the
 # other three switches; these two are not.
 #
-#   eth1_31  10.101.101.32/29   .33 here, .34 on the Arista
-#   eth1_32  10.101.101.96/29   .97 here, .98 on the Arista
+#   eth1_31  <address>/<prefix>   .33 here, .34 on the Arista
+#   eth1_32  <address>/<prefix>   .97 here, .98 on the Arista
 #
 # ⚠ The two links are NOT in adjacent blocks, and that is the Arista's
-# numbering rather than a mistake here. et31 sits in .32/29 and et32 in
-# .96/29; this end was originally written as .88/29 and .96/29, which put the
+# numbering rather than a mistake here. et31 sits in .<host>/<prefix> and et32 in
+# .<host>/<prefix>; this end was originally written as .<host>/<prefix> and .<host>/<prefix>, which put the
 # first link in a different subnet from its own far end -- a cable with link,
 # addresses on both ends and no possible adjacency.
 #
@@ -65,8 +81,8 @@ iface lo 10.101.255.54/32
 # and the other boards' transit links run 1600; raising these is a two-line
 # change but BOTH ENDS must change together, or the link passes small frames
 # and silently drops the rest.
-iface eth1_31 10.101.101.33/29
-iface eth1_32 10.101.101.97/29
+iface eth1_31 <address>/<prefix>
+iface eth1_32 <address>/<prefix>
 
 # ── Transit: the 40G cage to the 7050SX2 ───────────────────────────────────
 #
@@ -81,7 +97,7 @@ iface eth1_32 10.101.101.97/29
 # the file says what the interface is, and so lowering it later means
 # changing one place that is obviously about this link.
 #
-#   eth1_54  10.101.101.88/29   .90 here, .89 on the 7050SX2
+#   eth1_54  <address>/<prefix>   .90 here, .89 on the 7050SX2
 #
 # ⚠ .90 here, not .89. The plan in this file was the other way round, and the
 # 7050SX2 was configured with .89 on its end before we booted with ours --
@@ -89,16 +105,16 @@ iface eth1_32 10.101.101.97/29
 # on a point-to-point link: it half-works, because each end answers its own
 # ARP, and it presents as an adjacency that will not form for no visible
 # reason.
-iface eth1_54 10.101.101.90/29 mtu 1600
+iface eth1_54 <address>/<prefix> mtu 1600
 
 # ── Transit: the second 40G cage, to the Edgecore AS5610 ──────────────────
 #
 # Panel 53 here (logical port 65, the fifth cage) to swp49 on the AS5610.
-# That board already carries 10.101.101.18/29 on swp49 and runs it at 1600,
+# That board already carries <address>/<prefix> on swp49 and runs it at 1600,
 # both read off the running switch rather than chosen here, so this end
 # takes .17 out of the same block and matches the MTU.
 #
 # This is the cage that proved the 40G path works: with a different module
 # in it (AVF2146U0TX) it linked to the Edgecore at 40G immediately, while
 # panel 54's module (AVF2146U1DH) has never linked to anything.
-iface eth1_53 10.101.101.17/29 mtu 1600
+iface eth1_53 <address>/<prefix> mtu 1600

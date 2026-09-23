@@ -107,6 +107,7 @@ func Run(root string) *Result {
 		res.errf("loading boards: %v", err)
 	}
 	checkBoardDocs(res, root, boards)
+	checkNoUnitIdentity(res, root, boards)
 	for _, b := range boards {
 		for _, e := range b.Validate(root) {
 			res.errf("%s: %s", rel(root, b.Path), e)
@@ -175,6 +176,73 @@ func checkBoardDocs(res *Result, root string, boards []*board.Board) {
 		res.errf("%s or the switches table in %s is out of date — run: make docs",
 			docsgen.Path, docsgen.READMEPath)
 	}
+}
+
+// checkNoUnitIdentity keeps one physical switch's identity out of a public
+// repository, and out of every image built from it.
+//
+// This is not a style rule. platform/<board>/config/network.conf and frr.conf
+// are COPIED INTO THE IMAGE, so whatever they say is asserted by every switch
+// that boots one. Three boards shipped a real management address, a real
+// management MAC and a real OSPF router-id, which made a second unit built
+// from this tree a duplicate of the lab's first one -- same address on the
+// management LAN, same router-id in the same OSPF area, and an ARP entry
+// upstream that flaps between two machines. It is also simply somebody's
+// hardware, published.
+//
+// The split that fixes it already exists. A switch's own values belong in
+// /mnt/data/config/ on the data partition, where they survive an upgrade, a
+// rollback and a reinstall; a local copy may be kept in <name>.site.conf,
+// which .gitignore excludes. What stays in the tree is the shape and the
+// reasoning, as <name>.conf.example.
+//
+// Only config/ is examined. Documentation quotes captures from real hardware
+// and has to -- docs/hardware.md is worthless if its register dumps are
+// fictional -- so the line is drawn at files the build consumes.
+func checkNoUnitIdentity(res *Result, root string, boards []*board.Board) {
+	for _, b := range boards {
+		for _, name := range []string{"network.conf", "frr.conf"} {
+			p := filepath.Join(root, "platform", b.ID, "config", name)
+			if _, err := os.Stat(p); err == nil {
+				stem := strings.TrimSuffix(name, ".conf")
+				res.errf("%s is copied into the image, so it must not name one "+
+					"switch — move the real values to %s.site.conf (gitignored) "+
+					"or /mnt/data/config/ on the switch, and keep the shape as "+
+					"%s.example", rel(root, p), stem, name)
+			}
+		}
+		// The examples are published, so they are held to the same bar.
+		for _, name := range []string{"network.conf.example", "frr.conf.example"} {
+			p := filepath.Join(root, "platform", b.ID, "config", name)
+			body, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			for _, m := range identityRE.FindAllString(string(body), -1) {
+				if vendorConstant[strings.ToLower(m)] {
+					continue // a property of the model, not of a unit
+				}
+				res.errf("%s still contains %q — an example must carry no real "+
+					"address or MAC", rel(root, p), m)
+			}
+		}
+	}
+}
+
+// RFC1918 addresses and MAC addresses: what a unit is identified by.
+var identityRE = regexp.MustCompile(
+	`\b(?:10|172|192)\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b` +
+		`|\b(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}\b`)
+
+// Addresses that are a property of the MODEL and belong in an example: an
+// unprogrammed NIC's default, and the multicast MACs a switch must match.
+var vendorConstant = map[string]bool{
+	"00:10:18:00:00:00": true, // Broadcom, unprogrammed
+	"00:a0:c9:00:00:00": true, // Intel, unprogrammed
+	"00:00:00:00:00:00": true,
+	"ff:ff:ff:00:00:00": true,
+	"01:00:5e:00:00:00": true, // IPv4 multicast
+	"33:33:00:00:00:00": true, // IPv6 multicast
 }
 
 func checkDocumentedTargets(res *Result, root string) {

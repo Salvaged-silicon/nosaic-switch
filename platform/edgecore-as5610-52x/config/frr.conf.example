@@ -1,3 +1,19 @@
+# EXAMPLE ONLY -- this file is NOT shipped in the image and is NOT read by
+# anything. It is the shape of the file plus the reasoning behind it.
+#
+# Every address, MAC and router-id below has been replaced by a placeholder.
+# Put your own in
+#
+#     /mnt/data/config/frr.conf
+#
+# which lives on the data partition, so it survives an upgrade, a rollback and
+# a reinstall -- and is never overwritten by an image built for this model.
+#
+# ⚠ THIS FILE USED TO CARRY ONE PHYSICAL SWITCH'S IDENTITY, IN A PUBLIC REPO.
+# An image built from it made a second switch a duplicate of the first: same
+# management address, same MAC, same OSPF router-id in the same area. Keep real
+# values in <name>.site.conf, which .gitignore excludes, or on the switch.
+#
 # FRR configuration for this board, translated from the Quagga configuration
 # the EdgeNOS installation runs today (/etc/quagga/{zebra,ospfd,ospf6d}.conf,
 # read on 2026-09-02).
@@ -61,29 +77,29 @@ interface lo
 #
 # which is a deprecation that will one day be a removal.
 #
-# swp5 (10.99.99.0/24) and swp7 (10.101.101.32/29) carry addresses and are
+# swp5 (<address>/<prefix>) and swp7 (<address>/<prefix>) carry addresses and are
 # deliberately absent: EdgeNOS has no network statement covering either, so
 # they are routed interfaces that do not participate in OSPF. Reproduced
 # rather than tidied -- if that is wrong it is wrong on the running switch too,
 # and this file should not silently disagree with it.
 router ospf
- ospf router-id 10.101.101.241
- network 10.101.101.0/29 area 0.0.0.0
- network 10.101.101.8/29 area 0.0.0.0
- network 10.101.101.16/29 area 0.0.0.0
- network 10.101.101.24/29 area 0.0.0.0
- network 10.101.101.40/29 area 0.0.0.0
- network 10.101.101.48/29 area 0.0.0.0
- network 10.101.101.64/29 area 0.0.0.0
- network 10.101.101.241/32 area 0.0.0.0
- network 10.101.102.0/29 area 0.0.0.0
+ ospf router-id <address>
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
 !
 # ── OSPFv3 ───────────────────────────────────────────────────────────────────
 # Area membership is declared on the interfaces above, which is how FRR
 # prefers it; Quagga listed them in the router stanza. Same result, and the
 # interface form keeps each port's settings in one place.
 router ospf6
- ospf6 router-id 10.101.101.241
+ ospf6 router-id <address>
 !
 line vty
 !

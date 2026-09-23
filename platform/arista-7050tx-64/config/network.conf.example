@@ -30,7 +30,7 @@
 #
 # The sibling board has the same problem and the same workaround.
 
-# Management. 10.10.34.0/24 off ge34 on the lab's edgenos-4610.
+# Management. Its own /24 off the port it is cabled to on the lab's OOB switch.
 #
 # .2 is what EOS uses on this box and .3 is ours, deliberately kept apart: the
 # two present different MACs, and a shared address leaves a stale ARP entry
