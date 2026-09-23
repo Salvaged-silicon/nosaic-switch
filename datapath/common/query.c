@@ -125,20 +125,11 @@ static void json_str(FILE *out, const char *s)
 }
 
 /*
- * A request's arguments. The protocol is flat enough that finding a key and
- * reading what follows it is a parser: the CLI writes the JSON and nothing
- * here needs more than a number or a string out of it.
+ * A request's string arguments. The protocol is flat enough that finding a
+ * key and reading what follows it is a parser: the CLI writes the JSON and
+ * nothing here needs more than a number or a string out of it. The number
+ * half is req_int above.
  */
-static int req_int(const char *req, const char *key, int missing)
-{
-	char pat[40];
-	const char *p;
-
-	snprintf(pat, sizeof(pat), "\"%s\":", key);
-	p = strstr(req, pat);
-	return p ? atoi(p + strlen(pat)) : missing;
-}
-
 static void req_str(const char *req, const char *key, char *out, size_t len)
 {
 	char pat[40];

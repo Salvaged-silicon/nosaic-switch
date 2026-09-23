@@ -25,6 +25,7 @@ import (
 const platformUsage = `usage: nosaic platform <command>
 
   status               what the board reports about itself
+  mac                  the board's own base MAC, from its identity PROM
   release-asic         take the switch chip out of reset and wait for it
   asic                 what the switch chip says about itself (read-only)
   transceivers         which front-panel cages have modules in them
@@ -86,6 +87,21 @@ func platformCmd(args []string) error {
 		return linkmapCmd(b, args[1:])
 	case "schan":
 		return schanCmd(b, rest[1:])
+	case "mac":
+		// The board's own base address, one line and nothing else, because
+		// apply-network.sh substitutes it into `mac auto`. Exits non-zero
+		// when the board cannot say, so the caller can tell "no MAC" from
+		// "the empty string".
+		id, err := hal.Board()
+		if err != nil {
+			return fmt.Errorf("this board cannot report its identity: %w", err)
+		}
+		if len(id.MAC) == 0 {
+			return fmt.Errorf("this board's identity carries no MAC address")
+		}
+		fmt.Println(id.MAC)
+		return nil
+
 	case "i2c":
 		// Read-only, and deliberately not part of any board's driver: it
 		// is the instrument the cage-expander map is derived WITH, not a
@@ -193,6 +209,9 @@ func platformStatus(hal platformhal.HAL, b *board.Board) error {
 	} else {
 		fmt.Fprintf(w, "identity\t%s  serial %s  rev %s  sid %s\n",
 			id.Model, id.Serial, id.Revision, id.SID)
+		if len(id.MAC) > 0 {
+			fmt.Fprintf(w, "mac\t%s  (%d addresses)\n", id.MAC, id.MACCount)
+		}
 	}
 
 	for _, r := range []platformhal.Reset{platformhal.ResetSwitchCore, platformhal.ResetSwitchPCIe} {

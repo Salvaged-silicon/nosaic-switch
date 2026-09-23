@@ -1,0 +1,63 @@
+# Network configuration for ONE Cisco Nexus 3172TQ. Copy to network.conf.
+#
+# ⚠ THERE IS NO network.conf UNTIL YOU MAKE ONE, AND THAT IS DELIBERATE.
+#
+# Everything below is this machine's identity: its management address, its
+# routing identity, and the addressing of every link it has. None of it is
+# true of any other switch. An image built with a network.conf in it carries
+# that identity to whatever it is installed on, so a freshly built image
+# configures nothing at all and says so at boot.
+#
+# Two places this can live:
+#
+#   platform/cisco-n3172tq/config/network.conf   baked into the image you
+#                                                build, for a switch you own
+#   /mnt/data/config/network.conf                on the switch's own data
+#                                                partition, which OVERRIDES
+#                                                whatever the image shipped
+#
+# The second is the better answer for a machine that already runs: it survives
+# an upgrade, and an image can then be identical across a fleet.
+#
+# Syntax: iface <name> <addr/prefix> [mac <mac>|mac auto] [mtu <n>]
+#         route <prefix|default> via <gw> [dev <iface>]
+#
+# The file is re-read and re-applied every 30 seconds until every interface it
+# names exists, because the datapath's ports appear minutes after the
+# management interface does. Anything already in the state asked for is left
+# alone, so re-applying is free.
+
+# ── Management ─────────────────────────────────────────────────────────────
+#
+# ⚠ KEEP `mac auto` AND DO NOT WRITE AN ADDRESS HERE.
+#
+# This board's NIC EEPROM is blank -- eth0 comes up as 00:a0:c9:00:00:00,
+# Intel's OUI with an all-zero suffix -- and that is true of the MODEL, so
+# every 3172TQ presents that same address until told otherwise. Writing the
+# right one fixes exactly one switch and makes the image wrong for every
+# other.
+#
+# `mac auto` reads the board's own allocated block from its ID PROM, the
+# 24c512 at 0x52, and is correct on any unit. See `nosaic platform mac`.
+iface eth0 192.0.2.10/24 mac auto
+route default via 192.0.2.1
+
+# ── Routing identity ───────────────────────────────────────────────────────
+#
+# A stable address that belongs to no single link, so a neighbour losing an
+# interface does not lose the router. This is the OSPF router-id; it must be
+# unique in the routing domain, and frr.conf has to agree with it.
+iface lo 198.51.100.1/32
+
+# ── Front-panel ports ──────────────────────────────────────────────────────
+#
+# Names come from the tap_<name> properties in asic.conf, so eth1_31 is panel
+# port 31. A port with no address here still exists and still forwards; it
+# just has no layer 3.
+#
+# ⚠ MTU HAS TO MATCH THE NEIGHBOUR. OSPF carries it in its database
+# description packets and refuses an adjacency when the two disagree, leaving
+# it stuck in ExStart with nothing said about why.
+#
+# iface eth1_31 203.0.113.1/29 mtu 1600
+# iface eth1_53 203.0.113.9/29 mtu 1600

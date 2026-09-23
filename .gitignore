@@ -79,6 +79,26 @@ refs/
 # The repeater's tuning is per-board, comes from the board's own description
 # file, and is the vendor's rather than ours -- same rule as the port map.
 /platform/*/config/retimer.conf
+# ⚠ A SWITCH'S IDENTITY, AND AN IMAGE MUST NOT SHIP SOMEBODY ELSE'S.
+#
+# network.conf carries the management address, the routing identity and the
+# addressing of every link; frr.conf carries the router-id and which prefixes
+# are advertised. All of it belongs to ONE machine.
+#
+# These were committed for a while, which meant an image built from this
+# repository arrived on the next switch already claiming the first one's
+# addresses -- an IP conflict at best, and with a MAC stated as well, one
+# switch impersonating another. A freshly built image now configures NOTHING
+# until somebody says what this machine is.
+#
+# Start from the .example beside each, or put the file on the switch's own
+# data partition at /mnt/data/config/network.conf, which overrides whatever
+# the image shipped.
+/platform/*/config/network.conf
+/platform/*/config/frr.conf
+!/platform/*/config/network.conf.example
+!/platform/*/config/frr.conf.example
+
 
 # SerDes transmit equalisation: per-trace tuning from the board description.
 /platform/*/config/serdes.conf

@@ -255,6 +255,11 @@ func (h *hal) Board() (platformhal.Identity, error) {
 		Serial:   d.Serial,
 		Revision: d.Rev,
 		SID:      d.Part,
+		// Only the chassis record carries these; parseIDPROMRecord leaves
+		// them zero on the one that does not, and an all-zero field there
+		// means "this record has no MAC" rather than "the MAC is zero".
+		MAC:      d.MAC,
+		MACCount: d.MACSize,
 	}, nil
 }
 
