@@ -1,0 +1,36 @@
+# FRR configuration for ONE Cisco Nexus 3172TQ. Copy to frr.conf.
+#
+# ⚠ THERE IS NO frr.conf UNTIL YOU MAKE ONE, AND THAT IS DELIBERATE.
+#
+# The router-id and the advertised prefixes are this machine's identity. An
+# image that shipped them would arrive on the next switch announcing the first
+# one's routes with the first one's router-id, which is a routing domain with
+# two of the same router in it.
+#
+# Without this file the FRR package's own default is used: the daemons start
+# and report that OSPF is not enabled, which is the correct thing for a switch
+# nobody has configured yet.
+#
+# ⚠ It is installed 0640 owned by frr. A root-owned frr.conf is read by
+# nothing and the daemons come up with no configuration and no complaint.
+
+# Must match `iface lo` in network.conf. Unique in the routing domain.
+router-id 198.51.100.1
+
+log stdout informational
+
+router ospf
+ ospf router-id 198.51.100.1
+ # Advertised on startup so neighbours do not route through this switch while
+ # it is still learning. Dropped once convergence is done.
+ max-metric router-lsa on-startup 60
+ network 198.51.100.1/32 area 0.0.0.0
+ # One line per transit link, matching network.conf.
+ # network 203.0.113.0/29 area 0.0.0.0
+!
+
+# Cost per interface, so a 40G path wins on its own rather than by tie-break.
+# An interface with an address but no cost here is deliberately not in an area.
+# interface eth1_53
+#  ip ospf cost 10
+# !

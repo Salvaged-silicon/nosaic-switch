@@ -194,6 +194,39 @@ strange failure:
 nosd-td2: no port map, so the chip would initialise and reach no front-panel cage
 ```
 
+## The switch's own identity, which the image does not carry
+
+⚠ **A FRESHLY BUILT IMAGE CONFIGURES NO NETWORKING AT ALL, AND THAT IS
+DELIBERATE.**
+
+`config/network.conf` holds the management address, the routing identity and
+the addressing of every link; `config/frr.conf` holds the router-id and the
+advertised prefixes. All of it belongs to one machine, so neither is in the
+repository. Build without them and the image ships no `network.conf`, no
+`apply-network.sh` and FRR's own neutral default -- a switch that comes up on
+the console and waits to be told what it is.
+
+Both have a documented `.example` beside them:
+
+```sh
+cd platform/cisco-n3172tq/config
+cp network.conf.example network.conf
+cp frr.conf.example frr.conf
+$EDITOR network.conf frr.conf
+```
+
+⚠ **Keep `mac auto` in the management stanza.** This board's NIC EEPROM is
+blank -- `eth0` comes up as `00:a0:c9:00:00:00` on every 3172TQ -- so writing
+a real address there fixes one switch and makes the image wrong for every
+other. `auto` reads the board's own allocated block from its ID PROM; see
+`nosaic platform mac`.
+
+For a switch that already runs, the better home is the data partition:
+`/mnt/data/config/network.conf` overrides whatever the image shipped, survives
+an upgrade, and lets one image be identical across a fleet.
+
+## The port map you have to generate
+
 Three files, all read off a switch running the vendor's OS, all landing in
 `config/`, all gitignored:
 
