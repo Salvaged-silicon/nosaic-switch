@@ -36,6 +36,15 @@
 #include "regs.h"
 #include "sock.h"
 
+/*
+ * How long to wait for the chip before failing.
+ *
+ * Long enough that the platform HAL releasing the ASIC from SCD reset is never
+ * a race, short enough that a genuinely broken image fails its A/B trial while
+ * somebody is still watching.
+ */
+#define FM_DEFAULT_WAIT_SECS 30
+
 static volatile int running = 1;
 
 static void nap_ms(long ms)
@@ -59,17 +68,23 @@ static void usage(void)
 	fprintf(stderr,
 "usage: nosd-fm6000 [--slot ADDR] [--socket PATH] [--boot]\n"
 "\n"
-"  --boot   run the documented cold-boot sequence at start-up.\n"
-"           OFF BY DEFAULT: it writes to the chip, it is incomplete, and a\n"
-"           supervisor that restarts this daemon would run it again on a\n"
-"           chip in an unknown state. Use fm6000-probe --boot by hand.\n");
+"  --wait N  seconds to wait for the chip before failing (default %d).\n"
+"            0 fails immediately. The wait exists because the SCD holds the\n"
+"            ASIC in reset until the platform HAL releases it, so \"not there\n"
+"            yet\" is a normal transient rather than a fault.\n"
+"  --boot    run the documented cold-boot sequence at start-up.\n"
+"            OFF BY DEFAULT: it writes to the chip, it is incomplete, and a\n"
+"            supervisor that restarts this daemon would run it again on a\n"
+"            chip in an unknown state. Use fm6000-probe --boot by hand.\n",
+		FM_DEFAULT_WAIT_SECS);
 }
 
 int main(int argc, char **argv)
 {
 	struct fm6000 dev;
 	const char *slot = NULL, *sockpath = NULL;
-	int do_boot = 0, i, reported_offbus = 0;
+	int do_boot = 0, i, reported_offbus = 0, waited = 0;
+	int wait_secs = FM_DEFAULT_WAIT_SECS;
 
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--slot") == 0 && i + 1 < argc)
@@ -78,28 +93,60 @@ int main(int argc, char **argv)
 			sockpath = argv[++i];
 		else if (strcmp(argv[i], "--boot") == 0)
 			do_boot = 1;
+		else if (strcmp(argv[i], "--wait") == 0 && i + 1 < argc)
+			wait_secs = atoi(argv[++i]);
 		else {
 			usage();
 			return 2;
 		}
 	}
 
-	if (fm_open(&dev, slot) != FM_OK) {
-		/*
-		 * Exit rather than idle. A datapath that cannot find its chip
-		 * is exactly the condition A/B trial-confirm exists to catch:
-		 * the supervisor sees nosd fail, the trial boot does not
-		 * confirm itself healthy, and the switch rolls back. A daemon
-		 * that stays up reporting "no chip" would defeat that by
-		 * looking alive.
-		 */
-		fprintf(stderr,
-"nosd-fm6000: no 8086:155b on the PCI bus.\n"
+	/*
+	 * Wait for the chip, up to a bound, and then give up.
+	 *
+	 * Both halves of that matter and they pull in opposite directions.
+	 *
+	 * GIVING UP IS REQUIRED. A datapath that cannot find its chip is exactly
+	 * the condition A/B trial-confirm exists to catch: the supervisor sees
+	 * nosd fail, the trial boot does not confirm itself healthy, and the
+	 * switch rolls back to the slot that worked. A daemon that stayed up
+	 * reporting "no chip" would defeat that by looking alive, and a bad
+	 * image would be committed.
+	 *
+	 * WAITING IS ALSO REQUIRED, and this board is why. The FM6000 is held in
+	 * reset by the SCD from power-on and does not appear on the PCI bus until
+	 * the platform HAL releases it -- so "no chip yet" is a normal transient
+	 * at start-up, not a fault, and a daemon that exits on the first look is
+	 * racing something that is doing its job.
+	 *
+	 * Exiting instantly did both wrong at once. Measured on the switch: with
+	 * the chip held in reset, `restart: always` respawned this several times
+	 * a second, which printed a line each time and made the console unusable
+	 * for the very debugging the restarts were evidence for. The exit was
+	 * right and the cadence was not.
+	 *
+	 * So the wait is what bounds the restart rate, rather than a sleep bolted
+	 * on before exit: while the chip is legitimately on its way this is not a
+	 * failure at all, and once the deadline passes it is one.
+	 */
+	if (wait_secs > 0)
+		fprintf(stderr, "nosd-fm6000: looking for the chip, up to %ds\n",
+			wait_secs);
+	while (fm_open(&dev, slot) != FM_OK) {
+		if (waited >= wait_secs) {
+			fprintf(stderr,
+"nosd-fm6000: no 8086:155b on the PCI bus after %ds.\n"
 "nosd-fm6000: on a 7150S the SCD holds the FM6000 in reset from power-on,\n"
 "nosd-fm6000: so this is what an un-released chip looks like. The platform\n"
-"nosd-fm6000: HAL releases it; check the SCD (3475:0001) is present.\n");
-		return 1;
+"nosd-fm6000: HAL releases it; check the SCD (3475:0001) is present.\n",
+				waited);
+			return 1;
+		}
+		nap_ms(1000);
+		waited++;
 	}
+	if (waited > 0)
+		fprintf(stderr, "nosd-fm6000: chip appeared after %ds\n", waited);
 	banner(&dev);
 
 	if (do_boot) {
