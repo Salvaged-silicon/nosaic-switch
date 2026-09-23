@@ -176,10 +176,19 @@ has a reason, in code, parameterised by the board.
 
 ## Worth taking from elsewhere rather than writing
 
-- [ ] **`aristanetworks/sonic`** carries a GPL `scd` driver plus **`raven`**
-      board support — this board's platform layer — and the sysfs documentation
-      for it. Reference for M1; GPL, so it is referenced or packaged, never
-      pasted into this tree
+- [x] **`aristanetworks/sonic`** — checked 2026-09-23, and the useful half of
+      what was hoped for is not there. **There is no `raven` support in it**:
+      the platform list runs `clearlake`, `upperlake`, `lodoga`, `blackhawk`
+      and newer, and the tree contains no `raven`, `norcal`, `fm6000` or `7150`
+      at all. This board's platform layer has to be written, not borrowed.
+
+      What it *did* confirm is the reset convention, from `src/scd-reset.h` and
+      `src/scd-reset.c`: `RESET_SET_OFFSET 0x00`, `RESET_CLEAR_OFFSET 0x10`,
+      and a release is `write (1 << bit)` to the clear offset. That is exactly
+      what worked on this board, now corroborated by the vendor's own driver
+      rather than inferred from the sibling port. `src/scd.c` is a generic FPGA
+      driver — i2c/SMBus master, GPIO, LEDs, transceivers — with no board power
+      sequencing in it, so it does not answer the M1 question
 - [ ] **`aristanetworks/swi-tools`** is Arista's own SWI/SWIX packaging tooling.
       M0 should use it rather than hand-rolling the zip and `boot0`
 - [ ] there is **no FM6000 SAI and the 7150 is not a SONiC platform** — Fulcrum
