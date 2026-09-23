@@ -517,12 +517,32 @@ func TestAbootBoot0CyclesTheManagementInterface(t *testing.T) {
 
 	up := strings.Index(script, `ip link set "$NETDEV" up`)
 	down := strings.Index(script, `ip link set "$NETDEV" down`)
-	load := strings.Index(script, "kexec --load")
+	testonly := strings.Index(script, "testonly")
+	exec_ := strings.Index(script, "kexec --exec")
 	if up < 0 || down < 0 {
 		t.Fatal("boot0 does not cycle the management interface; tg3 will find no MAC")
 	}
-	if !(up < down && down < load) {
-		t.Errorf("the interface must go up, then down, then kexec (up=%d down=%d load=%d)", up, down, load)
+	// The interface must go up, then down, and both before the JUMP -- not
+	// before "kexec --load", which only stages. This used to be asserted
+	// against --load, which allowed the cycle to sit before the testonly exit
+	// and made a dry run leave the interface down. See below.
+	if !(up < down && down < exec_) {
+		t.Errorf("the interface must go up, then down, then jump (up=%d down=%d exec=%d)",
+			up, down, exec_)
+	}
+	// ⚠ AND IT MUST HAPPEN AFTER THE testonly EXIT.
+	//
+	// A dry run has to leave the board exactly as it found it. When this
+	// cycle ran first, "boot --testonly http://..." succeeded and left ma1
+	// DOWN, so the real "boot http://..." in the same Aboot session failed
+	// with "Network is unreachable" -- observed on the 7150S-52, with nothing
+	// in the output to suggest the dry run was the cause.
+	if testonly < 0 {
+		t.Fatal("boot0 does not honour testonly")
+	}
+	if up < testonly {
+		t.Errorf("the interface cycle must come after the testonly exit, or a dry "+
+			"run leaves the board changed (testonly=%d up=%d)", testonly, up)
 	}
 }
 

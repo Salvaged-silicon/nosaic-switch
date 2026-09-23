@@ -89,6 +89,20 @@ if [ -f /tmp/kernel-params ]; then
 fi
 echo "NOSaic: cmdline: $CMDLINE"
 
+kexec --load /tmp/nosaic-kernel \
+      --initrd=/tmp/nosaic-initrd \
+      --append="$CMDLINE"
+
+# Aboot exports testonly when it was asked for a dry run. Honouring it is what
+# makes "boot --testonly <url>" a dry run rather than a boot: everything up to
+# here has already proved the SWI unpacks, the kernel and initrd stage, and the
+# command line assembles -- and then we return to the prompt without jumping.
+#
+# The vendor's own boot0 does exactly this, at the same point. A SWI that
+# ignores it boots for real at the moment somebody was deliberately being
+# careful, which is the worst possible time to be surprised.
+[ -z "${testonly}" ] || { echo "NOSaic: staged, not booting (testonly)"; exit 0; }
+
 # Two things the vendor's own boot0 does around the kexec, both learned from
 # its comments rather than guessed.
 #
@@ -103,23 +117,18 @@ echo "NOSaic: cmdline: $CMDLINE"
 # cosmetic: the vendor records the NIC DMA-ing into memory before the next
 # kernel has initialised it, showing up as corruption or "Bad page state".
 # Leaving it up is a plausible way to hang a kernel shortly after handover.
+#
+# ⚠ THIS RUNS AFTER THE testonly EXIT, AND THE ORDER IS THE POINT.
+#
+# It used to run before it, which meant a dry run left the management interface
+# DOWN. On the 7150S-52 that broke the next netboot in the same Aboot session:
+# "boot --testonly http://..." succeeded, and the real "boot http://..."
+# straight after it failed with "wget: can't connect to remote host: Network is
+# unreachable" -- with nothing to suggest the dry run was the cause. A dry run
+# must leave the board exactly as it found it, or it is not a dry run.
 NETDEV="${NETDEV:-ma1}"
 ip link set "$NETDEV" up 2>/dev/null || true
 ip link set "$NETDEV" down 2>/dev/null || true
-
-kexec --load /tmp/nosaic-kernel \
-      --initrd=/tmp/nosaic-initrd \
-      --append="$CMDLINE"
-
-# Aboot exports testonly when it was asked for a dry run. Honouring it is what
-# makes "boot --testonly <url>" a dry run rather than a boot: everything up to
-# here has already proved the SWI unpacks, the kernel and initrd stage, and the
-# command line assembles -- and then we return to the prompt without jumping.
-#
-# The vendor's own boot0 does exactly this, at the same point. A SWI that
-# ignores it boots for real at the moment somebody was deliberately being
-# careful, which is the worst possible time to be surprised.
-[ -z "${testonly}" ] || { echo "NOSaic: staged, not booting (testonly)"; exit 0; }
 
 sync
 kexec --exec

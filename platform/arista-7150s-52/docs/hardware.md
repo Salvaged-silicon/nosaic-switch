@@ -65,17 +65,6 @@ committed, as on every other board.
       `AltaVdd 1.01` / `AltaVdds 1.0`, the regulator is presumably on the SCD
       SMBus, and the sibling board's notes already say prefdl gates this.
       **This is now the M1 blocker and it blocks everything after it**
-- [x] cold-vs-warm SCD diff taken 2026-09-23. It ruled the reset block OUT:
-      warm reads `0x000`, which is exactly the state we produced by hand. The
-      remaining delta is short and listed in [hardware.md](hardware.md) —
-      though note an SMBus write to a regulator would leave no trace in a
-      register diff at all
-- [ ] **look at `thorn`, `prickle` and `quill`.** `NorCalInit` version-checks
-      four programmable devices on this board and only one of them (`saguaro`)
-      is the SCD. The other three are untouched by this port and one is a
-      candidate for the power sequencing
-- [ ] read the FDL files in `/usr/share/NorCal/` and the `SantaRosaPca` board
-      description — for understanding, never copied
 - [ ] SCD support for *this* board in `internal/platformhal/scd`, once the above
       is known: same FPGA family as the sibling Arista boards, different layout
 - [ ] then release the FM6000 and have `02:00.0` enumerate
