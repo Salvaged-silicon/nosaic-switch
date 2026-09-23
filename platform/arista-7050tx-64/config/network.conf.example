@@ -1,3 +1,17 @@
+# EXAMPLE ONLY -- this file is NOT shipped in the image.
+#
+# Every address below belongs to ONE switch. Put your own in
+#
+#     /mnt/data/config/network.conf
+#
+# which is on the data partition, so it survives an upgrade, a rollback and a
+# reinstall -- and is never overwritten by an image built for this model.
+#
+# ⚠ THIS USED TO SHIP. An image built from this directory carried one lab
+# switch's management address, its management MAC and its OSPF router-id, so a
+# second switch built from the same source came up as a duplicate of the first.
+# That is why the real values live off the image and only a shape lives here.
+#
 # Network configuration for the Arista DCS-7050TX-64.
 #
 # Addresses for one physical switch in one lab. Shipped rather than generated
@@ -16,16 +30,16 @@
 #
 # The sibling board has the same problem and the same workaround.
 
-# Management. 10.10.34.0/24 off ge34 on the lab's edgenos-4610.
+# Management. Its own /24 off the port it is cabled to on the lab's OOB switch.
 #
 # .2 is what EOS uses on this box and .3 is ours, deliberately kept apart: the
 # two present different MACs, and a shared address leaves a stale ARP entry
 # upstream every time the box changes OS -- inbound blackholes while outbound
 # works, which reads exactly like a dead switch.
-iface eth0 10.10.34.3/24 mac 00:1c:73:da:fe:7a
-iface eth0 2001:470:882d:34::3/64
-route default via 10.10.34.1
-route default via 2001:470:882d:34::1
+iface eth0 <address>/<prefix> mac <this switch's management MAC>
+iface eth0 <address>/<prefix> mac <this switch's management MAC>
+route default via <gateway>
+route default via <gateway>
 
 # ⚠ PIN THE MANAGEMENT PATH BEFORE ANY ROUTING PROTOCOL RUNS.
 #
@@ -34,10 +48,10 @@ route default via 2001:470:882d:34::1
 # the box drops off the network the moment the adjacency comes up, with the
 # default still present and still correct. That happened on this board under the
 # predecessor, and the console was the only way back in.
-route 10.22.1.0/24 via 10.10.34.1 dev eth0
+route default via <gateway>
 
 # The router id, and the one address that does not depend on a link staying up.
-iface lo 10.101.255.50/32
+iface lo <router-id>/32
 
 # Transit. MTU 1600 on all three: OSPF carries the interface MTU in its Database
 # Description packets and sits in ExStart for ever on a mismatch.
@@ -45,10 +59,10 @@ iface lo 10.101.255.50/32
 # et49 and et50 are the two 40G links to the 7050SX2, deliberately equal cost so
 # they are an ECMP pair rather than primary and backup. The far ends are that
 # board's et52 (.81) and et53 (.73) -- see its config/network.conf.
-iface et49 10.101.101.82/29 mtu 1600
-iface et50 10.101.101.74/29 mtu 1600
+iface et49 <address>/<prefix> mtu 1600
+iface et50 <address>/<prefix> mtu 1600
 
 # et52 is the 40G link to the Edgecore AS5610. Higher OSPF cost than the SX2
 # pair, so it is a backup path that stays available rather than one that carries
 # transit.
-iface et52 10.101.101.50/29 mtu 1600
+iface et52 <address>/<prefix> mtu 1600

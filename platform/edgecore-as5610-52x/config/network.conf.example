@@ -1,3 +1,19 @@
+# EXAMPLE ONLY -- this file is NOT shipped in the image and is NOT read by
+# anything. It is the shape of the file plus the reasoning behind it.
+#
+# Every address, MAC and router-id below has been replaced by a placeholder.
+# Put your own in
+#
+#     /mnt/data/config/network.conf
+#
+# which lives on the data partition, so it survives an upgrade, a rollback and
+# a reinstall -- and is never overwritten by an image built for this model.
+#
+# ⚠ THIS FILE USED TO CARRY ONE PHYSICAL SWITCH'S IDENTITY, IN A PUBLIC REPO.
+# An image built from it made a second switch a duplicate of the first: same
+# management address, same MAC, same OSPF router-id in the same area. Keep real
+# values in <name>.site.conf, which .gitignore excludes, or on the switch.
+#
 # Network configuration for this board, captured from the EdgeNOS installation
 # it replaces so the two can be compared directly.
 #
@@ -23,7 +39,7 @@
 # change is not a router you can find again. The MAC is the board's own, out of
 # board_eeprom.
 #
-# MOVED on 2026-09-11, from 10.1.1.238/24 via 10.1.1.1. That address came from
+# MOVED on 2026-09-11, from <address>/<prefix> via <address>. That address came from
 # the EdgeNOS capture this file was built from and had stopped being real: the
 # port had link at 1000 and rx_packets=0, with the ARP entry for its own
 # gateway never resolving, so the box had been reachable only over the serial
@@ -31,14 +47,14 @@
 # the switch was doing its job -- OSPF, forwarding, adjacencies -- on ports that
 # had nothing to do with management. A dead management port on a working router
 # is quiet.
-iface eth0 10.10.35.2/24 mac 80:a2:35:81:ca:ae
-route default via 10.10.35.1 dev eth0
+iface eth0 <address>/<prefix> mac <this switch's MAC>
+route default via <address> dev eth0
 
 # Management stays on the management port.
 #
 # Once this box runs OSPF it learns a route to the build host's subnet through
-# its own front panel, and the kernel prefers it: 10.22.1.5 goes "via
-# 10.101.101.2 dev swp1", so every ssh and every file copy is carried by the
+# its own front panel, and the kernel prefers it: <address> goes "via
+# <address> dev swp1", so every ssh and every file copy is carried by the
 # CPU punt path instead of the management NIC. It works, which is what makes it
 # dangerous -- latency went from 0.3 ms to 7.7 ms here and a 28 MB transfer
 # stalled at 49 KB, which reads as a flaky network rather than a routing
@@ -46,12 +62,12 @@ route default via 10.10.35.1 dev eth0
 #
 # A static route wins on metric over the OSPF one, so this pins it back
 # whatever the topology advertises.
-route 10.22.1.0/24 via 10.10.35.1 dev eth0
+route <address>/<prefix> via <address> dev eth0
 
 # ── Loopback ─────────────────────────────────────────────────────────────────
 # Carries the OSPF router-id, which is why it is a loopback: the id must not
 # move when a front-panel port goes down.
-iface lo 10.101.101.241/32
+iface lo <address>/<prefix>
 
 # ── Front panel ──────────────────────────────────────────────────────────────
 # MTU 1600 throughout, matching the OSPF neighbours. EdgeNOS leaves the
@@ -64,20 +80,20 @@ iface lo 10.101.101.241/32
 # and, until the datapath lands, it is a wait for something that cannot happen.
 #
 # swp49 is the uplink to the Cisco Nexus and carries the default route.
-iface swp49 10.101.101.18/29 mtu 1600
-iface swp51 10.101.101.66/29 mtu 1600
-iface swp52 10.101.101.49/29 mtu 1600
+iface swp49 <address>/<prefix> mtu 1600
+iface swp51 <address>/<prefix> mtu 1600
+iface swp52 <address>/<prefix> mtu 1600
 
 # 10G links to the rest of the lab.
-iface swp1 10.101.101.1/29 mtu 1600
-iface swp2 10.101.101.10/29 mtu 1600
-iface swp4 10.101.102.1/29 mtu 1600
-iface swp5 10.99.99.1/24 mtu 1600
-iface swp6 10.101.101.25/29 mtu 1600
-iface swp7 10.101.101.33/29 mtu 1600
+iface swp1 <address>/<prefix> mtu 1600
+iface swp2 <address>/<prefix> mtu 1600
+iface swp4 <address>/<prefix> mtu 1600
+iface swp5 <address>/<prefix> mtu 1600
+iface swp6 <address>/<prefix> mtu 1600
+iface swp7 <address>/<prefix> mtu 1600
 # swp8 faces the Arista 7050SX2's et1, which is that board's way back to the
 # build host when its management port is down.
-iface swp8 10.101.101.41/29 mtu 1600
+iface swp8 <address>/<prefix> mtu 1600
 
 # ── IPv6 ─────────────────────────────────────────────────────────────────────
 # This switch also carries IPv6 on lo and swp1/2/4/6/7/8/49, in a globally

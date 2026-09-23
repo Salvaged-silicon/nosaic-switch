@@ -353,6 +353,18 @@ A deliberate pass over the claims this board had not been asked to prove.
   comment should stop claiming it — changing the comment is a claim about CI,
   so it is left to whoever owns that.
 
+- **Changing a routed port's address at runtime leaves the chip half-programmed.**
+  Readdressing a tap with `ip addr` is picked up for the *neighbour* -- l3sync
+  installs the new next hop and host entry -- but the port's own address is
+  never re-added as a CPU trap. The symptom is deceptive: traffic *through* the
+  switch keeps working, because that path is entirely in hardware, while the
+  switch itself stops answering on that interface in both directions. ARP still
+  resolves on both sides, which makes it read like a filtering problem rather
+  than a programming one. Found by renumbering the out-of-band link on a running
+  box; a reboot programs it correctly and the link came back both ways. Until
+  this is fixed, an address change on a routed port needs a datapath restart to
+  take effect.
+
 ## Open questions
 
 - **Which OpenBCM tree.** NOSaic builds `Salvaged-silicon/OpenBCM` 6.5.24; the

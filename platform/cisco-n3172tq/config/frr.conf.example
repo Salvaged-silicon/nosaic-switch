@@ -1,36 +1,133 @@
-# FRR configuration for ONE Cisco Nexus 3172TQ. Copy to frr.conf.
+# EXAMPLE ONLY -- this file is NOT shipped in the image and is NOT read by
+# anything. It is the shape of the file plus the reasoning behind it.
 #
-# ⚠ THERE IS NO frr.conf UNTIL YOU MAKE ONE, AND THAT IS DELIBERATE.
+# Every address, MAC and router-id below has been replaced by a placeholder.
+# Put your own in
 #
-# The router-id and the advertised prefixes are this machine's identity. An
-# image that shipped them would arrive on the next switch announcing the first
-# one's routes with the first one's router-id, which is a routing domain with
-# two of the same router in it.
+#     /mnt/data/config/frr.conf
 #
-# Without this file the FRR package's own default is used: the daemons start
-# and report that OSPF is not enabled, which is the correct thing for a switch
-# nobody has configured yet.
+# which lives on the data partition, so it survives an upgrade, a rollback and
+# a reinstall -- and is never overwritten by an image built for this model.
 #
-# ⚠ It is installed 0640 owned by frr. A root-owned frr.conf is read by
-# nothing and the daemons come up with no configuration and no complaint.
+# ⚠ THIS FILE USED TO CARRY ONE PHYSICAL SWITCH'S IDENTITY, IN A PUBLIC REPO.
+# An image built from it made a second switch a duplicate of the first: same
+# management address, same MAC, same OSPF router-id in the same area. Keep real
+# values in <name>.site.conf, which .gitignore excludes, or on the switch.
+#
+# FRR configuration for the Cisco Nexus 3172TQ.
+#
+# The interface addresses live in network.conf beside this file; this one
+# carries only the router-id and how each port participates in OSPF.
+#
+# ⚠ EVERY BLOCK ENDS WITH AN EXPLICIT `exit`.
+#
+# In FRR `!` is a COMMENT, not a node terminator. A file that separates blocks
+# with `!` alone parses as one long nested stanza, and the failure is silent:
+# the daemons start, vtysh shows a configuration, and adjacencies never form.
+# `vtysh -b` reports the parse errors that `vtysh -f` swallows -- use it to
+# check a change.
+#
+# ⚠ WITHOUT THIS FILE THE BOARD RUNS ANOTHER BOARD'S CONFIGURATION.
+#
+# The frr package ships a default frr.conf and it is not a neutral one: it
+# carries router-id <address> and a list of networks belonging to a
+# different switch. A board with no frr.conf of its own advertises that
+# identity, which is worse than having no routing configuration at all --
+# two routers claiming one id is a fault that looks like a flapping neighbour.
+frr version 10.2
+frr defaults traditional
+hostname nosaic-n3172tq
 
-# Must match `iface lo` in network.conf. Unique in the routing domain.
-router-id 198.51.100.1
-
+# ⚠ NOT `log file`, AND NOT `log syslog`.
+#
+# The package default asks for `/var/log/frr.log`, which the daemons cannot
+# create: they drop to the unprivileged `frr` account after binding their
+# sockets and /var/log is not theirs to write. The symptom on this board was
+# `can't open logfile /var/log/frr.log` three times on every boot.
+#
+# `log syslog` is what the 7050TX-64 uses, and it is no better here: no
+# profile in this tree ships a syslog daemon, so those messages go nowhere at
+# all -- quietly, which is the worse failure of the two. stdout is captured
+# like every other service's output.
 log stdout informational
+service integrated-vtysh-config
 
-router ospf
- ospf router-id 198.51.100.1
- # Advertised on startup so neighbours do not route through this switch while
- # it is still learning. Dropped once convergence is done.
- max-metric router-lsa on-startup 60
- network 198.51.100.1/32 area 0.0.0.0
- # One line per transit link, matching network.conf.
- # network 203.0.113.0/29 area 0.0.0.0
+# ── Interfaces ──────────────────────────────────────────────────────────────
+#
+# The two copper links to the Arista 7050TX-64, panel 31 and 32 to its panel
+# 31 and 32. EQUAL COST ON PURPOSE: that is what makes them an ECMP pair
+# rather than a primary and a backup, and this board is the first place in the
+# lab where two links of the same speed run between the same two routers.
+# Changing one of these numbers alone silently turns the pair into a single
+# path with a spare.
+interface eth1_31
+ ip ospf cost 10
+ ipv6 ospf6 area 0.0.0.0
+exit
 !
+interface eth1_32
+ ip ospf cost 10
+ ipv6 ospf6 area 0.0.0.0
+exit
+!
+# The 40G cage to the 7050SX2's et49. Cost 10 matches what the 7050TX-64
+# uses on its own 40G links to that board, so the lab stays comparable; it
+# is deliberately not cheaper than the copper pair above, because those go
+# to a different neighbour and the two costs never compete.
+interface eth1_54
+ ip ospf cost 10
+ ipv6 ospf6 area 0.0.0.0
+exit
+!
+# The 40G cage to the Edgecore AS5610's swp49. Cost 10 again: it is the same
+# speed as the other two neighbours' links and nothing here should prefer one
+# neighbour over another on cost alone.
+interface eth1_53
+ ip ospf cost 10
+ ipv6 ospf6 area 0.0.0.0
+exit
+!
+# The loopback is advertised but never forms an adjacency over.
+interface lo
+ ip ospf passive
+ ipv6 ospf6 area 0.0.0.0
+exit
+!
+# ── OSPFv2 ──────────────────────────────────────────────────────────────────
+#
+# The router-id is the LOOPBACK address, not an interface address. An id taken
+# from a front-panel interface changes meaning when that port goes down, and a
+# router-id that depends on a link is a router-id that moves during exactly
+# the event you need it to be stable through.
+router ospf
+ ospf router-id <address>
 
-# Cost per interface, so a 40G path wins on its own rather than by tie-break.
-# An interface with an address but no cost here is deliberately not in an area.
-# interface eth1_53
-#  ip ospf cost 10
-# !
+ # ⚠ This switch does not attract transit traffic.
+ #
+ # max-metric router-lsa advertises this router at the maximum cost, so
+ # adjacencies form and its own connected networks are reachable, while no
+ # other pair of routers will choose to route THROUGH it. That is the correct
+ # posture for a board whose datapath has never forwarded a packet and which
+ # is sitting in a live OSPF area.
+ #
+ # Remove this line when the datapath has earned the traffic.
+ max-metric router-lsa
+
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+ network <address>/<prefix> area 0.0.0.0
+exit
+!
+# ── OSPFv3 ──────────────────────────────────────────────────────────────────
+#
+# Runs over link-local addresses, so it needs no global v6 address on the
+# transit links -- and there are none in network.conf yet. The interfaces are
+# put in the area above rather than here, which is how ospf6d expects it.
+router ospf6
+ ospf6 router-id <address>
+exit
+!
+line vty
+exit

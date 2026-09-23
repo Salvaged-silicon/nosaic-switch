@@ -286,18 +286,37 @@ fi
 `
 
 func writeNetwork(o Options, rootfs string) (bool, error) {
+	/*
+	 * ⚠ THE SCRIPT ALWAYS SHIPS. THE CONFIG IS OPTIONAL.
+	 *
+	 * These used to be installed together, so a board that shipped no
+	 * config/network.conf got no apply-network.sh either -- and the caller
+	 * then skipped the service as well. The effect was that taking one lab
+	 * switch's addresses OUT of the image took addressing out of every
+	 * switch built from it, with no message anywhere: the script that would
+	 * have said "no network configuration" was the thing not installed.
+	 * The box came up on the console with a random tg3 MAC and no route in.
+	 *
+	 * A switch's own addresses belong in /mnt/data/config/network.conf,
+	 * which the script prefers and which survives an upgrade. So the script
+	 * is what makes a generic image usable, and it has to be there whether
+	 * or not the board model ships defaults of its own.
+	 */
+	if err := writeFile(rootfs, "/etc/nosaic/apply-network.sh", applyNetwork, 0o755); err != nil {
+		return false, err
+	}
+
 	src := filepath.Join(o.Root, "platform", o.Board.ID, "config", "network.conf")
 	b, err := os.ReadFile(src)
 	if os.IsNotExist(err) {
+		fmt.Fprintf(o.Log, "    no board network configuration; this image expects\n")
+		fmt.Fprintf(o.Log, "    /mnt/data/config/network.conf on the switch itself\n")
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
 	if err := writeFile(rootfs, "/etc/nosaic/network.conf", string(b), 0o644); err != nil {
-		return false, err
-	}
-	if err := writeFile(rootfs, "/etc/nosaic/apply-network.sh", applyNetwork, 0o755); err != nil {
 		return false, err
 	}
 	fmt.Fprintf(o.Log, "    network configuration from the board\n")

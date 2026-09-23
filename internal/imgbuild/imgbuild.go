@@ -795,7 +795,24 @@ poweroff -f
 		})
 	}
 
-	if hasNet {
+	/*
+	 * ⚠ THE SERVICE IS NOT CONDITIONAL ON THE BOARD SHIPPING A CONFIG.
+	 *
+	 * It used to be gated on hasNet, so a board that shipped no
+	 * config/network.conf got no network service at all -- and the runtime
+	 * script's whole point is that it prefers /mnt/data/config/network.conf,
+	 * which is where a switch's OWN addresses belong. Removing one lab
+	 * switch's addresses from the image therefore removed addressing from
+	 * every switch built from it, silently: the script that would have said
+	 * so was never installed, so the boot log carried no NOSAIC-NET line at
+	 * all and the box came up on the console with a random tg3 MAC.
+	 *
+	 * The script already handles having nothing to do -- it exits 0 when
+	 * neither file is readable. Always installing it is what makes "the
+	 * image is generic and the addresses are per switch" actually work.
+	 */
+	_ = hasNet
+	{
 		exec := "/etc/nosaic/apply-network.sh"
 		if n := o.Board.NetWaitSecs; n > 0 {
 			exec = fmt.Sprintf("/bin/sh -c \"NOSAIC_NET_WAIT=%d /etc/nosaic/apply-network.sh\"", n)

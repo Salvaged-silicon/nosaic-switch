@@ -1,63 +1,121 @@
-# Network configuration for ONE Cisco Nexus 3172TQ. Copy to network.conf.
+# EXAMPLE ONLY -- this file is NOT shipped in the image and is NOT read by
+# anything. It is the shape of the file plus the reasoning behind it.
 #
-# ⚠ THERE IS NO network.conf UNTIL YOU MAKE ONE, AND THAT IS DELIBERATE.
+# Every address, MAC and router-id below has been replaced by a placeholder.
+# Put your own in
 #
-# Everything below is this machine's identity: its management address, its
-# routing identity, and the addressing of every link it has. None of it is
-# true of any other switch. An image built with a network.conf in it carries
-# that identity to whatever it is installed on, so a freshly built image
-# configures nothing at all and says so at boot.
+#     /mnt/data/config/network.conf
 #
-# Two places this can live:
+# which lives on the data partition, so it survives an upgrade, a rollback and
+# a reinstall -- and is never overwritten by an image built for this model.
 #
-#   platform/cisco-n3172tq/config/network.conf   baked into the image you
-#                                                build, for a switch you own
-#   /mnt/data/config/network.conf                on the switch's own data
-#                                                partition, which OVERRIDES
-#                                                whatever the image shipped
+# ⚠ THIS FILE USED TO CARRY ONE PHYSICAL SWITCH'S IDENTITY, IN A PUBLIC REPO.
+# An image built from it made a second switch a duplicate of the first: same
+# management address, same MAC, same OSPF router-id in the same area. Keep real
+# values in <name>.site.conf, which .gitignore excludes, or on the switch.
 #
-# The second is the better answer for a machine that already runs: it survives
-# an upgrade, and an image can then be identical across a fleet.
+# Network configuration for the Cisco Nexus 3172TQ.
 #
-# Syntax: iface <name> <addr/prefix> [mac <mac>|mac auto] [mtu <n>]
+# Addresses for one physical switch in one lab. Shipped rather than generated
+# because none of it is the vendor's: it is how this unit is cabled and
+# addressed, and somebody installing NOSaic on their own 3172TQ will replace
+# every line.
+#
+# Syntax: iface <name> <addr/prefix> [mac <mac>] [mtu <n>]
 #         route <prefix|default> via <gw> [dev <iface>]
-#
-# The file is re-read and re-applied every 30 seconds until every interface it
-# names exists, because the datapath's ports appear minutes after the
-# management interface does. Anything already in the state asked for is left
-# alone, so re-applying is free.
 
 # ── Management ─────────────────────────────────────────────────────────────
 #
-# ⚠ KEEP `mac auto` AND DO NOT WRITE AN ADDRESS HERE.
+# ⚠ THE MAC IS "auto" BECAUSE THE NIC'S OWN EEPROM IS BLANK.
 #
-# This board's NIC EEPROM is blank -- eth0 comes up as 00:a0:c9:00:00:00,
-# Intel's OUI with an all-zero suffix -- and that is true of the MODEL, so
-# every 3172TQ presents that same address until told otherwise. Writing the
-# right one fixes exactly one switch and makes the image wrong for every
-# other.
+# eth0 comes up as 00:a0:c9:00:00:00 -- Intel's OUI with an all-zero suffix,
+# which is an unprogrammed NIC EEPROM. That is true of the model and not of
+# one unit, so EVERY 3172TQ presents that same address until something says
+# otherwise.
 #
-# `mac auto` reads the board's own allocated block from its ID PROM, the
-# 24c512 at 0x52, and is correct on any unit. See `nosaic platform mac`.
-iface eth0 192.0.2.10/24 mac auto
-route default via 192.0.2.1
+# This line used to state <this switch's MAC>, which is correct for exactly one
+# switch and wrong for every other -- an image built from it made the next
+# unit present the first one's identity, which is worse than the blank
+# default. "auto" asks the board instead: its ID PROM, the 24c512 at 0x52
+# that the i2c service already instantiates, carries the allocated block at
+# offset 4280 with a count of 0x0080, 128 addresses. idprom.go decodes it,
+# Identity carries it, and apply-network.sh resolves "auto" through
+# `nosaic platform mac`.
+#
+# .2 is NX-OS's address on this box and .3 is ours, deliberately kept apart so
+# that whichever OS is running can be reached without disturbing the other's
+# ARP state upstream. Both present the same MAC, which is fine -- one address
+# per OS, one MAC for the board.
+iface eth0 <address>/<prefix> mac auto
+route default via <address>
+# The build host, which is also the TFTP server every netboot comes from.
+route <address>/<prefix> via <address> dev eth0
 
 # ── Routing identity ───────────────────────────────────────────────────────
 #
-# A stable address that belongs to no single link, so a neighbour losing an
-# interface does not lose the router. This is the OSPF router-id; it must be
-# unique in the routing domain, and frr.conf has to agree with it.
-iface lo 198.51.100.1/32
+# A stable address that does not belong to any one link, so a neighbour losing
+# an interface does not lose the router. .50 and .53 are the Aristas, .241 is
+# the Edgecore.
+iface lo <address>/<prefix>
 
-# ── Front-panel ports ──────────────────────────────────────────────────────
+# ── Transit: the two copper ports patched to the Arista 7050TX-64 ──────────
 #
-# Names come from the tap_<name> properties in asic.conf, so eth1_31 is panel
-# port 31. A port with no address here still exists and still forwards; it
-# just has no layer 3.
+# Panel 31 and 32 here to panel 31 and 32 there. That board is the same ASIC
+# generation and the same BCM84848 copper PHY, and until this cable existed
+# neither board had a routing neighbour -- so this pair is the first real
+# traffic test for both of them.
 #
-# ⚠ MTU HAS TO MATCH THE NEIGHBOUR. OSPF carries it in its database
-# description packets and refuses an adjacency when the two disagree, leaving
-# it stuck in ExStart with nothing said about why.
+# /29 per link, from the lab's <address>/<prefix> transit range. Blocks .40-.47,
+# .48-.55, .56-.63, .64-.71, .72-.79 and .80-.87 are already spoken for by the
+# other three switches; these two are not.
 #
-# iface eth1_31 203.0.113.1/29 mtu 1600
-# iface eth1_53 203.0.113.9/29 mtu 1600
+#   eth1_31  <address>/<prefix>   .33 here, .34 on the Arista
+#   eth1_32  <address>/<prefix>   .97 here, .98 on the Arista
+#
+# ⚠ The two links are NOT in adjacent blocks, and that is the Arista's
+# numbering rather than a mistake here. et31 sits in .<host>/<prefix> and et32 in
+# .<host>/<prefix>; this end was originally written as .<host>/<prefix> and .<host>/<prefix>, which put the
+# first link in a different subnet from its own far end -- a cable with link,
+# addresses on both ends and no possible adjacency.
+#
+# ⚠ No mtu here, deliberately. The taps are created at 1500 by config/asic.conf
+# and the other boards' transit links run 1600; raising these is a two-line
+# change but BOTH ENDS must change together, or the link passes small frames
+# and silently drops the rest.
+iface eth1_31 <address>/<prefix>
+iface eth1_32 <address>/<prefix>
+
+# ── Transit: the 40G cage to the 7050SX2 ───────────────────────────────────
+#
+# Panel 54 here (logical port 69, the sixth QSFP cage) to et49 on the
+# 7050SX2. This is the first 40G link this board has ever had and the first
+# use of a cage at all: they are retimed through BCM84328s rather than
+# direct-attach, which is the one part of this board's port map that has
+# never been exercised. The cage reports 40000.
+#
+# ⚠ mtu 1600 to match that board, which runs all its transit at 1600. The
+# tap is created at 1600 by config/asic.conf; this line states it again so
+# the file says what the interface is, and so lowering it later means
+# changing one place that is obviously about this link.
+#
+#   eth1_54  <address>/<prefix>   .90 here, .89 on the 7050SX2
+#
+# ⚠ .90 here, not .89. The plan in this file was the other way round, and the
+# 7050SX2 was configured with .89 on its end before we booted with ours --
+# measured on it, not assumed. Two ends claiming .89 is a duplicate address
+# on a point-to-point link: it half-works, because each end answers its own
+# ARP, and it presents as an adjacency that will not form for no visible
+# reason.
+iface eth1_54 <address>/<prefix> mtu 1600
+
+# ── Transit: the second 40G cage, to the Edgecore AS5610 ──────────────────
+#
+# Panel 53 here (logical port 65, the fifth cage) to swp49 on the AS5610.
+# That board already carries <address>/<prefix> on swp49 and runs it at 1600,
+# both read off the running switch rather than chosen here, so this end
+# takes .17 out of the same block and matches the MTU.
+#
+# This is the cage that proved the 40G path works: with a different module
+# in it (AVF2146U0TX) it linked to the Edgecore at 40G immediately, while
+# panel 54's module (AVF2146U1DH) has never linked to anything.
+iface eth1_53 <address>/<prefix> mtu 1600
