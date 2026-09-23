@@ -16,6 +16,12 @@
  *   [RE]       established against the running chip by the reverse engineering
  *              that precedes this port. Believed, not proven from a second
  *              direction.
+ *   [OURS]     read by THIS code on the lab 7150S (2026-09-23, chip warm under
+ *              EOS 4.16.8M) and found to hold the value the [RE] note
+ *              predicted. That is confirmation from a second direction, by a
+ *              second implementation -- and it also proves the word addressing
+ *              below is right, because a wrong stride would not have produced
+ *              five predicted values in a row.
  *   [UNKNOWN]  we know the register exists and what it does, and we do not
  *              know where it is. Deliberately absent rather than guessed:
  *              a wrong address here does not fail, it writes somewhere else.
@@ -85,7 +91,18 @@
  * documents the command codes; the addresses below are [RE], from watching a
  * working boot.
  */
-#define FM6000_BOOT_CTRL	0x01c022	/* [RE] warm reads 0x313, cold 0x320 */
+#define FM6000_BOOT_CTRL	0x01c022	/* [OURS] read 0x00000313 warm, as predicted */
+
+/*
+ * PIN_STRAP -- the sampled boot configuration pins.
+ *
+ * Identified 2026-09-23: this register read 0x00000208 on the warm lab board,
+ * and the prior investigation's starting state for a cold bring-up is written
+ * "PIN_STRAP=0x208". A value matching a documented value is strong evidence and
+ * not proof, so this is believed rather than established: nothing yet confirms
+ * it from a second direction. [OURS, inferred]
+ */
+#define FM6000_PIN_STRAP	0x01c021
 /* BOOT_STATUS, with the CommandDone bit that every BOOT command is polled on.
  * [DS §4.2 Table 4-1 names it; address UNKNOWN] */
 /* #define FM6000_BOOT_STATUS	?? */
@@ -99,12 +116,21 @@
  * memories writable. The datasheet says otherwise. That conflict is unresolved
  * and is the first experiment this port should run -- see the board's
  * docs/todo.md, M2. */
-#define FM6000_SCAN_CONFIG_DATA_IN	0x01c03a	/* [RE] */
-#define FM6000_SCAN_CHAIN_DATA_IN	0x01c03b	/* [RE] */
+#define FM6000_SCAN_CONFIG_DATA_IN	0x01c03a	/* [OURS] warm 0xffffffff */
+#define FM6000_SCAN_CHAIN_DATA_IN	0x01c03b	/* [OURS] warm 0xffffffff */
 #define FM6000_SCAN_FIRST		0x01c039	/* [RE] the window is */
 #define FM6000_SCAN_LAST		0x01c03d	/* [RE] 0x1c039..0x1c03d */
 
-#define FM6000_SWEEPER		0x01c048	/* [RE] warm 0x0008bb2c, cold 0 */
+#define FM6000_SWEEPER		0x01c048	/* [OURS] read 0x0008bb2c warm, as predicted */
+
+/*
+ * A control register whose meaning is unknown and whose warm/cold difference
+ * is not. Bit 24 is set on a warm chip and clear on a cold one, so it is one
+ * of the few known handles on "has this chip been brought up".
+ * [RE for the delta; OURS for the warm value 0x0101e848]
+ */
+#define FM6000_MGMT_0X1C038	0x01c038
+#define FM6000_MGMT_0X1C038_WARM_BIT	(1u << 24)
 
 /*
  * SOFT_RESET holds every module at reset by default, and each must be released
@@ -116,6 +142,18 @@
  */
 #define FM6000_SOFT_RESET_COLD_VALUE	0x16
 /* #define FM6000_SOFT_RESET	?? */
+/*
+ * HOW TO FIND IT, now that a warm fingerprint of the MGMT block exists.
+ *
+ * SOFT_RESET reads 0x16 on a cold chip and 0 once bring-up has released every
+ * module, so it is one of the MGMT words that is ZERO warm and 0x16 cold. Warm
+ * alone cannot pick it out -- most of the block is zero -- but a cold dump of
+ * 0x1c000..0x1c07f diffed against the warm one should leave very few
+ * candidates, and only one of them holding exactly 0x16.
+ *
+ * The same diff is the way to find PLL_STATUS and BOOT_STATUS. That single
+ * experiment unblocks Table 4-1 steps 6 through 10, which is most of boot.c.
+ */
 
 /* PLL_STATUS, polled for lock in Table 4-1 step 6; maximum lock time 80 ms.
  * [DS §4.2 Table 4-1 step 6 names it; address UNKNOWN] */
@@ -148,7 +186,7 @@
  * from a port-flap trace misses it entirely and the port simply never links.
  * [RE]
  */
-#define FM6000_EPL_CFG_B		0x0e3b02
+#define FM6000_EPL_CFG_B		0x0e3b02	/* [OURS] warm 0x00090003 */
 #define FM6000_EPL_CFG_B_10GBASE_R	0x00090003
 #define FM6000_EPL_CFG_B_COLD		0x00080000
 

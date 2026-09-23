@@ -678,6 +678,64 @@ Broadcom ones, which is what `internal/nosd/proto` and
 The build is simpler than any other board's, though: no SDK to stage, no vendor
 tree to fetch, `-lpthread` and libc.
 
+## First contact: NOSaic's own code read this chip, 2026-09-23
+
+`fm6000-probe`, built static and run under EOS on the warm lab board, against a
+chip EOS had configured and was actively forwarding on. Read-only.
+
+```
+chip     0000:02:00.0  (8086:155b)
+BAR0     33554432 bytes mapped (32 MB), words 0..0x7fffff
+on bus   yes
+
+  BOOT_CTRL            0x01c022 = 0x00000313     predicted warm 0x313   ✓
+  SCAN_CONFIG_DATA_IN  0x01c03a = 0xffffffff                            ✓
+  SCAN_CHAIN_DATA_IN   0x01c03b = 0xffffffff                            ✓
+  SWEEPER              0x01c048 = 0x0008bb2c     predicted warm         ✓
+  EPL_CFG_B            0x0e3b02 = 0x00090003     10GBASE-R              ✓
+```
+
+Five predicted values in a row. That confirms more than five addresses:
+
+- **the word addressing is right.** A wrong stride would not have produced five
+  correct values; it would have produced five plausible wrong ones.
+- **`pci.c` works on real silicon**, including the sysfs `resource0` mapping —
+  which works even with the vendor's `fpdma` driver bound to the device, so
+  looking at this chip does not require unbinding anything.
+- **BAR0 is exactly 33554432 bytes**, so the 8M-word address space and the
+  `0x7fffff` ceiling are measured rather than inferred.
+
+### The warm MGMT fingerprint, and what it identified
+
+A dump of `0x1c000`–`0x1c07f` gave the first complete picture of the control
+block on a working chip. Two new identifications came straight out of it:
+
+| Word | Warm value | |
+|---|---|---|
+| `0x1c021` | `0x00000208` | **PIN_STRAP** — the prior work's cold bring-up starts from "PIN_STRAP=0x208". A value matching a documented value is strong evidence, not proof |
+| `0x1c038` | `0x0101e848` | **bit 24 set**, exactly as the warm-versus-cold delta predicted. One of the few known handles on "has this chip been brought up" |
+
+Other non-zero words in the block, unidentified and recorded so the cold diff
+has something to subtract from: `0x1c001` `6ffe`, `0x1c002` `3fff`,
+`0x1c003` `7fff`, `0x1c01d` `ffffffff`, `0x1c01e` `fffc0000`,
+`0x1c01f` `0009502f`, `0x1c025` `278`, `0x1c026` `380278`, `0x1c027` `ffffffff`,
+`0x1c028` `02900c81`, `0x1c030` `03c00000`, `0x1c031` `3010`, `0x1c033`
+`20000000`, `0x1c037` `3e`, `0x1c03d` `188`, `0x1c042` `20841438`,
+`0x1c043` `5560`, `0x1c044` `08011b05`, `0x1c046` `7`, `0x1c049` `2`,
+`0x1c04b` `0030a2c3`, `0x1c04c` `2000`, `0x1c050` `10`.
+
+### The experiment this sets up
+
+`SOFT_RESET` reads `0x16` cold and `0` warm. `PLL_STATUS` and `BOOT_STATUS`
+likewise differ between the two states. Warm alone cannot pick them out — most
+of the block is zero — but **a cold dump of the same range, diffed against the
+warm one above, should leave very few candidates, and only one holding exactly
+`0x16`**.
+
+That one experiment unblocks Table 4-1 steps 6 through 10, which is most of
+`boot.c` and includes step 9, "apply bank memory repairs". It needs the board
+cold: power cycle, and read the block before anything configures the chip.
+
 ## What NOSaic actually drives today
 
 `datapath/fm6000` exists and builds. It does **not** forward, bring ports up or
