@@ -335,7 +335,55 @@ the cold read will be diffed against:
  28 10  29 12  2a 37  2b 00  2c 00  2d d9  2e 01  2f 14
 ```
 
-### ⚠ The device at `0x70` was never actually identified
+### The device at `0x70` is the **Si5338 clock**, and the dump missed the part that matters
+
+Settled by the vendor's own Si5338 register table
+(`DosComponent/Si5338/Si5338Hal`), which gives:
+
+| Si5338 register | Offset | Our dump |
+|---|---|---|
+| `revisionId` | `0x00` | `0x09` |
+| `pllMask` | `0x06` | `0x08` |
+| **`i2cAddress`** | **`0x1b`** | **`0x70`** |
+| `refClock` | `0x1c` | `0x0b` |
+| `phaseCtrl` | `0x1d` | `0x08` |
+| `rDivider[0..3]` | `0x1f`–`0x22` | `c0 c1 c0 c0` |
+
+**The device reports its own I²C address as `0x70` at offset `0x1b`** — the
+address it answers on. A CHL8228G has no reason to hold `0x70` there. This is
+the Si5338.
+
+So the earlier reading was doubly wrong: the device was misnamed, *and* the
+conclusion drawn from the name was the wrong one of the two. It is the clock
+that reads identically cold and warm, and **the CHL8228G has never been read at
+all.**
+
+#### But the clock hypothesis is not damaged, because the dump stopped too early
+
+The same table shows what `0x00`–`0x2f` leaves out. Everything that sets the
+output frequency is above it:
+
+```
+   0x34 – 0x61   msCtrl[0..3], msCoef[0..3], msnCoef   ← the multisynth config
+   0x7b – 0xc4   msFreqInc[0..3]
+   0xda          los          0xe6  outputDrive
+   0xeb – 0xed   fcal          0xf6  softReset        0xff  page
+```
+
+The multisynth coefficients *are* the clock's programming. Reading `0x00`–`0x2f`
+and finding it unchanged says almost nothing about whether the clock is
+configured — and `page` at `0xff` means there is a second bank we have not
+looked at either.
+
+So the position is: **the clock's frequency registers are unread, and the
+regulator is unread.** Both live hypotheses are untested, and the one reading
+that looked like evidence covered neither.
+
+The next reads are specific: Si5338 `0x30`–`0x70` and `0xda`–`0xf6`, cold and
+warm; and the CHL8228G wherever it actually lives, which is not on any
+accelerator/bus scanned so far.
+
+### ⚠ The old identification note, kept for the record
 
 Correcting a claim made two sections down before it misleads anyone further.
 

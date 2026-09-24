@@ -134,6 +134,16 @@ committed, as on every other board.
 - [x] **the five steps before the reset are not it**, and `DosBoard` is the
       *diagnostic* tree rather than the boot path. `Saguaro.initialize()` is
       accelerator setup; `Ucd90160.initialize()` clears faults
+- [x] **the `0x70` device is identified: it is the Si5338**, confirmed by its
+      own `i2cAddress` register at `0x1b` reading `0x70`. So the "regulator
+      identical cold and warm" result was the *clock*, and the CHL8228G has
+      never been read
+- [ ] **re-read the Si5338 over the range that matters**: `0x30`–`0x70`
+      (multisynth `msCtrl`/`msCoef`/`msnCoef` — the actual frequency
+      programming) and `0xda`–`0xf6`, cold and warm. The earlier dump stopped
+      at `0x2f` and so covered none of it
+- [ ] **find the CHL8228G.** It is not at `0x70` on any accelerator/bus scanned
+      so far, and its other address `0x30` answered nowhere either
 - [ ] **the Si5338 clock generator.** The production path (`NorCalInit`, which
       is what `/etc/rc.d/init.d/NorCal` runs) programs a Silicon Labs Si5338 —
       "Programming clock for sid", with a `/mnt/flash/skipClockProgram` escape.
