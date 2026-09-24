@@ -264,9 +264,42 @@ nothing; if they are control, writing them is what turns the Alta on. Nothing
 here distinguishes those yet, and the difference matters because the experiment
 that settles it is a **write to a power sequencer**.
 
-`spike/thorn-read.c` has no write path, deliberately. Adding one is a decision
-about risk on hardware that has no schematic and no second unit in the rack, not
-a missing feature.
+A wider read settles where to look: across all **256** registers, warm, only
+three are non-zero — `1` (version `0x22`), `5` (`0xa1`) and `6` (`0x07`). There
+is no more-obviously-control register elsewhere in the file. Register 5 is the
+only candidate.
+
+### The experiment that settles it, and it has not been run
+
+`spike/thorn-read.c` now has a write path, and it is awkward on purpose: `-w`
+refuses unless `-b` names one bus, it says what it is about to write and to
+whom, and it reads the value back — because a status bit will not take a value,
+and that by itself is the answer.
+
+The sequence, all of it inside a RAM-booted NOSaic on a cold board (the image's
+busybox has `devmem`, so the SCD writes need no extra tool):
+
+```
+  doas /tmp/thorn-read -r 5 -n 2            baseline: expect 0x01
+  doas devmem 0xe1004000 32                 expect 0x00000106, resets held
+  doas /tmp/thorn-read -b 1 -r 5 -w 0xa1    THE WRITE
+  doas devmem 0xe1004010 32 0x2             release the SCD resets
+  doas devmem 0xe1004010 32 0x4
+  doas devmem 0xe1004010 32 0x100
+  doas sh -c 'echo 1 > /sys/bus/pci/rescan'
+  doas /usr/sbin/fm6000-probe               did 02:00.0 appear?
+```
+
+Three outcomes, and all three are informative:
+
+- the write does not read back → those are **status** bits, thorn is reporting
+  rail state rather than controlling it, and the enable is somewhere else;
+- it reads back and the chip still does not enumerate → they are writable and
+  not sufficient, and there is more to the sequence;
+- it reads back and `02:00.0` appears → **M1 is finished**.
+
+The board recovers from all three by power-cycling, which is the normal way in
+and out of this work anyway.
 
 ### What the vendor's board initialisation is
 

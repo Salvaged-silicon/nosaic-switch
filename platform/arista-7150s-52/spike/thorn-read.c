@@ -26,8 +26,25 @@
  * the vendor's platform agent holds the bus. Run this from NOSaic or from the
  * Aboot prompt, not underneath the vendor OS.
  *
- * READ-ONLY, and deliberately so. Writing to a power sequencer on a board
- * nobody has a schematic for is how a switch stops turning on.
+ * IT CAN NOW WRITE, AND THAT WAS A DECISION RATHER THAN A FEATURE.
+ *
+ * Reading thorn cold and warm found exactly one difference in its whole
+ * 256-register file: register 5 is 0x01 with the ASIC unpowered and 0xa1 with
+ * it running. Bits 7 and 5. Whether those are CONTROL bits that enable the
+ * rails or STATUS bits that report them good cannot be told by reading, and
+ * the only experiment that separates them is writing one on a cold board.
+ *
+ * So -w exists, and it is awkward on purpose:
+ *
+ *   - it refuses unless -b names one bus, so a write can never fan out across
+ *     every adapter the way a read does;
+ *   - it says what it is about to do, and to whom, before doing it;
+ *   - it reads the value back, because a status bit will not take one and that
+ *     is itself the answer;
+ *   - there is no write-all, no register range, and no default value.
+ *
+ * Writing to a power sequencer on a board with no schematic and no spare in
+ * the rack is a thing to do deliberately, once, watching the console.
  */
 #include <dirent.h>
 #include <fcntl.h>
@@ -62,6 +79,22 @@ static int smbus_read_byte_data(int fd, uint8_t reg, uint8_t *out)
 
 /* The adapter's own name, which is how you tell the SB700's SMBus from
  * anything else the kernel has registered. */
+static int smbus_write_byte_data(int fd, uint8_t reg, uint8_t val)
+{
+	union i2c_smbus_data data;
+	struct i2c_smbus_ioctl_data args;
+
+	memset(&data, 0, sizeof(data));
+	data.byte = val;
+	args.read_write = I2C_SMBUS_WRITE;
+	args.command = reg;
+	args.size = I2C_SMBUS_BYTE_DATA;
+	args.data = &data;
+	if (ioctl(fd, I2C_SMBUS, &args) < 0)
+		return -1;
+	return 0;
+}
+
 static void adapter_name(int n, char *buf, size_t len)
 {
 	char path[128];
@@ -83,6 +116,7 @@ int main(int argc, char **argv)
 {
 	int addr = THORN_ADDR, reg = THORN_VERSION_REG, count = 1;
 	int i, found = 0, read_ok = 0;
+	int bus = -1, wval = -1;
 
 	for (i = 1; i < argc; i++) {
 		if (!strcmp(argv[i], "-a") && i + 1 < argc)
@@ -91,14 +125,54 @@ int main(int argc, char **argv)
 			reg = (int)strtol(argv[++i], NULL, 0);
 		else if (!strcmp(argv[i], "-n") && i + 1 < argc)
 			count = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-b") && i + 1 < argc)
+			bus = atoi(argv[++i]);
+		else if (!strcmp(argv[i], "-w") && i + 1 < argc)
+			wval = (int)strtol(argv[++i], NULL, 0);
 		else {
 			fprintf(stderr,
 "usage: thorn-read [-a ADDR] [-r REG] [-n COUNT]\n"
+"       thorn-read -b BUS -r REG -w VALUE   (writes -- see the file header)\n"
 "  defaults: addr 0x23, reg 1, one byte -- thorn's version on a 7150S-52\n"
 "  every /dev/i2c-* is tried, because which one is the SB700's SMBus is a\n"
 "  property of the running kernel and not worth hard-coding.\n");
 			return 2;
 		}
+	}
+
+	if (wval >= 0) {
+		char path[64];
+		uint8_t back = 0;
+		int fd, rc;
+
+		if (bus < 0) {
+			fprintf(stderr,
+"thorn-read: -w requires -b to name one bus.\n"
+"thorn-read: a write that fanned out across every adapter the way a read\n"
+"thorn-read: does would poke unknown devices on unknown buses.\n");
+			return 2;
+		}
+		snprintf(path, sizeof(path), "/dev/i2c-%d", bus);
+		printf("WRITING to %s, device 0x%02x, register %d, value 0x%02x\n",
+		       path, addr, reg, wval);
+		if ((fd = open(path, O_RDWR)) < 0) {
+			fprintf(stderr, "thorn-read: %s: cannot open\n", path);
+			return 1;
+		}
+		if (ioctl(fd, I2C_SLAVE_FORCE, addr) < 0) {
+			fprintf(stderr, "thorn-read: cannot address 0x%02x\n", addr);
+			close(fd);
+			return 1;
+		}
+		rc = smbus_write_byte_data(fd, (uint8_t)reg, (uint8_t)wval);
+		printf("  write %s\n", rc == 0 ? "accepted" : "FAILED");
+		if (smbus_read_byte_data(fd, (uint8_t)reg, &back) == 0)
+			printf("  reads back 0x%02x (%u)%s\n", back, back,
+			       back == (uint8_t)wval ? "" : "   <- did NOT take the value");
+		else
+			printf("  read-back failed\n");
+		close(fd);
+		return rc == 0 ? 0 : 1;
 	}
 
 	/*

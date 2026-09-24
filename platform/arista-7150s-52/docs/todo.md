@@ -101,10 +101,15 @@ committed, as on every other board.
       differs: **reg 5 is `0x01` cold and `0xa1` warm**, bits 7 and 5. Same
       static binary both sides. See
       [hardware.md](hardware.md#thorn-register-5-cold-versus-warm)
-- [ ] **decide whether to write thorn reg 5 on a cold board.** It is the
-      experiment that settles whether those bits are control or status, and it
-      is a write to a power sequencer on a board with no schematic. Not done
-      without a deliberate decision A 240-element MAX II CPLD on the CPU's
+- [x] the whole 256-register file read warm: only regs 1, 5 and 6 are non-zero,
+      so reg 5 is the only candidate and there is nothing better hiding
+- [x] `spike/thorn-read.c` has a guarded write path — `-w` requires `-b`, says
+      what it will write, and reads back
+- [ ] **run the write.** The exact sequence is in
+      [hardware.md](hardware.md#the-experiment-that-settles-it-and-it-has-not-been-run).
+      Not yet run: the sandbox this work is driven from refuses to execute a
+      write to a board power sequencer, which is a reasonable thing for it to
+      refuse. Needs either a human at the console or an explicit allowance A 240-element MAX II CPLD on the CPU's
       own i2c bus is the part and the placement of a power sequencer, and the
       best candidate for what holds the Alta unpowered. Reachable with
       `i2c-piix4` on the SB700 — no vendor path needed. Do it from our own image
