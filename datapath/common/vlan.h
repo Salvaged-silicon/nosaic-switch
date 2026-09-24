@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 #include <bcm/types.h>
+#include <bcm/l2.h>
 
 /*
  * User VLANs: access and trunk membership on front-panel ports, and routed
@@ -39,6 +40,20 @@ int nosaic_vlan_is_user(int vid);
 /* The port is a member of at least one user VLAN, so it is switched, not
  * routed, and its routed tap must not transmit. */
 int nosaic_vlan_port_switched(int port);
+
+/*
+ * The local logical port an L2 table entry points at, or -1 (a trunk, or a
+ * port that is not ours).
+ *
+ * ⚠ l2->port ALONE IS NOT THE PORT. A chip with more ports than one module
+ * id covers splits them across two, and the L2 table reports (module, port):
+ * on an AS5610 the neighbour behind swp51 -- logical port 51 -- comes back
+ * as port 19 on the second module, 51 - 32. Built into an egress object as
+ * "19", a routed packet left by a dark 10G port instead. The same split is
+ * why src_port on the 7050SX2's 40G ports read 17, 19 and 20 for 49, 51 and
+ * 52 (tapbridge.c).
+ */
+int nosaic_l2_port(int unit, const bcm_l2_addr_t *l2);
 
 /* Members of a user VLAN and the untagged subset; 0 if it exists. */
 int nosaic_vlan_members(int vid, bcm_pbmp_t *members, bcm_pbmp_t *untagged);

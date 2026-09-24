@@ -583,12 +583,14 @@ static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len)
 	if (!(buf[0] & 1)) {
 		bcm_l2_addr_t l2;
 
+		int p;
+
 		if (bcm_l2_addr_get(tap_unit, (uint8 *)buf, (bcm_vlan_t)t->vlan,
 				    &l2) == BCM_E_NONE &&
-		    !(l2.flags & BCM_L2_TRUNK_MEMBER) &&
-		    BCM_PBMP_MEMBER(m, l2.port)) {
+		    (p = nosaic_l2_port(tap_unit, &l2)) >= 0 &&
+		    BCM_PBMP_MEMBER(m, p)) {
 			BCM_PBMP_CLEAR(pbm);
-			BCM_PBMP_PORT_ADD(pbm, l2.port);
+			BCM_PBMP_PORT_ADD(pbm, p);
 		}
 	}
 	if (BCM_PBMP_IS_NULL(pbm)) {
@@ -993,10 +995,12 @@ static int l2_dump_cb(int unit, bcm_l2_addr_t *info, void *user_data)
 	int *n = user_data;
 
 	if (*n < 24)
-		printf("l2:   %02x:%02x:%02x:%02x:%02x:%02x vlan %d port %d%s\n",
+		printf("l2:   %02x:%02x:%02x:%02x:%02x:%02x vlan %d mod %d port %d "
+		       "(local %d)%s\n",
 		       info->mac[0], info->mac[1], info->mac[2],
 		       info->mac[3], info->mac[4], info->mac[5],
-		       info->vid, info->port,
+		       info->vid, info->modid, info->port,
+		       nosaic_l2_port(unit, info),
 		       (info->flags & BCM_L2_STATIC) ? " static" : "");
 	(*n)++;
 	return BCM_E_NONE;

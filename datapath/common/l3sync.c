@@ -112,6 +112,7 @@
 #include "l3sync.h"
 #include "props.h"
 #include "tapbridge.h"
+#include "vlan.h"
 
 /* One router interface per tap, so this tracks the bridge's own limit.
  *
@@ -233,10 +234,9 @@ static int nh_port(const struct l3if *ifp, const uint8_t mac[6])
 
 	if (ifp->port >= 0)
 		return ifp->port;
-	if (bcm_l2_addr_get(l3_unit, (uint8 *)mac, ifp->vlan, &l2) != BCM_E_NONE ||
-	    (l2.flags & BCM_L2_TRUNK_MEMBER))
+	if (bcm_l2_addr_get(l3_unit, (uint8 *)mac, ifp->vlan, &l2) != BCM_E_NONE)
 		return -1;
-	return l2.port;
+	return nosaic_l2_port(l3_unit, &l2);
 }
 
 /*
@@ -401,9 +401,10 @@ static int nexthop(struct l3if *ifp, int ifx, uint32_t gw, bcm_if_t *eg)
 	memcpy(nh[nnh].mac, mac, 6);
 	nnh++;
 	printf("l3: next hop %u.%u.%u.%u dev %s via "
-	       "%02x:%02x:%02x:%02x:%02x:%02x -> egress %d\n",
+	       "%02x:%02x:%02x:%02x:%02x:%02x port %d -> egress %d\n",
 	       gw >> 24, (gw >> 16) & 0xff, (gw >> 8) & 0xff, gw & 0xff,
-	       ifp->ifname, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], *eg);
+	       ifp->ifname, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+	       port, *eg);
 	fflush(stdout);
 	return BCM_E_NONE;
 }
@@ -1627,6 +1628,17 @@ static void poll_svi_moves(void)
 		egr.port = port;
 		rv = bcm_l3_egress_create(l3_unit, BCM_L3_REPLACE | BCM_L3_WITH_ID,
 					  &egr, &eg);
+		if (rv == BCM_E_PORT) {
+			/* The same 40G ports nexthop() retries as a gport. */
+			bcm_gport_t gp;
+
+			if (bcm_port_gport_get(l3_unit, port, &gp) == BCM_E_NONE) {
+				egr.port = gp;
+				rv = bcm_l3_egress_create(l3_unit,
+							  BCM_L3_REPLACE | BCM_L3_WITH_ID,
+							  &egr, &eg);
+			}
+		}
 		printf("l3: %s neighbour %02x:%02x:%02x:%02x:%02x:%02x moved "
 		       "port %d -> %d (egress %d): %d\n", ifp->ifname,
 		       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],

@@ -514,6 +514,19 @@ void nosaic_vlan_query(FILE *out)
 	pthread_mutex_unlock(&vlan_lock);
 }
 
+int nosaic_l2_port(int unit, const bcm_l2_addr_t *l2)
+{
+	bcm_gport_t gp;
+	bcm_port_t local;
+
+	if (l2->flags & BCM_L2_TRUNK_MEMBER)
+		return -1;
+	BCM_GPORT_MODPORT_SET(gp, l2->modid, l2->port);
+	if (bcm_port_local_get(unit, gp, &local) != BCM_E_NONE)
+		return -1;
+	return local;
+}
+
 /* ---- lock-free readers for the packet paths; see the header comment ---- */
 
 int nosaic_vlan_is_user(int vid)
