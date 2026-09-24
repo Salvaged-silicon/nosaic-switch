@@ -138,7 +138,13 @@ struct l3if {
 	bcm_if_t   intf;
 	int        station;
 	bcm_if_t   cpu_eg;      /* egress object aimed at the CPU port */
-	int        self_done;   /* the "this is me" host entry is installed */
+	/* Every IPv4 address of this interface that has a to-CPU host entry.
+	 * A list rather than a flag: a flag set once meant an address added
+	 * later -- a secondary, a changed primary, or an SVI given back to a
+	 * VLAN with new addresses -- never reached the CPU at all. */
+#define MAX_SELF 8
+	uint32_t   self_ip[MAX_SELF];
+	int        nself;
 	bcm_field_entry_t fp_self;
 	int        fp_stat_self;
 	/* An SVI's interface is deleted at runtime but its slot is kept: egress
@@ -699,57 +705,100 @@ static void fp_show(const char *tag, int stat_id)
  * Passing the interface id is accepted and installs an entry that points
  * nowhere useful, which is the worst of both -- it reports success.
  */
-static void self_punt(struct l3if *ifp)
+static void self_punt(struct l3if *ifp, struct ifaddrs *head)
 {
 	bcm_l3_host_t h;
 	bcm_l3_egress_t egr;
 	bcm_port_config_t cfg;
-	uint32_t ip = 0;
-	int rv;
+	struct ifaddrs *a;
+	uint32_t want[MAX_SELF];
+	int nwant = 0, i, j, rv;
 
-	if (iface_ipv4(ifp->ifname, &ip) != 0 || ip == 0)
-		return;
+	/*
+	 * Every IPv4 address on the interface, not only the first. The chip
+	 * routes a packet for an address with no host entry like any other
+	 * destination, and there is no route back to ourselves, so it was
+	 * dropped: on both a 7050TX-64 and an AS5610, a secondary address
+	 * answered ARP -- ARP goes to the CPU by its own path -- and then
+	 * nothing sent to it arrived.
+	 */
+	for (a = head; a != NULL && nwant < MAX_SELF; a = a->ifa_next) {
+		if (a->ifa_addr == NULL || a->ifa_addr->sa_family != AF_INET ||
+		    strcmp(a->ifa_name, ifp->ifname) != 0)
+			continue;
+		want[nwant++] = ntohl(((struct sockaddr_in *)a->ifa_addr)->sin_addr.s_addr);
+	}
 
-	if (ifp->fp_self < 0 && fp_grp >= 0) {
+	if (nwant > 0 && ifp->fp_self < 0 && fp_grp >= 0) {
 		char b[80];
+		uint32_t ip = want[0];
 
 		snprintf(b, sizeof(b), "self %s (%u.%u.%u.%u)", ifp->ifname,
 			 ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
 		q_self_ip = ip;
 		fp_add(fp_grp, b, &ifp->fp_self, &ifp->fp_stat_self, q_self);
 	}
-	if (ifp->self_done)
-		return;
 
-	if (ifp->cpu_eg < 0) {
-		if (bcm_port_config_get(l3_unit, &cfg) != BCM_E_NONE)
-			return;
-		bcm_l3_egress_t_init(&egr);
-		egr.intf = ifp->intf;
-		egr.vlan = ifp->vlan;
-		BCM_PBMP_ITER(cfg.cpu, egr.port) {
-			break;
+	/* Addresses that have gone: their entries would send traffic for an
+	 * address this switch no longer has to its CPU. */
+	for (i = 0; i < ifp->nself; ) {
+		for (j = 0; j < nwant && want[j] != ifp->self_ip[i]; j++)
+			;
+		if (j < nwant) {
+			i++;
+			continue;
 		}
-		egr.flags = BCM_L3_L2TOCPU;
-		memset(egr.mac_addr, 0, 6);
-		rv = bcm_l3_egress_create(l3_unit, 0, &egr, &ifp->cpu_eg);
-		if (rv != BCM_E_NONE) {
-			fprintf(stderr, "l3: %s cpu egress: %d\n", ifp->ifname, rv);
-			ifp->cpu_eg = -1;
-			return;
-		}
+		bcm_l3_host_t_init(&h);
+		h.l3a_ip_addr = ifp->self_ip[i];
+		rv = bcm_l3_host_delete(l3_unit, &h);
+		printf("l3: %s self %u.%u.%u.%u gone: %d\n", ifp->ifname,
+		       ifp->self_ip[i] >> 24, (ifp->self_ip[i] >> 16) & 0xff,
+		       (ifp->self_ip[i] >> 8) & 0xff, ifp->self_ip[i] & 0xff, rv);
+		ifp->self_ip[i] = ifp->self_ip[--ifp->nself];
 	}
 
-	bcm_l3_host_t_init(&h);
-	h.l3a_ip_addr = ip;
-	h.l3a_flags = BCM_L3_L2TOCPU;
-	h.l3a_intf = ifp->cpu_eg;
-	rv = bcm_l3_host_add(l3_unit, &h);
-	printf("l3: %s self %u.%u.%u.%u -> CPU: %d\n", ifp->ifname,
-	       ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff, rv);
+	for (j = 0; j < nwant; j++) {
+		uint32_t ip = want[j];
+
+		for (i = 0; i < ifp->nself && ifp->self_ip[i] != ip; i++)
+			;
+		if (i < ifp->nself || ifp->nself >= MAX_SELF)
+			continue;
+
+		if (ifp->cpu_eg < 0) {
+			if (bcm_port_config_get(l3_unit, &cfg) != BCM_E_NONE)
+				return;
+			bcm_l3_egress_t_init(&egr);
+			egr.intf = ifp->intf;
+			egr.vlan = ifp->vlan;
+			BCM_PBMP_ITER(cfg.cpu, egr.port) {
+				break;
+			}
+			egr.flags = BCM_L3_L2TOCPU;
+			memset(egr.mac_addr, 0, 6);
+			rv = bcm_l3_egress_create(l3_unit, 0, &egr, &ifp->cpu_eg);
+			if (rv != BCM_E_NONE) {
+				fprintf(stderr, "l3: %s cpu egress: %d\n", ifp->ifname, rv);
+				ifp->cpu_eg = -1;
+				return;
+			}
+		}
+
+		bcm_l3_host_t_init(&h);
+		h.l3a_ip_addr = ip;
+		h.l3a_flags = BCM_L3_L2TOCPU;
+		h.l3a_intf = ifp->cpu_eg;
+		rv = bcm_l3_host_add(l3_unit, &h);
+		if (rv == BCM_E_EXISTS) {
+			h.l3a_flags |= BCM_L3_REPLACE;
+			rv = bcm_l3_host_add(l3_unit, &h);
+		}
+		printf("l3: %s self %u.%u.%u.%u -> CPU: %d\n", ifp->ifname,
+		       ip >> 24, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff, rv);
+		if (rv == BCM_E_NONE)
+			ifp->self_ip[ifp->nself++] = ip;
+	}
 	fflush(stdout);
-	if (rv == BCM_E_NONE)
-		ifp->self_done = 1;
 }
 
 static int rt_find(uint32_t dst, uint32_t mask)
@@ -1599,11 +1648,21 @@ void nosaic_l3_poll(void)
 		return;
 	pthread_mutex_lock(&l3_lock);
 	poll_svi_moves();
-	for (i = 0; i < nif; i++) {
-		if (ifs[i].dead)
-			continue;
-		self_punt(&ifs[i]);
-		self_punt6(&ifs[i]);
+	{
+		struct ifaddrs *head = NULL;
+
+		/* Once per poll, shared: every interface's addresses in one
+		 * netlink dump rather than one dump per interface. */
+		if (getifaddrs(&head) != 0)
+			head = NULL;
+		for (i = 0; i < nif; i++) {
+			if (ifs[i].dead)
+				continue;
+			self_punt(&ifs[i], head);
+			self_punt6(&ifs[i]);
+		}
+		if (head != NULL)
+			freeifaddrs(head);
 	}
 	loopback_punt();
 	poll_routes();
@@ -1729,6 +1788,29 @@ void nosaic_l3_del_intf(const char *ifname)
 		hs6[j++] = hs6[i];
 	}
 	nhs6 = j;
+	/* Its own addresses' to-CPU entries go too: the addresses left with the
+	 * interface, and a revived SVI programs whatever it has then. */
+	for (i = 0; i < ifp->nself; i++) {
+		bcm_l3_host_t h;
+
+		bcm_l3_host_t_init(&h);
+		h.l3a_ip_addr = ifp->self_ip[i];
+		bcm_l3_host_delete(l3_unit, &h);
+	}
+	ifp->nself = 0;
+	for (i = j = 0; i < nself6; i++) {
+		if (self6[i].ifx == ifx) {
+			bcm_l3_host_t h;
+
+			bcm_l3_host_t_init(&h);
+			h.l3a_flags = BCM_L3_IP6;
+			memcpy(h.l3a_ip6_addr, self6[i].ip, 16);
+			bcm_l3_host_delete(l3_unit, &h);
+			continue;
+		}
+		self6[j++] = self6[i];
+	}
+	nself6 = j;
 	/*
 	 * And its MY_STATION entry. SVI taps reuse slots, so the next SVI can
 	 * have this one's MAC: the station entry left behind made its
