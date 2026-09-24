@@ -68,7 +68,7 @@ CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"td2\" -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
 OBJS    += sdk.o ../common/tapbridge.o ../common/l3sync.o ../common/acl.o \
-	   ../common/query.o led.o phy.o \
+	   ../common/query.o ../common/vlan.o led.o phy.o \
            phybus.o ../scdmdio/scdmdio.o
 endif
 
@@ -94,6 +94,7 @@ phy.o: phy.c phy.h ../common/props.h
 phybus.o: phybus.c phybus.h ../scdmdio/scdmdio.h
 ../scdmdio/scdmdio.o: ../scdmdio/scdmdio.c ../scdmdio/scdmdio.h
 ../common/tapbridge.o: ../common/tapbridge.c ../common/tapbridge.h
+../common/vlan.o: ../common/vlan.c ../common/vlan.h ../common/tapbridge.h ../common/l3sync.h
 ../common/l3sync.o: ../common/l3sync.c ../common/l3sync.h ../common/props.h
 # Linked, not called. query.c is shared by every datapath and asks the access
 # list module for its capability unconditionally, so a datapath that does not

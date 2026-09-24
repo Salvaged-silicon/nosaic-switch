@@ -178,3 +178,76 @@ echo "== accept"; cat /proc/sys/net/ipv4/tcp_l3mdev_accept
 		t.Errorf("repairing an address re-joined eth0 to the VRF:\n%s", pass3)
 	}
 }
+
+// VLAN lines reach the datapath through the CLI, in the order that works: the
+// VLAN, the port's membership, then the SVI -- which must exist before the
+// address loop waits for vlan10, or that loop waits the full deadline for an
+// interface nothing was going to make.
+func TestApplyNetworkVLANs(t *testing.T) {
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Skip("no unshare")
+	}
+	if err := exec.Command("unshare", "-rn", "true").Run(); err != nil {
+		t.Skip("no unprivileged network namespace here")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.Mkdir(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A stand-in for the CLI: it records what it was asked, and makes the
+	// SVI the way a datapath would, as an interface appearing.
+	fake := `#!/bin/sh
+echo "$*" >> ` + filepath.Join(dir, "calls") + `
+case "$1 $2" in
+    "svi add") ip link show "vlan$3" >/dev/null 2>&1 || ip link add "vlan$3" type dummy ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(bin, "nosaic"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "apply.sh")
+	conf := filepath.Join(dir, "network.conf")
+	if err := os.WriteFile(script, []byte(applyNetwork), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conf, []byte(`vlan 10 name servers
+vlan 20
+switchport swp1 access 10
+switchport swp2 trunk 10,20 native 1
+iface vlan10 10.0.10.1/24
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("unshare", "-rn", "sh", "-c",
+		"sh "+script+" && ip -o addr show dev vlan10")
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"),
+		"NOSAIC_NET_CONF="+conf, "NOSAIC_NET_WAIT=5")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "10.0.10.1/24") {
+		t.Errorf("vlan10 did not get its address:\n%s", out)
+	}
+	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+	got := string(calls)
+	for _, want := range []string{
+		"vlan add 10\n", "vlan add 20\n",
+		"switchport swp1 access 10\n",
+		"switchport swp2 trunk 10,20 native 1\n",
+		"svi add 10\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the CLI was never asked %q; it was asked:\n%s", strings.TrimSpace(want), got)
+		}
+	}
+	if strings.Index(got, "vlan add 10") > strings.Index(got, "switchport swp1") ||
+		strings.Index(got, "switchport swp1") > strings.Index(got, "svi add 10") {
+		t.Errorf("out of order: the vlan, then its members, then its svi:\n%s", got)
+	}
+	if strings.Contains(got, "svi add 20") {
+		t.Errorf("vlan 20 has no iface line and must not get an svi:\n%s", got)
+	}
+}

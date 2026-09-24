@@ -88,7 +88,13 @@ POLL_SECS=5
 # wants. A number means keep going, that many seconds apart.
 RECONCILE_SECS=${NOSAIC_NET_RECONCILE:-0}
 
-say() { echo "NOSAIC-NET $*"; }
+say() {
+    # A second argument of "quiet" drops the line: the VLAN pass runs every
+    # few seconds while the datapath starts, and its ports not existing yet
+    # is the expected state, not news.
+    [ "${2:-}" = quiet ] && return 0
+    echo "NOSAIC-NET $1"
+}
 
 say "using $CONF"
 
@@ -159,6 +165,53 @@ if grep -q '^vrf ' "$CONF"; then
         [ -w "$f" ] && [ "$(cat "$f")" != 1 ] && echo 1 > "$f" && say "$(basename "$f") on"
     done
 fi
+}
+
+# VLANs, switch ports and routed VLAN interfaces, before the addresses.
+#
+#     vlan 10
+#     switchport swp1 access 10
+#     switchport swp49 trunk 10,20 native 1
+#     iface vlan10 10.0.10.1/24
+#
+# Each line is handed to the CLI, which talks to the datapath, so the same
+# file does the same thing on a chip and on the virtual board. switchport
+# states a port's whole membership, and an iface on vlan<N> brings its SVI
+# into being first -- vlan<N> does not exist until the datapath makes it, and
+# the address loop below would otherwise wait for it for ever.
+#
+# Every one of them is safe to repeat, which is what lets this run on the
+# reconcile timer: a datapath restart forgets every VLAN, and the next pass
+# puts them back the way it puts back addresses.
+#
+# Like addresses, a line taken OUT of the file is not undone on the switch:
+# "nosaic vlan del", "switchport <port> none" or "svi del" does that.
+#
+# $1 = "quiet" while waiting for the datapath, whose ports do not exist yet.
+apply_vlans() {
+command -v nosaic >/dev/null 2>&1 || return 0
+grep -Eq '^(vlan|switchport)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+while read -r kind a rest; do
+    out=""
+    case "$kind" in
+        vlan)
+            [ -n "$a" ] || continue
+            out=$(nosaic vlan add "$a" 2>&1) || say "vlan $a FAILED: $out" "$1"
+            ;;
+        switchport)
+            [ -n "$a" ] || continue
+            # shellcheck disable=SC2086 -- rest is the membership, word-split on purpose
+            out=$(nosaic switchport "$a" $rest 2>&1) || say "switchport $a $rest FAILED: $out" "$1"
+            ;;
+        iface)
+            case "$a" in
+                vlan[0-9]*)
+                    out=$(nosaic svi add "${a#vlan}" 2>&1) || say "svi $a FAILED: $out" "$1"
+                    ;;
+            esac
+            ;;
+    esac
+done < "$CONF"
 }
 
 # Interfaces first: a route cannot be installed through a device that has no
@@ -316,6 +369,7 @@ routed=0
 while : ; do
     : > "$ABSENT"
     apply_vrfs
+    apply_vlans quiet
     apply_ifaces
     missing=$?
     # After the first pass, whatever exists is configured -- so put its routes
@@ -347,6 +401,10 @@ ABSENT_FINAL="$ABSENT"
 # why. Front-panel ports create their routes on the second pass.
 apply_routes
 
+# Once more, out loud: whatever still fails now is worth a line.
+apply_vlans
+apply_ifaces >/dev/null 2>&1 || :
+
 if [ -s "$ABSENT_FINAL" ]; then
     say "never appeared after ${WAIT_SECS}s: $(tr "\n" " " < "$ABSENT_FINAL")"
 fi
@@ -364,6 +422,7 @@ if [ "$RECONCILE_SECS" -gt 0 ] 2>/dev/null; then
         # so anything this says is an address or a route that had gone --
         # which is the one thing an operator needs to see in the log.
         apply_vrfs
+        apply_vlans
         apply_ifaces || :
         apply_routes
     done

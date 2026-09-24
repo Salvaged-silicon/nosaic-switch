@@ -69,6 +69,14 @@ int nosaic_tap_count(void);
 int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
 		    unsigned char mac[6]);
 
+/*
+ * A tap for a routed VLAN interface, named name (vlan<VID>), carrying VID
+ * vid. Its MAC is written to mac. Not a port: nosaic_tap_count and
+ * nosaic_tap_info do not include it. Deleting it destroys the interface.
+ */
+int  nosaic_tap_svi_add(int vid, const char *name, unsigned char mac[6]);
+void nosaic_tap_svi_del(int vid);
+
 /* Print what the chip did with each bridged port: frames in and out, and the
  * discards and errors that separate "never sent" from "sent and rejected". */
 void nosaic_tap_stats(void);

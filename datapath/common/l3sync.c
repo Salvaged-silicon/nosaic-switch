@@ -85,6 +85,7 @@
  * They are skipped at every entry point rather than only where they were first
  * noticed.
  */
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,7 +125,7 @@
  * which legitimately has none. The visible symptom was a switch with full
  * OSPF adjacencies, a correct RIB, and CHIP route 0/15360.
  */
-#define MAX_IF   NOSAIC_MAX_TAPS
+#define MAX_IF   (NOSAIC_MAX_TAPS + 32)   /* ports, and SVIs */
 #define MAX_NH   64
 #define MAX_RT   1024
 #define MAX_HOST 256
@@ -140,6 +141,10 @@ struct l3if {
 	int        self_done;   /* the "this is me" host entry is installed */
 	bcm_field_entry_t fp_self;
 	int        fp_stat_self;
+	/* An SVI's interface is deleted at runtime but its slot is kept: egress
+	 * objects still name its router interface, so the chip will not let it
+	 * go, and a VLAN given its SVI back reuses it. */
+	int        dead;
 };
 
 static struct l3if ifs[MAX_IF];
@@ -148,14 +153,19 @@ static int l3_unit;
 static int l3_on;
 static int fp_stats;        /* see the note above: off unless asked for */
 
-static struct { int ifx; uint32_t gw; bcm_if_t eg; } nh[MAX_NH];
+/*
+ * Next hops remember the port they were built for, because on an SVI that is
+ * not fixed: it is wherever the chip's L2 table has the neighbour's MAC, and
+ * poll_svi_moves() rewrites the egress object when that changes.
+ */
+static struct { int ifx; uint32_t gw; bcm_if_t eg; int port; uint8_t mac[6]; } nh[MAX_NH];
 static int nnh;
 static struct { uint32_t dst, mask; bcm_if_t eg; int seen; } rt[MAX_RT];
 static int nrt;
 static struct { int ifx; uint32_t ip; } hs[MAX_HOST];
 static int nhs;
 
-static struct { int ifx; uint8_t gw[16]; bcm_if_t eg; } nh6[MAX_NH];
+static struct { int ifx; uint8_t gw[16]; bcm_if_t eg; int port; uint8_t mac[6]; } nh6[MAX_NH];
 static int nnh6;
 static struct { uint8_t dst[16]; int plen; bcm_if_t eg; int seen; } rt6[MAX_RT];
 static int nrt6;
@@ -186,15 +196,41 @@ static bcm_field_group_t fp_grp6 = -1;
 static bcm_field_entry_t fp_ospf6 = -1;
 static int fp_stat_ospf6 = -1;
 
+/*
+ * One lock for the whole table. nosaic_l3_poll() walks it on the periodic
+ * thread; an SVI adds or removes an interface from the query thread.
+ */
+static pthread_mutex_t l3_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static struct l3if *if_by_name(const char *n)
 {
 	int i;
 
 	for (i = 0; i < nif; i++) {
-		if (strcmp(ifs[i].ifname, n) == 0)
+		if (!ifs[i].dead && strcmp(ifs[i].ifname, n) == 0)
 			return &ifs[i];
 	}
 	return NULL;
+}
+
+/*
+ * The port a next hop leaves by.
+ *
+ * A routed port's is its own. An SVI's is wherever the chip has learned the
+ * neighbour's MAC in the VLAN, and -1 until it has: the next hop is then left
+ * unresolved and tried again on the next poll, which is what an unresolved
+ * ARP entry already gets.
+ */
+static int nh_port(const struct l3if *ifp, const uint8_t mac[6])
+{
+	bcm_l2_addr_t l2;
+
+	if (ifp->port >= 0)
+		return ifp->port;
+	if (bcm_l2_addr_get(l3_unit, (uint8 *)mac, ifp->vlan, &l2) != BCM_E_NONE ||
+	    (l2.flags & BCM_L2_TRUNK_MEMBER))
+		return -1;
+	return l2.port;
 }
 
 /*
@@ -296,7 +332,7 @@ static int nexthop(struct l3if *ifp, int ifx, uint32_t gw, bcm_if_t *eg)
 {
 	bcm_l3_egress_t egr;
 	uint8_t mac[6];
-	int rv, i;
+	int rv, i, port;
 
 	for (i = 0; i < nnh; i++) {
 		if (nh[i].ifx == ifx && nh[i].gw == gw) {
@@ -308,12 +344,14 @@ static int nexthop(struct l3if *ifp, int ifx, uint32_t gw, bcm_if_t *eg)
 		return BCM_E_RESOURCE;
 	if (!arp_lookup(ifp->ifname, gw, mac))
 		return BCM_E_NOT_FOUND;
+	if ((port = nh_port(ifp, mac)) < 0)
+		return BCM_E_NOT_FOUND;         /* an SVI neighbour not learned yet */
 
 	bcm_l3_egress_t_init(&egr);
 	memcpy(egr.mac_addr, mac, 6);
 	egr.intf = ifp->intf;
 	egr.vlan = ifp->vlan;
-	egr.port = ifp->port;
+	egr.port = port;
 	egr.module = 0;
 
 	rv = bcm_l3_egress_create(l3_unit, 0, &egr, eg);
@@ -335,14 +373,14 @@ static int nexthop(struct l3if *ifp, int ifx, uint32_t gw, bcm_if_t *eg)
 		 */
 		bcm_gport_t gp;
 
-		if (BCM_E_NONE == bcm_port_gport_get(l3_unit, ifp->port, &gp)) {
+		if (BCM_E_NONE == bcm_port_gport_get(l3_unit, port, &gp)) {
 			egr.port = gp;
 			rv = bcm_l3_egress_create(l3_unit, 0, &egr, eg);
 			if (rv == BCM_E_NONE && eg_gport_said < 4) {
 				eg_gport_said++;
 				printf("l3: %s needed a gport for its next hop "
 				       "(port %d -> gport %#x)\n",
-				       ifp->ifname, ifp->port, (unsigned)gp);
+				       ifp->ifname, port, (unsigned)gp);
 				fflush(stdout);
 			}
 		}
@@ -353,6 +391,8 @@ static int nexthop(struct l3if *ifp, int ifx, uint32_t gw, bcm_if_t *eg)
 	nh[nnh].ifx = ifx;
 	nh[nnh].gw = gw;
 	nh[nnh].eg = *eg;
+	nh[nnh].port = port;
+	memcpy(nh[nnh].mac, mac, 6);
 	nnh++;
 	printf("l3: next hop %u.%u.%u.%u dev %s via "
 	       "%02x:%02x:%02x:%02x:%02x:%02x -> egress %d\n",
@@ -494,7 +534,7 @@ static int nexthop6(struct l3if *ifp, int ifx, const uint8_t *gw, bcm_if_t *eg)
 {
 	bcm_l3_egress_t egr;
 	uint8_t mac[6];
-	int rv, i;
+	int rv, i, port;
 
 	for (i = 0; i < nnh6; i++) {
 		if (nh6[i].ifx == ifx && memcmp(nh6[i].gw, gw, 16) == 0) {
@@ -508,12 +548,14 @@ static int nexthop6(struct l3if *ifp, int ifx, const uint8_t *gw, bcm_if_t *eg)
 		return BCM_E_RESOURCE;
 	if (!nd_lookup(gw, mac))
 		return BCM_E_NOT_FOUND;
+	if ((port = nh_port(ifp, mac)) < 0)
+		return BCM_E_NOT_FOUND;
 
 	bcm_l3_egress_t_init(&egr);
 	memcpy(egr.mac_addr, mac, 6);
 	egr.intf = ifp->intf;
 	egr.vlan = ifp->vlan;
-	egr.port = ifp->port;
+	egr.port = port;
 	egr.module = 0;
 
 	rv = bcm_l3_egress_create(l3_unit, 0, &egr, eg);
@@ -523,6 +565,8 @@ static int nexthop6(struct l3if *ifp, int ifx, const uint8_t *gw, bcm_if_t *eg)
 	nh6[nnh6].ifx = ifx;
 	memcpy(nh6[nnh6].gw, gw, 16);
 	nh6[nnh6].eg = *eg;
+	nh6[nnh6].port = port;
+	memcpy(nh6[nnh6].mac, mac, 6);
 	nnh6++;
 	printf("l3: v6 next hop dev %s via %02x:%02x:%02x:%02x:%02x:%02x -> egress %d\n",
 	       ifp->ifname, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], *eg);
@@ -1498,6 +1542,52 @@ static void loopback_punt(void)
 	freeifaddrs(head);
 }
 
+/*
+ * Follow a neighbour that moved to another port of its VLAN.
+ *
+ * A routed port's next hop cannot move; an SVI's can, whenever a host is
+ * recabled or a MAC is learned somewhere else. The egress object is rewritten
+ * in place, with its id kept, so every route and host entry that points at it
+ * follows without being touched. A MAC that has aged out of the L2 table
+ * leaves the object as it was: the last known port is a better guess than
+ * none, and the chip relearns on the next frame from the host.
+ */
+static void poll_svi_moves(void)
+{
+	int i;
+
+	for (i = 0; i < nnh + nnh6; i++) {
+		int v6 = i >= nnh, k = v6 ? i - nnh : i;
+		int ifx = v6 ? nh6[k].ifx : nh[k].ifx;
+		int *cached = v6 ? &nh6[k].port : &nh[k].port;
+		uint8_t *mac = v6 ? nh6[k].mac : nh[k].mac;
+		bcm_if_t eg = v6 ? nh6[k].eg : nh[k].eg;
+		struct l3if *ifp = &ifs[ifx];
+		bcm_l3_egress_t egr;
+		int port, rv;
+
+		if (ifp->port >= 0 || ifp->dead)
+			continue;
+		port = nh_port(ifp, mac);
+		if (port < 0 || port == *cached)
+			continue;
+		bcm_l3_egress_t_init(&egr);
+		memcpy(egr.mac_addr, mac, 6);
+		egr.intf = ifp->intf;
+		egr.vlan = ifp->vlan;
+		egr.port = port;
+		rv = bcm_l3_egress_create(l3_unit, BCM_L3_REPLACE | BCM_L3_WITH_ID,
+					  &egr, &eg);
+		printf("l3: %s neighbour %02x:%02x:%02x:%02x:%02x:%02x moved "
+		       "port %d -> %d (egress %d): %d\n", ifp->ifname,
+		       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+		       *cached, port, eg, rv);
+		fflush(stdout);
+		if (rv == BCM_E_NONE)
+			*cached = port;
+	}
+}
+
 void nosaic_l3_poll(void)
 {
 	static unsigned long ticks;
@@ -1507,7 +1597,11 @@ void nosaic_l3_poll(void)
 
 	if (!l3_on)
 		return;
+	pthread_mutex_lock(&l3_lock);
+	poll_svi_moves();
 	for (i = 0; i < nif; i++) {
+		if (ifs[i].dead)
+			continue;
 		self_punt(&ifs[i]);
 		self_punt6(&ifs[i]);
 	}
@@ -1535,15 +1629,134 @@ void nosaic_l3_poll(void)
 		last = now;
 		nosaic_l3_stats();
 	}
+	pthread_mutex_unlock(&l3_lock);
 }
 
+static int l3_add_intf(int unit, const char *ifname, int port, int vlan,
+		       const bcm_mac_t mac, int mtu);
+
 int nosaic_l3_add_intf(int unit, const char *ifname, int port, int vlan,
+		       const bcm_mac_t mac, int mtu)
+{
+	int rv;
+
+	pthread_mutex_lock(&l3_lock);
+	rv = l3_add_intf(unit, ifname, port, vlan, mac, mtu);
+	pthread_mutex_unlock(&l3_lock);
+	return rv;
+}
+
+/*
+ * An SVI's interface coming back. Its slot, router interface and next hops
+ * are kept from before, and only the MAC may differ -- the tap it belongs to
+ * is new -- so the router interface and its MY_STATION entry are rewritten to
+ * the new one. A router interface whose MAC is not its tap's answers ARP and
+ * then drops everything sent to the address it answered with.
+ */
+static int l3_revive(struct l3if *ifp, const bcm_mac_t mac, int mtu)
+{
+	bcm_l3_intf_t intf;
+	bcm_l2_station_t st;
+	int rv;
+
+	ifp->dead = 0;
+	/* Its MY_STATION entry went with it (nosaic_l3_del_intf), so it comes
+	 * back whatever the MAC is. */
+	bcm_l2_station_t_init(&st);
+	memcpy(st.dst_mac, mac, 6);
+	memset(st.dst_mac_mask, 0xff, 6);
+	st.flags = BCM_L2_STATION_IPV4 | BCM_L2_STATION_IPV6 |
+		   BCM_L2_STATION_ARP_RARP;
+	rv = bcm_l2_station_add(l3_unit, &ifp->station, &st);
+	if (rv != BCM_E_NONE)
+		fprintf(stderr, "l3: %s MY_STATION back: %d\n", ifp->ifname, rv);
+	if (memcmp(ifp->mac, mac, 6) == 0)
+		return 0;
+	bcm_l3_intf_t_init(&intf);
+	intf.l3a_flags = BCM_L3_REPLACE | BCM_L3_WITH_ID;
+	intf.l3a_intf_id = ifp->intf;
+	memcpy(intf.l3a_mac_addr, mac, 6);
+	intf.l3a_vid = ifp->vlan;
+	intf.l3a_mtu = mtu > 0 ? mtu : 1500;
+	rv = bcm_l3_intf_create(l3_unit, &intf);
+	if (rv != BCM_E_NONE)
+		fprintf(stderr, "l3: %s new mac on its router interface: %d\n",
+			ifp->ifname, rv);
+	memcpy(ifp->mac, mac, 6);
+	return rv == BCM_E_NONE ? 0 : -1;
+}
+
+/*
+ * Take an SVI's interface out of use. Its neighbours' host entries are
+ * removed from the chip -- they would keep routing to a VLAN nobody answers
+ * for -- and its routes go the ordinary way, when the kernel drops them with
+ * the interface and the next poll sweeps them.
+ */
+void nosaic_l3_del_intf(const char *ifname)
+{
+	struct l3if *ifp;
+	int ifx, i, j;
+
+	pthread_mutex_lock(&l3_lock);
+	ifp = if_by_name(ifname);
+	if (ifp == NULL) {
+		pthread_mutex_unlock(&l3_lock);
+		return;
+	}
+	ifx = (int)(ifp - ifs);
+	for (i = j = 0; i < nhs; i++) {
+		if (hs[i].ifx == ifx) {
+			bcm_l3_host_t h;
+
+			bcm_l3_host_t_init(&h);
+			h.l3a_ip_addr = hs[i].ip;
+			bcm_l3_host_delete(l3_unit, &h);
+			continue;
+		}
+		hs[j++] = hs[i];
+	}
+	nhs = j;
+	for (i = j = 0; i < nhs6; i++) {
+		if (hs6[i].ifx == ifx) {
+			bcm_l3_host_t h;
+
+			bcm_l3_host_t_init(&h);
+			h.l3a_flags = BCM_L3_IP6;
+			memcpy(h.l3a_ip6_addr, hs6[i].ip, 16);
+			bcm_l3_host_delete(l3_unit, &h);
+			continue;
+		}
+		hs6[j++] = hs6[i];
+	}
+	nhs6 = j;
+	/*
+	 * And its MY_STATION entry. SVI taps reuse slots, so the next SVI can
+	 * have this one's MAC: the station entry left behind made its
+	 * bcm_l2_station_add fail with EXISTS, and the new SVI answered ARP and
+	 * OSPF with no router interface in the chip -- found on a 7050SX2 right
+	 * after `verify contract` had made and removed a vlan200.
+	 */
+	if (ifp->station >= 0) {
+		bcm_l2_station_delete(l3_unit, ifp->station);
+		ifp->station = -1;
+	}
+	ifp->dead = 1;
+	pthread_mutex_unlock(&l3_lock);
+	printf("l3: %s router interface out of use\n", ifname);
+	fflush(stdout);
+}
+
+static int l3_add_intf(int unit, const char *ifname, int port, int vlan,
 		       const bcm_mac_t mac, int mtu)
 {
 	bcm_l3_intf_t intf;
 	bcm_l2_station_t st;
 	struct l3if *ifp;
-	int rv;
+	int rv, i;
+
+	for (i = 0; i < nif; i++)
+		if (ifs[i].dead && strcmp(ifs[i].ifname, ifname) == 0)
+			return l3_revive(&ifs[i], mac, mtu);
 
 	if (nif >= MAX_IF) {
 		/* Loud, because the consequence is a port that links, addresses
@@ -1622,7 +1835,13 @@ int nosaic_l3_add_intf(int unit, const char *ifname, int port, int vlan,
 	st.flags = BCM_L2_STATION_IPV4 | BCM_L2_STATION_IPV6 |
 		   BCM_L2_STATION_ARP_RARP;
 	rv = bcm_l2_station_add(unit, &ifp->station, &st);
-	if (rv != BCM_E_NONE) {
+	if (rv == BCM_E_EXISTS) {
+		/* The same MAC already terminates L3 -- station entries are not
+		 * per interface -- so what this entry would do is done. */
+		fprintf(stderr, "l3: %s MY_STATION already present for its MAC\n",
+			ifname);
+		ifp->station = -1;
+	} else if (rv != BCM_E_NONE) {
 		fprintf(stderr, "l3: %s bcm_l2_station_add: %d\n", ifname, rv);
 		return -1;
 	}
