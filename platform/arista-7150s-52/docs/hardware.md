@@ -368,6 +368,90 @@ before that middle section and releases them after; this port has only ever
 released them. Doing work while the chip is held in reset, and only then
 letting go, is a different sequence from the one tried.
 
+### The SCD register map for this board
+
+Disassembling `SantaRosaP5.initialize()` and reading `SaguaroHal`'s register
+table gives the board's whole SCD map, and it names most of what the earlier
+cold/warm diff could only list as offsets. **Addresses are byte offsets into
+SCD BAR0.**
+
+| Offset | Register | |
+|---|---|---|
+| `0x0140` | `scratch2` | |
+| `0x0150` | `softError` | |
+| `0x0160` | `prickleRev` | prickle's version — `0x002a0000` → 42 |
+| `0x0170` | `quillRev` | quill's version — `0x00550000` → 85 |
+| `0x01a0` / `0x01b0` | `dnaHi` / `dnaLo` | FPGA device DNA |
+| `0x1000` | `writeProtect` | FDL write protect |
+| `0x3000`–`0x30b0` | `interrupt0..3` | maskSet / maskClear / status, 3 registers each |
+| `0x3100` | `interruptCtrl` | |
+| `0x3300` / `0x3400` | `clockMeasureCtrl` / `clock156MeasureResult` | **this is the `0x3400` delta** |
+| `0x3800` / `0x3810` / `0x3820` | `altaTimeLo` / `altaTimeHi` / `altaTimeCtrl` | **this is the `0x3800`–`0x381c` delta** |
+| `0x4000` | **`resetSet`** | write 1 to a bit to ASSERT that reset |
+| `0x4010` | **`resetClear`** | write 1 to a bit to RELEASE it |
+| `0x4100` | `SFPTxDisable` | |
+| `0x5000` | `powerSupply` | |
+| `0x5010`–`0x5340` | `portStatusControl[1..52]` | **per-front-panel-port, stride `0x10`** — 52 of them, one per SFP+ cage |
+| `0x5310`–`0x5340` | `qsfpPortStatusControl[49..52]` | the same four ports, QSFP view |
+| `0x6000` | `ledFlashRate` | |
+| `0x6050` / `0x6060` / `0x6090` | `statusLed` / `fanLed` / `beaconLed` | |
+| `0x6070` / `0x6080` | `powerSupplyLed[1..2]` | |
+| `0x60d0`–`0x64c0` | `portLinkLed[1..64]` | stride `0x10` |
+| `0x7020` / `0x7030` | `usbPower` / `slaveError` | |
+| `0x7900` | `spiBlock` | |
+| `0x8000` + `0x80`·n | `smbusBlockV2[n]` | the SMBus accelerators — matching what `scdsmbus` already assumes |
+
+`portStatusControl[1..52]` at `0x5010` stride `0x10` is the per-port transceiver
+control this port half-knew from "clearing bit 6 of `0x5010` turns a laser on".
+It is one register per front-panel port, and the whole block moving between cold
+and warm is now explained.
+
+### The reset bits are named, and we had them right
+
+`ResetRegValue` gives the field positions:
+
+```
+   alta = bit 1        sol = bit 2        rpt = bit 8
+```
+
+A cold `resetSet` reads `0x00000106` — bits 1, 2 and 8 — which is **exactly
+`alta` + `sol` + `rpt`**. So the three bits cleared by hand were the right
+three, and releasing the FM6000's reset was done correctly.
+
+That closes off a whole line of doubt. Whatever is missing is **not** the reset
+bits, and not their polarity, and not a fourth bit nobody found.
+
+### So the gap is upstream of the reset
+
+The disassembly of `initialize()` reads:
+
+```python
+frc += self.scd.initialize()
+frc += self.altatemp.initialize()
+if self.ir:
+    frc += self.ir.initialize('vidMode', True)
+frc += self.ucd.initialize()
+frc += self.scd.initialize()            # a SECOND time
+
+reset = self.scd.hal.resetSet.rd()      # assert
+reset.rpt = 1; reset.alta = 1; reset.sol = 1
+self.scd.hal.resetSet.wr(reset)
+
+reset = self.scd.hal.resetClear.rd()    # then release
+reset.rpt = 1; reset.alta = 1; reset.sol = 1
+self.scd.hal.resetClear.wr(reset)
+```
+
+Note `rd` and `wr` are the register accessors, not devices — an earlier reading
+of the name list here took them for board components and was wrong.
+
+This port has done the last two blocks and **none** of the first five. The
+candidates are now specific and short: `scd.initialize()` (called twice, which
+is itself a hint), `altatemp.initialize()`, `ir.initialize('vidMode', True)`,
+and `ucd.initialize()`. The regulator's registers are identical cold and warm,
+so whatever `ir.initialize` does is either invisible in its first 48 registers
+or genuinely idempotent here; `ucd.initialize()` has never been looked at.
+
 ### ⚠ Reaching it from NOSaic is a licensing question, not just a coding one
 
 The cold half of that read needs NOSaic to talk to an SCD SMBus accelerator,

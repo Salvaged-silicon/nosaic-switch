@@ -124,9 +124,17 @@ committed, as on every other board.
       [hardware.md](hardware.md#the-regulator-is-identical-cold-and-warm--the-rails-hypothesis-is-wrong)
 - [ ] read the **UCD90160** (`/scd/0/1/0x4e`) cold — not yet done, the thermal
       restart storm ate the output
-- [ ] look at the five steps the vendor runs **between `resetSet` and
-      `resetClear`** (`rd`, `rpt`, `alta`, `sol`, `wr`). This port has only ever
-      released the resets; the vendor asserts them, does work, then releases
+- [x] **the reset bits are named and we had them right**: `alta`=1, `sol`=2,
+      `rpt`=8, and a cold `0x4000` reads `0x106` — exactly those three. The
+      reset release was correct; the gap is upstream of it
+- [x] **the board's whole SCD register map is recovered** — see
+      [hardware.md](hardware.md#the-scd-register-map-for-this-board). It names
+      the `0x3400`, `0x3800` and `0x5000` deltas from the earlier diff, and
+      gives `portStatusControl[1..52]` at `0x5010` stride `0x10`
+- [ ] **work through the five steps before the reset**: `scd.initialize()`
+      (called twice), `altatemp.initialize()`, `ir.initialize('vidMode', True)`,
+      `ucd.initialize()`. This port has done none of them, and one of them is
+      what brings the chip onto the bus
 - [ ] **`thermal` restart-storms** now that `platform_hal` is declared, because
       the board has no `smbus:` sensor map. Same fix as `nosd`: back off rather
       than spin. Do **not** fix it by inventing a sensor map A 240-element MAX II CPLD on the CPU's
