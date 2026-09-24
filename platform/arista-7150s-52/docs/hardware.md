@@ -452,6 +452,59 @@ and `ucd.initialize()`. The regulator's registers are identical cold and warm,
 so whatever `ir.initialize` does is either invisible in its first 48 registers
 or genuinely idempotent here; `ucd.initialize()` has never been looked at.
 
+### ⚠ `DosBoard` is the diagnostic tree, not the boot path
+
+Worth correcting before anyone builds on the sequence above.
+`DosBoard` / `DosLib` / `DosComponent` are Arista's **diagnostic** OS modules.
+`SantaRosaP5.initialize()` is the diagnostics' board setup, and its register
+map and field names are solid facts about the hardware — but it is not what the
+switch runs at boot.
+
+Reading the two components it calls confirms they are not the missing step
+either:
+
+- **`Saguaro.initialize()`** walks the SMBus accelerators, clears their hams
+  and initialises the MDIO accelerators. Nothing to do with powering the Alta.
+- **`Ucd90160.initialize()`** calls `_setRail()`, then shows, clears and
+  re-clears logged faults. Fault housekeeping, no enable.
+
+### The production path is `NorCalInit`, and it programs a clock
+
+`/usr/bin/NorCalInit` is a 190-byte wrapper around a `NorCalInit` Python
+module, and *that* is what `/etc/rc.d/init.d/NorCal` runs at boot. Its `main()`
+does, among much else:
+
+```
+   identifyCell → verifyAbootCompatibility → readFdlPrefdl / readFdl
+   enableScdCrc
+   getDmamemSize                      ← the 48 MB the FM6000's DMA works out of
+   hasChl822X → updatePowerControllers
+   AltaVoltageRailAdj.isRosa → adjustRosaVoltageRails
+   UpdateCpld · enableFaultPowerCycle · UpdatePex · enableEgressCreditTimeout
+   Si5338 → needsQuartzyConfig → configure      ← PROGRAMS A CLOCK GENERATOR
+   configureNet → HwEpochPolicy → PicassoInit
+```
+
+Two things stand out.
+
+**There is a clock generator, and the boot path programs it.** `Si5338` is a
+Silicon Labs programmable clock; the board module lists it at `0x70` with an
+`osc` and a `resetPin`, and `main()` carries the strings *"Programming clock for
+sid"*, *"Clock switch failed, using original clock."* and a
+`/mnt/flash/skipClockProgram` escape hatch. **A switch ASIC with no reference
+clock will not train a PCIe link no matter what its resets say** — which is
+exactly the symptom this board has. This is now the strongest remaining
+candidate.
+
+**Nothing in `NorCalInit` releases the ASIC's reset.** There is no
+`resetClear` in that flow at all. So something else does it — the vendor's
+`scd` kernel driver on probe, or EOS's platform agent later — and finding which
+is a separate question from finding what makes the chip *ready* to be released.
+
+`updatePowerControllers` and `adjustRosaVoltageRails` are both in the flow and
+both named "update"/"adjust": consistent with the cold-versus-warm read showing
+the regulator already in its final state and needing nothing.
+
 ### ⚠ Reaching it from NOSaic is a licensing question, not just a coding one
 
 The cold half of that read needs NOSaic to talk to an SCD SMBus accelerator,

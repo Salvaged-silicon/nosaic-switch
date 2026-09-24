@@ -131,10 +131,18 @@ committed, as on every other board.
       [hardware.md](hardware.md#the-scd-register-map-for-this-board). It names
       the `0x3400`, `0x3800` and `0x5000` deltas from the earlier diff, and
       gives `portStatusControl[1..52]` at `0x5010` stride `0x10`
-- [ ] **work through the five steps before the reset**: `scd.initialize()`
-      (called twice), `altatemp.initialize()`, `ir.initialize('vidMode', True)`,
-      `ucd.initialize()`. This port has done none of them, and one of them is
-      what brings the chip onto the bus
+- [x] **the five steps before the reset are not it**, and `DosBoard` is the
+      *diagnostic* tree rather than the boot path. `Saguaro.initialize()` is
+      accelerator setup; `Ucd90160.initialize()` clears faults
+- [ ] **the Si5338 clock generator.** The production path (`NorCalInit`, which
+      is what `/etc/rc.d/init.d/NorCal` runs) programs a Silicon Labs Si5338 —
+      "Programming clock for sid", with a `/mnt/flash/skipClockProgram` escape.
+      An ASIC with no reference clock will not train a PCIe link whatever its
+      resets say, which is this board's exact symptom. **Strongest remaining
+      candidate**
+- [ ] **find what actually releases the ASIC reset under EOS** — it is not in
+      `NorCalInit` at all. Likely the vendor's `scd` kernel driver on probe, or
+      the platform agent. Separate question from what makes the chip ready
 - [ ] **`thermal` restart-storms** now that `platform_hal` is declared, because
       the board has no `smbus:` sensor map. Same fix as `nosd`: back off rather
       than spin. Do **not** fix it by inventing a sensor map A 240-element MAX II CPLD on the CPU's
