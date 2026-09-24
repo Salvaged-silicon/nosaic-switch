@@ -144,6 +144,21 @@ committed, as on every other board.
 - [x] **Si5338 `0xda`–`0xf6` and `0xff` read cold: identical to warm**,
       `outputDrive` at `0xe6` included (`0x00` both). **The clock hypothesis is
       closed** — every register on it is the same cold as warm
+- [x] **found the CHL8228G at `/scd/0/3/0x70`** — the board class carries the
+      whole SMBus map as `accel.bus` (`ir 0.3`, `dpm 0.5`, `osc 1.1`, …), and
+      `osc 1.1` matches where the Si5338 was found, which confirms the map.
+      Earlier scans missed it because they probed register 0, and on a PMBus
+      part command `0x00` is `PAGE` and does not answer a read
+- [x] **the rails are already on cold.** `OPERATION` = `0x88` (enable bit set)
+      cold *and* warm, and `READ_IOUT` is non-zero cold — the regulator is
+      delivering current before anything NOSaic does. **The power hypothesis is
+      closed.**
+- [ ] **the PCIe link itself is the remaining place to look.** Powered, clocked
+      and out of reset, and still not on the bus, means the link is not
+      training. Look at the RS780 root port `00:04.0` — its link status cold
+      versus warm — and at datasheet Table 4-1 step 11, *"If PCIe is used, BOOT
+      ROM must setup PCIe SerDes and take PCIe out of reset"*, which is a step
+      inside the chip that nothing on this board has been shown to perform
 - [ ] **step back.** Everything compared so far — reset block, clock, thorn —
       is identical cold and warm. "A device needs programming" predicts a
       difference and there is none. Next candidates, in order: find the

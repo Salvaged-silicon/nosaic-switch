@@ -381,6 +381,45 @@ cold and `0x00` warm — as is the page register at `0xff`.
 a board whose ASIC is dark and one whose ASIC is forwarding. The clock comes up
 fully configured and is not what the board does differently.
 
+### The CHL8228G, found at last — and the rails are already on
+
+The regulator was never missing, only mis-scanned. The board class carries the
+whole SMBus map as `accel.bus`:
+
+```
+   alta 0.2    dpm 0.5    ir 0.3     osc 1.1    psu1 1.0
+   psu2 0.4    repeater 1.2    scd 0.1    security 0.6    switch 0.0
+```
+
+`osc` is `1.1`, which is exactly where the Si5338 was found — so the map is
+confirmed by something already measured. **`ir` is `0.3`**: the CHL8228G is at
+`/scd/0/3/0x70`, and `dpm` (UCD90160) at `/scd/0/5/0x4e`.
+
+Earlier scans missed it for a reason worth remembering: **they probed register
+0, and on a PMBus device command `0x00` is `PAGE`, which does not answer a
+read.** A scan that decides "nothing here" from register 0 alone will walk past
+every PMBus part on the bus.
+
+It answers on its implemented commands, and they decode:
+
+| PMBus | Cold | Warm | |
+|---|---|---|---|
+| `0x01` OPERATION | **`0x88`** | **`0x88`** | bit 7 set — **the unit is ON in both** |
+| `0x19` CAPABILITY | `0xa0` | `0xa0` | |
+| `0x20` VOUT_MODE | `0x15` | `0x15` | linear, exponent −11 |
+| `0x78` STATUS_BYTE | `0x00` | `0x02` | |
+| `0x8c` READ_IOUT | **`0x12`** | **`0x1d`** | **current is flowing cold, and more of it warm** |
+
+**The rails are up on a cold board.** `OPERATION` has its enable bit set in both
+states, and `READ_IOUT` is non-zero cold — the regulator is not merely enabled,
+it is delivering current. The increase to warm is the ASIC drawing more once it
+runs, which is what you would expect of a chip that is powered and idle.
+
+So the power hypothesis is closed too, and closed in the most useful way: not
+"we could not find a difference" but "the thing is measurably on".
+
+### Three hypotheses, all measured, all wrong
+
 ### What ruling three things out actually tells us
 
 Taken together the measurements now say something more useful than any of them
