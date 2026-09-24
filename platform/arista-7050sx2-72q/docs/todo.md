@@ -48,7 +48,31 @@ and how it was proven is in
 
 ## Required — the switch does not come up working without these
 
-### A port can link and carry nothing until the datapath is restarted
+### ~~A port can link and carry nothing until the datapath is restarted~~ — fixed 2026-09-24
+
+**Cause:** td2p started linkscan but never gave any port a linkscan mode, so
+linkscan scanned nothing. `bcm_port_enable_set` turns the MAC on only if the
+port has link at that moment (sdk `port.c:9033`), and the only thing that turns
+it on later is `bcm_port_update`, which linkscan calls. A port whose far end
+was down at bring-up therefore kept its MAC off for good. Its link query fell
+back to the PHY and said `link=1`, and linkscan's never-corrected "all up" link
+bitmap let `bcm_tx` build descriptors, so `tx-ok` counted.
+`datapath/td2p/sdk.c` now does what td2 already did:
+`bcm_linkscan_mode_set_pbm(..., BCM_LINKSCAN_MODE_HW)` after the enable loop.
+
+**Proven here.** The SX2 datapath was restarted while the 7050TX-64's datapath
+was re-initialising, so Et52/Et53 had no link (`tx-nolink=34`). The TX then
+came up and the SX2 was not touched again (nosd up 449 s through the whole
+test). Both ports went to `in-uc=9 in-nuc=34 out-uc=7 out-nuc=24`, OSPF reached
+Full on each, and ping ran at 0.59 ms. Before the fix, exactly this sequence
+needed a restart.
+
+It also explains the refuted `EPC_LINK_BMAP` theory below. The bitmap was
+all-ones because nothing ever ran on a link change, not because this board
+does not maintain it. Expect it to track link now.
+
+The history follows, kept because the reasoning is what led here.
+
 
 Caught in the act on 2026-09-22, on Ethernet49, by the detector in
 `tapbridge.c` — the first specimen with numbers rather than a recollection.
