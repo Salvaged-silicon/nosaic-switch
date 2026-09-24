@@ -102,6 +102,27 @@ That leaves the empty-cage-at-boot circumstance above as the live hypothesis,
 and `linkmap` as a standing check: if a port ever IS absent from the bitmap
 while its interface reports up, the fault is named outright.
 
+**A second specimen, 2026-09-24, and it narrows the hypothesis.** Et52 and
+Et53, both to the 7050TX-64, after this switch rebooted while the TX was also
+rebooting:
+
+```
+et52  link=1  tx-ok=21  tx-nolink=33  out-uc=0  out-nuc=0  in-uc=0  in-nuc=0
+et53  link=1  tx-ok=21  tx-nolink=33  out-uc=0  out-nuc=0  in-uc=0  in-nuc=0
+```
+
+Both cages had their optics in throughout. The only thing that was absent
+when the datapath came up was the far end's link (`tx-nolink=33` is the
+datapath trying to send before the TX was up). Et49 and Et54, whose far ends
+were up at the time, came up normally in the same boot. A datapath restart
+once the TX was up cleared both ports at once: OSPF went Full on each and the
+MAC counted traffic both ways.
+
+So an empty cage is not needed. **Far end down when the datapath
+initialises** is enough, and that is the ordinary case whenever two lab
+switches reboot together. The empty-cage-at-boot specimen above had that
+condition too.
+
 Until then the detector is the mitigation — it names the port and says the
 restart clears it, which is the difference between a five-minute fix and the
 day this cost when it was mistaken for a dead far end.
