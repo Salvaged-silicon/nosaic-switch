@@ -286,6 +286,23 @@ func (c *Client) SetPortVLAN(name string, vid int, tagged bool) error {
 	return c.call(proto.OpSetPortVLAN, proto.VLANArgs{Port: name, VID: vid, Tagged: tagged}, nil)
 }
 
+func (c *Client) DelPortVLAN(name string, vid int) error {
+	return c.call(proto.OpDelPortVLAN, proto.VLANArgs{Port: name, VID: vid}, nil)
+}
+
+func (c *Client) VLANs() ([]switchapi.VLAN, error) {
+	var vl []switchapi.VLAN
+	return vl, c.call(proto.OpVLANs, nil, &vl)
+}
+
+func (c *Client) AddSVI(vid int) error {
+	return c.call(proto.OpAddSVI, proto.VLANArgs{VID: vid}, nil)
+}
+
+func (c *Client) DelSVI(vid int) error {
+	return c.call(proto.OpDelSVI, proto.VLANArgs{VID: vid}, nil)
+}
+
 func (c *Client) FDB() ([]switchapi.FDBEntry, error) {
 	var f []switchapi.FDBEntry
 	return f, c.call(proto.OpFDB, nil, &f)

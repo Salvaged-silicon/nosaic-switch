@@ -42,6 +42,7 @@ type Switch struct {
 	cfg   Config
 	names []string
 	nft   bool // nftables works here, so access lists are real
+	vlans bool // the bridge tool is here, so VLANs and SVIs are real
 	acls  map[int]switchapi.ACLRule
 }
 
@@ -53,7 +54,7 @@ func New(cfg Config) *Switch {
 	if cfg.Peer == "" {
 		cfg.Peer = "-p"
 	}
-	s := &Switch{cfg: cfg, nft: nftWorks(), acls: map[int]switchapi.ACLRule{}}
+	s := &Switch{cfg: cfg, nft: nftWorks(), vlans: bridgeWorks(), acls: map[int]switchapi.ACLRule{}}
 	for i := 1; i <= cfg.Ports; i++ {
 		s.names = append(s.names, fmt.Sprintf("swp%d", i))
 	}
@@ -62,17 +63,18 @@ func New(cfg Config) *Switch {
 
 // Capabilities reports honestly what this datapath does.
 //
-// VLANs are declared absent rather than faked. Doing them properly means a
-// bridge with VLAN filtering, which changes how addresses behave on a port,
-// and half-implementing them would be worse than not having them: the
-// conformance suite exists precisely to stop a datapath claiming something it
-// does not do.
+// VLANs are a VLAN-filtering bridge (vlan.go), and are declared only where the
+// bridge tool is there to drive one. Where it is not they are refused rather
+// than faked: the conformance suite exists precisely to stop a datapath
+// claiming something it does not do.
 func (s *Switch) Capabilities() switchapi.Capabilities {
 	return switchapi.Capabilities{
 		Contract:   switchapi.Version,
 		Driver:     "virt",
 		MaxPorts:   s.cfg.Ports,
-		VLANs:      false,
+		VLANs:      s.vlans,
+		MaxVLANs:   4094 * b2i(s.vlans),
+		SVIs:       s.vlans,
 		L2Learning: false,
 		L3:         true,
 		IPv6:       true,
@@ -136,9 +138,12 @@ func (s *Switch) Start() error {
 // not one anybody should run on a switch.
 func (s *Switch) Close() error { return nil }
 
+// exists asks the kernel, not sysfs. /sys/class/net shows the namespace sysfs
+// was mounted in, which is not this process's after an unshare -n: the test
+// harness runs exactly that way, and there the bridge made a moment earlier
+// was invisible and the next AddVLAN tried to create it again.
 func exists(name string) bool {
-	_, err := os.Stat("/sys/class/net/" + name)
-	return err == nil
+	return exec.Command("ip", "link", "show", "dev", name).Run() == nil
 }
 
 func (s *Switch) Ports() ([]switchapi.Port, error) {
@@ -239,16 +244,12 @@ func (s *Switch) PortCounters(name string) (switchapi.Counters, error) {
 	}, nil
 }
 
-// VLANs are not implemented, and say so. See Capabilities.
-func (s *Switch) AddVLAN(int) error                   { return switchapi.Unsupported("vlans") }
-func (s *Switch) DelVLAN(int) error                   { return switchapi.Unsupported("vlans") }
-func (s *Switch) SetPortVLAN(string, int, bool) error { return switchapi.Unsupported("vlans") }
 func (s *Switch) FDB() ([]switchapi.FDBEntry, error) {
 	return nil, switchapi.Unsupported("l2 learning")
 }
 
 func (s *Switch) AddAddress(name string, addr netip.Prefix) error {
-	if err := s.known(name); err != nil {
+	if err := s.knownL3(name); err != nil {
 		return err
 	}
 	_, err := ipCmd("addr", "add", addr.String(), "dev", name)
@@ -256,7 +257,7 @@ func (s *Switch) AddAddress(name string, addr netip.Prefix) error {
 }
 
 func (s *Switch) DelAddress(name string, addr netip.Prefix) error {
-	if err := s.known(name); err != nil {
+	if err := s.knownL3(name); err != nil {
 		return err
 	}
 	_, err := ipCmd("addr", "del", addr.String(), "dev", name)

@@ -162,6 +162,28 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return done(s.sw.SetPortVLAN(v.Port, v.VID, v.Tagged))
 
+	case proto.OpDelPortVLAN:
+		if err := json.Unmarshal(req.Args, &v); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.DelPortVLAN(v.Port, v.VID))
+
+	case proto.OpVLANs:
+		vl, err := s.sw.VLANs()
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(vl)
+
+	case proto.OpAddSVI, proto.OpDelSVI:
+		if err := json.Unmarshal(req.Args, &v); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		if req.Op == proto.OpAddSVI {
+			return done(s.sw.AddSVI(v.VID))
+		}
+		return done(s.sw.DelSVI(v.VID))
+
 	case proto.OpFDB:
 		f, err := s.sw.FDB()
 		if err != nil {

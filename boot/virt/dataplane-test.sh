@@ -23,6 +23,22 @@ export PATH="$TOOLS/sbin:$TOOLS/usr/sbin:$TOOLS/bin:$PATH"
 command -v ip >/dev/null || { echo "the iproute2 package has no ip" >&2; exit 1; }
 echo "using $(command -v ip) from $(basename "$IPR")"
 
+# And ping from our busybox, when the container has none -- it has none, and a
+# ping that cannot run fails exactly like a ping that got no answer. The VLAN
+# checks below are all pings, so without this they failed on a bridge that was
+# forwarding correctly.
+if ! command -v ping >/dev/null; then
+    BB=$(ls -1 out/packages/busybox_*_"$(uname -m)".nos 2>/dev/null | head -1)
+    [ -n "$BB" ] || { echo "no ping here: build busybox first: make pkg PKG=busybox ARCH=x86_64" >&2; exit 1; }
+    # Its own directory: busybox links ip too, and that must not shadow
+    # iproute2's.
+    BBDIR=$(mktemp -d)
+    tar -xOf "$BB" data.tar.gz | tar -xzf - -C "$BBDIR" 2>/dev/null
+    mkdir -p "$TOOLS/bin"
+    ln -sf "$BBDIR/bin/busybox" "$TOOLS/bin/ping"
+    echo "using ping from $(basename "$BB")"
+fi
+
 # Build before entering the namespace, because there is no network inside one
 # and the Go toolchain would try to fetch modules. Running real binaries is
 # also closer to the truth: a switch runs nosd and nosaic, not `go run`.
@@ -60,7 +76,7 @@ mkdir -p /run
 # itself, but only once it starts; clearing it here means a run that crashed
 # before that does not wedge the next one.
 rm -f "$SOCK"
-./out/nosd --socket "$SOCK" --driver virt --ports 4 >/tmp/nosd.log 2>&1 &
+./out/nosd --socket "$SOCK" --driver virt --ports 6 >/tmp/nosd.log 2>&1 &
 NOSD=$!
 trap 'kill $NOSD 2>/dev/null || true' EXIT
 
@@ -146,9 +162,85 @@ else
 fi
 
 echo
-echo "=== a capability it does not have must be refused ==="
-if ./out/nosaic show caps | grep -q 'vlans.*false'; then
-    echo "    vlans: reported as unsupported, as this datapath actually is"
+echo "=== vlans and routed vlan interfaces, with traffic ==="
+if ./out/nosaic show caps | grep -Eq '^vlans +true'; then
+    # The contract suite first, over the socket, against the real bridge: the
+    # same checks the reference implementation passes.
+    ./out/nosaic verify contract | sed 's/^/    /'
+
+    # Three hosts, each in a namespace of its own on the far end of a port.
+    #   A  swp3  access 10   10.10.0.2, untagged
+    #   B  swp4  trunk 10,20 10.10.0.3 on a .10 subinterface, so tagged
+    #   C  swp5  access 20   10.10.0.4 -- the same subnet in another VLAN
+    host() {
+        unshare -n sleep 600 & local pid=$!
+        HOSTS="$HOSTS $pid"
+        trap 'kill $NOSD ${PEER:-} $HOSTS 2>/dev/null || true' EXIT
+        sleep 0.3
+        ip link set "$1" netns "$pid"
+        nsenter -t "$pid" -n ip link set lo up
+        nsenter -t "$pid" -n ip link set "$1" up
+        eval "$2=$pid"
+    }
+    HOSTS=""
+    host swp3-p A
+    host swp4-p B
+    host swp5-p C
+    nsenter -t "$A" -n ip addr add 10.10.0.2/24 dev swp3-p
+    nsenter -t "$B" -n ip link add link swp4-p name swp4-p.10 type vlan id 10
+    nsenter -t "$B" -n ip link set swp4-p.10 up
+    nsenter -t "$B" -n ip addr add 10.10.0.3/24 dev swp4-p.10
+    nsenter -t "$C" -n ip addr add 10.10.0.4/24 dev swp5-p
+
+    ./out/nosaic vlan add 10
+    ./out/nosaic vlan add 20
+    ./out/nosaic switchport swp3 access 10
+    ./out/nosaic switchport swp4 trunk 10,20
+    ./out/nosaic switchport swp5 access 20
+    for p in swp3 swp4 swp5; do ./out/nosaic interface "$p" up; done
+    ./out/nosaic show vlans | sed 's/^/    /'
+    sleep 1
+
+    pingfrom() { nsenter -t "$1" -n ping -c 2 -i 0.2 -W 1 "$2" >/dev/null 2>&1; }
+    # What the bridge holds, for when a ping says only that it failed.
+    bridgestate() {
+        echo "--- bridge vlan show"; bridge vlan show
+        echo "--- bridge fdb show br br0"; bridge fdb show br br0
+        echo "--- ip -d link show master br0"; ip -br link show master br0
+        ip -d link show br0 | head -4
+        echo "--- A"; nsenter -t "$A" -n ip -br addr; nsenter -t "$A" -n ip neigh
+        echo "--- B"; nsenter -t "$B" -n ip -br addr; nsenter -t "$B" -n ip neigh
+    }
+    pingfrom "$A" 10.10.0.3 || { echo "access 10 cannot reach the trunk's tagged 10"; bridgestate; exit 1; }
+    echo "    A (access 10, untagged) -> B (trunk, tagged 10): switched"
+    if pingfrom "$A" 10.10.0.4; then echo "vlan 10 reached vlan 20: no isolation"; exit 1; fi
+    echo "    A (vlan 10) -> C (vlan 20, same subnet): refused, as it must be"
+
+    # A routed interface for vlan 10. Addresses on it are ordinary addresses.
+    ./out/nosaic svi add 10 | sed 's/^/    svi: /'
+    ip addr add 10.10.0.1/24 dev vlan10
+    pingfrom "$A" 10.10.0.1 || { echo "the access host cannot reach vlan10"; exit 1; }
+    pingfrom "$B" 10.10.0.1 || { echo "the tagged host cannot reach vlan10"; exit 1; }
+    echo "    vlan10 answers both the untagged and the tagged member"
+    if pingfrom "$C" 10.10.0.1; then echo "vlan 20's host reached vlan 10's svi"; exit 1; fi
+    ./out/nosaic show vlans | sed 's/^/    /'
+
+    if ./out/nosaic vlan del 10 2>/dev/null; then
+        echo "vlan 10 was deleted with its svi still on it"; exit 1
+    fi
+    ./out/nosaic svi del 10
+    for p in swp3 swp4 swp5; do ./out/nosaic switchport "$p" none; done
+    ./out/nosaic vlan del 10
+    ./out/nosaic vlan del 20
+    if ip -o link show swp3 | grep -q "master"; then
+        echo "swp3 left every vlan and is still bridged"; exit 1
+    fi
+    echo "    removed: svi, memberships and vlans; the ports route again"
+else
+    echo "    vlans: reported as unsupported here (no bridge tool), so nothing to drive"
+    if ./out/nosaic vlan add 10 2>/dev/null; then
+        echo "a datapath without vlans accepted one"; exit 1
+    fi
 fi
 
 echo

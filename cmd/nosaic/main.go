@@ -183,7 +183,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl":
+	case "show", "interface", "route", "acl", "vlan", "svi", "switchport":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -748,7 +748,7 @@ func switchCmd(args []string) error {
 	switch args[0] {
 	case "show":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: nosaic show <ports|routes|acl|caps>")
+			return fmt.Errorf("usage: nosaic show <ports|routes|vlans|acl|caps>")
 		}
 		return showCmd(c, args[1], args[2:])
 
@@ -779,6 +779,15 @@ func switchCmd(args []string) error {
 
 	case "acl":
 		return aclCmd(c, args[1:])
+
+	case "vlan":
+		return vlanCmd(c, args[1:])
+
+	case "svi":
+		return sviCmd(c, args[1:])
+
+	case "switchport":
+		return switchportCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -794,6 +803,7 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		fmt.Fprintf(w, "contract\t%s\n", caps.Contract)
 		fmt.Fprintf(w, "ports\t%d max\n", caps.MaxPorts)
 		fmt.Fprintf(w, "vlans\t%v\n", caps.VLANs)
+		fmt.Fprintf(w, "svis\t%v\n", caps.SVIs)
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
 		if caps.ACL {
 			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)
@@ -1009,6 +1019,9 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\n", r.Seq, action, match, r.Packets, status)
 		}
 		return nil
+
+	case "vlans":
+		return showVLANs(c, w)
 
 	case "routes":
 		routes, err := c.Routes()
@@ -1394,8 +1407,14 @@ func verifyCmd(args []string) error {
 	case "ports", "routes":
 		return fmt.Errorf("`verify %s` is implemented in the C CLI and not yet "+
 			"here; `nosaic show %s` reports the datapath's own view", what, what)
+	case "contract":
+		c, err := nosdclient.Dial(os.Getenv("NOSD_SOCKET"))
+		if err != nil {
+			return err
+		}
+		return verifyContract(c)
 	}
-	return fmt.Errorf("usage: nosaic verify <ports|routes>")
+	return fmt.Errorf("usage: nosaic verify <contract|ports|routes>")
 }
 
 // humanBytes keeps the pool figures readable: 64 MiB is a size an operator

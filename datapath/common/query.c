@@ -529,11 +529,19 @@ static void handle(FILE *out, const char *req)
 		 * The width comes from the chip rather than from a constant here: it
 		 * is what the silicon reports it can do, which is the same rule the
 		 * port speeds follow.
+		 *
+		 * ⚠ AND VLANS WERE REPORTED THAT WERE NEVER THERE. This said
+		 * "VLANs":true and "L2Learning":true while every vlan.* and l2.fdb
+		 * request below falls through to "unsupported" -- the capability
+		 * model's one rule broken the other way round from ECMP. They are
+		 * false until this server implements them, and the contract stays
+		 * 1.1 here because 1.2's VLAN listing and SVIs are not implemented
+		 * either.
 		 */
 		fprintf(out,
 			"{\"ok\":true,\"result\":{\"Contract\":\"1.1\","
-			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
-			"\"MaxVLANs\":4094,\"L2Learning\":true,\"L3\":true,"
+			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":false,"
+			"\"MaxVLANs\":0,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
 			"\"ACL\":%s,\"ACLEntries\":%d,"
 			"\"ACL6\":%s,\"ACL6Entries\":%d}}\n",

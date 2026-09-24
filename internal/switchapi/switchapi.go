@@ -47,7 +47,13 @@ import (
 //
 // 1.1 added access lists: ACLs, SetACL and DelACL, gated by Capabilities.ACL
 // and ACL6.
-const Version = "1.1"
+//
+// 1.2 made VLANs something a caller can see and undo, and added routed VLAN
+// interfaces: VLANs, DelPortVLAN, AddSVI and DelSVI, the last two gated by
+// Capabilities.SVIs. It also pinned down what SetPortVLAN already implied but
+// never said: an untagged membership is the port's native VLAN, and a port has
+// at most one.
+const Version = "1.2"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -72,6 +78,9 @@ type Capabilities struct {
 
 	VLANs    bool
 	MaxVLANs int
+	// SVIs is routed VLAN interfaces: an L3 interface named vlan<VID> that
+	// routes for every port in the VLAN, which is what Cisco calls an SVI.
+	SVIs bool
 
 	L2Learning bool
 	MaxFDB     int
@@ -150,6 +159,28 @@ type Route struct {
 	NextHops []NextHop
 }
 
+// VLAN is one 802.1Q VLAN as the datapath holds it.
+type VLAN struct {
+	VID     int
+	Members []VLANMember
+	// SVI is whether the VLAN has a routed interface, named SVIName(VID).
+	SVI bool
+}
+
+// VLANMember is one port's membership. Untagged is the port's native VLAN:
+// frames it receives without a tag are placed in this VLAN, and frames it
+// sends from it leave without one. That is an access port, or a trunk's
+// native VLAN.
+type VLANMember struct {
+	Port   string
+	Tagged bool
+}
+
+// SVIName is the interface a routed VLAN appears as. One spelling for every
+// datapath, so that "iface vlan10 ..." in a configuration file means the same
+// thing on every board.
+func SVIName(vid int) string { return fmt.Sprintf("vlan%d", vid) }
+
 // FDBEntry is one learned or static MAC.
 type FDBEntry struct {
 	MAC    string
@@ -178,9 +209,27 @@ type Switch interface {
 	PortCounters(name string) (Counters, error)
 
 	// VLANs.
+	//
+	// AddVLAN creates the VLAN; a datapath may refuse a VID it reserves for
+	// its own use, and must say which. DelVLAN removes it and its
+	// memberships, and refuses while it has an SVI.
+	//
+	// SetPortVLAN makes the port a member. Untagged also makes it the port's
+	// native VLAN, replacing any earlier untagged membership: a port has one
+	// native VLAN, and a second would make an untagged frame ambiguous. A
+	// port with any membership is a switched port, and stops being a routed
+	// one. DelPortVLAN removes one membership; removing the last returns the
+	// port to routed.
 	AddVLAN(vid int) error
 	DelVLAN(vid int) error
 	SetPortVLAN(name string, vid int, tagged bool) error
+	DelPortVLAN(name string, vid int) error
+	VLANs() ([]VLAN, error)
+
+	// AddSVI gives an existing VLAN a routed interface, SVIName(vid), which
+	// takes addresses through AddAddress like a port does. DelSVI removes it.
+	AddSVI(vid int) error
+	DelSVI(vid int) error
 
 	// Access lists. See acl.go. SetACL adds the rule or replaces the one with
 	// the same sequence number; DelACL removes it; ACLs lists every rule the
