@@ -97,11 +97,14 @@ committed, as on every other board.
       an Altera EPM240 CPLD on the host southbridge SMBus at `/sb/1` addr
       `0x23`**. See
       [hardware.md](hardware.md#the-four-devices-and-where-each-one-lives)
-- [ ] **read `thorn` cold versus warm.** `spike/thorn-read.c` is written and
-      builds; it walks every `/dev/i2c-*` and reads address `0x23` register 1.
-      Getting it onto a RAM-booted switch is blocked behind the management NIC
-      above — the first attempt could not fetch it because `eth0` never
-      appeared. A 240-element MAX II CPLD on the CPU's
+- [x] **`thorn` read cold versus warm, 2026-09-24** — and exactly one register
+      differs: **reg 5 is `0x01` cold and `0xa1` warm**, bits 7 and 5. Same
+      static binary both sides. See
+      [hardware.md](hardware.md#thorn-register-5-cold-versus-warm)
+- [ ] **decide whether to write thorn reg 5 on a cold board.** It is the
+      experiment that settles whether those bits are control or status, and it
+      is a write to a power sequencer on a board with no schematic. Not done
+      without a deliberate decision A 240-element MAX II CPLD on the CPU's
       own i2c bus is the part and the placement of a power sequencer, and the
       best candidate for what holds the Alta unpowered. Reachable with
       `i2c-piix4` on the SB700 — no vendor path needed. Do it from our own image

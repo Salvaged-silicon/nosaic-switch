@@ -232,6 +232,42 @@ holds the Alta unpowered, and it sits on a bus NOSaic reaches with a stock
 `NorCalInit` read it fine at boot — the bus is presumably held by the vendor's
 platform agent. Do this from our own image, or from Aboot.
 
+### thorn register 5, cold versus warm
+
+Read with `spike/thorn-read.c` in both states, 2026-09-24 — cold from a
+RAM-booted NOSaic, warm from EOS, the **same static binary** in both so the
+comparison is not across two tools.
+
+```
+  thorn, SMBus 0x23 on the PIIX4 adapter that answers (NOSaic /dev/i2c-1)
+
+  reg    cold   warm
+   0     0x00   0x00
+   1     0x22   0x22     version 34, as NorCalInit reports
+   2-4   0x00   0x00
+   5     0x01   0xa1     ◀── THE ONLY DIFFERENCE
+   6     0x07   0x07
+   7-23  0x00   0x00
+```
+
+**One register, two bits.** `0xa1` against `0x01` is bit 7 (`0x80`) and bit 5
+(`0x20`) set on a board whose ASIC is running and clear on one whose ASIC is
+not. Every other register in the first 24 is identical.
+
+That is the first thing found anywhere on this board that distinguishes the two
+states and is not downstream of the ASIC already being up.
+
+**What is not known is whether those bits are cause or effect.** A power
+sequencer's register file holds both: control bits that enable rails, and status
+bits that report them good. If bit 7 and bit 5 are status, writing them achieves
+nothing; if they are control, writing them is what turns the Alta on. Nothing
+here distinguishes those yet, and the difference matters because the experiment
+that settles it is a **write to a power sequencer**.
+
+`spike/thorn-read.c` has no write path, deliberately. Adding one is a decision
+about risk on hardware that has no schematic and no second unit in the rack, not
+a missing feature.
+
 ### What the vendor's board initialisation is
 
 `/etc/rc.d/init.d/NorCal` wraps `/usr/bin/NorCalInit`, which logs to
@@ -793,8 +829,18 @@ says", honoured where the skews are enabled and set by tg3 for the BCM50610.
 Additive, so it only ever turns a delay on and no board that works today
 changes behaviour.
 
-**Not yet confirmed on hardware** — the kernel carrying it has not been booted
-on the switch at the time of writing.
+**Confirmed on hardware 2026-09-24.** With both changes in:
+
+```
+Broadcom BCM50610 a6:01: attached PHY driver (mii_bus:phy_addr=a6:01, irq=POLL)
+tg3 0000:00:14.6 eth0: Tigon3 [partno(none) rev 5785041] (PCI Express)
+tg3 0000:00:14.6 eth0: Link is up at 1000 Mbps, full duplex
+```
+
+The PHY attaches at `a6:01`, `eth0` exists, and the link comes up at a gigabit.
+The MAC is still the random fallback from patch `0001` — "only a default address
+available; using a random one until the board supplies its own" — which is the
+existing stopgap doing its job until the prefdl reader exists.
 
 ### 1. The login works — I used the wrong account
 
