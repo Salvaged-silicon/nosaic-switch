@@ -983,10 +983,17 @@ poweroff -f
 	// it and wrong when a unit file does, so the unit is not written at all
 	// where the command cannot work.
 	if haveGoCLI && o.Board.PlatformHAL.Driver != "" && datapathInstalled(o, packages) {
+		// Through a script, not an exec line: it has to report a failed
+		// release without BEING a failure. See releaseASIC for why that is
+		// right and why it does not weaken A/B rollback.
+		if err := writeFile(rootfs, "/etc/nosaic/release-asic.sh", releaseASIC, 0o755); err != nil {
+			return err
+		}
 		services = append(services, svcgen.Service{
 			Name:    "asic-release",
-			Exec:    "/usr/bin/nosaic platform release-asic",
+			Exec:    "/etc/nosaic/release-asic.sh",
 			Restart: "never",
+			Verbose: true,
 		})
 	}
 

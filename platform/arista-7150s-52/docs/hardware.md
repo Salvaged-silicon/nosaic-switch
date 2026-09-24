@@ -1252,6 +1252,36 @@ saying a board cannot be logged into is exactly what nobody re-checks. `root` is
 *was* missing is a `config/` directory, so it came up with no management
 address. It has a `network.conf` now.
 
+### 2b. declaring `platform_hal` made the board boot to a rescue shell
+
+Found the hard way, on the boot after adding `platform_hal:` to `board.yml`:
+
+```
+nosaic: context deadline exceeded
+s6-rc: warning: unable to start service asic-release: command exited 1
+NOSAIC-S6-FAIL the service database did not come up
+NOSAIC-RESCUE shell on the console; the system is NOT running
+```
+
+Declaring a platform HAL adds an `asic-release` oneshot. On this board the
+release genuinely fails — the chip does not come onto the bus, which is the
+entire M1 problem — and **an s6 oneshot that exits non-zero takes the whole
+service database with it.** The switch came up with no network, no login and no
+services: strictly worse than a switch that boots and reports a dead datapath,
+and precisely the state a board under bring-up is in every time.
+
+Fixed by running the release through a script that reports a failure instead of
+being one. **This does not weaken A/B rollback**, which is the obvious
+objection: the signal that an image is broken is `nosd` exiting non-zero when
+it cannot find its chip, and trial-confirm acts on that. The oneshot failing
+was a second, redundant copy of the same signal — and the redundant copy is the
+one that costs an operator their console.
+
+The same file already warned about this shape for the C CLI: *"a generated
+service that runs a refusal exits non-zero and takes the service database down
+with it"*. The warning was right and the case it guarded against was too
+narrow.
+
 ### 2a. `thermal` restart-loops too, for the same reason
 
 Declaring `platform_hal` in `board.yml` started the thermal service, and it
