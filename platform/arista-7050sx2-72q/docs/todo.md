@@ -172,16 +172,26 @@ names one network, and any other prefix the switch learns can do the same
 again. The real answer is a **management VRF** — eth0 and its routes in a
 separate table, which is also what an operator expects on a switch.
 
-**Written 2026-09-24, not yet run on this board.** network.conf takes
-`vrf mgmt table 1001`, then `vrf mgmt` on eth0's `iface` and `route` lines
-(see `config/network.conf.example`), and the pin comes out. apply-network.sh
-creates the VRF with busybox's `ip` and turns `tcp_l3mdev_accept` on so ssh
-still answers on eth0. The script is tested in a network namespace under the
-image's own busybox (`internal/imgbuild/network_test.go`). What that test cannot
-show is the transfer rate. To close this, pull an image over eth0 with OSPF up
-and check it runs at the pinned rate, not at 21 KB/s. The kernel needs
-`CONFIG_NET_VRF`, which is outside the A/B slot, so the SWI has to be pushed
-along with the image.
+**Done 2026-09-24, on this board.** network.conf takes `vrf mgmt table 1001`,
+then `vrf mgmt` on eth0's `iface` and `route` lines (see
+`config/network.conf.example`), and the pin is gone. After a cold boot with the
+new SWI (slot b, committed by its own trial):
+
+- eth0 is `master mgmt`. Table 1001 holds eth0's v4 and v6 subnets and both
+  defaults, and the main table holds only front-panel routes, with nothing
+  `dev eth0` in either family.
+- ssh answers on eth0 (`tcp_l3mdev_accept=1`). A 20 MB pull over it takes
+  3.52 s against 3.56 s with the pin, so the rate is the pinned one, not 21 KB/s.
+- Four OSPF adjacencies are Full, and 13 routes are in DEFIP with 0 failed.
+  FRR sees the VRF (`show vrf`: `vrf mgmt id 4 table 1001`).
+- From the default VRF the build host is "Network is unreachable". Inside
+  (`ping -I mgmt`) it answers, and so does the v6 gateway.
+
+What this did not reproduce is the original failure. OSPF is not carrying the
+build network today, so nothing competes with eth0 for it. With the VRF that
+failure cannot recur, because OSPF's routes go into a table eth0's traffic
+never consults. The kernel is outside the A/B slot, and the SWI from before
+this change is on flash as `nosaic-ab-prevrf.swi`.
 
 ### SSH lands on root, not on the login account
 
