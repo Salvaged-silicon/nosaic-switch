@@ -109,13 +109,18 @@ committed, as on every other board.
       shows `Thorn`'s methods are `isPowerPhaseFault`, `clearPowerPhaseFault`
       and `clockSelectStatus` — reg 5's bits are **status**, and writing them
       would almost certainly have done nothing
-- [ ] **read the CHL8228G's VID registers cold versus warm.** The board's own
-      `initialize()` programs the voltage controller (`ir`, CHL8228G at i2c
-      `0x30` / smbus `0x70`, dual rail) and the UCD90160 sequencer (`0x4e`)
-      **before** it releases the resets — which this port never did. If cold
-      shows the rails unprogrammed and warm shows `AltaVdd 1.01` /
-      `AltaVdds 1.0`, M1 becomes "program the regulator from prefdl". See
-      [hardware.md](hardware.md#the-boards-own-power-up-sequence-read-from-the-vendors-board-module) A 240-element MAX II CPLD on the CPU's
+- [x] **found where the power devices are**: not on the host SMBus at all, but
+      behind the SCD's accelerators — **CHL8228G (`ir`) at `/scd/1/1/0x70`** and
+      **UCD90160 (`dpm`) at `/scd/0/1/0x4e`**, exactly where the board module
+      said. The regulator's first 48 registers are captured warm in
+      [hardware.md](hardware.md#where-the-two-power-devices-actually-sit)
+- [ ] **SCD SMBus access for this board in `internal/platformhal`**, using the
+      existing GPL-2.0 `scdsmbus` package. ⚠ Do **not** reimplement the
+      accelerator protocol in a C spike: that directory is Apache-2.0 and a
+      hand-written port is the same derivative work in another language
+- [ ] then read the CHL8228G cold and diff against the warm capture; then
+      program it from prefdl's `AltaVdd` / `AltaVdds` before releasing the
+      resets, which is the order the board's own `initialize()` uses A 240-element MAX II CPLD on the CPU's
       own i2c bus is the part and the placement of a power sequencer, and the
       best candidate for what holds the Alta unpowered. Reachable with
       `i2c-piix4` on the SB700 — no vendor path needed. Do it from our own image

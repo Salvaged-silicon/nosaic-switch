@@ -311,10 +311,49 @@ names up, which tracks call order closely but is not a decompiled listing —
 treat the sequence as strong evidence of shape, not as a transcript. The
 component addresses come from `co_consts` beside their names and are firmer.
 
-The next step is a read, not a write: **read the CHL8228G's VID registers cold
-and warm.** If a cold board shows the rails unprogrammed and a warm one shows
-`AltaVdd 1.01` / `AltaVdds 1.0`, the question is answered and M1 becomes
-"program the regulator", with prefdl supplying the values it already carries.
+### Where the two power devices actually sit
+
+Neither is on the host SMBus — probing `0x30` and `0x70` across every
+`/dev/i2c-*` got no answer. They are behind the **SCD's SMBus accelerators**,
+and a bounded scan found both exactly where the board module said they would
+be:
+
+| Path | Device | |
+|---|---|---|
+| `/scd/1/1/0x70` | **CHL8228G** (`ir`) | accelerator 1, bus 1 — the Alta core rails |
+| `/scd/0/1/0x4e` | **UCD90160** (`dpm`) | accelerator 0, bus 1 — the sequencer |
+
+The regulator's first 48 registers, read warm (ASIC running), as the baseline
+the cold read will be diffed against:
+
+```
+ 00 09  01 08  02 26  03 80  04 07  05 0c  06 08  07 2e
+ 08 20  09 b3  0a 0a  0b a6  0c 00  0d 00  0e f1  0f 65
+ 10 00  11 00  12 00  13 00  14 00  15 00  16 00  17 00
+ 18 00  19 00  1a 00  1b 70  1c 0b  1d 08  1e b0  1f c0
+ 20 c1  21 c0  22 c0  23 15  24 04  25 04  26 06  27 01
+ 28 10  29 12  2a 37  2b 00  2c 00  2d d9  2e 01  2f 14
+```
+
+### ⚠ Reaching it from NOSaic is a licensing question, not just a coding one
+
+The cold half of that read needs NOSaic to talk to an SCD SMBus accelerator,
+and **the accelerator protocol is GPL-2.0 in this tree**.
+`internal/platformhal/scdsmbus` says why: reading a register *map* — an
+address, a bit position — is fact-gathering and no licence attaches, but
+transcribing a *protocol* — the request word layout, the transfer sequence,
+the reset handling — is a derivative work of Arista's GPL `scd-smbus.c`, and
+the licence follows it. That package is the one GPL-2.0 package in NOSaic, kept
+separate so the boundary is an import rather than a comment.
+
+So a C reimplementation of the accelerator in `spike/` would be **wrong**: that
+directory is Apache-2.0 like the rest of the tree, and a hand-written C port of
+the same protocol is the same derivative work wearing a different language.
+
+The right route is the existing Go package, which already implements this and
+already carries the right licence. What this board needs is a `platformhal`
+entry that uses it — which is the code M1 needs anyway, since programming the
+regulator at boot is the platform HAL's job and not a spike's.
 
 ### thorn's bits are status, not control
 
