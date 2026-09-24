@@ -114,3 +114,84 @@ func TestTrialConfirmationDetachesFromTheBoot(t *testing.T) {
 		t.Error("the trial confirmation script no longer runs the confirm command")
 	}
 }
+
+// The data partition is waited for, not probed once. On the AS5610 the disk is
+// a USB DOM that attaches a second or two into the boot; the one-shot lookup
+// lost that race and the switch came up stateless with its real configuration
+// sitting on a partition that appeared a moment later.
+//
+// This runs the script's own block, not a copy of it, against stubs: findfs
+// finds the partition only from a given round on, and sleep advances the
+// round. So it measures what the loop does, not what its text says.
+func TestDataPartitionIsWaitedFor(t *testing.T) {
+	sh, err := exec.LookPath("dash")
+	if err != nil {
+		if sh, err = exec.LookPath("sh"); err != nil {
+			t.Skip("no POSIX shell available")
+		}
+	}
+	start := strings.Index(initScript, "PERSIST=no\n_dwaited=0")
+	if start < 0 {
+		t.Fatal("the data-partition wait loop is gone from the init script")
+	}
+	end := strings.Index(initScript[start:], "\ndone\n")
+	block := initScript[start : start+end+len("\ndone\n")]
+
+	stubs := `
+ROUND=0
+findfs() { [ -n "$DATA_AT" ] && [ "$ROUND" -ge "$DATA_AT" ] && echo /dev/sda4; }
+mount() {
+    case "$*" in
+        *tmpfs*) echo "MOUNT tmpfs"; return 0 ;;
+        *loop*)  echo "MOUNT loop"; return 0 ;;
+        *ext4*)  echo "MOUNT ext4"; return 0 ;;
+    esac
+    return 1
+}
+sleep() { ROUND=$((ROUND + 1)); }
+mkdir() { :; }
+fail() { echo "FAIL $*"; exit 1; }
+FLASH=""
+mount_flash() {
+    [ -n "$FLASH_AT" ] && [ "$ROUND" -ge "$FLASH_AT" ] || return 1
+    FLASH=$FLASHDIR
+    return 0
+}
+`
+	cases := []struct {
+		name, env, want string
+		persist           bool
+	}{
+		{"disk attaches at 3s", "DATA_AT=3", "data partition mounted (/dev/sda4) after 3s", true},
+		{"disk already there", "DATA_AT=0", "data partition mounted (/dev/sda4)\n", true},
+		{"flash with a data image at 2s", "FLASH_AT=2 IMG=1", "data image mounted", true},
+		{"flash with no data image", "FLASH_AT=0", "booting stateless", false},
+		{"nothing at all", "", "no data partition after 15s; booting stateless", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := c.env + "\nFLASHDIR=" + dir + "\n" +
+				`[ -n "$IMG" ] && : > "$FLASHDIR/nosaic-data.img"` + "\n" +
+				stubs + block + `echo "PERSIST=$PERSIST ROUND=$ROUND"` + "\n"
+			out, err := exec.Command(sh, "-c", script).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
+			got := string(out)
+			if !strings.Contains(got, c.want) {
+				t.Errorf("want %q in:\n%s", c.want, got)
+			}
+			want := "PERSIST=no"
+			if c.persist {
+				want = "PERSIST=yes"
+			}
+			if !strings.Contains(got, want) {
+				t.Errorf("want %s in:\n%s", want, got)
+			}
+			if c.name == "flash with no data image" && !strings.Contains(got, "ROUND=0") {
+				t.Errorf("a flash with no data image waited anyway:\n%s", got)
+			}
+		})
+	}
+}
