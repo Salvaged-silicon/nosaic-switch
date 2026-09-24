@@ -335,23 +335,55 @@ the cold read will be diffed against:
  28 10  29 12  2a 37  2b 00  2c 00  2d d9  2e 01  2f 14
 ```
 
-### The regulator is identical cold and warm — the rails hypothesis is wrong
+### ⚠ The device at `0x70` was never actually identified
+
+Correcting a claim made two sections down before it misleads anyone further.
+
+The board module lists **two** devices at SMBus address `0x70`: the CHL8228G
+regulator (`smbusAddress 0x70`) and the **Si5338 clock generator** (also
+`0x70`). A scan of the SCD's accelerators, buses 0 and 1, found exactly **one**
+responder — `/scd/1/1/0x70` — and it was labelled "the CHL8228G" on the
+strength of the address alone.
+
+That was not established. It is one of the two, and the dump below is of
+whichever it is.
+
+Attempts to settle it so far:
+
+- `Chl8228G.__init__` sets `mfrModelId = 14` and `deviceIdName = 'CHL8228G'`,
+  so the class identifies its part by a model ID — but it reaches the chip
+  through a PMBus HAL, and `smbus read8` at a raw offset is not the same
+  addressing. No register in the dump reads 14.
+- Register `0x02` reads `0x26`, which is 38 decimal, and 38 is suggestive of a
+  Si5338 part-number field. Suggestive is not identification.
+- Accelerators 0–8 on buses 0–1, and accelerators 0–3 on buses 2–5, were
+  scanned for a second `0x70`. **There isn't one.** So the other device is on a
+  bus not yet scanned (accelerators 4–8, buses 2–7), behind a mux, or not
+  reachable this way at all — and the one responder still has two possible
+  identities.
+
+**Why this matters more than a label.** If the device that reads identically
+cold and warm is the *clock*, then the clock hypothesis is already weakened by
+evidence sitting in this file, and the rails hypothesis is untested rather than
+disproven. The two readings of the same dump point in opposite directions, and
+which one is right is not yet known.
+
+### The device at `0x70` is identical cold and warm
 
 Read from NOSaic's own CLI on a cold board (`nosaic platform smbus read 1 1
 0x70 0x00 48`) and compared against the warm capture above:
 
 **All 48 registers are byte-identical.** Not one differs.
 
-So the CHL8228G is in the same state on a board whose ASIC is dark as on one
-whose ASIC is forwarding — including its `OPERATION` and mode registers. The
-regulator comes up configured, presumably from its own NVM, and **programming
-it is not the missing step**. The hypothesis that `AltaVdd`/`AltaVdds` had to
-be written before the chip would appear is disproven.
+Whichever chip this is, it is in the same state on a board whose ASIC is dark as
+on one whose ASIC is forwarding. It comes up configured — presumably from its
+own NVM — and **whatever it is, programming it is not the missing step**.
 
-That is worth as much as a positive would have been, and it is the reason to
-have done the read rather than the write: the whole line of reasoning that
-started at "prefdl carries the core voltages" and ran through
-`AltaVoltageRailAdj.py` to "the rails must be unprogrammed" ends here.
+If it is the CHL8228G, the rails hypothesis is disproven and the reasoning that
+ran from "prefdl carries the core voltages" through `AltaVoltageRailAdj.py` ends
+here. If it is the Si5338, the *clock* hypothesis is the one that just took the
+damage, and the rails are simply untested. **See the identification warning
+above: this is not yet decided**, and reporting it as settled was wrong.
 
 What it leaves. The vendor's `initialize()` order is still evidence, but the
 interesting part of it is no longer `ir`:
