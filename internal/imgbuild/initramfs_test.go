@@ -160,7 +160,7 @@ mount_flash() {
 `
 	cases := []struct {
 		name, env, want string
-		persist           bool
+		persist         bool
 	}{
 		{"disk attaches at 3s", "DATA_AT=3", "data partition mounted (/dev/sda4) after 3s", true},
 		{"disk already there", "DATA_AT=0", "data partition mounted (/dev/sda4)\n", true},
