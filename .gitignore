@@ -102,3 +102,11 @@ refs/
 
 # SerDes transmit equalisation: per-trace tuning from the board description.
 /platform/*/config/serdes.conf
+
+# Local tooling configuration, per developer and per machine. Nothing here is
+# a property of the project, and a committed one silently changes how someone
+# else's tools behave.
+#
+# .claude/settings.json reached main in 6374f26 because a merge was staged
+# with `git add -A` in a worktree where it happened to be untracked.
+.claude/
