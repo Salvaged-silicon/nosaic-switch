@@ -918,7 +918,24 @@ poweroff -f
 	// out, so a crash leaves the box cool and noisy rather than cool and
 	// unmanaged -- but noisy-forever is a bad resting state, and something has
 	// to bring regulation back.
-	if haveCLI && o.Board.PlatformHAL.Driver != "" {
+	// ⚠ AND ONLY ON A BOARD THAT HAS SOMETHING TO REGULATE.
+	//
+	// Declaring a platform HAL is not the same as having sensors. A board can
+	// have an SCD -- and want it, for the SMBus and the resets -- while
+	// declaring no `smbus:` sensor map and no `thermal:` curve because nobody
+	// has measured them yet. Starting a cooling loop there gives a service
+	// that exits "this board has no fan control" the moment it runs, and
+	// `restart: always` then respawns it several times a second, for ever.
+	//
+	// That is not a tidiness problem. On the 7150S-52 it printed a line per
+	// restart at 9600 baud and twice destroyed the output of the command
+	// somebody was running on the console at the time -- the same console that
+	// is the only way into a board whose datapath is not up yet. The bug is
+	// starting a regulator for a board with nothing to regulate, so the fix is
+	// not to start one.
+	hasSensors := (o.Board.PlatformHAL.SMBus != nil && len(o.Board.PlatformHAL.SMBus.Sensors) > 0) ||
+		(o.Board.PlatformHAL.I2C != nil && len(o.Board.PlatformHAL.I2C.Sensors) > 0)
+	if haveCLI && o.Board.PlatformHAL.Driver != "" && hasSensors {
 		// ⚠ NOT ON THE CONSOLE. This prints a line per sensor sweep, for ever,
 		// on a board whose console is 9600 baud. It buries everything else,
 		// it makes a serial session unusable at exactly the moment somebody

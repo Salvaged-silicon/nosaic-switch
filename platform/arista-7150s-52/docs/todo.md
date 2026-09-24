@@ -138,10 +138,13 @@ committed, as on every other board.
       own `i2cAddress` register at `0x1b` reading `0x70`. So the "regulator
       identical cold and warm" result was the *clock*, and the CHL8228G has
       never been read
-- [ ] **re-read the Si5338 over the range that matters**: `0x30`–`0x70`
-      (multisynth `msCtrl`/`msCoef`/`msnCoef` — the actual frequency
-      programming) and `0xda`–`0xf6`, cold and warm. The earlier dump stopped
-      at `0x2f` and so covered none of it
+- [x] **Si5338 `0x30`–`0x70` read cold and warm: all 65 identical.** The
+      multisynth programming is the same on a cold board, so the clock comes up
+      configured
+- [ ] read Si5338 `0xda`–`0xf6` cold — particularly **`outputDrive` at `0xe6`**,
+      which reads `0x00` warm. A configured clock with its outputs disabled
+      would look exactly like this board's symptom, and it is the last part of
+      the clock hypothesis still standing
 - [ ] **find the CHL8228G.** It is not at `0x70` on any accelerator/bus scanned
       so far, and its other address `0x30` answered nowhere either
 - [ ] **the Si5338 clock generator.** The production path (`NorCalInit`, which

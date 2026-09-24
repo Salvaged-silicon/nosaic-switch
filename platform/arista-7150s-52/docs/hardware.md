@@ -358,7 +358,26 @@ conclusion drawn from the name was the wrong one of the two. It is the clock
 that reads identically cold and warm, and **the CHL8228G has never been read at
 all.**
 
-#### But the clock hypothesis is not damaged, because the dump stopped too early
+#### And the frequency registers are identical too
+
+Re-read over the range that actually programs the clock — `0x30`–`0x70`, the
+multisynth `msCtrl`/`msCoef`/`msnCoef` block — cold from a RAM-booted NOSaic
+and warm from EOS:
+
+**All 65 registers identical.** The multisynth configuration on a cold board is
+the same as on a running one, so the Si5338 comes up programmed and
+*"Programming clock for sid"* is not doing anything this port is failing to do.
+
+Still unread: `0xda`–`0xf6` (`los`, `outputDrive`, `fcal`, `softReset`) — the
+thermal restart storm ate that half of the output twice. `outputDrive` at
+`0xe6` is the one worth having, since a configured clock with its outputs
+disabled would look exactly like this. Warm it reads `0x00`.
+
+So the clock hypothesis is **weakened but not closed**: the frequency
+programming is identical, and whether the outputs are enabled has not been
+compared.
+
+#### The range the first dump stopped before
 
 The same table shows what `0x00`–`0x2f` leaves out. Everything that sets the
 output frequency is above it:
