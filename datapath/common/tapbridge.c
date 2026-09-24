@@ -664,7 +664,24 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 		{
 			unsigned b[6];
 			const char *base = nosaic_props_get("tap_mac_base");
+			static char derived[32];
 			static int warned;
+
+			/*
+			 * Unset, the switch's own address, worked out at boot by
+			 * /etc/nosaic/switch-mac.sh from the board's identity, its
+			 * network.conf or eth0 (internal/imgbuild/switchmac.go).
+			 * The property still wins: it is an operator saying so.
+			 */
+			if (base == NULL) {
+				FILE *f = fopen("/run/nosaic/base_mac", "r");
+
+				if (f != NULL) {
+					if (fgets(derived, sizeof(derived), f) != NULL)
+						base = derived;
+					fclose(f);
+				}
+			}
 
 			if (base != NULL && sscanf(base, "%x:%x:%x:%x:%x:%x",
 						   &b[0], &b[1], &b[2], &b[3],
@@ -680,11 +697,12 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 			} else if (!warned) {
 				warned = 1;
 				fprintf(stderr,
-					"tap: no usable tap_mac_base, so tap addresses are "
+					"tap: no tap_mac_base and nothing in "
+					"/run/nosaic/base_mac, so tap addresses are "
 					"02:00:00:00:00:xx -- the SAME on every NOSaic "
 					"switch. Two of them on one segment, or two ports "
-					"of either in one VLAN, will collide. Set "
-					"tap_mac_base to this board's own MAC.\n");
+					"of either in one VLAN, will collide. Give eth0 "
+					"its mac in network.conf, or set tap_mac_base.\n");
 			}
 		}
 		ifr.ifr_hwaddr.sa_data[5] = (char)(0x50 + index);
