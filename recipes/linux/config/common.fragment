@@ -88,6 +88,29 @@ CONFIG_BRIDGE=m
 CONFIG_BRIDGE_VLAN_FILTERING=y
 CONFIG_VLAN_8021Q=m
 
+# A management VRF: the management port in a routing table of its own.
+#
+# The main table is the one the datapath mirrors into the chip and the one the
+# kernel routes transit traffic through, so a management port in it is a way
+# out of the box for traffic that never should have reached it, and the
+# management network's own routes end up "pinned" into the front-panel table
+# by hand. network.conf's "vrf mgmt table N" puts eth0 somewhere else.
+#
+# Built in, not modules: apply-network.sh creates the VRF with busybox's ip,
+# and nothing on a minimal image loads a module for it. IP_MULTIPLE_TABLES was
+# already on, but only because x86_64 and powerpc defconfigs happened to set
+# it; NET_VRF depends on it, so it is asked for here rather than trusted.
+#
+# ⚠ THE KERNEL IS OUTSIDE THE A/B SLOT. An image upgrade that brings a
+# network.conf with a vrf line does not bring this with it: the SWI (Aristas)
+# or the FIT partition (AS5610) has to be pushed too, or the VRF line fails
+# with "vrf mgmt table N FAILED" and the management port stays where it was.
+CONFIG_IP_ADVANCED_ROUTER=y
+CONFIG_IP_MULTIPLE_TABLES=y
+CONFIG_IPV6_MULTIPLE_TABLES=y
+CONFIG_NET_L3_MASTER_DEV=y
+CONFIG_NET_VRF=y
+
 # TUN/TAP, for putting hardware switch ports on the Linux network stack.
 #
 # A switch chip's ports are not network interfaces to Linux: the SDK owns them.

@@ -40,7 +40,7 @@ Ordered by how much they matter to a switch being a switch.
 | feature | hardware | NOSaic | note |
 |---|---|---|---|
 | **ECMP** | up to **128-way** on this model | 1 next hop per prefix | `l3sync` takes a single next hop; the datasheet calls out 128-way for the 7050SX2-72Q specifically |
-| **VRF** | yes | none | wanted immediately: the management pin exists because in-band and out-of-band share one table |
+| **VRF** | yes | management VRF only, in the kernel | `vrf mgmt table N` in network.conf puts eth0 in its own table (2026-09-24, not yet proven on this board). Front-panel VRFs in the chip are not started |
 | **Cut-through** | 550 ns | store-and-forward | EOS sets `cut_through=1`, which is an Arista property absent from OpenBCM 6.5.24 — so this needs finding, not copying |
 | **CoS queues** | 8 per port | SDK default | `bcm_num_cos=8` in EOS |
 | **VXLAN** | routing, bridging and gateway at wire speed | nothing | see below — the SDK driver is already compiled in |

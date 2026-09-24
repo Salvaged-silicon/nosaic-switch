@@ -172,6 +172,17 @@ names one network, and any other prefix the switch learns can do the same
 again. The real answer is a **management VRF** — eth0 and its routes in a
 separate table, which is also what an operator expects on a switch.
 
+**Written 2026-09-24, not yet run on this board.** network.conf takes
+`vrf mgmt table 1001`, then `vrf mgmt` on eth0's `iface` and `route` lines
+(see `config/network.conf.example`), and the pin comes out. apply-network.sh
+creates the VRF with busybox's `ip` and turns `tcp_l3mdev_accept` on so ssh
+still answers on eth0. The script is tested in a network namespace under the
+image's own busybox (`internal/imgbuild/network_test.go`). What that test cannot
+show is the transfer rate. To close this, pull an image over eth0 with OSPF up
+and check it runs at the pinned rate, not at 21 KB/s. The kernel needs
+`CONFIG_NET_VRF`, which is outside the A/B slot, so the SWI has to be pushed
+along with the image.
+
 ### SSH lands on root, not on the login account
 
 Solved enough to stop being a blocker: dropbear is packaged, keys come from the

@@ -21,8 +21,9 @@
 # and exist only once the datapath is up; a management-plane boot brings up
 # eth0 and says plainly that the others are absent, rather than failing.
 #
-#   iface <name> <address/prefix> [mtu <n>]
-#   route <prefix|default> via <gateway> [dev <iface>]
+#   vrf <name> table <n>
+#   iface <name> <address/prefix> [mtu <n>] [mac <addr>] [vrf <name>]
+#   route <prefix|default> via <gateway> [dev <iface>] [vrf <name>]
 
 # Management. The BCM57762 the kernel drives with tg3 -- a normal NIC, present
 # whether or not the ASIC is.
@@ -33,8 +34,15 @@
 # This is a stopgap and should disappear: once the prefdl reader exists, the
 # board supplies its own address and no configuration file should be asserting
 # hardware identity.
-iface eth0 <address>/<prefix> mac <this switch's MAC>
-route default via <address>
+# The management VRF. eth0 and its routes live in table 1001, not the main
+# table the datapath mirrors into the chip and routes transit traffic through.
+# ssh answers on eth0 anyway: apply-network.sh turns tcp_l3mdev_accept on, so
+# services listening in the default VRF accept connections from it. Needs a
+# kernel with CONFIG_NET_VRF, which is outside the A/B slot -- see
+# recipes/linux/config/common.fragment.
+vrf mgmt table 1001
+iface eth0 <address>/<prefix> mac <this switch's MAC> vrf mgmt
+route default via <address> vrf mgmt
 
 # The loopback carries the OSPF router-id. It is a loopback precisely so the
 # id does not move when a front-panel port goes down.
@@ -77,23 +85,12 @@ iface et52 <address>/<prefix> mtu 1600
 iface et53 <address>/<prefix> mtu 1600
 iface et54 <address>/<prefix> mtu 1600
 
-# Keep management traffic on the management port.
-#
-# This switch runs OSPF on its front-panel ports, so it LEARNS a route to the
-# build network over them -- and a learned /24 beats the default route by
-# longest-prefix match. The result is that the box's own management traffic
-# leaves by the front panel and comes back through the CPU punt path, which
-# carries about twenty packets a second. Pulling an image ran at 21 KB/s and
-# saturated the box; with this line it runs at over 2 MB/s and does not.
-#
-# Nothing was misconfigured to cause that. It is what happens when a router
-# with a management port also participates in the routing domain that contains
-# its management station: in-band and out-of-band are the same table, and the
-# more specific route wins regardless of which one you meant.
-#
-# A static route has metric 0 and OSPF's has 20, so this wins at equal prefix
-# length. The real answer is a management VRF, which is in docs/todo.md.
-route <address>/<prefix> via <address> dev eth0
+# No "pin" for the build network any more. It was a static route out of
+# eth0, there because OSPF learned the management subnet over the front panel
+# and the box's own replies followed it through the CPU punt path. With eth0 in
+# the management VRF those replies are routed in table 1001, where OSPF's
+# routes never go. Traffic the switch ORIGINATES in the default VRF (an scp
+# from the switch, say) still follows the main table.
 
 # IPv6 on the management port.
 #
@@ -102,5 +99,5 @@ route <address>/<prefix> via <address> dev eth0
 # names, and the already-correct test is per address, so re-running stays free.
 # The MAC is not repeated here -- it is set by the line above, and a second
 # place to state it is a second place for it to drift.
-iface eth0 <ipv6-address>/<prefix>
-route default via <ipv6-address>/<prefix>
+iface eth0 <ipv6-address>/<prefix> vrf mgmt
+route default via <ipv6-address> vrf mgmt

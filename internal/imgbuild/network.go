@@ -44,6 +44,8 @@ const applyNetwork = `#!/bin/sh
 # something other than a rebuild.
 CONF=/etc/nosaic/network.conf
 [ -r /mnt/data/config/network.conf ] && CONF=/mnt/data/config/network.conf
+# A test names its own file; nothing on a switch sets this.
+[ -n "$NOSAIC_NET_CONF" ] && CONF=$NOSAIC_NET_CONF
 [ -r "$CONF" ] || exit 0
 
 # How long to wait for the datapath to create its interfaces.
@@ -107,6 +109,58 @@ for f in /proc/sys/net/ipv4/ip_forward /proc/sys/net/ipv6/conf/all/forwarding; d
     fi
 done
 
+# VRFs, before the interfaces that belong to them.
+#
+#     vrf mgmt table 1001
+#
+# The management port has to be out of the main table. The main table is what
+# the datapath mirrors into the chip, and it is what the kernel consults for a
+# packet that transits the box. With eth0 in it, a packet that missed in the
+# ASIC and was punted could be routed out of the management port, and the
+# management network's routes had to be "pinned" into the front-panel routing
+# table by hand. A VRF gives the management port a table of its own. It is the
+# same answer Cisco (vrf management) and Cumulus (vrf mgmt) reached.
+#
+# The table number is the operator's, not a name: busybox's ip has no
+# "vrf NAME" route keyword, so every route line below is translated to
+# "table N" through this line.
+vrf_table() {
+    awk -v v="$1" '$1=="vrf" && $2==v && $3=="table" {print $4; exit}' "$CONF"
+}
+
+apply_vrfs() {
+while read -r kind name tbl id rest; do
+    [ "$kind" = "vrf" ] || continue
+    if [ "$tbl" != "table" ] || [ -z "$id" ]; then
+        say "vrf $name: expected 'vrf $name table <N>'"
+        continue
+    fi
+    if ! ip link show "$name" >/dev/null 2>&1; then
+        if ip link add "$name" type vrf table "$id" 2>/dev/null; then
+            say "vrf $name table $id"
+        else
+            # The usual cause is a kernel without CONFIG_NET_VRF. That kernel
+            # is outside the A/B slot, so an image upgrade does not bring it.
+            say "vrf $name table $id FAILED"
+            continue
+        fi
+    fi
+    ip link show "$name" 2>/dev/null | head -1 | grep -q "[<,]UP[,>]" \
+        || ip link set dev "$name" up 2>/dev/null
+done < "$CONF"
+
+# Services listen in the default VRF, and a connection arriving on a VRF
+# member does not reach them without this: sshd would answer on the front
+# panel and not on the management port, which is the wrong way round.
+# Binding each service to the VRF would be the alternative, and dropbear has no
+# option for it, and busybox has no "ip vrf exec".
+if grep -q '^vrf ' "$CONF"; then
+    for f in /proc/sys/net/ipv4/tcp_l3mdev_accept /proc/sys/net/ipv4/udp_l3mdev_accept; do
+        [ -w "$f" ] && [ "$(cat "$f")" != 1 ] && echo 1 > "$f" && say "$(basename "$f") on"
+    done
+fi
+}
+
 # Interfaces first: a route cannot be installed through a device that has no
 # address, and the error if you try names neither.
 apply_ifaces() {
@@ -119,6 +173,7 @@ while read -r kind name rest; do
     addr=$(echo "$rest" | awk '{print $1}')
     mtu=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
     mac=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="mac") print $(i+1)}')
+    vrf=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="vrf") print $(i+1)}')
 
     # "mac auto" means ask the board, and it is what makes an image generic.
     #
@@ -157,9 +212,25 @@ while read -r kind name rest; do
     have_addr=$(ip -o addr show dev "$name" 2>/dev/null | grep -c "${addr%%/*}/")
     have_mac=$(cat /sys/class/net/"$name"/address 2>/dev/null)
     is_up=$(ip link show "$name" 2>/dev/null | head -1 | grep -c "[<,]UP[,>]")
+    have_vrf=$(ip -o link show "$name" 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="master") print $(i+1)}')
     if [ "$have_addr" -ge 1 ] && [ "$is_up" -ge 1 ] &&
-       { [ -z "$mac" ] || [ "$have_mac" = "$mac" ]; }; then
+       { [ -z "$mac" ] || [ "$have_mac" = "$mac" ]; } &&
+       { [ -z "$vrf" ] || [ "$have_vrf" = "$vrf" ]; }; then
         continue
+    fi
+    # Into the VRF before anything else, and only when it is not there already.
+    #
+    # Enslaving cycles the interface down and up, which the kernel does to
+    # flush its routes and neighbours -- and a static IPv6 address does not
+    # survive the down. So this goes before the addresses, and it is guarded
+    # by the same "already correct" rule as the MAC below: a pass that
+    # re-enslaved every time would flap the management port every few seconds.
+    if [ -n "$vrf" ] && [ "$have_vrf" != "$vrf" ]; then
+        if ip link set dev "$name" master "$vrf" 2>/dev/null; then
+            say "$name vrf $vrf"
+        else
+            say "$name FAILED to join vrf $vrf"
+        fi
     fi
     # The address, before the interface comes up. A board states one when its
     # hardware does not carry it anywhere the driver can find: on these
@@ -213,15 +284,27 @@ while read -r kind dest via gw rest; do
         *:*) fam="-6" ;;
         *)   fam="" ;;
     esac
-    ip $fam route show | grep -q "^${dest} via ${gw}" && continue
-    if ip $fam route add "$dest" via "$gw" $rest 2>/dev/null; then
-        say "route $dest via $gw"
+    # "vrf NAME" becomes "table N". Everything else on the line is ip's.
+    vrf=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="vrf") print $(i+1)}')
+    table=""
+    if [ -n "$vrf" ]; then
+        rest=$(echo "$rest" | awk '{s=""; for(i=1;i<=NF;i++) if($i=="vrf") i++; else s=s" "$i; print s}')
+        table=$(vrf_table "$vrf")
+        if [ -z "$table" ]; then
+            say "route $dest via $gw: no 'vrf $vrf table <N>' line"
+            continue
+        fi
+        table="table $table"
+    fi
+    ip $fam route show $table | grep -q "^${dest} via ${gw}" && continue
+    if ip $fam route add "$dest" via "$gw" $rest $table 2>/dev/null; then
+        say "route $dest via $gw${vrf:+ vrf $vrf}"
     else
         # Worth saying out loud. The common cause is a gateway that is not on
         # any configured subnet, and a silent failure there is a box that comes
         # up looking correct and is reachable from nowhere.
-        ip $fam route show | grep -q "^${dest} " \
-            || say "route $dest via $gw FAILED"
+        ip $fam route show $table | grep -q "^${dest} " \
+            || say "route $dest via $gw${vrf:+ vrf $vrf} FAILED"
     fi
 done < "$CONF"
 }
@@ -232,6 +315,7 @@ announced=""
 routed=0
 while : ; do
     : > "$ABSENT"
+    apply_vrfs
     apply_ifaces
     missing=$?
     # After the first pass, whatever exists is configured -- so put its routes
@@ -279,6 +363,7 @@ if [ "$RECONCILE_SECS" -gt 0 ] 2>/dev/null; then
         # NOT silenced. A pass with nothing to do already prints nothing,
         # so anything this says is an address or a route that had gone --
         # which is the one thing an operator needs to see in the log.
+        apply_vrfs
         apply_ifaces || :
         apply_routes
     done

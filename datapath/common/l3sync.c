@@ -1275,6 +1275,12 @@ static void rt6_sweep(void)
  * /proc/net/ipv6_route columns:
  *   dst(32 hex) dstplen(hex) src(32 hex) srcplen nexthop(32 hex)
  *   metric refcnt use flags ifname
+ *
+ * Every table, not just main: with CONFIG_IPV6_MULTIPLE_TABLES this file walks
+ * them all and has no table column. It is the interface test below that keeps
+ * the management VRF out of the chip -- its routes are via eth0, which is not a
+ * tap. That holds while only the management port is in a VRF; a front-panel
+ * VRF would need this read from netlink with rtm_table, as rt_walk() does.
  */
 static void poll_routes6(void)
 {

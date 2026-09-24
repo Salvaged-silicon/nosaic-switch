@@ -21,8 +21,9 @@
 # EdgeNOS's own /etc/edged/swp-addrs.conf. This is the record of what this
 # router does today: bringing NOSaic up here means reproducing it.
 #
-#   iface <name> <address/prefix> [mtu <n>] [mac <addr>]
-#   route <prefix|default> via <gateway> [dev <iface>]
+#   vrf <name> table <n>
+#   iface <name> <address/prefix> [mtu <n>] [mac <addr>] [vrf <name>]
+#   route <prefix|default> via <gateway> [dev <iface>] [vrf <name>]
 
 # ── Management ───────────────────────────────────────────────────────────────
 # The P2020's own eTSEC, driven by gianfar, behind a BCM54610C PHY.
@@ -47,22 +48,22 @@
 # the switch was doing its job -- OSPF, forwarding, adjacencies -- on ports that
 # had nothing to do with management. A dead management port on a working router
 # is quiet.
-iface eth0 <address>/<prefix> mac <this switch's MAC>
-route default via <address> dev eth0
+# The management VRF. eth0 and its routes live in table 1001, not the main
+# table the datapath mirrors into the chip and routes transit traffic through.
+# ssh answers on eth0 anyway: apply-network.sh turns tcp_l3mdev_accept on, so
+# services listening in the default VRF accept connections from it. Needs a
+# kernel with CONFIG_NET_VRF, which is outside the A/B slot -- see
+# recipes/linux/config/common.fragment.
+vrf mgmt table 1001
+iface eth0 <address>/<prefix> mac <this switch's MAC> vrf mgmt
+route default via <address> dev eth0 vrf mgmt
 
-# Management stays on the management port.
-#
-# Once this box runs OSPF it learns a route to the build host's subnet through
-# its own front panel, and the kernel prefers it: <address> goes "via
-# <address> dev swp1", so every ssh and every file copy is carried by the
-# CPU punt path instead of the management NIC. It works, which is what makes it
-# dangerous -- latency went from 0.3 ms to 7.7 ms here and a 28 MB transfer
-# stalled at 49 KB, which reads as a flaky network rather than a routing
-# decision the switch made about itself.
-#
-# A static route wins on metric over the OSPF one, so this pins it back
-# whatever the topology advertises.
-route <address>/<prefix> via <address> dev eth0
+# No "pin" for the build network any more. It was a static route out of
+# eth0, there because OSPF learned the management subnet over the front panel
+# and the box's own replies followed it through the CPU punt path. With eth0 in
+# the management VRF those replies are routed in table 1001, where OSPF's
+# routes never go. Traffic the switch ORIGINATES in the default VRF (an scp
+# from the switch, say) still follows the main table.
 
 # ── Loopback ─────────────────────────────────────────────────────────────────
 # Carries the OSPF router-id, which is why it is a loopback: the id must not
