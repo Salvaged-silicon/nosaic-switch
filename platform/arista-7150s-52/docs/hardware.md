@@ -373,9 +373,43 @@ thermal restart storm ate that half of the output twice. `outputDrive` at
 `0xe6` is the one worth having, since a configured clock with its outputs
 disabled would look exactly like this. Warm it reads `0x00`.
 
-So the clock hypothesis is **weakened but not closed**: the frequency
-programming is identical, and whether the outputs are enabled has not been
-compared.
+And `0xda`–`0xf6` is identical too, `outputDrive` at `0xe6` included — `0x00`
+cold and `0x00` warm — as is the page register at `0xff`.
+
+**The clock hypothesis is closed.** Every register read on the Si5338 —
+`0x00`–`0x2f`, `0x30`–`0x70`, `0xda`–`0xf6`, `0xff` — is byte-identical between
+a board whose ASIC is dark and one whose ASIC is forwarding. The clock comes up
+fully configured and is not what the board does differently.
+
+### What ruling three things out actually tells us
+
+Taken together the measurements now say something more useful than any of them
+did alone:
+
+| | Cold vs warm |
+|---|---|
+| SCD reset block `0x4000` | warm is `0x000` — **the same state we produced by hand** |
+| Si5338 clock, every register read | **identical** |
+| thorn `0x23` registers | identical but for reg 5, whose bits the vendor's own class calls fault/clock **status** |
+
+**Everything compared so far is the same on a cold board as on a running one.**
+That is a pattern, and it points away from the shape of hypothesis this port
+has been testing. "Some device needs programming before the chip will appear"
+predicts a difference somewhere, and there is none in the three devices looked
+at.
+
+What that leaves, roughly in order of how much they would explain:
+
+- **The CHL8228G has never been found.** It answers at neither `0x70` nor
+  `0x30` on any accelerator and bus scanned, so it is somewhere not yet looked
+  — and it is the one device in the chain still completely unmeasured.
+- **Something that is not a register.** A sequence, a timing, a GPIO, or a
+  strap — none of which a cold/warm register diff can see. The `resetSet` →
+  work → `resetClear` shape in the diagnostics is a *pulse*, and a pulse leaves
+  no trace in either endpoint's register state.
+- **Something on the host side of the link.** The RS780 root port at `00:04.0`
+  has never been examined; a chip that is powered, clocked and out of reset
+  still needs the port to train.
 
 #### The range the first dump stopped before
 

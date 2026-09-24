@@ -141,10 +141,16 @@ committed, as on every other board.
 - [x] **Si5338 `0x30`–`0x70` read cold and warm: all 65 identical.** The
       multisynth programming is the same on a cold board, so the clock comes up
       configured
-- [ ] read Si5338 `0xda`–`0xf6` cold — particularly **`outputDrive` at `0xe6`**,
-      which reads `0x00` warm. A configured clock with its outputs disabled
-      would look exactly like this board's symptom, and it is the last part of
-      the clock hypothesis still standing
+- [x] **Si5338 `0xda`–`0xf6` and `0xff` read cold: identical to warm**,
+      `outputDrive` at `0xe6` included (`0x00` both). **The clock hypothesis is
+      closed** — every register on it is the same cold as warm
+- [ ] **step back.** Everything compared so far — reset block, clock, thorn —
+      is identical cold and warm. "A device needs programming" predicts a
+      difference and there is none. Next candidates, in order: find the
+      CHL8228G (still unmeasured); look for something a register diff cannot
+      see (a pulse, a GPIO, a strap); and examine the **RS780 root port at
+      `00:04.0`**, which has never been looked at and which a chip needs in
+      order to train even when it is powered, clocked and released
 - [ ] **find the CHL8228G.** It is not at `0x70` on any accelerator/bus scanned
       so far, and its other address `0x30` answered nowhere either
 - [ ] **the Si5338 clock generator.** The production path (`NorCalInit`, which
