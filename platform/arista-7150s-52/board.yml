@@ -56,15 +56,32 @@ kernel: ""
 #                  where this board's ~3978 MB of RAM ends, and guessing it
 #                  produces a kernel that dies before the console is up.
 #
-#   platform_hal   The SCD is an Arastra 3475:0001 at 04:00.0 with a 256 KiB
-#                  BAR0, and internal/platformhal/scd already carries the note
-#                  that its version register is the one "the 7150 uses". Its
-#                  reset, LED and SMBus layout on THIS board is not the sibling
-#                  boards' layout and none of it has been driven by our code.
-#                  A wrong reset bit here holds the ASIC down or lets it go at
-#                  the wrong time.
-#
 #   thermal        No sensor has been read by our code on this box.
+
+# The board's own hardware is behind Arista's SCD, an FPGA on the PCI bus. It
+# holds the FM6000 in reset from power-on, which is why the ASIC's address is
+# stated: until the SCD lets go, 02:00.0 is not on the bus to be discovered.
+#
+# Only the three axes that are measured are stated. Deliberately absent:
+#
+#   smbus:   the sensor and cage layout. Not known for this board, and the
+#            sibling boards' is not transferable -- theirs was transcribed from
+#            what was already running, and nothing is running here yet.
+#
+# ⚠ The reset-bit polarity here is the OPPOSITE of the sibling 7050SX2.
+# Unimplemented bits read as ZERO on this board: cold, 0x4000 reads 0x00000106,
+# so bits 1, 2 and 8 are the ones held. That board reads 0xfffffffc with its
+# ASIC running, and its driver warns that taking another platform's bit number
+# would be silently fatal. The warning applies here in reverse.
+#
+# What this unlocks today is the SMBus: the Alta's voltage controller and its
+# sequencer are behind the SCD's accelerators, at /scd/1/1/0x70 (CHL8228G) and
+# /scd/0/1/0x4e (UCD90160), and `nosaic platform smbus read` can reach them
+# once the board declares it has an SCD at all.
+platform_hal:
+  driver: scd
+  pci: "0000:04:00.0"
+  asic_pci: "0000:02:00.0"
 
 status: planned
 

@@ -118,9 +118,18 @@ committed, as on every other board.
       existing GPL-2.0 `scdsmbus` package. ⚠ Do **not** reimplement the
       accelerator protocol in a C spike: that directory is Apache-2.0 and a
       hand-written port is the same derivative work in another language
-- [ ] then read the CHL8228G cold and diff against the warm capture; then
-      program it from prefdl's `AltaVdd` / `AltaVdds` before releasing the
-      resets, which is the order the board's own `initialize()` uses A 240-element MAX II CPLD on the CPU's
+- [x] **CHL8228G read cold and diffed: all 48 registers identical to warm.**
+      The regulator is configured on a cold board already, so programming it is
+      not the missing step and the rails hypothesis is disproven. See
+      [hardware.md](hardware.md#the-regulator-is-identical-cold-and-warm--the-rails-hypothesis-is-wrong)
+- [ ] read the **UCD90160** (`/scd/0/1/0x4e`) cold — not yet done, the thermal
+      restart storm ate the output
+- [ ] look at the five steps the vendor runs **between `resetSet` and
+      `resetClear`** (`rd`, `rpt`, `alta`, `sol`, `wr`). This port has only ever
+      released the resets; the vendor asserts them, does work, then releases
+- [ ] **`thermal` restart-storms** now that `platform_hal` is declared, because
+      the board has no `smbus:` sensor map. Same fix as `nosd`: back off rather
+      than spin. Do **not** fix it by inventing a sensor map A 240-element MAX II CPLD on the CPU's
       own i2c bus is the part and the placement of a power sequencer, and the
       best candidate for what holds the Alta unpowered. Reachable with
       `i2c-piix4` on the SB700 — no vendor path needed. Do it from our own image

@@ -335,6 +335,39 @@ the cold read will be diffed against:
  28 10  29 12  2a 37  2b 00  2c 00  2d d9  2e 01  2f 14
 ```
 
+### The regulator is identical cold and warm — the rails hypothesis is wrong
+
+Read from NOSaic's own CLI on a cold board (`nosaic platform smbus read 1 1
+0x70 0x00 48`) and compared against the warm capture above:
+
+**All 48 registers are byte-identical.** Not one differs.
+
+So the CHL8228G is in the same state on a board whose ASIC is dark as on one
+whose ASIC is forwarding — including its `OPERATION` and mode registers. The
+regulator comes up configured, presumably from its own NVM, and **programming
+it is not the missing step**. The hypothesis that `AltaVdd`/`AltaVdds` had to
+be written before the chip would appear is disproven.
+
+That is worth as much as a positive would have been, and it is the reason to
+have done the read rather than the write: the whole line of reasoning that
+started at "prefdl carries the core voltages" and ran through
+`AltaVoltageRailAdj.py` to "the rails must be unprogrammed" ends here.
+
+What it leaves. The vendor's `initialize()` order is still evidence, but the
+interesting part of it is no longer `ir`:
+
+```
+   scd.initialize → altatemp → ir + 'vidMode' → ucd → hal.resetSet
+     → rd / rpt / alta / sol / wr → hal.resetClear → repeaters
+```
+
+`ir` looks idempotent on this board. **`ucd` — the UCD90160 sequencer — has not
+been read cold**, and the five steps between `resetSet` and `resetClear` have
+not been looked at at all. Note also that the vendor **asserts** the resets
+before that middle section and releases them after; this port has only ever
+released them. Doing work while the chip is held in reset, and only then
+letting go, is a different sequence from the one tried.
+
 ### ⚠ Reaching it from NOSaic is a licensing question, not just a coding one
 
 The cold half of that read needs NOSaic to talk to an SCD SMBus accelerator,
@@ -982,6 +1015,25 @@ saying a board cannot be logged into is exactly what nobody re-checks. `root` is
 **`admin`**, no password, console only, per `base/identity.yml`. What the board
 *was* missing is a `config/` directory, so it came up with no management
 address. It has a `network.conf` now.
+
+### 2a. `thermal` restart-loops too, for the same reason
+
+Declaring `platform_hal` in `board.yml` started the thermal service, and it
+immediately did what `nosd` used to: respawn several times a second, printing
+`thermal: output to /var/log/thermal/current` each time. 98 lines of it in one
+short session, and it swallowed the output of the command being run at the
+time.
+
+Same shape as the `nosd` bug and the same cause: a service that cannot do its
+job exits, `restart: always` brings it straight back, and on a board where the
+thing it needs is *legitimately* absent that is an infinite loop rather than a
+fault. Here the board has no `smbus:` sensor map — deliberately, because this
+board's is not known and the sibling's is not transferable — so there is
+nothing for the thermal loop to read.
+
+Fixing it properly is the same fix: a service with nothing to work with should
+back off, not spin. Fixing it accidentally by inventing a sensor map would be
+worse than the bug.
 
 ### 2. `nosd` restart-looped and flooded the console — fixed
 
