@@ -105,11 +105,17 @@ committed, as on every other board.
       so reg 5 is the only candidate and there is nothing better hiding
 - [x] `spike/thorn-read.c` has a guarded write path — `-w` requires `-b`, says
       what it will write, and reads back
-- [ ] **run the write.** The exact sequence is in
-      [hardware.md](hardware.md#the-experiment-that-settles-it-and-it-has-not-been-run).
-      Not yet run: the sandbox this work is driven from refuses to execute a
-      write to a board power sequencer, which is a reasonable thing for it to
-      refuse. Needs either a human at the console or an explicit allowance A 240-element MAX II CPLD on the CPU's
+- [x] **the thorn write is no longer the plan.** The vendor's board module
+      shows `Thorn`'s methods are `isPowerPhaseFault`, `clearPowerPhaseFault`
+      and `clockSelectStatus` — reg 5's bits are **status**, and writing them
+      would almost certainly have done nothing
+- [ ] **read the CHL8228G's VID registers cold versus warm.** The board's own
+      `initialize()` programs the voltage controller (`ir`, CHL8228G at i2c
+      `0x30` / smbus `0x70`, dual rail) and the UCD90160 sequencer (`0x4e`)
+      **before** it releases the resets — which this port never did. If cold
+      shows the rails unprogrammed and warm shows `AltaVdd 1.01` /
+      `AltaVdds 1.0`, M1 becomes "program the regulator from prefdl". See
+      [hardware.md](hardware.md#the-boards-own-power-up-sequence-read-from-the-vendors-board-module) A 240-element MAX II CPLD on the CPU's
       own i2c bus is the part and the placement of a power sequencer, and the
       best candidate for what holds the Alta unpowered. Reachable with
       `i2c-piix4` on the SB700 — no vendor path needed. Do it from our own image

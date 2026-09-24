@@ -269,6 +269,66 @@ three are non-zero — `1` (version `0x22`), `5` (`0xa1`) and `6` (`0x07`). Ther
 is no more-obviously-control register elsewhere in the file. Register 5 is the
 only candidate.
 
+### The board's own power-up sequence, read from the vendor's board module
+
+**This supersedes the thorn-write experiment below, and it is why that
+experiment should not be the next thing anyone runs.**
+
+`DosBoard/SantaRosaPca` is the vendor's description of *this* board. It is
+compiled Python, but the runtime is on the switch, so it can be introspected
+rather than decompiled: every function's `co_names` and `co_consts` are
+readable, which gives the components, their addresses and the order a routine
+touches them. `spike/introspect.py` does that. **No vendor code is copied here;
+what follows is the board's layout as it describes itself.**
+
+The board carries two power devices this port had never heard of:
+
+| Name | Part | Address | |
+|---|---|---|---|
+| `ir` | **CHL8228G** | `i2cSmbusAddress 0x30`, `smbusAddress 0x70` | dual-rail digital PWM controller — `loop1Vid`/`loop2Vid`, `vmaxRail1`/`vmaxRail2`. **Two rails, matching `AltaVdd` and `AltaVdds`** |
+| `dpm` | **UCD90160** | `0x4e` | TI power-supply sequencer and monitor |
+
+And `SantaRosaP5.initialize()` touches them in this order:
+
+```
+   scd.initialize          ──  the SCD first
+   altatemp
+   ir      + 'vidMode'     ──  THE VOLTAGE CONTROLLER, put into VID mode
+   ucd                     ──  the power sequencer
+   hal.resetSet            ──  resets ASSERTED
+   rd / rpt / alta / sol / wr
+   hal.resetClear          ──  resets RELEASED
+   repeaters
+   max6658.setup
+```
+
+**The regulator is programmed before the resets are released.** This port
+released the resets and never touched `ir` or `ucd` at all, which is exactly
+consistent with what was measured: reset bits clear, chip still absent.
+
+⚠ **How much to trust this.** `co_names` is the order in which a function looks
+names up, which tracks call order closely but is not a decompiled listing —
+treat the sequence as strong evidence of shape, not as a transcript. The
+component addresses come from `co_consts` beside their names and are firmer.
+
+The next step is a read, not a write: **read the CHL8228G's VID registers cold
+and warm.** If a cold board shows the rails unprogrammed and a warm one shows
+`AltaVdd 1.01` / `AltaVdds 1.0`, the question is answered and M1 becomes
+"program the regulator", with prefdl supplying the values it already carries.
+
+### thorn's bits are status, not control
+
+The same introspection settles the register-5 question without writing
+anything. The `Thorn` class's methods are **`isPowerPhaseFault`**,
+**`clearPowerPhaseFault`** and **`clockSelectStatus`** — fault reporting and
+clock status. Bits 7 and 5 of register 5 tracking ASIC power is exactly what a
+fault/status register does, and writing them would almost certainly have
+achieved nothing.
+
+The experiment below is left documented because the tooling and reasoning are
+worth keeping, and because "we thought about poking it and here is why we did
+not" is more useful than silence. It is no longer the recommended next step.
+
 ### The experiment that settles it, and it has not been run
 
 `spike/thorn-read.c` now has a write path, and it is awkward on purpose: `-w`
