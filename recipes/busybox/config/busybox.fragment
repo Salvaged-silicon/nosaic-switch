@@ -96,3 +96,19 @@ CONFIG_I2CGET=y
 CONFIG_I2CSET=y
 CONFIG_I2CDUMP=y
 CONFIG_I2CTRANSFER=y
+
+# devmem, for bring-up on a board whose registers are the work.
+#
+# Not a general-purpose tool and not enabled for convenience. On the 7150S-52
+# the whole M1 investigation is reads and writes to an FPGA's BAR, and the only
+# environment where the chip is cold is one of ours -- so without this the
+# choice is between building a bespoke binary for every register poke and doing
+# the work in the vendor's bootloader, whose busybox has had devmem all along.
+#
+# It was assumed to be here already, on the strength of CONFIG_DEVMEM appearing
+# in a build tree's .config, and the switch said otherwise:
+#
+#     doas: devmem: command not found
+#
+# which cost a cold boot. The fragment is what decides, not the build tree.
+CONFIG_DEVMEM=y
