@@ -1202,9 +1202,28 @@ reliable way to restart this chassis from software:
                                                             armed at handover)
 ```
 
-*(live for EOS's behaviour; derived for ours.)* Plan every bring-up iteration
-around a four-minute cold cycle, and treat "it will reboot into the other slot"
-as a claim to be demonstrated rather than assumed — A/B rollback rests on it.
+*(live for EOS's behaviour.)* Plan every bring-up iteration around a
+four-minute cold cycle, and treat "it will reboot into the other slot" as a
+claim to be demonstrated rather than assumed — A/B rollback rests on it.
+
+**The SCD watchdog works, and it is the recovery path to use. live,
+2026-09-25.** Demonstrated from a RAM-booted NOSaic:
+
+```
+nosaic platform watchdog arm 60000
+  armed, 60000 ms. It must be petted before then or the board power-cycles.
+nosaic platform watchdog status
+  register  0xc1f41770
+  armed, 60000 ms, power-cycles on expiry
+```
+
+Left unpetted, the board power-cycled and came back on EOS from flash, pingable
+110 s after the watchdog fired and with its OSPF adjacency FULL about a minute
+later. So a wedged bring-up does **not** need somebody at the PDU: arm the
+watchdog before doing anything to the chip and the box recovers itself.
+
+This matters more here than on a board that can reboot, because nothing else
+software can reach will restart this chassis.
 
 ## Boot chain
 

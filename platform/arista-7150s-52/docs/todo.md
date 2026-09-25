@@ -72,6 +72,10 @@ committed, as on every other board.
       prefdl parser is shared work with the 7050SX2, which has the same gap
 - [ ] choose the reserved DMA region and prove the kernel survives it — the
       address depends on where this board's ~3978 MB ends
+- [x] **recovery without the PDU is demonstrated** — the SCD watchdog
+      power-cycles the board. Armed for 60 s from a RAM-booted NOSaic and left
+      unpetted, it brought the box back on EOS, pingable 110 s later. Arm it
+      before touching the chip.
 - [ ] **find out whether this board can reboot.** EOS kexecs and does not trust
       the hardware reset; every reset path tried from a bare kernel has hung.
       Until this is answered, A/B upgrade on this board is a claim with nothing
