@@ -370,6 +370,28 @@ driver fm6000   ports 0 max   vlans false   l3 false   acl no   ecmp no
 
 That is accurate and it is the gap: the chip boots, and nothing forwards yet.
 
+## Platform parity with the other boards — mostly done
+
+Features that do not need the ASIC, measured and working 2026-09-25:
+
+- [x] **transceivers** — all 52 cages, presence and full SFF-8472 DOM.
+      `nosaic platform transceivers` and `platform xcvr N`.
+- [x] **temperature** — `board` 29 °C and `remote` 26 °C through
+      `platform status`.
+- [x] **PSU presence** — both supplies, free from the SCD driver.
+- [x] **resets and watchdog** — released state reported; watchdog arms and
+      recovers the box.
+- [ ] **fans** — the controller is not on `0x58`–`0x68` of accelerators 0 or 1.
+      Until it is found no cooling loop runs, which is now enforced by
+      `wantsThermalService()` rather than left to chance.
+- [ ] **board identity / prefdl** — `platform status` still says the SEEPROM is
+      not located. Two non-transceiver `0x50` responders were found at accel 0
+      bus 4 and accel 1 bus 0; read them. This also removes the hand-written
+      MAC in `config/network.conf`.
+- [ ] **status lamps** — the SCD LED registers are mapped
+      (`0x6050`/`0x6060`/`0x6090`, `portLinkLed` at `0x60d0` stride `0x10`) but
+      no `statusleds.conf` is generated for this board.
+
 ## M2 — the chip survives being talked to
 
 This is where the board is actually hard. An access to an uninitialised bank

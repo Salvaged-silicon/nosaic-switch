@@ -84,6 +84,15 @@ var SMBusParts = map[string]int{
 	"max6658":        0x00, // local diode
 	"max6658-remote": 0x01, // remote diode 1
 	"lm73":           0x00, // 16-bit, and the high byte is whole degrees
+
+	// LM90-compatible: local diode at 0x00, remote at 0x01, both signed whole
+	// degrees. Named for the register layout rather than a part number on
+	// purpose -- the 7150S-52's sensor answers manufacturer ID (0xfe) 0x01 and
+	// device ID (0xff) 0x11, which is not a Maxim part and so not a max6658
+	// however identical the two registers are. Calling it what it reads is
+	// honest; calling it a max6658 would be a guess that happens to work.
+	"lm90":        0x00,
+	"lm90-remote": 0x01,
 }
 
 // Validate reports what a board got wrong, by name, rather than letting it

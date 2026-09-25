@@ -933,9 +933,7 @@ poweroff -f
 	// is the only way into a board whose datapath is not up yet. The bug is
 	// starting a regulator for a board with nothing to regulate, so the fix is
 	// not to start one.
-	hasSensors := (o.Board.PlatformHAL.SMBus != nil && len(o.Board.PlatformHAL.SMBus.Sensors) > 0) ||
-		(o.Board.PlatformHAL.I2C != nil && len(o.Board.PlatformHAL.I2C.Sensors) > 0)
-	if haveCLI && o.Board.PlatformHAL.Driver != "" && hasSensors {
+	if haveCLI && o.Board.PlatformHAL.Driver != "" && wantsThermalService(o.Board) {
 		// ⚠ NOT ON THE CONSOLE. This prints a line per sensor sweep, for ever,
 		// on a board whose console is 9600 baud. It buries everything else,
 		// it makes a serial session unusable at exactly the moment somebody
@@ -1598,6 +1596,28 @@ func newestSource(dir string, skip map[string]bool) (time.Time, string) {
 // executable, and with no extension. Building in the tree is how these recipes
 // work, and counting a build's own output as a source change would make every
 // package look stale the moment it was built.
+// wantsThermalService reports whether this board should run a cooling loop.
+//
+// It needs something to measure AND something to regulate with. Sensors alone
+// are not enough, and the 7150S-52 is the board that shows why: its temperature
+// sensor was found and declared before its fan controller was, and a cooling
+// loop with readings but no fans exits "no fan control" on its first pass --
+// the same restart storm described at the call site, reached from the other
+// side. A board with sensors and no fans still reports temperature through
+// `nosaic platform status`; what it does not get is a regulator, because there
+// is nothing for one to drive.
+//
+// An I2C board states no fan controller in its map -- its cooling comes from a
+// driver the kernel binds -- so the fan requirement applies only to the SMBus
+// shape, and an I2C board with sensors keeps the behaviour it had.
+func wantsThermalService(b *board.Board) bool {
+	smb, i2c := b.PlatformHAL.SMBus, b.PlatformHAL.I2C
+	hasSensors := (smb != nil && len(smb.Sensors) > 0) ||
+		(i2c != nil && len(i2c.Sensors) > 0)
+	hasFans := smb == nil || smb.Fans != nil
+	return hasSensors && hasFans
+}
+
 func isBuildOutput(p string, fi os.FileInfo) bool {
 	switch filepath.Ext(p) {
 	case ".o", ".a", ".d", ".so", ".lo", ".gch":

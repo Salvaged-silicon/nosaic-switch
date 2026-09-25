@@ -259,6 +259,74 @@ way EPL does. Found while sweeping for `SOFT_RESET`. `0x1b000`, `0x1d000` and
 `0x1e000` are all safe. Not yet identified, and not yet guarded, because
 nothing needs to read it. **live**
 
+## Platform features work: optics, sensors, PSUs, 2026-09-25
+
+None of this needs the ASIC, and all of it is verified on hardware. **live**
+
+```
+cage  type  state                     raw
+1     SFP+  module present, laser on  0x00000180
+2     SFP+  module present, laser on  0x00000180
+3..52 SFP+  undetermined              0x00000187
+
+cage 1  CISCO-FINISAR FTLX8574D3BCL-CS  serial FNS215108H7
+        29.7 C  3.31 V   rx -2.19 dBm  tx -1.95 dBm  bias 8.5 mA
+
+temp board   29.0 °C        psu1  present
+temp remote  26.0 °C        psu2  present
+```
+
+### The cage map, triangulated three ways
+
+Not taken from a table — measured, and each way checks the others:
+
+1. scanning address `0x50` across accelerators 0–9 and buses 0–7 found exactly
+   **two** SFF-8472 identifiers (`0x03`), at **accel 2 bus 0** and **accel 2
+   bus 1**;
+2. the SCD's own per-cage registers read `0x1E0` at `0x5010` and `0x5020` and
+   `0x1DF` at the other fifty — **the same two cages and no others**;
+3. those two are `Ethernet1` and `Ethernet2`, the only ports EOS has up.
+
+So **panel port N is SCD `0x5010 + (N-1)·0x10`, and SMBus accelerator
+`2 + (N-1)/8` bus `(N-1)%8`.** Accelerators 2–8 give 56 buses for 52 cages, and
+accelerators 10 and above answer "no response", so 0–9 is the set.
+
+### The temperature sensor, and what it is not
+
+One LM90-compatible part at **accel 0 bus 0 address `0x4c`**: local diode at
+register `0x00`, remote at `0x01`.
+
+It answers manufacturer ID (`0xfe`) `0x01` and device ID (`0xff`) `0x11`. That
+is **not** Maxim, so it is not the `max6658` whose two registers are identical —
+the board declares `lm90`/`lm90-remote`, named for the register layout rather
+than for a part number nobody has confirmed.
+
+⚠ What the **remote** diode is wired to is not established. It reads *cooler*
+than the local one (26 °C against 29 °C), which argues against it being the
+FM6000 die, so it is named `remote` rather than `asic`. **UNKNOWN**
+
+### ⚠ No fan controller found, so no cooling loop runs
+
+A scan of `0x58`–`0x68` on accelerators 0 and 1 found nothing. The chassis has
+fans; where their controller sits is not known, and none is declared.
+
+This board is the reason `wantsThermalService()` now requires **fans as well as
+sensors**. A cooling loop with readings and nothing to drive exits "no fan
+control" on its first pass, and `restart: always` respawns it for ever — the
+same storm that twice destroyed console output here, reached from the other
+side. A board with sensors and no fans still reports temperature through
+`nosaic platform status`; it just does not get a regulator.
+
+### A lead on the prefdl SEEPROM
+
+The same `0x50` scan found two responders that are **not** transceivers,
+answering identifier `0x01` rather than `0x03`: **accel 0 bus 4** and **accel 1
+bus 0**. An SFF identifier of `0x01` is "GBIC", which no cage on this board
+has, so these are more likely the board's own SEEPROMs. That matters because
+`platform status` still reports *"board identity needs the prefdl SEEPROM,
+which is not located yet"*, and because `config/network.conf` currently states
+a MAC address by hand for want of one. Not yet read. **derived**
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

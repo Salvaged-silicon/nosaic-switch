@@ -135,6 +135,51 @@ platform_hal:
   # is what `release-asic` did until 2026-09-25.
   switch_pcie_after_config: true
 
+  # The board's SMBus, recovered by scanning it 2026-09-25 with NOSaic's own
+  # scdsmbus -- accelerators 0..9 exist, 10 and up answer "no response".
+  #
+  # ⚠ ONE SENSOR, AND NO FANS YET. A scan of 0x58..0x68 on accelerators 0 and 1
+  # found no fan controller, so none is declared and no cooling loop starts.
+  # The fans are somewhere -- the chassis has them -- and until they are found
+  # this board reports temperature through `nosaic platform status` and
+  # regulates nothing. Declaring a controller we have not read would be worse
+  # than declaring none.
+  smbus:
+    sensors:
+      # Local and remote diodes of one LM90-compatible part at accel 0 bus 0.
+      # Read 0x1c (28 °C) and 0x19 (25 °C) on a warm board.
+      #
+      # The part is named for its register layout, not a part number: it
+      # answers manufacturer ID (0xfe) 0x01 and device ID (0xff) 0x11, which is
+      # not Maxim and so not the max6658 whose two registers are identical.
+      #
+      # ⚠ What the REMOTE diode is wired to is not established. It reads
+      # *cooler* than the local one, which argues against it being the FM6000
+      # die, so it is named for what it is rather than for a guess.
+      - {name: board,  part: lm90,        accel: 0, bus: 0, addr: 0x4c}
+      - {name: remote, part: lm90-remote, accel: 0, bus: 0, addr: 0x4c}
+
+  # The 52 front-panel SFP+ cages.
+  #
+  # Triangulated three ways on 2026-09-25 rather than taken from a table:
+  #
+  #   1. scanning 0x50 across accelerators 0..9 and buses 0..7 found exactly
+  #      two SFF-8472 identifiers (0x03), at accel 2 bus 0 and accel 2 bus 1;
+  #   2. the SCD's own per-cage registers read 0x1E0 at 0x5010 and 0x5020 and
+  #      0x1DF at the other fifty -- the same two cages and no others;
+  #   3. those two are Ethernet1 and Ethernet2, the only ports EOS has up.
+  #
+  # So panel port N is SCD 0x5010 + (N-1)*0x10, and SMBus accelerator
+  # 2 + (N-1)/8 bus (N-1)%8. Accelerators 2..8 give 56 buses for 52 cages.
+  #
+  # No QSFP on this board: 52 SFP+ and nothing else.
+  cages:
+    base: 0x5010
+    stride: 0x10
+    count: 52
+    sfp_count: 52
+    sfp_eeprom: {accel_base: 2, buses_per_accel: 8}
+
 status: planned
 
 notes: >
