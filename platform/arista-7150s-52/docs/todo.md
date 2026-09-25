@@ -165,6 +165,17 @@ committed, as on every other board.
       is `MGMT2+0x021` = `0x1c021`) gives **`BOOT_MODE = 0x4` — boot from SPI
       serial ROM**. The host cannot substitute for this: it would need PCIe to
       do it
+- [x] **the link stays dead after a real release** — `asic-release` runs
+      through our own SCD driver every boot, and reading the root port after it
+      still gives `LnkSta = 0x1100`, DLActive clear. Measured, not inferred
+- [x] **the SCD's SPI block is not an arbiter.** `0x7900` is a plain master
+      FIFO — `spicmd`/`spiread`/`spictrl`, no owner or mux field — and the
+      FM6000 has its own SPI pins (`GPIO[3..6]`), so its boot flash is its own
+- [ ] **so either the straps never latched, or `CHIP_RESET_N` is not the SCD's
+      `alta` bit.** Those are the two remaining explanations and they are
+      distinguishable: find what drives `CHIP_RESET_N` on this board — `thorn`
+      is the obvious suspect, being the power sequencer with a
+      `clockSelectStatus` already
 - [ ] **find out what owns the SPI flash.** The SCD has its own SPI block at
       BAR0 `0x7900`. If the boot flash is shared between it and the FM6000 —
       the ordinary way to build this, so the host can reprogram it — then

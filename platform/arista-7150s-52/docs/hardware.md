@@ -489,6 +489,43 @@ that initialises its PCIe. The chip is not failing to be powered, clocked or
 released — all three are measured — it is failing to *read its boot ROM*, or
 never being asked to.
 
+### The link stays dead after a real reset release — measured
+
+The release is not hypothetical on a booted NOSaic: the `asic-release` service
+runs `nosaic platform release-asic` every boot, through the SCD driver, and its
+failure (`context deadline exceeded`) is it writing the reset bits and then
+waiting for a device that never arrives. `NOSAIC-IRQ 0000:02:00.0 is not on the
+bus` in the same boot says the same thing from the other side.
+
+Reading the root port **after** that release:
+
+```
+   0x68: 00 00 00 11   LnkSta = 0x1100 — DLActive still clear
+```
+
+So this is now measured rather than inferred: **the resets are released by our
+own driver, and the link still does not train.** The earlier reading could be
+read as "nobody released it yet"; this one cannot.
+
+### And the SCD's SPI block is not an arbiter
+
+The block at `0x7900` decodes to three registers — `spicmd` at `+0x00`
+(`data`, `csEnd`, `intrWhenDone`, `recordSpiOp`), `spiread` at `+0x10`
+(`data`, `valid`), `spictrl` at `+0x20` (`readFifoCnt`, `writeFifoCnt`, `intr`,
+`ovfl`, `unfl`).
+
+That is a plain SPI master with a FIFO. **There is no owner, grant or mux field
+anywhere in it**, so the "SCD and FM6000 share a flash and something arbitrates"
+idea is not supported by the hardware as described. The FM6000 has its own SPI
+pins — `GPIO[3,4,5]` for `SPI_CS_N`/`MOSI`/`CLK` and `GPIO[6]` for `MISO` — so
+its boot flash is most likely its own, wired directly, with nothing to contend
+for.
+
+Which sharpens the question again rather than answering it: if the chip has its
+own flash and its own pins, and the board has released its reset, then either
+the strap latch never happened, or `CHIP_RESET_N` is not what the SCD's `alta`
+bit drives.
+
 ### What that suggests is in the way
 
 The SCD has an SPI block of its own, at BAR0 `0x7900`. If the boot flash is
