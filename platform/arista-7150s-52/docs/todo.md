@@ -171,6 +171,16 @@ committed, as on every other board.
 - [x] **the SCD's SPI block is not an arbiter.** `0x7900` is a plain master
       FIFO — `spicmd`/`spiread`/`spictrl`, no owner or mux field — and the
       FM6000 has its own SPI pins (`GPIO[3..6]`), so its boot flash is its own
+- [x] **`thorn.initialize()` writes nothing to hardware** — it sets a software
+      `operatingMode` field. Dead end, recorded so it is not walked twice
+- [x] **the EOS timeline is measured**: scd loads at t=34, `scd_finish_init` at
+      t=156 (interrupt/UIO plumbing, no reset write — the GPL source is
+      readable), and the FM6000 appears at t=173 **by rescan**. So the release
+      is done by **EOS userspace after the SCD driver is fully initialised** —
+      not by the driver and not by `NorCalInit`
+- [ ] **find the EOS userspace agent that releases it**, in the window between
+      `scd device initialization complete` and the rescan. That is the last
+      unexamined actor
 - [ ] **so either the straps never latched, or `CHIP_RESET_N` is not the SCD's
       `alta` bit.** Those are the two remaining explanations and they are
       distinguishable: find what drives `CHIP_RESET_N` on this board — `thorn`

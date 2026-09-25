@@ -526,6 +526,52 @@ own flash and its own pins, and the board has released its reset, then either
 the strap latch never happened, or `CHIP_RESET_N` is not what the SCD's `alta`
 bit drives.
 
+### When the chip actually appears under EOS
+
+From the vendor's own boot, `dmesg`:
+
+```
+  t=34.7   scd module installed / scd 0000:04:00.0: scd detected
+  t=156.6  scd 0000:04:00.0: scd_finish_init
+           scd 0000:04:00.0: scd device initialization complete
+  t=173.6  pci 0000:02:00.0: [8086:155b] type 00 class 0x020000    ← APPEARS
+           pci 0000:02:00.0: BAR 0: assigned [mem 0xe2000000-0xe3ffffff]
+  t=173.7  fpdma 0000:02:00.0: module installed
+```
+
+Three things follow.
+
+**The chip appears very late, and by rescan.** 173 seconds into the boot, and
+the "type 00 class" / "BAR 0: assigned" pair is the kernel *discovering* a
+device on a rescan, not finding one at boot enumeration. Something in userspace
+released it and rescanned.
+
+**`scd_finish_init` is not what releases it**, despite sitting 17 seconds
+earlier and looking like a candidate. Arista's GPL driver is readable and the
+function is interrupt plumbing: it walks the interrupt masks, creates up to 32
+UIO devices — one per set bit — and registers the handler. There is no reset
+write in it.
+
+**`init_trigger` is a userspace handshake, not a board operation.** The driver's
+own comment: after the other attributes are written, writing anything to
+`init_trigger` causes initialisation to continue, creating the UIO devices and
+registering the handler; afterwards the attribute files become read-only. It
+reads `0` on this box, meaning "initialised, no error".
+
+So the release is performed by **EOS userspace, after the SCD driver is fully
+initialised** — not by the driver, and not by `NorCalInit`, which runs much
+earlier and contains no `resetClear`. That is a narrower target than "something
+in EOS", and it is where to look next.
+
+### thorn's initialize writes nothing
+
+Worth recording as a dead end so it is not walked twice. `Thorn.initialize()` is
+one line — `self.operatingMode = OperatingMode.Operating` — and the property
+setter validates the value and stores it in `self._operatingMode`. **No hardware
+write at all.** The interface looked promising (`powerGood`, `powerStatus`,
+`powerCycle`, `scdReset`, `clockSelect`, `initValues`) and the initialisation
+touches none of it.
+
 ### What that suggests is in the way
 
 The SCD has an SPI block of its own, at BAR0 `0x7900`. If the boot flash is
