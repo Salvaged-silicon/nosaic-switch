@@ -168,12 +168,15 @@ var installedBoardFile = "/etc/nosaic/board.yml"
 
 func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
 	hal, err := platformhal.Open(b.PlatformHAL.Driver, platformhal.Config{
-		PCI:       b.PlatformHAL.PCI,
-		ASICPCI:   b.PlatformHAL.ASICPCI,
-		SMBus:     b.PlatformHAL.SMBus,
-		Cages:     b.PlatformHAL.Cages,
-		Resets:    b.PlatformHAL.Resets,
-		BoardData: b.PlatformHAL.N3172TQ,
+		PCI:     b.PlatformHAL.PCI,
+		ASICPCI: b.PlatformHAL.ASICPCI,
+		SMBus:   b.PlatformHAL.SMBus,
+		Cages:   b.PlatformHAL.Cages,
+		Resets:  b.PlatformHAL.Resets,
+		// The board's own switch-chip reset bits, not the driver's default
+		// pair. Silent when wrong: an unimplemented bit takes the write.
+		SwitchResetBits: b.PlatformHAL.SwitchResetBits,
+		BoardData:       b.PlatformHAL.N3172TQ,
 	})
 	if err != nil {
 		return nil, nil, err

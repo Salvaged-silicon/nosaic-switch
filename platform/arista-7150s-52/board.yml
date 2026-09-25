@@ -83,6 +83,20 @@ platform_hal:
   pci: "0000:04:00.0"
   asic_pci: "0000:02:00.0"
 
+  # The bits in the SCD's reset block that hold the switch chip, released in
+  # this order. Read out of the vendor's own register description, where the
+  # fields are named: alta = 1, sol = 2, rpt = 8. A cold 0x4000 reads 0x106,
+  # which is exactly those three.
+  #
+  # ⚠ STATED BECAUSE THE DRIVER'S DEFAULT IS THE SIBLING BOARD'S AND IS WRONG
+  # HERE. That default is bits 0 and 1, from the 7050SX2. On this board bit 0
+  # does not exist and bits 2 and 8 do, so the default writes a bit that goes
+  # nowhere and never touches two lines that matter -- silently, because an
+  # unimplemented bit accepts the write and reports success. The sibling's own
+  # comment warns about exactly this and then hard-codes its numbers for
+  # everyone.
+  switch_reset_bits: [1, 2, 8]
+
 status: planned
 
 notes: >

@@ -64,10 +64,35 @@ const (
 // for releasing -- both end up cleared and only the 500 ms between them is
 // ordered -- and it is why ResetState's answer is honest about being a guess
 // while ReleaseSwitchChip's is not.
+//
+// ⚠ THESE ARE A DEFAULT, NOT A CONSTANT. A board states its own in
+// `platform_hal: switch_reset_bits:`, because they are not the same on two
+// boards that share this controller -- the 7150S-52's are 1, 2 and 8, and a
+// driver carrying the numbers below writes bit 0, which does not exist there,
+// and never touches two lines that do.
 const (
 	bitSwitchCore = 0
 	bitSwitchPCIe = 1
 )
+
+// switchResetBits is what this board actually uses: its own, or the pair
+// above when it has not said.
+func (s *SCD) switchResetBits() []int {
+	if len(s.resetBits) > 0 {
+		return s.resetBits
+	}
+	return []int{bitSwitchCore, bitSwitchPCIe}
+}
+
+// switchResetMask is those bits as one word, for the assert and for testing
+// whether the chip is held.
+func (s *SCD) switchResetMask() uint32 {
+	var m uint32
+	for _, b := range s.switchResetBits() {
+		m |= 1 << uint(b)
+	}
+	return m
+}
 
 // Watchdog register fields.
 //
@@ -154,6 +179,9 @@ type SCD struct {
 	// resets are the board's own reset lines, released during bring-up
 	// alongside the switch chip's.
 	resets []platformhal.ResetLine
+	// resetBits is this board's switch-chip reset bits; empty means the
+	// default pair. See switchResetBits().
+	resetBits []int
 
 	// lamps is the board's chassis-lamp map, loaded once on first use from a
 	// generated file. Cached including the failure: a board without the map
@@ -203,7 +231,8 @@ func Open(cfg platformhal.Config) (*SCD, error) {
 	return &SCD{
 		bar: bar, pci: pciAddr, asic: asicAddr,
 		smbusMap: cfg.SMBus, cages: cfg.Cages, resets: cfg.Resets,
-		close: func() error { munmapFile(bar); return f.Close() },
+		resetBits: cfg.SwitchResetBits,
+		close:     func() error { munmapFile(bar); return f.Close() },
 	}, nil
 }
 
@@ -276,7 +305,7 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 	// through the release sequence again: the writes would be no-ops, the
 	// register would not change, and the check below would report a mapping
 	// problem on hardware that is working. Skip to enabling it.
-	held := before & ((1 << bitSwitchCore) | (1 << bitSwitchPCIe))
+	held := before & s.switchResetMask()
 	if held == 0 {
 		s.trace("both resets are already released; enabling only")
 		return s.enableAndWait(ctx)
@@ -303,20 +332,27 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 	// Costs nothing where it was already right: this runs only in the branch
 	// where the chip is held, so on a board whose reset is genuinely asserted
 	// the write is a no-op and the release that follows is unchanged.
-	s.write32(resetSet, (1<<bitSwitchCore)|(1<<bitSwitchPCIe))
-	s.trace("asserted core and pcie before release: %#08x", s.read32(resetBase))
+	s.write32(resetSet, s.switchResetMask())
+	s.trace("asserted switch resets %#08x: %#08x", s.switchResetMask(), s.read32(resetBase))
 	if err := sleepCtx(ctx, pcieResetDelay); err != nil {
 		return err
 	}
 
-	s.write32(resetClear, 1<<bitSwitchCore)
-	s.trace("after clearing core (bit %d): %#08x", bitSwitchCore, s.read32(resetBase))
-	if err := sleepCtx(ctx, pcieResetDelay); err != nil {
-		return err
+	// Released one at a time, in the order the board gave, with the same wait
+	// between them. The order is the board's to state: on the sibling it is
+	// core then PCIe and the gap is what that chip wants, and a board that
+	// needs a different order says so by listing its bits differently.
+	bits := s.switchResetBits()
+	for i, b := range bits {
+		s.write32(resetClear, 1<<uint(b))
+		s.trace("after clearing bit %d: %#08x", b, s.read32(resetBase))
+		if i != len(bits)-1 {
+			if err := sleepCtx(ctx, pcieResetDelay); err != nil {
+				return err
+			}
+		}
 	}
-	s.write32(resetClear, 1<<bitSwitchPCIe)
 	after := s.read32(resetBase)
-	s.trace("after clearing pcie (bit %d): %#08x", bitSwitchPCIe, after)
 	s.trace("status register: %#08x", s.read32(resetStatus))
 
 	if after == before {

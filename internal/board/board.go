@@ -421,6 +421,16 @@ type PlatformHAL struct {
 	// is absent from the bus until then, which is why it is stated here
 	// rather than discovered.
 	ASICPCI string `yaml:"asic_pci"`
+	// SwitchResetBits are the bits in the controller's reset block that hold
+	// the switch chip, released in the order given.
+	//
+	// ⚠ STATE THESE. They are NOT the same across boards that share an SCD.
+	// The 7050SX2 uses 0 and 1; the 7150S-52's are alta=1, sol=2, rpt=8, and
+	// a driver carrying the first board's numbers writes bit 0 -- which does
+	// not exist there -- and never touches two lines that do. Nothing reports
+	// that, because an unimplemented bit accepts the write.
+	SwitchResetBits []int `yaml:"switch_reset_bits"`
+
 	// SMBus is where the board's sensors and fan controller sit on the
 	// controller's SMBus. Optional, because a board may have none -- but a
 	// driver that needs it refuses to guess, which is the point: the same

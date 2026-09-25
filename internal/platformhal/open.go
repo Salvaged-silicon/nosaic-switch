@@ -23,6 +23,15 @@ type Config struct {
 	// Resets are board reset lines released during bring-up, beyond the
 	// switch chip's own.
 	Resets []ResetLine
+	// SwitchResetBits are the bit positions in the controller's reset block
+	// that hold the switch chip down, in the order they should be released.
+	//
+	// Board data because it is not the same on two boards that share a
+	// controller, and getting it wrong is silent: an unimplemented bit
+	// accepts a write, changes nothing, and reports success. Empty means the
+	// driver's own default, which is whatever the first board to need it
+	// used.
+	SwitchResetBits []int
 	// I2C is where the board's platform devices sit on its Linux i2c buses,
 	// for boards whose controller is not an SCD. Optional and mutually
 	// exclusive with SMBus in practice, though nothing enforces that: a
