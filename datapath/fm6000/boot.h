@@ -66,6 +66,15 @@ struct fm_boot_report {
 int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep);
 
 /*
+ * The same sequence, with step 12 optional.
+ *
+ * Step 12 fills a 262144-word memory and there is a live question about what
+ * else that disturbs, so it has to be possible to run steps 1-11 and stop --
+ * otherwise "did step 12 do this?" cannot be asked at all.
+ */
+int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init);
+
+/*
  * Has the documented cold boot already run on this chip?
  *
  * Asked because nosd restarting must not put a forwarding chip back through

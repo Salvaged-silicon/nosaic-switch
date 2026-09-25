@@ -461,6 +461,20 @@ has a reason, in code, parameterised by the board.
       it does not read back what was written, and writing `0` and `0xa5a5a5a5`
       give the *same* readback, so the value is not derived from the write.
       Stable across reads, so not a counter. Needs its own look.
+- [x] **the SPICO/licensing risk is settled, and favourably.** SerDes firmware
+      is needed only for **copper**; a fibre-only build needs zero proprietary
+      files. This board is 52 × SFP+ with fibre SR modules in it, so the
+      redistributable claim holds. Copper DAC is out of scope until somebody
+      reimplements SPICO. This was the open risk that could have invalidated
+      the licensing shape of the whole port.
+- [x] **the EPL block is mapped** — 24 EPLs × 4 lanes at stride `0x80` from
+      `0x0e0400`, two structures interleaved, with `EPL_CFG_A`/`B` landing
+      where independently known. ⚠ Above `0x0e6400` it is still fatal to read.
+- [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
+      for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
+      Both are per-EPL registers with per-port fields. Needs the lane-enable
+      algorithm — 18 steps, read-modify-write and two blocking polls — and an
+      SBus op-`0x20` device reset before any SerDes write.
 - [ ] **step 11, PCIe** — `fmPlatformSetupPCIe` is six registers we have
       addresses for (`0x01002`, `0x01400`, `0x01416`, `0x01418`, `0x0141d`,
       `0x01435`) and have never tried. Needed for packet DMA, not before.

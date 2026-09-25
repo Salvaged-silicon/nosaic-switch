@@ -351,6 +351,12 @@ int main(int argc, char **argv)
 		if (i + 1 < argc)
 			pat = (uint32_t)strtoul(argv[i + 1], NULL, 0);
 		rc = cmd_meminit(&dev, pat);
+	} else if (strcmp(argv[i], "--boot-nomem") == 0) {
+		struct fm_boot_report rep;
+
+		rv = fm_boot_cold_opt(&dev, &rep, 0);
+		fm_boot_report_print(&rep);
+		rc = (rv == FM_OK) ? 0 : 2;
 	} else if (strcmp(argv[i], "--boot") == 0) {
 		struct fm_boot_report rep;
 

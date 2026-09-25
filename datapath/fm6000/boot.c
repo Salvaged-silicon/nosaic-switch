@@ -129,6 +129,11 @@ int fm_boot_already_done(struct fm6000 *d)
 
 int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 {
+	return fm_boot_cold_opt(d, rep, 1);
+}
+
+int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
+{
 	int rv;
 
 	memset(rep, 0, sizeof(*rep));
@@ -304,6 +309,11 @@ int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 	 * answered -- it does not read back the pattern written, so it is not
 	 * plain 32-bit RAM.
 	 */
+	if (!mem_init) {
+		set(rep, FM_STEP_MEMORY_INIT, FM_ENOADDR, "skipped by request");
+		fm_boot_mark_done(d);
+		return FM_OK;
+	}
 	rv = fm_mem_fill(d, FM6000_BANK_STATS_BASE, FM6000_BANK_STATS_SPAN, 0);
 	if (rv != FM_OK) {
 		set(rep, FM_STEP_MEMORY_INIT, rv,

@@ -244,10 +244,18 @@ The experiment this page said nobody had run. **live**
    after  the sequence:  read 0x0e3b02  ->  0x00080000, PIN_STRAP = 0x208
 ```
 
-So the hazard is not permanent and not mysterious: the EPL block is unreadable
-until the boot controller's commands have run, and safe afterwards.
-`fm_hazard()` refuses it until `fm_boot_mark_done()`, which `fm_boot_cold()`
-calls itself on success.
+So the hazard is not permanent. ⚠ **But it is not wholly cleared either, and
+the first version of this section over-claimed from a single word.** Sweeping
+the block after the boot sequence shows:
+
+```
+   0x0e0400 .. 0x0e6316   reads fine, and has real structure in it
+   0x0e6400 .. 0x0e7fff   STILL takes the chip off the bus
+```
+
+`fm_hazard()` refuses the block until `fm_boot_mark_done()`, which
+`fm_boot_cold()` calls itself on success — and that remains the right guard,
+because the upper part is fatal in both states.
 
 This does **not** unlock the ECC bank memories. Those are a separate guard
 waiting on step 12's memory initialisation, which is not written yet.
@@ -382,6 +390,96 @@ filled bank therefore belong in the process that filled it, which is why
 `fm6000-probe --meminit` characterises the region itself instead of leaving it
 to a second invocation. The alternative is a flag that turns the guard off, and
 that is the one thing `pci.h` says not to build.
+
+## The EPL block is mapped, and the SPICO question is answered, 2026-09-25
+
+### ⚠ Zero proprietary files, for fibre
+
+The page above called the SerDes firmware *"the open risk to the claim that
+images for this board stay publishable"* and said settling it could invalidate
+the licensing shape of the whole port. **It is settled, and the answer is the
+good one.**
+
+The prior EdgeNOS investigation on this same chassis got to *"zero proprietary
+files for a fibre-only build"*. SPICO SerDes firmware is **not generatable —
+only droppable, and only for fibre**; copper needs firmware nobody has
+reimplemented. This board's 52 cages are SFP+, and the two modules in it are
+CISCO-FINISAR FTLX8574D3BCL-CS, which are fibre SR. So the parser-microcode
+decision and the SerDes question now point the same way and the redistributable
+claim holds for the configuration this board is in. **Copper DAC is out of
+scope until somebody reimplements SPICO.**
+
+### The EPL block, measured
+
+Swept after the boot sequence, in chunks, with recovery verified between them.
+**live**
+
+Two structures interleaved, at a stride of **`0x80` words** from `0x0e0400`:
+
+| | count | what it is |
+|---|---|---|
+| **type A** | **96** | per-**lane** |
+| **type B** | **24** | per-**EPL** |
+
+24 EPLs × 4 lanes = 96 lanes, which is what the part should have, and type B's
+offsets `+0x01` and `+0x02` land exactly on the independently known
+`EPL_CFG_A` (`0x0e3b01`) and `EPL_CFG_B` (`0x0e3b02`). Two facts agreeing from
+different directions is what makes this a map rather than a pattern.
+
+```
+ type A (per lane)                    type B (per EPL)
+   +0x00  00000015                      +0x01  0c7d7899   EPL_CFG_A
+   +0x01  0007ffff                      +0x02  00080000   EPL_CFG_B
+   +0x02  07ffffff                      +0x03  00041041
+   +0x03  00000080                      +0x13  00002985
+   +0x04  00001003                      +0x14  000001ff
+   +0x10  40000000                      +0x16  unique per EPL
+   +0x13  00005381
+   +0x16  0100009c                    ⚠ above 0x0e6400 the block is still
+   +0x17  00000001                      fatal to read, booted or not
+   +0x21  00001001
+   +0x23  00000011
+   +0x24  00000228
+   +0x2a  02000000
+   +0x2e  01048000
+   +0x34  0aaaa005
+   +0x37  00000001
+   +0x3e  VARIES per lane: 0000aa80 x20, 00005560 x19, 0000ffe0 x14
+   +0x3f  00000780
+   +0x40  00003fff
+```
+
+`+0x3e` is the only per-lane field that differs, which makes it the first place
+to look for lane state. **derived**
+
+### The two gates that decide whether a port comes up
+
+From the prior investigation's two-day hunt for one dark port, and worth having
+before we try: both gates live in **per-EPL registers with per-port fields**, so
+two lanes are *fields of the same register* — which is why every per-lane diff
+it took reported "identical configuration", correctly and uselessly.
+
+- `EPL_CFG_B.PortNPcsSel` — `3` is 10GBASE-R, `0` is `PCS_DISABLE`
+- `EPL_CFG_A.Active_N` — the lane must be marked active
+
+Ours currently reads `EPL_CFG_B` = `0x00080000` against a forwarding chip's
+`0x00090003`, so the low nibble is `PCS_DISABLE` today.
+
+⚠ Also from that work, and the reason a capture cannot substitute here: **a
+lane enable is an algorithm**, 18 steps of read-modify-write plus two blocking
+polls, and **an SBus write to a SerDes needs an op-`0x20` device reset first**.
+A replay carries the values that came out, not the reads or the waits.
+
+### ⚠ A harness that could not tell "killed" from "already dead"
+
+Worth recording as method. An earlier sweep reported that *every* word in the
+EPL block was fatal — a clean-looking table, and false. Its recovery helper
+called the boot sequence and carried on without checking, and `--boot` bails at
+step 1 on a chip that is not answering and does nothing. So one silent recovery
+failure made every later verdict garbage, in the shape of "everything failed".
+
+The sweep now verifies recovery and **aborts** rather than reporting. A harness
+that cannot distinguish those two states produces confident nonsense.
 
 ## Confirmed on the bench, 2026-09-22
 
