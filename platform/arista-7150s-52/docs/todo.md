@@ -184,10 +184,16 @@ committed, as on every other board.
       no link to lose, so that is the endpoint being taken down and brought
       back. This port has only ever cleared the reset bits; the vendor's
       diagnostics assert *then* clear, which was read as ceremony
-- [ ] **RUN THE PULSE**: cold, write `0x106` to `resetSet` (`0xe1004000`), then
-      `0x106` to `resetClear` (`0xe1004010`), then look. Needs the rebuilt
-      image — `devmem` and `CONFIG_HOTPLUG_PCI_PCIE` both landed after the last
-      one was built
+- [x] **the pulse is ruled out.** With the bits corrected to `[1, 2, 8]` the
+      driver asserts all three and releases them in order; `0xe1004000` then
+      reads `0x00000000` on a cold board and the chip still does not appear.
+      No link event is logged at all, where EOS logs a down and an up
+- [ ] **instrument EOS's own boot.** Our sequence produces no link transition;
+      EOS produces one at t=173. `spike/scd-dump.c` is already on the switch's
+      flash, so a script started early under EOS that polls `0x4000` and the
+      root port's `LnkSta` into a file on flash would catch the transition and
+      what precedes it. That is the one event nothing so far has been able to
+      see, and guessing at it has now cost four hypotheses
 - [x] `CONFIG_HOTPLUG_PCI_PCIE` enabled, so a chip whose link comes up is
       enumerated without a manual rescan — which is what `pcielw` does for the
       vendor

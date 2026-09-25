@@ -603,7 +603,29 @@ reset = scd.hal.resetClear.rd();  reset.rpt=1; reset.alta=1; reset.sol=1;  reset
 Assert, then release. A pulse. It was read as ceremony around a release; the
 link-down/link-up pair says it is the point.
 
-**This is the next experiment**, and it is cheap: on a cold board write `0x106`
+**RUN, AND IT DID NOT WORK.** With the reset bits corrected to this board's
+`[1, 2, 8]`, the driver asserts all three and releases them in order, and
+afterwards `devmem 0xe1004000` reads **`0x00000000`** — every reset released,
+by our own code, on a cold board. The chip still does not appear, the root port
+still shows no device, and no link event is logged at all.
+
+So the pulse is ruled out along with everything else. What was hypothesised
+below is kept because the reasoning was sound and the evidence for it was real;
+it simply is not the answer.
+
+What remains unexplained is the specific thing EOS does at t=173 that produces
+a link transition. Our sequence produces no link event whatsoever — not a down,
+not an up — where EOS logs both 104 ms apart. Something is happening there that
+no register this port has read is recording.
+
+**The way to find it is to instrument the vendor's own boot** rather than keep
+guessing at it: `spike/scd-dump.c` is already on the switch's flash, so a
+script started early in EOS that polls `0x4000` and the root port's `LnkSta`
+into a file on flash would catch the transition and whatever precedes it. That
+is a direct observation of the one event that matters, and nothing tried so far
+has been able to see it.
+
+**The original plan, kept for the record**, was cheap: on a cold board write `0x106`
 to `resetSet` (`0xe1004000`), then `0x106` to `resetClear` (`0xe1004010`), and
 watch. It is the same class of write already done safely several times, to the
 same register.
