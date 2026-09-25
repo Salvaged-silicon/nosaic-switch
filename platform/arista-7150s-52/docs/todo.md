@@ -59,7 +59,10 @@ committed, as on every other board.
       exit, so a dry run left the interface down and broke the next netboot
 - [ ] `config/authorized_keys` for network login — gitignored and per-operator,
       so created on the machine that builds, not committed
-- [ ] set `boot_mib` / `slot_mib` / `data_mib` from what was measured
+- [x] **`boot_mib` / `slot_mib` / `data_mib` set from a measured image** —
+      64/128/128. A slot's content is 57 MiB (kernel 13.6 + rootfs 43.4), and
+      the layout fits 511 MB free with room to double. The defaults would have
+      given a 96 MiB slot, which is 39 MiB of headroom on this image.
 - [ ] **the management NIC does not come up yet.** `tg3: No PHY devices` — the
       BCM50610 never answers on MDIO. Two causes found and both fixed in the
       tree, neither yet confirmed on hardware: `CONFIG_BROADCOM_PHY` was missing
@@ -322,6 +325,50 @@ identifications all came out of it and are all still correct.
 - [ ] **set the Alta core rails from prefdl** — `AltaVdd 1.01`, `AltaVdds 1.0`
       on this board, per-board data rather than a constant
 - [ ] find out what the SCD's second BAR (16 MB at `0xe0000000`) is for
+
+## Shipping: what a cold board does with no operator
+
+**As of 2026-09-25 the image brings the ASIC up by itself.** Verified by
+booting it and touching nothing:
+
+```
+nosd-fm6000: looking for the chip, up to 30s
+nosd-fm6000: reaching the chip over the SCD's local bus at 0000:04:00.0
+nosd-fm6000: Intel FM6000 via SCD 0000:04:00.0 BAR1, 16 MB window
+nosd-fm6000: cold chip -- running the documented boot sequence
+   1   ok   chip out of reset and on the bus
+   ...
+   8   ok   BOOT 3: initialize all scheduler freelists
+```
+
+Three things had to change for that, and each was a way the old arrangement
+could not have shipped:
+
+- **the daemon looked for the chip on PCIe only.** It waited 30 s for an
+  `8086:155b` that does not appear until the chip is configured, then exited
+  non-zero. `fm_open_auto()` tries PCIe and falls back to the SCD's local bus.
+- **the cold boot was opt-in.** Nothing else runs Table 4-1 — the platform HAL
+  releases the reset and stops, because what to do with a released chip is the
+  datapath's business — so the image booted to a prompt with a dead ASIC and
+  nothing saying why. It now runs by default; `--no-boot` holds a chip cold.
+- **it had to become safe to repeat.** `restart: always` means a restart would
+  have put a forwarding chip back through the sequence.
+  `fm_boot_already_done()` tests the end state rather than remembering
+  anything, so it is right after a crash and right for a chip somebody else
+  booted.
+
+⚠ **The image is netboot-only in practice.** Nothing has been installed to this
+unit's flash, because it is the lab's OSPF router and its EOS is the only way
+back. `boot_mib`/`slot_mib`/`data_mib` are now measured, so the install path is
+described; it has not been exercised.
+
+What the switch honestly reports once up:
+
+```
+driver fm6000   ports 0 max   vlans false   l3 false   acl no   ecmp no
+```
+
+That is accurate and it is the gap: the chip boots, and nothing forwards yet.
 
 ## M2 — the chip survives being talked to
 

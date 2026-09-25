@@ -38,14 +38,35 @@ kernel: ""
 # platform.
 #
 # The sibling 7050SX2 gives each A/B slot 768 MiB, which does not fit here even
-# once. The numbers below are left unset until a minimal x86_64 image has been
-# built for this board and measured -- choosing them from an estimate is how the
-# sibling board ended up declaring a profile it was not running. There is about
-# another 530 MB reclaimable from reverse-engineering traces if two slots and a
-# data partition do not fit in 511 MB.
-# boot_mib:
-# slot_mib:
-# data_mib:
+# once. These were left unset until an image had been built for this board and
+# measured, because choosing them from an estimate is how the sibling ended up
+# declaring a profile it was not running.
+#
+# Measured 2026-09-25, minimal x86_64, from out/images/arista-7150s-52:
+#
+#     vmlinuz              13.6 MiB
+#     rootfs.sqsh          43.4 MiB   <- what a slot actually costs
+#     initramfs.cpio.gz    44.5 MiB   (RAM-boot only; not installed)
+#     the RAM-boot SWI     58.2 MiB
+#
+# So a slot's content is 57 MiB today. 128 MiB gives it room to roughly double
+# before anyone has to think about this again, and the whole layout still fits:
+#
+#     boot 64  +  slot 128 x2  +  data 128  =  448 MiB, against 511 MiB free
+#
+# ⚠ Like the sibling, this board boots through Aboot from a filesystem rather
+# than from partitions, so these are not partition sizes here and nothing
+# currently reads them -- a slot costs exactly its squashfs. They are stated so
+# that the numbers are measured ones if the partitioned layout is ever used,
+# and so the defaults (slot 96 MiB) cannot silently apply: 96 would leave this
+# board 39 MiB of headroom on a 57 MiB image.
+#
+# There is about another 530 MB reclaimable from reverse-engineering traces if
+# a bigger layout is ever wanted. EOS-4.16.8M.swi is 416 MB of the rest and
+# stays: it is the only way back and the last EOS that supports this platform.
+boot_mib: 64
+slot_mib: 128
+data_mib: 128
 
 # Deliberately not stated yet:
 #

@@ -134,6 +134,19 @@ int fm_open(struct fm6000 *d, const char *slot);
  */
 int fm_open_lbus(struct fm6000 *d, const char *scd_slot);
 
+/*
+ * Open the chip whichever way it can be reached, and say which.
+ *
+ * Tries the FM6000's own BAR0 first and falls back to the SCD's local-bus
+ * window. That order is not a preference so much as a diagnosis: if the
+ * endpoint is there, the chip has already been configured by somebody, and if
+ * it is not, this is a cold board and the local bus is the only way in.
+ *
+ * This is what the daemon uses, because a daemon that can only reach a chip
+ * that is already working is no use on the boot where it is not.
+ */
+int fm_open_auto(struct fm6000 *d, const char *slot, const char *scd_slot);
+
 void fm_close(struct fm6000 *d);
 
 /* Register access by 32-bit WORD address, which is how the chip's own

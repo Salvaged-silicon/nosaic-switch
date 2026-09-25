@@ -277,6 +277,13 @@ const char *fm_block_name(uint32_t word)
 	return "?";
 }
 
+int fm_open_auto(struct fm6000 *d, const char *slot, const char *scd_slot)
+{
+	if (fm_open(d, slot) == FM_OK)
+		return FM_OK;
+	return fm_open_lbus(d, scd_slot);
+}
+
 void fm_boot_mark_done(struct fm6000 *d)
 {
 	d->boot_done = 1;

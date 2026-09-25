@@ -204,6 +204,19 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	/*
+	 * Find out whether somebody has already booted this chip, and if so say
+	 * so to the guard.
+	 *
+	 * Nothing carries over between processes: a fresh fm6000-probe against a
+	 * chip that nosd booted minutes ago starts with boot_done clear and
+	 * refuses the EPL block as though the chip were cold. That is safe and
+	 * wrong -- it reports a hazard that is not there and hides the register
+	 * the operator asked for. The chip's own state is the authority.
+	 */
+	if (fm_boot_already_done(&dev) == 1)
+		fm_boot_mark_done(&dev);
+
 	if (lbus) {
 		int alive = fm_alive(&dev);
 

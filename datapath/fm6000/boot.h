@@ -65,6 +65,21 @@ struct fm_boot_report {
  */
 int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep);
 
+/*
+ * Has the documented cold boot already run on this chip?
+ *
+ * Asked because nosd restarting must not put a forwarding chip back through
+ * Table 4-1. The test is the end state the sequence leaves behind and that a
+ * chip which has not been through it cannot have: every module out of soft
+ * reset, and the boot controller reporting the last of its three commands
+ * complete.
+ *
+ * Returns 1 for yes, 0 for no, negative if the chip could not be read. On a
+ * negative the caller should NOT boot -- a chip that cannot be read cannot be
+ * booted either, and the failure belongs in the log rather than in a write.
+ */
+int fm_boot_already_done(struct fm6000 *d);
+
 /* Print a report in the form a human reads at three in the morning. */
 void fm_boot_report_print(const struct fm_boot_report *rep);
 

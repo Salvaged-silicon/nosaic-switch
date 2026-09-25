@@ -82,10 +82,29 @@ build:
 
 services:
   - name: nosd
-    # --boot is NOT passed. The cold-boot sequence writes to the chip, it is
-    # incomplete, and a supervisor that restarts this daemon would run it again
-    # against a chip in an unknown state. Cold boot is a deliberate act:
-    # `fm6000-probe --boot`, by hand, watching the console.
+    # The cold-boot sequence RUNS BY DEFAULT, and no flag is passed to ask for
+    # it. That is a reversal of what this file used to say, and the reason is
+    # that the old arrangement could not ship: on a cold board nothing else
+    # runs Table 4-1 -- the platform HAL releases the chip's reset and stops,
+    # because what to do with a released chip is the datapath's business -- so
+    # an image built this way boots to a prompt with a dead ASIC and nothing
+    # saying why. "Run fm6000-probe by hand" is a bring-up instruction, not a
+    # product.
+    #
+    # The two objections to it were real and are both answered:
+    #
+    #   "it writes to the chip"  -- it does, and those writes are Table 4-1
+    #   steps 5 to 10 with a documented reason each. Verified on hardware
+    #   2026-09-25: the chip ends with BOOT_CTRL 0x313 and SOFT_RESET 0x00,
+    #   bit-for-bit what a forwarding EOS chip reads.
+    #
+    #   "a restart would run it again against a chip in an unknown state" --
+    #   the state is not unknown and the daemon checks it. A booted chip reads
+    #   SOFT_RESET 0x00 with CommandDone and Command 3; a cold one reads 0x1f
+    #   and 0x320. No overlap, so a restart against a forwarding chip is a
+    #   no-op rather than a dropped dataplane.
+    #
+    # --no-boot holds a chip in its cold state for debugging.
     exec: /usr/sbin/nosd-fm6000
     # Restarted rather than one-shot: the daemon owns the chip for as long as
     # the switch is up, and the supervisor is what notices when it stops.

@@ -102,6 +102,31 @@ static int boot_command(struct fm6000 *d, uint32_t cmd)
 			 FM6000_BOOT_STATUS_CMD_DONE, FM6000_BOOT_CMD_MAX_MS);
 }
 
+int fm_boot_already_done(struct fm6000 *d)
+{
+	uint32_t soft = 0, boot = 0;
+	int rv;
+
+	rv = fm_rd(d, FM6000_SOFT_RESET, &soft);
+	if (rv != FM_OK)
+		return rv;
+	rv = fm_rd(d, FM6000_BOOT_CTRL, &boot);
+	if (rv != FM_OK)
+		return rv;
+
+	/* A chip that has been through the sequence reads SOFT_RESET 0x00 and
+	 * BOOT_CTRL with CommandDone set and Command 3 -- measured, and the same
+	 * on a forwarding EOS chip. A chip that has only been pulsed reads
+	 * SOFT_RESET 0x1f and BOOT_CTRL 0x320. There is no overlap. */
+	if (soft != 0)
+		return 0;
+	if (!(boot & FM6000_BOOT_STATUS_CMD_DONE))
+		return 0;
+	if ((boot & FM6000_BOOT_CTRL_CMD_MASK) != FM6000_BOOT_CMD_FREELISTS_ALL)
+		return 0;
+	return 1;
+}
+
 int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 {
 	int rv;
@@ -285,6 +310,13 @@ void fm_boot_report_print(const struct fm_boot_report *rep)
 {
 	int i;
 
+	/* ⚠ stdout, and this function is called by a daemon that then runs
+	 * forever. Block-buffered into a pipe, every line below sits in the
+	 * buffer until an exit that never comes -- so on the boot where the
+	 * report matters most it is the one thing missing from the log.
+	 * Measured: nosd's log stopped at "running the documented boot
+	 * sequence" with the whole report invisible. */
+
 	for (i = 1; i < FM_STEP__COUNT; i++) {
 		const char *mark;
 
@@ -304,4 +336,5 @@ void fm_boot_report_print(const struct fm_boot_report *rep)
 		if (rep->step[i].note != NULL)
 			printf("          %s\n", rep->step[i].note);
 	}
+	fflush(stdout);
 }
