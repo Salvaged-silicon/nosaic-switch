@@ -2,9 +2,32 @@
 /*
  * Reaching the FM6000's registers, and surviving it.
  *
- * There is no BDE here because there is no CMIC. The chip is an ordinary PCIe
- * endpoint with a 32 MB BAR0, and this file maps that BAR and hands out two
- * accessors over it.
+ * There is no BDE here because there is no CMIC. This file maps the chip's
+ * register window and hands out two accessors over it.
+ *
+ * THERE ARE TWO WINDOWS, and which one you want depends on whether the chip has
+ * been brought up yet.
+ *
+ *   FM_XPORT_PCIE   the FM6000's own BAR0, as an 8086:155b endpoint.
+ *   FM_XPORT_LBUS   the same registers, seen through the Arista SCD's BAR1.
+ *
+ * ⚠ ON A COLD BOARD ONLY THE SECOND ONE EXISTS. The FM6000 does not enumerate
+ * on PCIe until it has been configured, so a bring-up that waits for the
+ * endpoint to appear waits forever -- which is exactly how this port lost
+ * several days. The SCD is a PCI-to-LocalBus bridge and the chip's whole
+ * register space is mapped into its 16 MB BAR1 at offset 0, word-addressed:
+ * register word w is at byte 4*w. That window is live as soon as the SCD
+ * enumerates, which it does unconditionally at power-on.
+ *
+ * The vendor OS does the same thing and says so in its own log -- it reports
+ * "localBusHam for alta0" throughout bring-up and only switches to "pciHam for
+ * alta0" at the very end, after the chip is configured. PCIe on this part is
+ * for packet DMA, not for bring-up.
+ *
+ * Verified on the bench 2026-09-25 by reading four registers both ways on a
+ * forwarding chip -- PIN_STRAP, BOOT_CTRL, SWEEPER and an EPL word all agreed
+ * exactly -- and then reading PIN_STRAP over the local bus on a cold board with
+ * the FM6000 absent from lspci.
  *
  * It is not a thin wrapper, and it should not become one. Two properties of
  * this silicon make unguarded access a liability rather than a convenience:
@@ -32,9 +55,18 @@
 
 #define FM_SLOT_LEN 16
 
+enum fm_xport {
+	FM_XPORT_PCIE,	/* the FM6000's own BAR0 -- only once it has enumerated */
+	FM_XPORT_LBUS,	/* the SCD's BAR1 -- available cold, and the bring-up path */
+};
+
 struct fm6000 {
+	/* The device whose BAR is mapped. For FM_XPORT_PCIE that is the
+	 * FM6000; for FM_XPORT_LBUS it is the SCD, and the FM6000 has no PCI
+	 * address of its own yet. */
 	char               slot[FM_SLOT_LEN];  /* "0000:02:00.0" */
-	volatile uint32_t *bar0;
+	enum fm_xport      xport;
+	volatile uint32_t *regs;
 	size_t             bar_bytes;
 	int                bar_fd;
 
@@ -75,6 +107,28 @@ struct fm6000 {
  * platform HAL's job, not this file's.
  */
 int fm_open(struct fm6000 *d, const char *slot);
+
+/*
+ * Map the chip through the SCD's local-bus window instead. THIS IS THE ONE TO
+ * USE FOR BRING-UP.
+ *
+ * `scd_slot` is the SCD's PCI address, "0000:04:00.0" on a 7150S-52, or NULL to
+ * search for the first 3475:0001. It is board data and belongs in board.yml
+ * rather than here.
+ *
+ * This reaches across into the platform's FPGA, which is not normally the
+ * datapath's business. It is done deliberately: the local bus IS the SCD's BAR,
+ * so there is no way to address the FM6000 cold without touching the SCD, and
+ * hiding that behind the platform HAL would buy nothing but indirection.
+ *
+ * Releasing the FM6000's reset is still the platform HAL's job and is NOT done
+ * here. Note that a release alone is not enough -- the chip answers this window
+ * only after a reset PULSE (assert bits 1,2,8 in the SCD's resetSet, then clear
+ * them in resetClear). Measured: with the resets merely left clear from boot,
+ * every register reads 0.
+ */
+int fm_open_lbus(struct fm6000 *d, const char *scd_slot);
+
 void fm_close(struct fm6000 *d);
 
 /* Register access by 32-bit WORD address, which is how the chip's own
@@ -122,8 +176,34 @@ void fm_set_write_check(struct fm6000 *d, int on);
  */
 int fm_check_offbus(struct fm6000 *d);
 
+/*
+ * Is the chip answering? Transport-appropriate, and the only honest check on
+ * the local bus.
+ *
+ * On FM_XPORT_PCIE this is fm_check_offbus(): ask config space.
+ *
+ * On FM_XPORT_LBUS there is no config space to ask -- the SCD is perfectly
+ * healthy whatever the FM6000 is doing, and its BAR keeps answering. So this
+ * reads PIN_STRAP, a hardware strap that reads 0x208 on this board whether the
+ * chip is cold or forwarding, and reports the chip dead when it reads 0.
+ *
+ * Returns 1 if alive, 0 if not, negative if the question could not be asked.
+ */
+int fm_alive(struct fm6000 *d);
+
 /* True once the chip has been seen off-bus. Cheap; does not touch hardware. */
 static inline int fm_is_offbus(const struct fm6000 *d) { return d->offbus; }
+
+/*
+ * Forget that the chip was ever off-bus.
+ *
+ * The latch is sticky because on PCIe a dead endpoint stays dead. On the local
+ * bus that is not true: a reset pulse brings the chip back, reliably and in
+ * under a second, which makes an experiment that kills it cheap to recover
+ * from. Call this after pulsing, and only then -- clearing the latch without
+ * actually reviving the chip just restores the log flood it exists to prevent.
+ */
+void fm_clear_offbus(struct fm6000 *d);
 
 /*
  * Declare the ECC bank memories initialised, unlocking access to them.

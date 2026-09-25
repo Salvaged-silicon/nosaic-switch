@@ -43,8 +43,9 @@ static int read_sysfs_hex(const char *slot, const char *file, unsigned long *out
 	return FM_OK;
 }
 
-/* Find the first 8086:155b on the bus. */
-static int find_slot(char *slot, size_t len)
+/* Find the first device with this vendor:device on the bus. */
+static int find_slot_id(char *slot, size_t len, unsigned long want_ven,
+			unsigned long want_dev)
 {
 	DIR *d = opendir(PCI_DEVICES);
 	struct dirent *e;
@@ -66,7 +67,7 @@ static int find_slot(char *slot, size_t len)
 			continue;
 		if (read_sysfs_hex(e->d_name, "device", &dev) != FM_OK)
 			continue;
-		if (ven == FM6000_PCI_VENDOR && dev == FM6000_PCI_DEVICE) {
+		if (ven == want_ven && dev == want_dev) {
 			snprintf(slot, len, "%s", e->d_name);
 			found = FM_OK;
 			break;
@@ -74,6 +75,12 @@ static int find_slot(char *slot, size_t len)
 	}
 	closedir(d);
 	return found;
+}
+
+/* Find the first 8086:155b on the bus. */
+static int find_slot(char *slot, size_t len)
+{
+	return find_slot_id(slot, len, FM6000_PCI_VENDOR, FM6000_PCI_DEVICE);
 }
 
 /* Make sure the device's memory space is decoded. With no driver bound nothing
@@ -94,14 +101,37 @@ static void enable_device(const char *slot)
 	close(fd);
 }
 
-int fm_open(struct fm6000 *d, const char *slot)
+static int map_bar(struct fm6000 *d, const char *resource)
 {
 	char path[256];
 	struct stat st;
 
+	snprintf(path, sizeof(path), "%s/%s/%s", PCI_DEVICES, d->slot, resource);
+	if ((d->bar_fd = open(path, O_RDWR | O_SYNC)) < 0)
+		return FM_ERR;
+	if (fstat(d->bar_fd, &st) != 0 || st.st_size == 0) {
+		close(d->bar_fd);
+		d->bar_fd = -1;
+		return FM_ERR;
+	}
+	d->bar_bytes = (size_t)st.st_size;
+	d->regs = mmap(NULL, d->bar_bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
+		       d->bar_fd, 0);
+	if (d->regs == MAP_FAILED) {
+		d->regs = NULL;
+		close(d->bar_fd);
+		d->bar_fd = -1;
+		return FM_ERR;
+	}
+	return FM_OK;
+}
+
+int fm_open(struct fm6000 *d, const char *slot)
+{
 	memset(d, 0, sizeof(*d));
 	d->bar_fd = -1;
 	d->check_writes = 1;
+	d->xport = FM_XPORT_PCIE;
 
 	if (slot != NULL) {
 		if (strlen(slot) >= sizeof(d->slot))
@@ -112,35 +142,73 @@ int fm_open(struct fm6000 *d, const char *slot)
 	}
 
 	enable_device(d->slot);
+	return map_bar(d, "resource0");
+}
 
-	snprintf(path, sizeof(path), "%s/%s/resource0", PCI_DEVICES, d->slot);
-	if ((d->bar_fd = open(path, O_RDWR | O_SYNC)) < 0)
-		return FM_ERR;
-	if (fstat(d->bar_fd, &st) != 0 || st.st_size == 0) {
-		close(d->bar_fd);
-		d->bar_fd = -1;
+/*
+ * The SCD, as a PCI-to-LocalBus bridge. Its BAR1 is the FM6000's register
+ * space; see the note at the top of pci.h for why that is the bring-up path.
+ */
+#define SCD_VENDOR 0x3475
+#define SCD_DEVICE 0x0001
+
+int fm_open_lbus(struct fm6000 *d, const char *scd_slot)
+{
+	memset(d, 0, sizeof(*d));
+	d->bar_fd = -1;
+	d->check_writes = 1;
+	d->xport = FM_XPORT_LBUS;
+
+	if (scd_slot != NULL) {
+		if (strlen(scd_slot) >= sizeof(d->slot))
+			return FM_ERR;
+		snprintf(d->slot, sizeof(d->slot), "%s", scd_slot);
+	} else if (find_slot_id(d->slot, sizeof(d->slot),
+				SCD_VENDOR, SCD_DEVICE) != FM_OK) {
 		return FM_ERR;
 	}
-	d->bar_bytes = (size_t)st.st_size;
-	d->bar0 = mmap(NULL, d->bar_bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
-		       d->bar_fd, 0);
-	if (d->bar0 == MAP_FAILED) {
-		d->bar0 = NULL;
-		close(d->bar_fd);
-		d->bar_fd = -1;
-		return FM_ERR;
-	}
-	return FM_OK;
+
+	enable_device(d->slot);
+	return map_bar(d, "resource1");
 }
 
 void fm_close(struct fm6000 *d)
 {
-	if (d->bar0 != NULL)
-		munmap((void *)d->bar0, d->bar_bytes);
+	if (d->regs != NULL)
+		munmap((void *)d->regs, d->bar_bytes);
 	if (d->bar_fd >= 0)
 		close(d->bar_fd);
-	d->bar0 = NULL;
+	d->regs = NULL;
 	d->bar_fd = -1;
+}
+
+void fm_clear_offbus(struct fm6000 *d)
+{
+	d->offbus = 0;
+}
+
+int fm_alive(struct fm6000 *d)
+{
+	uint32_t v;
+
+	if (d->regs == NULL)
+		return FM_ERR;
+
+	if (d->xport == FM_XPORT_PCIE) {
+		int off = fm_check_offbus(d);
+		return off < 0 ? off : !off;
+	}
+
+	/* Local bus: read the strap directly, going around guard() -- which
+	 * would refuse once the latch is set, and the whole point of this call
+	 * is to find out whether that latch is still true. */
+	v = nosaic_mmio_rd32((const void *)((const char *)d->regs +
+					    FM6000_PIN_STRAP * 4));
+	if (v != FM6000_PIN_STRAP_VALUE) {
+		d->offbus = 1;
+		return 0;
+	}
+	return 1;
 }
 
 int fm_check_offbus(struct fm6000 *d)
@@ -218,6 +286,10 @@ const char *fm_hazard(const struct fm6000 *d, uint32_t word)
 		       "chip off the PCIe bus";
 	if (word == FM6000_ESCHED_READ_HAZARD)
 		return "ESCHED 0x2000: READING this off-buses a cold chip";
+	if (word >= FM6000_BLK_EPL && word < FM6000_BLK_EPL + FM6000_BLK_EPL_SPAN)
+		return "EPL block, uninitialised: READING it off-buses a chip "
+		       "that has had nothing but a reset pulse (measured "
+		       "2026-09-25 at 0x0e3b02)";
 	return NULL;
 }
 
@@ -235,7 +307,7 @@ void fm_set_write_check(struct fm6000 *d, int on)
  * access happens, in the order that costs least. */
 static int guard(struct fm6000 *d, uint32_t word, size_t byte_off)
 {
-	if (d->bar0 == NULL)
+	if (d->regs == NULL)
 		return FM_ERR;
 	if (d->offbus) {
 		d->refused++;
@@ -258,7 +330,7 @@ int fm_rd_byte(struct fm6000 *d, uint32_t off, uint32_t *out)
 	if (rv != FM_OK)
 		return rv;
 
-	v = nosaic_mmio_rd32((const void *)((const char *)d->bar0 + off));
+	v = nosaic_mmio_rd32((const void *)((const char *)d->regs + off));
 	d->reads++;
 
 	/*
@@ -284,7 +356,7 @@ int fm_wr_byte(struct fm6000 *d, uint32_t off, uint32_t val)
 	if (rv != FM_OK)
 		return rv;
 
-	nosaic_mmio_wr32((void *)((char *)d->bar0 + off), val);
+	nosaic_mmio_wr32((void *)((char *)d->regs + off), val);
 	nosaic_mmio_barrier();
 	d->writes++;
 

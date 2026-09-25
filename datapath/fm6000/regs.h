@@ -51,6 +51,7 @@
 #define FM6000_BLK_MGMT		0x01c000
 #define FM6000_BLK_CRM		0x01f000
 #define FM6000_BLK_EPL		0x0e3000
+#define FM6000_BLK_EPL_SPAN	0x002000
 #define FM6000_BLK_CM		0x110000
 #define FM6000_BLK_MOD		0x150000
 #define FM6000_BLK_MOD_END	0x15ffff
@@ -98,11 +99,23 @@
  *
  * Identified 2026-09-23: this register read 0x00000208 on the warm lab board,
  * and the prior investigation's starting state for a cold bring-up is written
- * "PIN_STRAP=0x208". A value matching a documented value is strong evidence and
- * not proof, so this is believed rather than established: nothing yet confirms
- * it from a second direction. [OURS, inferred]
+ * "PIN_STRAP=0x208".
+ *
+ * Confirmed from a second direction 2026-09-25: a cold chip, reached over the
+ * SCD local bus with nothing done to it but a reset pulse, reads 0x00000208
+ * here too. Straps are latched in hardware and do not depend on configuration,
+ * so agreement between a cold chip and a forwarding one is what this register
+ * ought to show -- and it makes it the cheapest liveness beacon on the part.
+ * [OURS, confirmed]
+ *
+ * fm_alive() uses exactly that. A chip that has been knocked off the local bus
+ * reads 0x00000000 here -- note ZERO, not the 0xffffffff a dead PCIe endpoint
+ * answers, because on the local bus there is no PCIe error semantics to give
+ * the all-ones. Code that tests for 0xffffffff will not notice a dead chip on
+ * this path.
  */
 #define FM6000_PIN_STRAP	0x01c021
+#define FM6000_PIN_STRAP_VALUE	0x00000208	/* this board, cold and warm */
 /* BOOT_STATUS, with the CommandDone bit that every BOOT command is polled on.
  * [DS §4.2 Table 4-1 names it; address UNKNOWN] */
 /* #define FM6000_BOOT_STATUS	?? */
@@ -180,15 +193,25 @@
  * EPL. EPL_CFG_B selects the PCS type per port, and 10GBASE-R is the one this
  * board's 52 SFP+ cages need.
  *
- * ⚠ A cold chip reads 0x00080000 here and a working one 0x00090003, where the
- * low nibble is Port0PcsSel=3. This never appears in a port-bounce capture,
- * because the vendor OS sets the PCS type once at boot -- so a bring-up built
- * from a port-flap trace misses it entirely and the port simply never links.
- * [RE]
+ * A working chip reads 0x00090003 here, where the low nibble is Port0PcsSel=3.
+ * This never appears in a port-bounce capture, because the vendor OS sets the
+ * PCS type once at boot -- so a bring-up built from a port-flap trace misses it
+ * entirely and the port simply never links. [RE]
+ *
+ * ⚠⚠ DO NOT READ THIS ADDRESS ON AN UNCONFIGURED CHIP. Measured on the bench
+ * 2026-09-25, over the local bus: reading word 0x0e3b02 after nothing but a
+ * reset pulse takes the chip off the bus. PIN_STRAP, which is a hardware strap
+ * and reads 0x208 on any live chip, reads 0 from that moment on, and stays 0
+ * until the next reset pulse. Reads of MGMT and the other blocks either side of
+ * it are harmless -- it is the EPL block specifically.
+ *
+ * So the whole EPL block is refused by fm_hazard() until the boot sequence has
+ * run. The earlier note here claimed a cold chip reads 0x00080000; that value
+ * came from the vendor trace, where the chip had already been initialised, and
+ * it is not what cold hardware does.
  */
 #define FM6000_EPL_CFG_B		0x0e3b02	/* [OURS] warm 0x00090003 */
 #define FM6000_EPL_CFG_B_10GBASE_R	0x00090003
-#define FM6000_EPL_CFG_B_COLD		0x00080000
 
 /* A port that is up reads 0x8c0 in PORT_STATUS. [RE] The register's address is
  * per-EPL and the per-port stride is not established. [UNKNOWN] */

@@ -182,6 +182,8 @@ type SCD struct {
 	// resetBits is this board's switch-chip reset bits; empty means the
 	// default pair. See switchResetBits().
 	resetBits []int
+	// alwaysPulse drives the switch resets even when they read clear.
+	alwaysPulse bool
 
 	// lamps is the board's chassis-lamp map, loaded once on first use from a
 	// generated file. Cached including the failure: a board without the map
@@ -231,8 +233,9 @@ func Open(cfg platformhal.Config) (*SCD, error) {
 	return &SCD{
 		bar: bar, pci: pciAddr, asic: asicAddr,
 		smbusMap: cfg.SMBus, cages: cfg.Cages, resets: cfg.Resets,
-		resetBits: cfg.SwitchResetBits,
-		close:     func() error { munmapFile(bar); return f.Close() },
+		resetBits:   cfg.SwitchResetBits,
+		alwaysPulse: cfg.SwitchResetAlwaysPulse,
+		close:       func() error { munmapFile(bar); return f.Close() },
 	}, nil
 }
 
@@ -306,9 +309,23 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 	// register would not change, and the check below would report a mapping
 	// problem on hardware that is working. Skip to enabling it.
 	held := before & s.switchResetMask()
-	if held == 0 {
+	if held == 0 && !s.alwaysPulse {
 		s.trace("both resets are already released; enabling only")
 		return s.enableAndWait(ctx)
+	}
+	if held == 0 {
+		// ⚠ MEASURED ON THE 7150S-52, 2026-09-25. Finding the bits clear
+		// does NOT mean the chip has been brought out of reset -- it reads
+		// the same whether the edge ever happened. On that board a chip
+		// whose resets merely read clear answers 0 to every register,
+		// including PIN_STRAP, which is a hardware strap that cannot be 0
+		// on a live part. Driving the bits and letting them go makes it
+		// answer 0x208, every time, within a second.
+		//
+		// So on a board that says so, the shortcut above is skipped and
+		// the full sequence runs. The write to the SET port below is what
+		// creates the edge; without it there is nothing to release.
+		s.trace("resets already read clear, but this board wants the edge anyway")
 	}
 
 	// ⚠ ASSERT BEFORE RELEASING. The chip wants an EDGE, not an absence.
@@ -355,7 +372,11 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 	after := s.read32(resetBase)
 	s.trace("status register: %#08x", s.read32(resetStatus))
 
-	if after == before {
+	// Only meaningful when something was actually held. On the always-pulse
+	// path the register starts clear and ends clear, and that is the correct
+	// outcome rather than evidence of a dead mapping -- the assert between
+	// them is traced above and is what proves the writes land.
+	if after == before && held != 0 {
 		return fmt.Errorf("the reset register did not change: it read %#08x before and "+
 			"after both writes, so the writes are not reaching the device. This is a "+
 			"mapping or addressing problem, not a chip problem", before)

@@ -19,6 +19,150 @@ pages). The only copy `make datasheets` can fetch is 331496-001 revision 3.3,
 which is two pages longer and does not necessarily number things the same way —
 see [docs/datasheets.md](../../../docs/datasheets.md).
 
+## ⚠ Read this first: the chip is not reached over PCIe
+
+**Most of the investigation below asks the wrong question.** It asks what puts
+the FM6000 on the PCI bus, on the assumption that the bus is how you reach its
+registers. It is not, and on a cold board it cannot be.
+
+The SCD is a **PCI-to-LocalBus bridge**, and the FM6000's entire register space
+is mapped into **the SCD's BAR1** — 16 MB at `0xe0000000`, word-addressed, base
+zero. Register word `w` is at byte `4*w`. That window is live as soon as the SCD
+enumerates, which it does unconditionally at power-on, with no help from
+anybody.
+
+So there is no chicken-and-egg. The FM6000 never had to be on the PCI bus for us
+to talk to it. PCIe on this part is for **packet DMA**, and it trains *late*, as
+a consequence of the chip having been configured over the local bus.
+
+### How this was found
+
+The vendor says so in its own log. `/var/log/agents/FocalPointV2-3350`, the
+FM6000 datapath agent, opens with:
+
+```
+Operational mode: modeNormal
+Returning localBusHam for alta0          <-- local bus, not PCIe
+Ring mode set to 5 (52 ports, 64 tokens, 4 locked, 4 slow, 1 sync)
+Using microcode init func fm6000UcLibraryInit
+SwitchNum = 0
+SERDES lanes are ready in 13836 usec. PollCnt 109. PCI_IP = 0x20
+Chip version is B2 ( 64 ports )
+```
+
+and closes, 180 lines later and after the whole port map has been programmed,
+with:
+
+```
+Returning pciHam for alta0               <-- only now
+```
+
+A "ham" is Arista's hardware access method. The agent uses the local bus for
+bring-up and switches to PCIe at the end.
+
+Two files on the box are **plain Python source, not compiled**, and spell out
+the mechanism:
+
+- `/usr/lib/python2.7/site-packages/FruPlugin/FocalPointV2.py:211`
+  ```python
+  localBus = fru.localBus.otherEndConnectedTo
+  assert localBus, "Device is not connected to a PCI-to-LocalBus bridge"
+  ```
+- `/usr/lib/python2.7/site-packages/FruPlugin/Scd.py:204`
+  ```python
+  for name in scd.localBus:
+     # scd includes a PCI-to-LocalBus bridge
+     hamCtors = Fru.pciHotplugHam( scd.pciFpga, driverCtx, filename="resource1" )[1:]
+  ```
+
+`filename="resource1"` is the whole answer: **SCD BAR1**.
+
+### Confirmed against hardware, both ways
+
+Four registers whose values were already known from PCIe reads on a forwarding
+chip, re-read through SCD BAR1 on the same chip. **live**
+
+| Register | word | byte in BAR1 | via SCD BAR1 | via FM6000 BAR0 |
+|---|---|---|---|---|
+| `PIN_STRAP` | `0x1c021` | `0x70084` | `0x00000208` | `0x208` ✓ |
+| `BOOT_CTRL` | `0x1c022` | `0x70088` | `0x00000313` | `0x313` ✓ |
+| `SWEEPER` | `0x1c048` | `0x70120` | `0x0008bb2c` | `0x0008bb2c` ✓ |
+| `EPL_CFG_B` | `0x0e3b02` | `0x38ec08` | `0x00090003` | `0x00090003` ✓ |
+
+16 MB is exactly 4M words × 4 bytes — the whole FM6000 register space, at
+offset 0.
+
+Then the same read on a **cold** board, NOSaic RAM-booted, `lspci` showing no
+`8086:` device at all:
+
+```
+BAR0=0x00000000e1000000 BAR1=0x00000000e0000000
+  PIN_STRAP  w=0x1c021  0x00000208
+  BOOT_CTRL  w=0x1c022  0x00000320     (0x313 warm -- unconfigured, as expected)
+  SWEEPER    w=0x1c048  0x00000000     (unconfigured)
+```
+
+`PIN_STRAP` is a hardware-latched strap: it does not depend on configuration, so
+a cold chip and a forwarding chip *should* agree, and they do. Reading `0x208`
+rather than `0x00000000` or `0xffffffff` is the chip answering.
+
+### It takes a reset PULSE, not a release
+
+This is the part that made the earlier experiments look like failures. **live,
+2026-09-25**
+
+| state | `PIN_STRAP` reads |
+|---|---|
+| resets left clear since boot (`resetSet` = `0x0`) | `0x00000000` — silent |
+| after asserting `0x106` to `resetSet` | `0x00000000` — silent |
+| **after clearing `0x106` to `resetClear`** | **`0x00000208` — answering** |
+
+So the chip needs the reset **driven and then let go**, not merely found
+released. NOSaic's own `release-asic.sh` leaves the bits clear at boot, which
+reads identically to "never asserted" and produces a silent chip. Once pulsed
+the chip is stable indefinitely: 400 consecutive reads and a 5 s idle both
+returned `0x208`.
+
+This also makes bring-up experiments cheap. A pulse revives the chip in under a
+second, from the shell, with no power cycle — so killing it costs nothing.
+
+### ⚠ Reading the EPL block on an unconfigured chip kills it
+
+Measured by bisection, reading `PIN_STRAP` between each step: **live**
+
+| read | chip afterwards |
+|---|---|
+| `BOOT_CTRL` `0x1c022` | alive |
+| `SWEEPER` `0x1c048` | alive |
+| `SCAN_CFG` `0x1c03a` | alive |
+| **`EPL_CFG_B` `0x0e3b02`** | **dead — `PIN_STRAP` reads `0x00000000`** |
+| anything, after that | dead, until the next pulse |
+
+This is the ECC-uninitialised hazard the datapath already guarded in the
+abstract, now measured and localised to the EPL block. `fm_hazard()` refuses all
+of `0x0e3000`–`0x0e4fff` until the boot sequence has run.
+
+Note the failure *signature* differs by transport. A dead PCIe endpoint answers
+`0xffffffff`; a chip knocked off the **local bus** answers `0x00000000`, because
+there is no PCIe error semantics in the path to produce the all-ones. Code that
+tests for `0xffffffff` will not notice. `fm_alive()` tests `PIN_STRAP` instead.
+
+### What this changes
+
+- **M1 is not a blocker and never was a real one.** Register access has been
+  available from cold the entire time.
+- The four hypotheses below — reset bits, the Si5338 clock, the CHL8228G rails,
+  the reset pulse — were all tested against the wrong success criterion
+  ("does it appear in `lspci`"). The right one is "does `PIN_STRAP` read `0x208`
+  over BAR1", and the answer is yes, after a pulse.
+- The next work is the **Table 4-1 boot sequence over the local bus**, not
+  further hunting for what enumerates the chip.
+- Everything below this section is kept as written. It is a record of how the
+  question was got wrong, and several of its measurements (the SCD register map,
+  the reset bit names, the SMBus map, the device identifications) remain correct
+  and useful. Where a section's *conclusion* is superseded, it is superseded by
+  this one.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted
@@ -1437,6 +1581,51 @@ SRAM is indexed by state. The encoding is documented; its address is not.
 
 ## Front panel
 
+### The port map, recovered from the vendor agent
+
+`/var/log/agents/FocalPointV2-3350` prints its whole mapping at bring-up, one
+line per physical port:
+
+```
+SwitchPostInitialize port 40 --> logPort 1
+SwitchPostInitialize port 20 --> logPort 2
+...
+```
+
+75 physical ports, of which 54 carry a logical port and 21 are unused. **live**
+
+| front panel → physical | | | |
+|---|---|---|---|
+| 1 → 40 | 2 → 20 | 3 → 41 | 4 → 21 |
+| 5 → 42 | 6 → 22 | 7 → 43 | 8 → 23 |
+| 9 → 36 | 10 → 64 | 11 → 37 | 12 → 65 |
+| 13 → 38 | 14 → 66 | 15 → 39 | 16 → 67 |
+| 17 → 72 | 18 → 28 | 19 → 73 | 20 → 29 |
+| 21 → 74 | 22 → 30 | 23 → 75 | 24 → 31 |
+| 25 → 68 | 26 → 24 | 27 → 69 | 28 → 25 |
+| 29 → 70 | 30 → 26 | 31 → 71 | 32 → 27 |
+| 33 → 32 | 34 → 60 | 35 → 33 | 36 → 61 |
+| 37 → 34 | 38 → 62 | 39 → 35 | 40 → 63 |
+| 41 → 52 | 42 → 56 | 43 → 53 | 44 → 57 |
+| 45 → 54 | 46 → 58 | 47 → 55 | 48 → 59 |
+| 49 → 44 | 50 → 45 | 51 → 46 | 52 → 47 |
+
+It is not a tidy mapping and there is no arithmetic that generates it — odd
+front-panel ports come off one set of physical ports and even off another, in
+blocks of four, which is what a four-lane EPL feeding two rows of cages looks
+like once the board routing is taken into account.
+
+Physical ports with no logical port: 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 48, 49, 50, 51. **live**
+
+Logical 53 → physical 3 and logical 54 → physical 1 sit outside the 52 SFP+
+cages. They are almost certainly the CPU-side ports, but nothing here confirms
+that. **derived**
+
+The mapping from physical port to *EPL instance and lane* is still not
+established — this table stops at the physical port number the vendor's agent
+uses. **UNKNOWN**
+
+
 ```
    ┌────────────────────────────────────────────────────── ARISTA 7150S-52 ──┐
    │  1  3  5  7 ...                                             ... 49  51  │
@@ -1447,9 +1636,8 @@ SRAM is indexed by state. The encoding is documented; its address is not.
    └──────────────────────────────────────────────────────────────────────────┘
         no QSFP · no external PHYs · every port direct serdes off the FM6000
 
-   front panel N  ──?──▶  EPL instance  ──?──▶  serdes lane
-                    ▲                     ▲
-                    └── THIS MAPPING DOES NOT EXIST YET ──┘
+   front panel N  ─────▶  physical port  ─────▶  serdes lane
+                          (see the table below)
 ```
 
 52 SFP+ cages, 10G, numbered 1..52 on the silkscreen. No QSFP, and no external

@@ -430,6 +430,21 @@ type PlatformHAL struct {
 	// not exist there -- and never touches two lines that do. Nothing reports
 	// that, because an unimplemented bit accepts the write.
 	SwitchResetBits []int `yaml:"switch_reset_bits"`
+	// SwitchResetAlwaysPulse makes the release sequence assert the switch
+	// chip's resets and then clear them even when they already read clear.
+	//
+	// ⚠ SET THIS ONLY ON A BOARD THAT HAS BEEN MEASURED TO NEED IT. The
+	// FM6000 on a 7150S-52 does: with its reset bits merely found clear, it
+	// is silent -- every register reads 0 -- and it starts answering only
+	// after the bits are driven and let go. It wants an edge, and "already
+	// released" is not one.
+	//
+	// The cost is that this disturbs a chip that is already running, because
+	// the reset bits cannot distinguish "never brought up" from "brought up
+	// and forwarding". The honest predicate is whether the chip answers, and
+	// that is the switch driver's question rather than the controller's, so
+	// it is not asked here.
+	SwitchResetAlwaysPulse bool `yaml:"switch_reset_always_pulse"`
 
 	// SMBus is where the board's sensors and fan controller sit on the
 	// controller's SMBus. Optional, because a board may have none -- but a

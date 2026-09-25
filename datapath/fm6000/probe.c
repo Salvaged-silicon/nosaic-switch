@@ -28,7 +28,13 @@
 static void usage(void)
 {
 	fprintf(stderr,
-"usage: fm6000-probe [--slot ADDR] [command]\n"
+"usage: fm6000-probe [--lbus [SCD_ADDR]] [--slot ADDR] [command]\n"
+"\n"
+"  --lbus [SCD_ADDR]     reach the chip through the SCD's local-bus window\n"
+"                        instead of its own BAR0. THE ONLY PATH THAT WORKS\n"
+"                        ON A COLD BOARD, because the FM6000 does not\n"
+"                        enumerate on PCIe until it has been configured.\n"
+"                        SCD_ADDR defaults to searching for 3475:0001.\n"
 "\n"
 "  (no command)          identify the chip and read what is safe to read\n"
 "  --dump WORD COUNT     dump COUNT words from word address WORD\n"
@@ -143,27 +149,60 @@ int main(int argc, char **argv)
 {
 	struct fm6000 dev;
 	const char *slot = NULL;
-	int i, rv, rc;
+	int i, rv, rc, lbus = 0;
 
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--slot") == 0 && i + 1 < argc) {
 			slot = argv[++i];
 			continue;
 		}
+		if (strcmp(argv[i], "--lbus") == 0) {
+			lbus = 1;
+			/* The optional address is the SCD's, not the chip's. */
+			if (i + 1 < argc && argv[i + 1][0] != '-')
+				slot = argv[++i];
+			continue;
+		}
 		break;
 	}
 
-	rv = fm_open(&dev, slot);
+	rv = lbus ? fm_open_lbus(&dev, slot) : fm_open(&dev, slot);
 	if (rv != FM_OK) {
-		fprintf(stderr,
+		if (lbus)
+			fprintf(stderr,
+"fm6000-probe: no SCD (3475:0001) found, or its BAR1 would not map.\n"
+"\n"
+"The local-bus window IS the SCD's BAR1, so without the SCD there is no way\n"
+"to reach the FM6000 at all on a cold board.\n");
+		else
+			fprintf(stderr,
 "fm6000-probe: no 8086:155b found on the PCI bus.\n"
 "\n"
 "On a 7150S that is the EXPECTED state of a board nobody has initialised:\n"
-"the SCD holds the FM6000 in reset from power-on and it does not appear\n"
-"until something releases it. Check the SCD (3475:0001) is present first:\n"
+"the FM6000 does not enumerate on PCIe until it has been configured, so it\n"
+"is absent here even after its reset has been released. This is not a fault\n"
+"and waiting for it will not help.\n"
 "\n"
-"    lspci -nn | grep 3475\n");
+"USE --lbus INSTEAD. The chip's registers are reachable cold through the\n"
+"SCD's BAR1, which is how the vendor's own OS brings it up.\n"
+"\n"
+"    lspci -nn | grep 3475        # the SCD should be here\n"
+"    fm6000-probe --lbus\n");
 		return 1;
+	}
+
+	if (lbus) {
+		int alive = fm_alive(&dev);
+
+		printf("local bus: SCD %s BAR1, %zu bytes -- chip is %s\n",
+		       dev.slot, dev.bar_bytes,
+		       alive == 1 ? "answering" :
+		       alive == 0 ? "SILENT (PIN_STRAP reads 0)" : "unreadable");
+		if (alive == 0)
+			printf("\n"
+"A silent chip needs a reset PULSE, not a release: assert bits 1,2,8 in the\n"
+"SCD's resetSet (BAR0+0x4000) and then clear them in resetClear (+0x4010).\n"
+"Leaving the resets clear from boot is NOT enough -- measured.\n\n");
 	}
 
 	if (i >= argc) {

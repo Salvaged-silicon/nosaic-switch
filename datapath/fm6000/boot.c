@@ -58,7 +58,7 @@ int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 	 *
 	 * So the test for "steps 1-3 happened" is simply that the chip answers.
 	 */
-	if (d->bar0 == NULL) {
+	if (d->regs == NULL) {
 		set(rep, FM_STEP_RESET_RELEASED, FM_ERR,
 		    "no BAR mapped -- is the chip still held in reset by the SCD?");
 		return FM_ERR;

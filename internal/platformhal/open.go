@@ -32,6 +32,11 @@ type Config struct {
 	// driver's own default, which is whatever the first board to need it
 	// used.
 	SwitchResetBits []int
+	// SwitchResetAlwaysPulse makes the release sequence drive the switch
+	// chip's resets even when they already read clear, because on some
+	// chips a release is only meaningful as an edge. Board data; see
+	// board.SwitchResetAlwaysPulse for what it costs.
+	SwitchResetAlwaysPulse bool
 	// I2C is where the board's platform devices sit on its Linux i2c buses,
 	// for boards whose controller is not an SCD. Optional and mutually
 	// exclusive with SMBus in practice, though nothing enforces that: a

@@ -77,7 +77,58 @@ committed, as on every other board.
       Until this is answered, A/B upgrade on this board is a claim with nothing
       under it.
 
-## M1 — the ASIC is on the bus
+## M1 — the ASIC is reachable  ✅ DONE 2026-09-25
+
+**This milestone was named wrong and that is why it took so long.** It was
+"the ASIC is on the bus", and the ASIC never needs to be on the PCI bus to be
+reachable. The FM6000's registers are mapped into the **SCD's BAR1**, a
+PCI-to-LocalBus window that is live from power-on. See the section at the top
+of [hardware.md](hardware.md).
+
+- [x] **register access on a cold board, with the FM6000 absent from `lspci`** —
+      `PIN_STRAP` reads `0x00000208` through SCD BAR1, matching what a
+      forwarding chip reads. Four registers cross-checked warm against PCIe and
+      all four agree exactly.
+- [x] **the access sequence is a reset PULSE** — assert `0x106` to the SCD's
+      `resetSet` (`BAR0+0x4000`), then clear `0x106` to `resetClear` (`+0x4010`).
+      Resets merely left clear from boot give a silent chip that reads `0`
+      everywhere. This is what made the earlier release experiments look like
+      failures.
+- [x] **the datapath can use it** — `fm_open_lbus()` in `datapath/fm6000/pci.c`,
+      `fm6000-probe --lbus`.
+- [x] **the hazard is measured, not just guarded in the abstract** — reading any
+      of the EPL block (`0x0e3000`–`0x0e4fff`) before init takes the chip off
+      the local bus; `fm_hazard()` refuses it. A dead chip reads `0x00000000`
+      here, **not** `0xffffffff`.
+- [ ] **`release-asic.sh` must pulse, not just clear.** It currently leaves the
+      bits clear, which produces a silent chip. This is the one code change M1
+      still owes.
+- [ ] **PCIe enumeration is now an M4/M5 question, not an M1 one.** The chip is
+      expected to appear on the bus only after it has been configured — that is
+      what the vendor agent does, switching from `localBusHam` to `pciHam` at
+      the end of bring-up. Nothing needs it before then, because packet DMA is
+      the only thing that uses it.
+
+### What the vendor agent tells us about the bring-up to come
+
+From `/var/log/agents/FocalPointV2-3350`, for M3/M4. **live**
+
+- `Ring mode set to 5 (52 ports, 64 tokens, 4 locked, 4 slow, 1 sync)`
+- `Using microcode init func fm6000UcLibraryInit` — the parser microcode is
+  loaded from a library, which is the thing we generate ourselves.
+- `Chip version is B2 ( 64 ports )`
+- `SERDES lanes are ready in 13836 usec. PollCnt 109. PCI_IP = 0x20` — SerDes
+  readiness is polled, takes ~14 ms, and `PCI_IP` is read *after* it.
+- a 64-entry `SSCHED_INIT_TOKEN` scheduler table, `RX=`/`TX=` per token.
+- the full physical→logical port map, now in
+  [hardware.md](hardware.md#the-port-map-recovered-from-the-vendor-agent).
+
+### The original M1 investigation, superseded
+
+Kept because its measurements stand even though its conclusion does not: the
+SCD register map, the reset bit names, the SMBus map and the device
+identifications all came out of it and are all still correct.
+
 
 - [x] **the SCD reset block is mapped and works** — measured from Aboot
       2026-09-23. Cold it reads `0x106` (bits 1, 2, 8 held); the clear port at

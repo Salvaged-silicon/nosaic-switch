@@ -97,6 +97,15 @@ platform_hal:
   # everyone.
   switch_reset_bits: [1, 2, 8]
 
+  # ⚠ THE FM6000 NEEDS THE RESET EDGE, NOT MERELY TO BE FOUND RELEASED.
+  # Measured 2026-09-25: with these bits clear from boot, every register reads
+  # 0 -- including PIN_STRAP, which is a hardware strap and cannot be 0 on a
+  # live part. Drive them and let go and it reads 0x208 within a second, every
+  # time. Without this the release is a no-op and the chip is silent, which
+  # looks exactly like a chip that was never there.
+  # See docs/hardware.md, "It takes a reset PULSE, not a release".
+  switch_reset_always_pulse: true
+
 status: planned
 
 notes: >

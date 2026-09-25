@@ -1,6 +1,7 @@
 package scd
 
 import (
+	"context"
 	"testing"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
@@ -148,5 +149,54 @@ func TestRegisterAccessIsBoundsChecked(t *testing.T) {
 	}
 	if err := s.check(0x10); err != nil {
 		t.Errorf("a valid offset was rejected: %v", err)
+	}
+}
+
+// The 7150S-52's FM6000 wants a reset EDGE. Finding the bits clear tells you
+// nothing about whether that edge ever happened -- the register reads the same
+// either way -- and a chip that never got one is silent: every register reads
+// 0, including a hardware strap that cannot be 0 on a live part. Measured
+// 2026-09-25. So a board may ask for the resets to be driven regardless, and
+// the shortcut that skips straight to enabling must not run on those boards.
+func TestABoardThatAsksForAPulseGetsOneEvenWithTheResetsClear(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancelled up front: the assert happens before the first wait, so this
+	// stops the sequence right after the write under test without a 2.5s
+	// sleep and without reaching the sysfs enable, which has no hardware here.
+	cancel()
+
+	s := fake(0x8000)
+	s.resetBits = []int{1, 2, 8}
+	s.alwaysPulse = true
+	// The state that used to defeat the release: nothing held.
+	s.write32(resetBase, 0)
+
+	_ = s.ReleaseSwitchChip(ctx)
+
+	const want = uint32(1<<1 | 1<<2 | 1<<8)
+	if got := s.read32(resetSet); got != want {
+		t.Errorf("resets asserted = %#08x, want %#08x -- without this write "+
+			"there is no edge, and the release is a no-op that reports success",
+			got, want)
+	}
+}
+
+func TestWithoutThatFlagClearResetsAreLeftAlone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s := fake(0x8000)
+	s.resetBits = []int{1, 2, 8}
+	s.alwaysPulse = false
+	s.write32(resetBase, 0)
+
+	_ = s.ReleaseSwitchChip(ctx)
+
+	// A chip that is already up must not be reset out from under whatever is
+	// using it, which is why the flag is opt-in per board rather than the
+	// default.
+	if got := s.read32(resetSet); got != 0 {
+		t.Errorf("resets asserted = %#08x on a board that did not ask for a "+
+			"pulse, want no write at all", got)
 	}
 }

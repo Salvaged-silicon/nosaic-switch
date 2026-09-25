@@ -175,8 +175,9 @@ func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
 		Resets:  b.PlatformHAL.Resets,
 		// The board's own switch-chip reset bits, not the driver's default
 		// pair. Silent when wrong: an unimplemented bit takes the write.
-		SwitchResetBits: b.PlatformHAL.SwitchResetBits,
-		BoardData:       b.PlatformHAL.N3172TQ,
+		SwitchResetBits:        b.PlatformHAL.SwitchResetBits,
+		SwitchResetAlwaysPulse: b.PlatformHAL.SwitchResetAlwaysPulse,
+		BoardData:              b.PlatformHAL.N3172TQ,
 	})
 	if err != nil {
 		return nil, nil, err
