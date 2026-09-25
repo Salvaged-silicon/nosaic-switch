@@ -184,6 +184,9 @@ type SCD struct {
 	resetBits []int
 	// alwaysPulse drives the switch resets even when they read clear.
 	alwaysPulse bool
+	// pcieAfterConfig means the chip enumerates only once configured, so
+	// releasing reset must not wait for it.
+	pcieAfterConfig bool
 
 	// lamps is the board's chassis-lamp map, loaded once on first use from a
 	// generated file. Cached including the failure: a board without the map
@@ -233,9 +236,10 @@ func Open(cfg platformhal.Config) (*SCD, error) {
 	return &SCD{
 		bar: bar, pci: pciAddr, asic: asicAddr,
 		smbusMap: cfg.SMBus, cages: cfg.Cages, resets: cfg.Resets,
-		resetBits:   cfg.SwitchResetBits,
-		alwaysPulse: cfg.SwitchResetAlwaysPulse,
-		close:       func() error { munmapFile(bar); return f.Close() },
+		resetBits:       cfg.SwitchResetBits,
+		alwaysPulse:     cfg.SwitchResetAlwaysPulse,
+		pcieAfterConfig: cfg.SwitchPCIeAfterConfig,
+		close:           func() error { munmapFile(bar); return f.Close() },
 	}, nil
 }
 
@@ -394,6 +398,19 @@ func (s *SCD) enableAndWait(ctx context.Context) error {
 }
 
 func (s *SCD) enableAndWaitFrom(ctx context.Context, before uint32) error {
+	if s.pcieAfterConfig {
+		// Nothing to wait for. On this kind of board the chip's PCIe block
+		// is brought up by chip initialisation, not by the reset release, so
+		// the endpoint is legitimately absent at this point and will stay
+		// absent until the datapath has run. Waiting produces a timeout that
+		// reads as a hardware fault and is not one -- and the release has in
+		// fact succeeded, which the datapath can confirm for itself over the
+		// controller's local bus.
+		s.trace("not waiting for %s: this board's chip enumerates only after "+
+			"it has been configured", s.asic)
+		return nil
+	}
+
 	node := "/sys/bus/pci/devices/" + s.asic
 	if _, err := os.Stat(node); err != nil {
 		// The kernel enumerated while the device was in reset and found

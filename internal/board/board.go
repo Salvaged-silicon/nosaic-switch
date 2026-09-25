@@ -445,6 +445,16 @@ type PlatformHAL struct {
 	// that is the switch driver's question rather than the controller's, so
 	// it is not asked here.
 	SwitchResetAlwaysPulse bool `yaml:"switch_reset_always_pulse"`
+	// SwitchPCIeAfterConfig says the switch chip does not appear on the PCI
+	// bus when its reset is released, but only later, once the datapath has
+	// configured it.
+	//
+	// The FM6000 on a 7150S-52 is like this, and it is not a quirk: its PCIe
+	// block is brought up as part of chip initialisation, and the host
+	// reaches its registers over the controller's local bus until then. A
+	// release that waits for the endpoint to appear waits for something that
+	// cannot happen yet, times out, and reports a working board as broken.
+	SwitchPCIeAfterConfig bool `yaml:"switch_pcie_after_config"`
 
 	// SMBus is where the board's sensors and fan controller sit on the
 	// controller's SMBus. Optional, because a board may have none -- but a

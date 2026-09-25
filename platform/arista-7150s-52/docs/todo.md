@@ -100,14 +100,20 @@ of [hardware.md](hardware.md).
       of the EPL block (`0x0e3000`–`0x0e4fff`) before init takes the chip off
       the local bus; `fm_hazard()` refuses it. A dead chip reads `0x00000000`
       here, **not** `0xffffffff`.
-- [ ] **`release-asic.sh` must pulse, not just clear.** It currently leaves the
-      bits clear, which produces a silent chip. This is the one code change M1
-      still owes.
-- [ ] **PCIe enumeration is now an M4/M5 question, not an M1 one.** The chip is
-      expected to appear on the bus only after it has been configured — that is
-      what the vendor agent does, switching from `localBusHam` to `pciHam` at
-      the end of bring-up. Nothing needs it before then, because packet DMA is
-      the only thing that uses it.
+- [x] **the release pulses** — `switch_reset_always_pulse: true`. It used to
+      take a shortcut when nothing read held, so on this board the release was
+      a no-op that reported success. Verified on hardware: the trace reads
+      `0x106 → 0x104 → 0x100 → 0x000`, and the chip answers afterwards.
+- [x] **the release no longer waits for PCIe** — `switch_pcie_after_config:
+      true`. It waited for an endpoint that cannot appear until the datapath
+      has configured the chip, timed out after a perfectly successful release,
+      and reported a working board as broken. `release-asic` now exits 0 and
+      says what actually happened.
+- [ ] **PCIe enumeration is an M4/M5 question.** The chip is expected to appear
+      on the bus only after it has been configured — that is what the vendor
+      agent does, switching from `localBusHam` to `pciHam` at the end of
+      bring-up. Nothing needs it before then, because packet DMA is the only
+      thing that uses it.
 
 ### What the vendor agent tells us about the bring-up to come
 

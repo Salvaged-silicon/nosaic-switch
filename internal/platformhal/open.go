@@ -37,6 +37,9 @@ type Config struct {
 	// chips a release is only meaningful as an edge. Board data; see
 	// board.SwitchResetAlwaysPulse for what it costs.
 	SwitchResetAlwaysPulse bool
+	// SwitchPCIeAfterConfig says the chip enumerates only after the datapath
+	// has configured it, so releasing reset must not wait for it to appear.
+	SwitchPCIeAfterConfig bool
 	// I2C is where the board's platform devices sit on its Linux i2c buses,
 	// for boards whose controller is not an SCD. Optional and mutually
 	// exclusive with SMBus in practice, though nothing enforces that: a

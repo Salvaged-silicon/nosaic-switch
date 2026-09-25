@@ -73,7 +73,7 @@ static const struct {
 	{ FM6000_SWEEPER,            "SWEEPER",
 	  "warm 0x0008bb2c, cold 0" },
 	{ FM6000_EPL_CFG_B,          "EPL_CFG_B",
-	  "0x00090003 is 10GBASE-R; a cold chip reads 0x00080000" },
+	  "0x00090003 is 10GBASE-R. ⚠ READING THIS BEFORE INIT KILLS THE CHIP" },
 };
 
 static int cmd_survey(struct fm6000 *d)
@@ -81,14 +81,26 @@ static int cmd_survey(struct fm6000 *d)
 	size_t i;
 	int bad = 0;
 
-	printf("chip     %s  (8086:155b)\n", d->slot);
-	printf("BAR0     %zu bytes mapped (%zu MB), words 0..0x%x\n",
-	       d->bar_bytes, d->bar_bytes >> 20, FM6000_WORD_MAX);
-	printf("on bus   %s\n\n", fm_check_offbus(d) == 1 ? "NO" : "yes");
+	if (d->xport == FM_XPORT_LBUS) {
+		/* The slot here is the SCD's, not the chip's -- the FM6000 has
+		 * no PCI address of its own until it has been configured, and
+		 * printing one would be a lie that sends someone looking for a
+		 * device that is not supposed to be there yet. */
+		printf("reached   via SCD %s BAR1 (local bus)\n", d->slot);
+		printf("window    %zu bytes mapped (%zu MB), words 0..0x%x\n",
+		       d->bar_bytes, d->bar_bytes >> 20, FM6000_WORD_MAX);
+		printf("answering %s\n\n",
+		       fm_alive(d) == 1 ? "yes" : "NO -- PIN_STRAP reads 0");
+	} else {
+		printf("chip     %s  (8086:155b)\n", d->slot);
+		printf("BAR0     %zu bytes mapped (%zu MB), words 0..0x%x\n",
+		       d->bar_bytes, d->bar_bytes >> 20, FM6000_WORD_MAX);
+		printf("on bus   %s\n\n", fm_check_offbus(d) == 1 ? "NO" : "yes");
+	}
 
 	if (fm_is_offbus(d)) {
-		printf("The chip is not answering config space. Nothing below\n"
-		       "would mean anything, so it is not attempted.\n");
+		printf("The chip is not answering. Nothing below would mean\n"
+		       "anything, so it is not attempted.\n");
 		return 2;
 	}
 

@@ -77,7 +77,7 @@ func platformCmd(args []string) error {
 	case "status":
 		return platformStatus(hal, b)
 	case "release-asic":
-		return releaseASIC(hal)
+		return releaseASIC(hal, b)
 	case "asic":
 		return probeASIC(hal)
 	case "smbus":
@@ -177,6 +177,7 @@ func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
 		// pair. Silent when wrong: an unimplemented bit takes the write.
 		SwitchResetBits:        b.PlatformHAL.SwitchResetBits,
 		SwitchResetAlwaysPulse: b.PlatformHAL.SwitchResetAlwaysPulse,
+		SwitchPCIeAfterConfig:  b.PlatformHAL.SwitchPCIeAfterConfig,
 		BoardData:              b.PlatformHAL.N3172TQ,
 	})
 	if err != nil {
@@ -300,7 +301,7 @@ func platformStatus(hal platformhal.HAL, b *board.Board) error {
 // The watchdog is checked first and the answer is only a warning: releasing a
 // reset is not itself dangerous, but everything that follows it is, and a
 // switch with no automatic recovery is a switch that gets recovered by hand.
-func releaseASIC(hal platformhal.HAL) error {
+func releaseASIC(hal platformhal.HAL, b *board.Board) error {
 	if wd, err := hal.Watchdog(); err == nil {
 		if armed, _, err := wd.Armed(); err == nil && !armed {
 			fmt.Fprintln(os.Stderr,
@@ -335,6 +336,15 @@ func releaseASIC(hal platformhal.HAL) error {
 			return nil
 		}
 		return err
+	}
+	// Not "on the bus" on every board. Where the chip enumerates only after
+	// the datapath has configured it, saying so here would be false at the
+	// moment it is printed, and it is the one line an operator reads to decide
+	// whether a board is healthy.
+	if b != nil && b.PlatformHAL.SwitchPCIeAfterConfig {
+		fmt.Println("the switch chip is out of reset. It is not on the PCI bus " +
+			"yet, and will not be until the datapath has configured it.")
+		return nil
 	}
 	fmt.Println("the switch chip is on the bus.")
 	return nil

@@ -3,6 +3,7 @@ package scd
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal"
 )
@@ -198,5 +199,34 @@ func TestWithoutThatFlagClearResetsAreLeftAlone(t *testing.T) {
 	if got := s.read32(resetSet); got != 0 {
 		t.Errorf("resets asserted = %#08x on a board that did not ask for a "+
 			"pulse, want no write at all", got)
+	}
+}
+
+// A board whose chip enumerates only after the datapath has configured it must
+// not be made to wait for the endpoint here. The FM6000 on a 7150S-52 brings
+// its own PCIe block up during chip init, so at this point the device is
+// legitimately absent -- and waiting turns a successful release into a timeout
+// that reads as a hardware fault.
+func TestReleaseDoesNotWaitForAChipThatEnumeratesAfterConfiguration(t *testing.T) {
+	s := fake(0x8000)
+	s.resetBits = []int{1, 2, 8}
+	s.alwaysPulse = true
+	s.pcieAfterConfig = true
+	// An address that is certainly not on this host's PCI bus: without the
+	// flag the wait below would sit on it until the deadline.
+	s.asic = "9999:99:99.9"
+	s.write32(resetBase, 0)
+
+	done := make(chan error, 1)
+	go func() { done <- s.ReleaseSwitchChip(context.Background()) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("release: %v, want success -- an absent endpoint is the "+
+				"expected state on this kind of board", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("release is still waiting for a chip that cannot appear yet")
 	}
 }

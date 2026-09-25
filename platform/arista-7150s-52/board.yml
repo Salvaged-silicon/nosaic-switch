@@ -106,6 +106,14 @@ platform_hal:
   # See docs/hardware.md, "It takes a reset PULSE, not a release".
   switch_reset_always_pulse: true
 
+  # ⚠ THE CHIP IS NOT ON THE PCI BUS WHEN ITS RESET IS RELEASED, AND THAT IS
+  # CORRECT. The FM6000's PCIe block is brought up as part of chip
+  # initialisation; until then the host reaches its registers through the SCD's
+  # BAR1 local-bus window. Waiting for the endpoint here times out after a
+  # perfectly successful release and reports a working board as broken, which
+  # is what `release-asic` did until 2026-09-25.
+  switch_pcie_after_config: true
+
 status: planned
 
 notes: >
