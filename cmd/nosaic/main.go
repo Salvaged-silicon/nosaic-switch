@@ -818,8 +818,12 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		fmt.Fprintf(w, "vlans\t%v\n", caps.VLANs)
 		fmt.Fprintf(w, "svis\t%v\n", caps.SVIs)
 		if caps.LAGs {
-			fmt.Fprintf(w, "lags\tyes, %d of up to %d ports, lacp %v\n",
-				caps.MaxLAGs, caps.MaxLAGMembers, caps.LACP)
+			lacp := ""
+			if caps.LACP {
+				lacp = ", lacp"
+			}
+			fmt.Fprintf(w, "lags\tyes, %d, up to %d members each%s\n",
+				caps.MaxLAGs, caps.MaxLAGMembers, lacp)
 		} else {
 			fmt.Fprintf(w, "lags\tno\n")
 		}

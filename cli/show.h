@@ -38,6 +38,8 @@ int nosaic_vlan_cmd(int argc, char **argv);
 int nosaic_svi_cmd(int argc, char **argv);
 int nosaic_switchport_cmd(int argc, char **argv);
 int nosaic_show_vlans(void);
+int nosaic_lag_cmd(int argc, char **argv);
+int nosaic_show_lags(void);
 
 /* What the datapath's DMA pool holds, and which allocation names hold it.
  *

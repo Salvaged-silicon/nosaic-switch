@@ -152,6 +152,9 @@ struct l3if {
 	 * objects still name its router interface, so the chip will not let it
 	 * go, and a VLAN given its SVI back reuses it. */
 	int        dead;
+	/* A routed LAG's interface: its trunk id + 1, 0 for anything else. Next
+	 * hops leave by the trunk and the chip hashes across its members. */
+	int        trunk;
 };
 
 static struct l3if ifs[MAX_IF];
@@ -221,6 +224,23 @@ static struct l3if *if_by_name(const char *n)
 }
 
 /*
+ * An egress object's port: a port, or a routed LAG's trunk. The trunk goes in
+ * as BCM_L3_TGID and a trunk id rather than as a trunk gport in the port
+ * field, which is the form every generation of the SDK takes.
+ */
+static void egr_port(bcm_l3_egress_t *egr, int port)
+{
+	if (BCM_GPORT_IS_TRUNK(port)) {
+		egr->flags |= BCM_L3_TGID;
+		egr->trunk = BCM_GPORT_TRUNK_GET(port);
+		egr->port = 0;
+	} else {
+		egr->port = port;
+	}
+	egr->module = 0;
+}
+
+/*
  * The port a next hop leaves by.
  *
  * A routed port's is its own. An SVI's is wherever the chip has learned the
@@ -231,9 +251,14 @@ static struct l3if *if_by_name(const char *n)
 static int nh_port(const struct l3if *ifp, const uint8_t mac[6])
 {
 	bcm_l2_addr_t l2;
+	bcm_gport_t gp;
 
 	if (ifp->port >= 0)
 		return ifp->port;
+	if (ifp->trunk) {
+		BCM_GPORT_TRUNK_SET(gp, ifp->trunk - 1);
+		return gp;
+	}
 	if (bcm_l2_addr_get(l3_unit, (uint8 *)mac, ifp->vlan, &l2) != BCM_E_NONE)
 		return -1;
 	return nosaic_l2_port(l3_unit, &l2);
@@ -357,8 +382,7 @@ static int nexthop(struct l3if *ifp, int ifx, uint32_t gw, bcm_if_t *eg)
 	memcpy(egr.mac_addr, mac, 6);
 	egr.intf = ifp->intf;
 	egr.vlan = ifp->vlan;
-	egr.port = port;
-	egr.module = 0;
+	egr_port(&egr, port);
 
 	rv = bcm_l3_egress_create(l3_unit, 0, &egr, eg);
 	if (rv == BCM_E_PORT) {
@@ -562,8 +586,7 @@ static int nexthop6(struct l3if *ifp, int ifx, const uint8_t *gw, bcm_if_t *eg)
 	memcpy(egr.mac_addr, mac, 6);
 	egr.intf = ifp->intf;
 	egr.vlan = ifp->vlan;
-	egr.port = port;
-	egr.module = 0;
+	egr_port(&egr, port);
 
 	rv = bcm_l3_egress_create(l3_unit, 0, &egr, eg);
 	if (rv != BCM_E_NONE)
@@ -1616,7 +1639,7 @@ static void poll_svi_moves(void)
 		bcm_l3_egress_t egr;
 		int port, rv;
 
-		if (ifp->port >= 0 || ifp->dead)
+		if (ifp->port >= 0 || ifp->trunk || ifp->dead)
 			continue;
 		port = nh_port(ifp, mac);
 		if (port < 0 || port == *cached)
@@ -1625,7 +1648,7 @@ static void poll_svi_moves(void)
 		memcpy(egr.mac_addr, mac, 6);
 		egr.intf = ifp->intf;
 		egr.vlan = ifp->vlan;
-		egr.port = port;
+		egr_port(&egr, port);
 		rv = bcm_l3_egress_create(l3_unit, BCM_L3_REPLACE | BCM_L3_WITH_ID,
 					  &egr, &eg);
 		if (rv == BCM_E_PORT) {
@@ -1713,6 +1736,20 @@ int nosaic_l3_add_intf(int unit, const char *ifname, int port, int vlan,
 
 	pthread_mutex_lock(&l3_lock);
 	rv = l3_add_intf(unit, ifname, port, vlan, mac, mtu);
+	pthread_mutex_unlock(&l3_lock);
+	return rv;
+}
+
+int nosaic_l3_add_lag_intf(int unit, const char *ifname, int tid, int vlan,
+			   const bcm_mac_t mac, int mtu)
+{
+	struct l3if *ifp;
+	int rv;
+
+	pthread_mutex_lock(&l3_lock);
+	rv = l3_add_intf(unit, ifname, -1, vlan, mac, mtu);
+	if (rv == 0 && (ifp = if_by_name(ifname)) != NULL)
+		ifp->trunk = tid + 1;
 	pthread_mutex_unlock(&l3_lock);
 	return rv;
 }

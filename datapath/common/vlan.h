@@ -42,8 +42,8 @@ int nosaic_vlan_is_user(int vid);
 int nosaic_vlan_port_switched(int port);
 
 /*
- * The local logical port an L2 table entry points at, or -1 (a trunk, or a
- * port that is not ours).
+ * The local logical port an L2 table entry points at; for an entry learned on
+ * a LAG, the trunk as a gport (BCM_GPORT_IS_TRUNK); -1 if it is not ours.
  *
  * ⚠ l2->port ALONE IS NOT THE PORT. A chip with more ports than one module
  * id covers splits them across two, and the L2 table reports (module, port):
@@ -54,6 +54,13 @@ int nosaic_vlan_port_switched(int port);
  * 52 (tapbridge.c).
  */
 int nosaic_l2_port(int unit, const bcm_l2_addr_t *l2);
+
+/* LAG hooks, for lag.c: a member joining or leaving a switched LAG takes on
+ * or gives up the LAG's VLANs. Both return whether the LAG is switched. */
+int  nosaic_vlan_lag_join(int key, int port);
+int  nosaic_vlan_lag_leave(int key, int port);
+void nosaic_vlan_lag_forget(int key);
+int  nosaic_vlan_lag_switched(int key);       /* lock-free */
 
 /* Members of a user VLAN and the untagged subset; 0 if it exists. */
 int nosaic_vlan_members(int vid, bcm_pbmp_t *members, bcm_pbmp_t *untagged);
