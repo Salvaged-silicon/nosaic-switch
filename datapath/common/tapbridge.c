@@ -116,6 +116,7 @@
 
 #include "props.h"
 #include "tapbridge.h"
+#include "vlan.h"
 
 #define TAP_MTU        9216
 #define MIN_FRAME      60
@@ -140,9 +141,28 @@ struct tap {
 	 * dead for the first moment it is legitimately quiet. */
 	int silent;
 	unsigned long tx_nolink;  /* dropped: the port has no link to send on */
+	unsigned long tx_switched; /* dropped: the port is switched, not routed */
 };
 
 static struct tap taps[MAX_TAPS];
+
+/*
+ * Routed VLAN interfaces: one tap per SVI, not tied to a port.
+ *
+ * Kept apart from taps[] on purpose. Everything that walks taps[] -- the
+ * query server's port list, the ACL port names, the LEDs, the startup loop
+ * that gives each port a router interface -- means front-panel ports, and an
+ * SVI in that array would be a port with no port number in every one of them.
+ *
+ * Made and destroyed at runtime, from the query thread, while the receive
+ * thread and the pump are using the table, hence the lock. A slot whose fd is
+ * -1 is free.
+ */
+#define MAX_SVI 32
+static struct tap svis[MAX_SVI];
+static int nsvi;                  /* high-water mark of slots ever used */
+static pthread_rwlock_t svi_lock = PTHREAD_RWLOCK_INITIALIZER;
+static unsigned long rx_nosvi;    /* punted in a user VLAN that has no SVI */
 
 /* The board's "really has link" test; see nosaic_tap_link_filter(). */
 static int (*tap_link_real)(int port);
@@ -274,6 +294,33 @@ static int           rx_unmatched_logged;
 static struct { bcm_port_t src; unsigned long n; } unclaimed[32];
 static int nunclaimed;
 
+/* Hand a punted frame to one tap, untagged as it was on the wire. */
+static bcm_rx_t tap_deliver(struct tap *t, bcm_pkt_t *pkt)
+{
+	unsigned char  flat[TAP_MTU];
+	unsigned char *d;
+	int            len;
+
+	len = pkt->tot_len ? (int)pkt->tot_len : (int)pkt->pkt_data[0].len;
+	if (len > (int)pkt->pkt_data[0].len)
+		len = (int)pkt->pkt_data[0].len;   /* never read past the block */
+	if (len <= 0)
+		return BCM_RX_NOT_HANDLED;
+
+	/* Punted frames arrive tagged; Linux wants what was on the wire. */
+	d = pkt->pkt_data[0].data;
+	if (len > 16 && d[12] == 0x81 && d[13] == 0x00 &&
+	    len - 4 <= (int)sizeof(flat)) {
+		memcpy(flat, d, 12);
+		memcpy(flat + 12, d + 16, (size_t)(len - 16));
+		len -= 4;
+		d = flat;
+	}
+	if (write(t->fd, d, (size_t)len) != len)
+		return BCM_RX_NOT_HANDLED;
+	return BCM_RX_HANDLED;
+}
+
 static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 {
 	int i, vid;
@@ -281,9 +328,10 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 	/*
 	 * The VLAN the frame arrived in, from the frame itself.
 	 *
-	 * Every front-panel port sits alone in its own service VLAN, so the tag
-	 * on a punted frame names the port it came from exactly, and it is data
-	 * off the wire rather than a number the SDK derived.
+	 * Every routed port sits alone in its own service VLAN, so the tag on
+	 * a punted frame names the port it came from exactly, and it is data
+	 * off the wire rather than a number the SDK derived. A frame in a user
+	 * VLAN belongs to that VLAN's SVI, whichever member port it came in on.
 	 */
 	vid = 0;
 	if (pkt->pkt_data[0].len > 16) {
@@ -293,14 +341,40 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 			vid = ((p[14] << 8) | p[15]) & 0xfff;
 	}
 
-	for (i = 0; i < ntaps; i++) {
-		unsigned char  flat[TAP_MTU];
-		unsigned char *d;
-		int            len;
+	/*
+	 * By VLAN first. A routed port's service VLAN and a user VLAN's SVI
+	 * are the two things a VID can name, and neither depends on src_port
+	 * -- which is not trustworthy on the 40G ports, below.
+	 */
+	if (vid != 0) {
+		for (i = 0; i < ntaps; i++)
+			if (taps[i].vlan == vid)
+				return tap_deliver(&taps[i], pkt);
 
+		pthread_rwlock_rdlock(&svi_lock);
+		for (i = 0; i < nsvi; i++) {
+			if (svis[i].fd >= 0 && svis[i].vlan == vid) {
+				bcm_rx_t r = tap_deliver(&svis[i], pkt);
+
+				pthread_rwlock_unlock(&svi_lock);
+				return r;
+			}
+		}
+		pthread_rwlock_unlock(&svi_lock);
+
+		/* A user VLAN nobody routes for. The CPU is not a member of
+		 * one, so this is a stray -- and handing it to the member
+		 * port's routed tap would put a switched frame on a routed
+		 * interface. */
+		if (nosaic_vlan_is_user(vid)) {
+			rx_nosvi++;
+			return BCM_RX_NOT_HANDLED;
+		}
+	}
+
+	for (i = 0; i < ntaps; i++) {
 		/*
-		 * Either identifies the tap, and the VLAN is the one that works
-		 * on every port.
+		 * By source port, for a frame whose VLAN named nothing.
 		 *
 		 * src_port is what the chip put in the punt header, and on this
 		 * board's 40G ports it is neither the logical port nor anything
@@ -314,29 +388,10 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 		 * ports received. The far end saw link, received our hellos and
 		 * replied; nothing ever reached ospfd here, and no adjacency
 		 * formed on a link whose counters showed clean traffic arriving.
+		 * That is why the VLAN is tried first.
 		 */
-		if (taps[i].port != pkt->src_port &&
-		    !(vid != 0 && taps[i].vlan == vid))
-			continue;
-
-		len = pkt->tot_len ? (int)pkt->tot_len : (int)pkt->pkt_data[0].len;
-		if (len > (int)pkt->pkt_data[0].len)
-			len = (int)pkt->pkt_data[0].len;   /* never read past the block */
-		if (len <= 0)
-			return BCM_RX_NOT_HANDLED;
-
-		/* Punted frames arrive tagged; Linux wants what was on the wire. */
-		d = pkt->pkt_data[0].data;
-		if (len > 16 && d[12] == 0x81 && d[13] == 0x00 &&
-		    len - 4 <= (int)sizeof(flat)) {
-			memcpy(flat, d, 12);
-			memcpy(flat + 12, d + 16, (size_t)(len - 16));
-			len -= 4;
-			d = flat;
-		}
-		if (write(taps[i].fd, d, (size_t)len) != len)
-			return BCM_RX_NOT_HANDLED;
-		return BCM_RX_HANDLED;
+		if (taps[i].port == pkt->src_port)
+			return tap_deliver(&taps[i], pkt);
 	}
 
 	/*
@@ -389,8 +444,15 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 	return BCM_RX_NOT_HANDLED;
 }
 
-/* Linux -> wire. */
-static int tap_tx(struct tap *t, const unsigned char *buf, int len)
+/*
+ * Linux -> wire: tag, pad and hand to the DMA engine, to the ports given.
+ *
+ * pbm is where the frame goes and upbm the subset that sends it untagged.
+ * For a routed port both are the one port; for an SVI they are whatever the
+ * VLAN's membership and the chip's L2 table say (tap_tx_svi).
+ */
+static int tap_send(struct tap *t, const unsigned char *buf, int len,
+		    bcm_pbmp_t pbm, bcm_pbmp_t upbm)
 {
 	unsigned char *frame;
 	bcm_pkt_t *tx_pkt;
@@ -398,36 +460,6 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 
 	if (tx_ring[0] == NULL || len < 12 || len + 4 > TAP_MTU)
 		return -1;
-
-	/*
-	 * Don't hand a frame to a port with no link.
-	 *
-	 * bcm_tx ANDs the packet's port bitmap with the bitmap linkscan
-	 * maintains, so a dark port yields no descriptor. The SDK then prints
-	 * "Could not send pkt with dv_vcnt = 0", invokes the completion
-	 * callback inline, AND RETURNS SUCCESS -- so without this the frame is
-	 * counted in tx_ok as though it went out, and the log fills up.
-	 *
-	 * This only became visible when this board declared a tap for all 54
-	 * of its ports rather than only the cabled ones. Linux sends router
-	 * solicitations and MLD out of every interface it has, so 52 dark
-	 * ports produced a steady drip of failed transmits reported as
-	 * successes. Declaring every port is right -- a cable plugged in later
-	 * should just work -- so the transmit path has to tolerate dark ones.
-	 *
-	 * Checked per frame rather than cached: this is the CPU-originated
-	 * slow path at a few frames a second, and a cached copy would need a
-	 * linkscan handler to stay honest.
-	 */
-	{
-		int link = 0;
-
-		if (bcm_port_link_status_get(tap_unit, t->port, &link) ==
-		    BCM_E_NONE && !link) {
-			t->tx_nolink++;
-			return -1;
-		}
-	}
 
 	/*
 	 * A full ring means every packet is still with the DMA engine. Drop
@@ -462,10 +494,8 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 	tx_pkt->pkt_len         = (uint32)len;
 	tx_pkt->tot_len         = (uint32)len;
 	tx_pkt->flags          |= BCM_TX_CRC_APPEND;
-	BCM_PBMP_CLEAR(tx_pkt->tx_pbmp);
-	BCM_PBMP_PORT_ADD(tx_pkt->tx_pbmp, t->port);
-	BCM_PBMP_CLEAR(tx_pkt->tx_upbmp);
-	BCM_PBMP_PORT_ADD(tx_pkt->tx_upbmp, t->port);  /* leave the wire untagged */
+	BCM_PBMP_ASSIGN(tx_pkt->tx_pbmp, pbm);
+	BCM_PBMP_ASSIGN(tx_pkt->tx_upbmp, upbm);   /* untagged where the VLAN is */
 
 	/*
 	 * The cookie is the slot, and pkt->call_back -- set once at allocation
@@ -481,6 +511,95 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 	}
 	t->tx_ok++;
 	return 0;
+}
+
+/* Linux -> wire, from a routed port's tap. */
+static int tap_tx(struct tap *t, const unsigned char *buf, int len)
+{
+	bcm_pbmp_t pbm;
+
+	/*
+	 * A switched port's routed tap stays quiet. Linux still sends router
+	 * solicitations and MLD out of every interface it has, and from this
+	 * tap they would go out of a port that now belongs to a VLAN -- onto
+	 * a segment that has an SVI to speak for it.
+	 */
+	if (nosaic_vlan_port_switched(t->port)) {
+		t->tx_switched++;
+		return -1;
+	}
+
+	/*
+	 * Don't hand a frame to a port with no link.
+	 *
+	 * bcm_tx ANDs the packet's port bitmap with the bitmap linkscan
+	 * maintains, so a dark port yields no descriptor. The SDK then prints
+	 * "Could not send pkt with dv_vcnt = 0", invokes the completion
+	 * callback inline, AND RETURNS SUCCESS -- so without this the frame is
+	 * counted in tx_ok as though it went out, and the log fills up.
+	 *
+	 * This only became visible when this board declared a tap for all 54
+	 * of its ports rather than only the cabled ones. Linux sends router
+	 * solicitations and MLD out of every interface it has, so 52 dark
+	 * ports produced a steady drip of failed transmits reported as
+	 * successes. Declaring every port is right -- a cable plugged in later
+	 * should just work -- so the transmit path has to tolerate dark ones.
+	 *
+	 * Checked per frame rather than cached: this is the CPU-originated
+	 * slow path at a few frames a second, and a cached copy would need a
+	 * linkscan handler to stay honest.
+	 */
+	{
+		int link = 0;
+
+		if (bcm_port_link_status_get(tap_unit, t->port, &link) ==
+		    BCM_E_NONE && !link) {
+			t->tx_nolink++;
+			return -1;
+		}
+	}
+
+	BCM_PBMP_CLEAR(pbm);
+	BCM_PBMP_PORT_ADD(pbm, t->port);
+	return tap_send(t, buf, len, pbm, pbm);  /* leave the wire untagged */
+}
+
+/*
+ * Linux -> wire, from an SVI: into the VLAN.
+ *
+ * A known unicast destination goes to the one port the chip's L2 table has
+ * it behind; anything else -- broadcast, multicast, a MAC the chip has not
+ * learned -- floods to the VLAN's members, which is what the chip itself
+ * would do with it. Transmit from the CPU names its ports explicitly, so
+ * this is the lookup the pipeline would otherwise have done.
+ */
+static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len)
+{
+	bcm_pbmp_t m, u, pbm, upbm;
+
+	if (len < 12 || nosaic_vlan_members(t->vlan, &m, &u) != 0)
+		return -1;
+	BCM_PBMP_ASSIGN(pbm, m);
+	if (!(buf[0] & 1)) {
+		bcm_l2_addr_t l2;
+
+		int p;
+
+		if (bcm_l2_addr_get(tap_unit, (uint8 *)buf, (bcm_vlan_t)t->vlan,
+				    &l2) == BCM_E_NONE &&
+		    (p = nosaic_l2_port(tap_unit, &l2)) >= 0 &&
+		    BCM_PBMP_MEMBER(m, p)) {
+			BCM_PBMP_CLEAR(pbm);
+			BCM_PBMP_PORT_ADD(pbm, p);
+		}
+	}
+	if (BCM_PBMP_IS_NULL(pbm)) {
+		t->tx_nolink++;                     /* a VLAN with no members */
+		return -1;
+	}
+	BCM_PBMP_ASSIGN(upbm, pbm);
+	BCM_PBMP_AND(upbm, u);
+	return tap_send(t, buf, len, pbm, upbm);
 }
 
 /* Create one tap device, up, with its own MAC. */
@@ -545,7 +664,24 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 		{
 			unsigned b[6];
 			const char *base = nosaic_props_get("tap_mac_base");
+			static char derived[32];
 			static int warned;
+
+			/*
+			 * Unset, the switch's own address, worked out at boot by
+			 * /etc/nosaic/switch-mac.sh from the board's identity, its
+			 * network.conf or eth0 (internal/imgbuild/switchmac.go).
+			 * The property still wins: it is an operator saying so.
+			 */
+			if (base == NULL) {
+				FILE *f = fopen("/run/nosaic/base_mac", "r");
+
+				if (f != NULL) {
+					if (fgets(derived, sizeof(derived), f) != NULL)
+						base = derived;
+					fclose(f);
+				}
+			}
 
 			if (base != NULL && sscanf(base, "%x:%x:%x:%x:%x:%x",
 						   &b[0], &b[1], &b[2], &b[3],
@@ -561,11 +697,12 @@ static int tap_open(struct tap *t, const char *name, bcm_port_t port, int index,
 			} else if (!warned) {
 				warned = 1;
 				fprintf(stderr,
-					"tap: no usable tap_mac_base, so tap addresses are "
+					"tap: no tap_mac_base and nothing in "
+					"/run/nosaic/base_mac, so tap addresses are "
 					"02:00:00:00:00:xx -- the SAME on every NOSaic "
 					"switch. Two of them on one segment, or two ports "
-					"of either in one VLAN, will collide. Set "
-					"tap_mac_base to this board's own MAC.\n");
+					"of either in one VLAN, will collide. Give eth0 "
+					"its mac in network.conf, or set tap_mac_base.\n");
 			}
 		}
 		ifr.ifr_hwaddr.sa_data[5] = (char)(0x50 + index);
@@ -876,10 +1013,12 @@ static int l2_dump_cb(int unit, bcm_l2_addr_t *info, void *user_data)
 	int *n = user_data;
 
 	if (*n < 24)
-		printf("l2:   %02x:%02x:%02x:%02x:%02x:%02x vlan %d port %d%s\n",
+		printf("l2:   %02x:%02x:%02x:%02x:%02x:%02x vlan %d mod %d port %d "
+		       "(local %d)%s\n",
 		       info->mac[0], info->mac[1], info->mac[2],
 		       info->mac[3], info->mac[4], info->mac[5],
-		       info->vid, info->port,
+		       info->vid, info->modid, info->port,
+		       nosaic_l2_port(unit, info),
 		       (info->flags & BCM_L2_STATIC) ? " static" : "");
 	(*n)++;
 	return BCM_E_NONE;
@@ -963,10 +1102,11 @@ void nosaic_tap_stats(void)
 
 			printf("port: %s (port %d) link=%d lb=%d fmax=%d "
 			       "intf=%d ability=%#x tx-ok=%lu tx-err=%lu "
-			       "tx-nobuf=%lu tx-nolink=%lu",
+			       "tx-nobuf=%lu tx-nolink=%lu tx-switched=%lu",
 			       taps[i].name, taps[i].port, link, lb, fmax,
 			       (int)intf, (unsigned)fd,
-			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf, taps[i].tx_nolink);
+			       taps[i].tx_ok, taps[i].tx_err, taps[i].tx_nobuf, taps[i].tx_nolink,
+			       taps[i].tx_switched);
 		}
 		traffic = 0;
 		for (j = 0; j < (int)(sizeof(want) / sizeof(want[0])); j++) {
@@ -1074,6 +1214,9 @@ void nosaic_tap_stats(void)
 	}
 
 	printf("tap: %lu punted frame(s) matched no tap\n", rx_unmatched);
+	if (rx_nosvi != 0)
+		printf("tap: %lu punted frame(s) in a user vlan with no svi\n",
+		       rx_nosvi);
 	for (i = 0; i < nunclaimed; i++)
 		printf("tap:   src_port %d: %lu frame(s)\n",
 		       unclaimed[i].src, unclaimed[i].n);
@@ -1164,11 +1307,76 @@ int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
 	return 0;
 }
 
+int nosaic_tap_svi_add(int vid, const char *name, unsigned char mac[6])
+{
+	int i, slot = -1;
+
+	pthread_rwlock_wrlock(&svi_lock);
+	for (i = 0; i < nsvi; i++) {
+		if (svis[i].fd >= 0 && svis[i].vlan == vid) {
+			memcpy(mac, svis[i].mac, 6);        /* already there */
+			pthread_rwlock_unlock(&svi_lock);
+			return 0;
+		}
+		if (svis[i].fd < 0 && slot < 0)
+			slot = i;
+	}
+	if (slot < 0) {
+		if (nsvi >= MAX_SVI) {
+			pthread_rwlock_unlock(&svi_lock);
+			fprintf(stderr, "tap: %s: all %d SVI taps are in use\n",
+				name, MAX_SVI);
+			return -1;
+		}
+		slot = nsvi;
+	}
+	memset(&svis[slot], 0, sizeof(svis[slot]));
+	svis[slot].fd = -1;
+	/*
+	 * The MAC's last byte continues past the ports' (0x50 + port index),
+	 * so an SVI's address is distinct from every port's on this switch and,
+	 * through tap_mac_base, from every other switch's.
+	 */
+	if (tap_open(&svis[slot], name, -1, MAX_TAPS + slot, 0) != 0) {
+		svis[slot].fd = -1;
+		pthread_rwlock_unlock(&svi_lock);
+		return -1;
+	}
+	svis[slot].vlan = vid;
+	svis[slot].port = -1;
+	memcpy(mac, svis[slot].mac, 6);
+	if (slot == nsvi)
+		nsvi++;
+	pthread_rwlock_unlock(&svi_lock);
+	printf("tap: %s <-> vlan %d\n", name, vid);
+	fflush(stdout);
+	return 0;
+}
+
+void nosaic_tap_svi_del(int vid)
+{
+	int i;
+
+	pthread_rwlock_wrlock(&svi_lock);
+	for (i = 0; i < nsvi; i++) {
+		if (svis[i].fd >= 0 && svis[i].vlan == vid) {
+			/* A tap made without IFF_TUN_PERSIST goes away with its
+			 * fd, and the kernel takes its addresses and routes with
+			 * it -- which is what DelSVI means. */
+			close(svis[i].fd);
+			svis[i].fd = -1;
+			svis[i].vlan = 0;
+		}
+	}
+	pthread_rwlock_unlock(&svi_lock);
+}
+
 void nosaic_tap_pump(void (*tick)(void), int tick_ms)
 {
-	struct pollfd fds[MAX_TAPS];
+	struct pollfd fds[MAX_TAPS + MAX_SVI];
+	int           svifd[MAX_SVI];
 	unsigned char buf[TAP_MTU];
-	int i;
+	int i, n, ns;
 
 	for (;;) {
 		for (i = 0; i < ntaps; i++) {
@@ -1176,14 +1384,30 @@ void nosaic_tap_pump(void (*tick)(void), int tick_ms)
 			fds[i].events = POLLIN;
 			fds[i].revents = 0;
 		}
-		if (poll(fds, (nfds_t)ntaps, tick != NULL ? tick_ms : -1) < 0) {
+		n = ntaps;
+		pthread_rwlock_rdlock(&svi_lock);
+		ns = nsvi;
+		for (i = 0; i < ns; i++) {
+			svifd[i] = svis[i].fd;
+			fds[n + i].fd = svis[i].fd;       /* -1 is ignored by poll */
+			fds[n + i].events = POLLIN;
+			fds[n + i].revents = 0;
+		}
+		pthread_rwlock_unlock(&svi_lock);
+
+		/*
+		 * Never wait for ever. An SVI made while the pump sleeps in
+		 * poll() is not in this set, and would stay deaf -- sending
+		 * nothing -- until some other tap happened to have a frame.
+		 */
+		if (poll(fds, (nfds_t)(n + ns), tick != NULL ? tick_ms : 1000) < 0) {
 			if (errno == EINTR)
 				continue;
 			return;
 		}
 		if (tick != NULL)
 			tick();
-		for (i = 0; i < ntaps; i++) {
+		for (i = 0; i < n; i++) {
 			ssize_t len;
 
 			if (!(fds[i].revents & POLLIN))
@@ -1192,5 +1416,19 @@ void nosaic_tap_pump(void (*tick)(void), int tick_ms)
 			if (len > 0)
 				tap_tx(&taps[i], buf, (int)len);
 		}
+		pthread_rwlock_rdlock(&svi_lock);
+		for (i = 0; i < ns; i++) {
+			ssize_t len;
+
+			/* The slot may have been closed, or even reused, since
+			 * the poll: only read an fd that is still this one. */
+			if (!(fds[n + i].revents & POLLIN) || svifd[i] < 0 ||
+			    svis[i].fd != svifd[i])
+				continue;
+			len = read(svis[i].fd, buf, sizeof(buf));
+			if (len > 0)
+				tap_tx_svi(&svis[i], buf, (int)len);
+		}
+		pthread_rwlock_unlock(&svi_lock);
 	}
 }

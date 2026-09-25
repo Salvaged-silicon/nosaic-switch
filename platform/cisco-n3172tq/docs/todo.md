@@ -464,7 +464,11 @@ Ordered so each step's failure is diagnosable with the one before it working.
       vendor runs 16%. If a band ever looks absurd, check which sensor is
       driving it before adjusting the numbers.
 
-- [ ] **Adopt `tap_mac_base`, and feed it from the ID PROM.** The tap MACs
+- [x] **Adopt `tap_mac_base`, and feed it from the ID PROM.** Done 2026-09-24:
+      `switch-mac.sh` asks `nosaic platform mac` first, which reads the ID
+      PROM, and the datapath builds its addresses from that. The allocated
+      block itself is still unused -- addresses are derived, locally
+      administered, from its low four bytes. The tap MACs
       are generated identically on every board — `02:00:00:00:00:50` upward
       by tap index — so this board and the 7050TX-64 hold overlapping ranges
       (`0x50`–`0x85` against `0x50`–`0x86`) and collide index for index: our

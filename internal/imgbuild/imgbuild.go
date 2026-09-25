@@ -1128,7 +1128,21 @@ poweroff -f
 	// After asic-release, because the chip is not on the PCI bus until then
 	// and the daemon would find nothing to open.
 	if datapathInstalled(o, packages) {
-		after := []string{"network"}
+		if err := writeFile(rootfs, "/etc/nosaic/switch-mac.sh", switchMAC, 0o755); err != nil {
+			return err
+		}
+		macAfter := []string{"network"}
+		// The identity PROM is an i2c device, instantiated by i2c-devices.
+		if haveI2C {
+			macAfter = append(macAfter, "i2c-devices")
+		}
+		services = append(services, svcgen.Service{
+			Name:    "switch-mac",
+			Exec:    "/etc/nosaic/switch-mac.sh",
+			After:   macAfter,
+			Restart: "never",
+		})
+		after := []string{"network", "switch-mac"}
 		// Matching the gate on the service itself: depending on a service
 		// that was never written is a dangling edge, and s6-rc refuses the
 		// whole database rather than one service.

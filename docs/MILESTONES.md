@@ -25,6 +25,26 @@ worth having early.
 |---|---|---|
 | **S1** | Can a current toolchain produce working binaries for 32-bit big-endian PowerPC (Freescale e500v2)? | **Answered: yes.** gcc-15.2.0 / glibc-2.42, soft-float, built in 47 min; the binary ran and reported `bits=32 endian=big`, and an audit of all 112,775 instructions found no FPU, SPE or AltiVec instruction anywhere. Hardware confirmation on a real board outstanding. |
 
+## Features outside the milestones
+
+Work that is not a milestone of its own, recorded with its gate like the
+rest: what was proven, and where.
+
+| | Feature | Gate |
+|---|---|---|
+| **F1** | Access lists | **Done.** IPv4 and IPv6 rules in the ingress field processor, counted by traffic, on the AS5610 and the 7050SX2. See [acl.md](acl.md) |
+| **F2** | Management VRF | **Done.** eth0 and its routes in table 1001 on all four lab switches, and nothing of the management network in the main table. On the 7050SX2 the pin route is gone and transfers over eth0 run at the pinned rate. See [vrf.md](vrf.md) |
+| **F3** | VLANs and SVIs (switchapi 1.2) | **Done on three chip families.** Between NOSaic switches, both ends set to `trunk 100 native 200` with an SVI in each: tagged and native traffic, and OSPF over the native SVI, on Trident2+/Trident2 (SX2↔TX) and Trident+/Trident2+ (AS5610↔SX2). Routed into the tagged VLAN by the SX2's chip and by the AS5610's, and switched between access ports by the SX2's, with the CPU counters flat each time. The virtual board passes the same contract with traffic in `make dataplane-test`. See [vlan.md](vlan.md) |
+| **F4** | Switch-derived addresses | **Done.** Every tap and SVI MAC comes from the switch's own base, worked out at boot: the Nexus from its ID PROM, and the AS5610 from its own network.conf, with no fallback warning. The two Aristas derive the same addresses they had by hand |
+
+Found and fixed on the way, each of them general:
+- a 40G port whose far end was down at bring-up never carried traffic on the
+  SX2 (td2p gave no port a linkscan mode);
+- the initramfs did not wait for a USB data partition, and the AS5610 booted
+  stateless;
+- the chip only ever sent an interface's first address to the CPU;
+- an L2 entry's port is (module, port) on a chip that spans two module IDs.
+
 S1 runs ahead of M8 rather than as part of it. If the answer is no, that class of hardware
 needs a pinned ancient compiler, and M8's scope changes — which is worth knowing before a
 distro is built on the assumption that every architecture is equally reachable.

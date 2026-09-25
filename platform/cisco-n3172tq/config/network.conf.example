@@ -21,8 +21,9 @@
 # addressed, and somebody installing NOSaic on their own 3172TQ will replace
 # every line.
 #
-# Syntax: iface <name> <addr/prefix> [mac <mac>] [mtu <n>]
-#         route <prefix|default> via <gw> [dev <iface>]
+# Syntax: vrf <name> table <n>
+#         iface <name> <addr/prefix> [mac <mac>] [mtu <n>] [vrf <name>]
+#         route <prefix|default> via <gw> [dev <iface>] [vrf <name>]
 
 # ── Management ─────────────────────────────────────────────────────────────
 #
@@ -46,10 +47,19 @@
 # that whichever OS is running can be reached without disturbing the other's
 # ARP state upstream. Both present the same MAC, which is fine -- one address
 # per OS, one MAC for the board.
-iface eth0 <address>/<prefix> mac auto
-route default via <address>
+# The management VRF. eth0 and its routes live in table 1001, not the main
+# table the datapath mirrors into the chip and routes transit traffic through.
+# ssh answers on eth0 anyway: apply-network.sh turns tcp_l3mdev_accept on, so
+# services listening in the default VRF accept connections from it. Needs a
+# kernel with CONFIG_NET_VRF, which is outside the A/B slot -- see
+# recipes/linux/config/common.fragment.
+vrf mgmt table 1001
+iface eth0 <address>/<prefix> mac auto vrf mgmt
+route default via <address> vrf mgmt
 # The build host, which is also the TFTP server every netboot comes from.
-route <address>/<prefix> via <address> dev eth0
+# In the VRF like everything else of eth0's; kept because the build host is
+# not behind the default gateway on every site.
+route <address>/<prefix> via <address> dev eth0 vrf mgmt
 
 # ── Routing identity ───────────────────────────────────────────────────────
 #
@@ -119,3 +129,21 @@ iface eth1_54 <address>/<prefix> mtu 1600
 # in it (AVF2146U0TX) it linked to the Edgecore at 40G immediately, while
 # panel 54's module (AVF2146U1DH) has never linked to anything.
 iface eth1_53 <address>/<prefix> mtu 1600
+
+# ── VLANs and routed VLAN interfaces ─────────────────────────────────────────
+# Optional. A port is routed until a switchport line puts it in a VLAN, and
+# routed again when it leaves the last one. The routed VLAN interface is
+# vlan<VID>, and an iface line on it creates it. docs/vlan.md has the model.
+#
+#   vlan <vid>
+#   switchport <port> access <vid>
+#   switchport <port> trunk <vid>[,<vid>...] [native <vid>]
+#   iface vlan<vid> <address>/<prefix> [mtu <n>]
+#
+# Reserved on this board -- the datapath's per-port VLANs: 1001-1054.
+#
+# vlan 10
+# vlan 20
+# switchport eth1_1 access 10
+# switchport eth1_54 trunk 10,20 native 1
+# iface vlan10 <address>/<prefix> mtu 1600

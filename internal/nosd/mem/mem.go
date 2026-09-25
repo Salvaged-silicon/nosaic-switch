@@ -39,6 +39,7 @@ func DefaultCaps() switchapi.Capabilities {
 		MaxPorts:    64,
 		VLANs:       true,
 		MaxVLANs:    4094,
+		SVIs:        true,
 		L2Learning:  true,
 		L3:          true,
 		IPv6:        true,
@@ -68,6 +69,7 @@ type Switch struct {
 	ports   []*port
 	byName  map[string]*port
 	vlans   map[int]bool
+	svis    map[int]*port // routed VLAN interfaces, keyed by VID
 	routes  map[netip.Prefix]switchapi.Route
 	acls    map[int]switchapi.ACLRule
 }
@@ -87,6 +89,7 @@ func New(cfg Config) *Switch {
 		cfg:    cfg,
 		byName: map[string]*port{},
 		vlans:  map[int]bool{},
+		svis:   map[int]*port{},
 		routes: map[netip.Prefix]switchapi.Route{},
 		acls:   map[int]switchapi.ACLRule{},
 	}
@@ -137,6 +140,19 @@ func (s *Switch) lookup(name string) (*port, error) {
 		return nil, fmt.Errorf("no such port %q", name)
 	}
 	return p, nil
+}
+
+// l3lookup finds anything that takes an address: a port, or an SVI.
+func (s *Switch) l3lookup(name string) (*port, error) {
+	if p, ok := s.byName[name]; ok {
+		return p, nil
+	}
+	for _, v := range s.svis {
+		if v.name == name {
+			return v, nil
+		}
+	}
+	return nil, fmt.Errorf("no such port or vlan interface %q", name)
 }
 
 func (s *Switch) PortStatus(name string) (switchapi.PortStatus, error) {
@@ -209,7 +225,13 @@ func (s *Switch) DelVLAN(vid int) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.svis[vid]; ok {
+		return fmt.Errorf("vlan %d has a routed interface; remove %s first", vid, switchapi.SVIName(vid))
+	}
 	delete(s.vlans, vid)
+	for _, p := range s.ports {
+		delete(p.vlans, vid)
+	}
 	return nil
 }
 
@@ -226,7 +248,75 @@ func (s *Switch) SetPortVLAN(name string, vid int, tagged bool) error {
 	if !s.vlans[vid] {
 		return fmt.Errorf("vlan %d does not exist", vid)
 	}
+	// One native VLAN per port: an untagged membership replaces the last.
+	if !tagged {
+		for v, t := range p.vlans {
+			if !t && v != vid {
+				delete(p.vlans, v)
+			}
+		}
+	}
 	p.vlans[vid] = tagged
+	return nil
+}
+
+func (s *Switch) DelPortVLAN(name string, vid int) error {
+	if !s.cfg.Caps.VLANs {
+		return switchapi.Unsupported("vlans")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, err := s.lookup(name)
+	if err != nil {
+		return err
+	}
+	delete(p.vlans, vid)
+	return nil
+}
+
+func (s *Switch) VLANs() ([]switchapi.VLAN, error) {
+	if !s.cfg.Caps.VLANs {
+		return nil, switchapi.Unsupported("vlans")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []switchapi.VLAN
+	for vid := range s.vlans {
+		v := switchapi.VLAN{VID: vid}
+		_, v.SVI = s.svis[vid]
+		for _, p := range s.ports {
+			if tagged, ok := p.vlans[vid]; ok {
+				v.Members = append(v.Members, switchapi.VLANMember{Port: p.name, Tagged: tagged})
+			}
+		}
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].VID < out[j].VID })
+	return out, nil
+}
+
+func (s *Switch) AddSVI(vid int) error {
+	if !s.cfg.Caps.SVIs {
+		return switchapi.Unsupported("routed vlan interfaces")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.vlans[vid] {
+		return fmt.Errorf("vlan %d does not exist", vid)
+	}
+	if _, ok := s.svis[vid]; !ok {
+		s.svis[vid] = &port{name: switchapi.SVIName(vid), mtu: 1500, addrs: map[netip.Prefix]bool{}}
+	}
+	return nil
+}
+
+func (s *Switch) DelSVI(vid int) error {
+	if !s.cfg.Caps.SVIs {
+		return switchapi.Unsupported("routed vlan interfaces")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.svis, vid)
 	return nil
 }
 
@@ -243,7 +333,7 @@ func (s *Switch) AddAddress(name string, addr netip.Prefix) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, err := s.lookup(name)
+	p, err := s.l3lookup(name)
 	if err != nil {
 		return err
 	}
@@ -257,7 +347,7 @@ func (s *Switch) DelAddress(name string, addr netip.Prefix) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p, err := s.lookup(name)
+	p, err := s.l3lookup(name)
 	if err != nil {
 		return err
 	}

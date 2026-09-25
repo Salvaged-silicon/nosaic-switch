@@ -85,11 +85,115 @@ func checkVLANs(sw Switch, caps Capabilities, p0 string) []error {
 		return probs
 	}
 	var probs []error
-	if err := sw.SetPortVLAN(p0, 100, true); err != nil {
-		probs = append(probs, fmt.Errorf("SetPortVLAN: %w", err))
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	defer sw.DelVLAN(100)
+	if err := sw.AddVLAN(200); err != nil {
+		return append(probs, fmt.Errorf("AddVLAN(200): %w", err))
 	}
-	if err := sw.DelVLAN(100); err != nil {
-		probs = append(probs, fmt.Errorf("DelVLAN: %w", err))
+	defer sw.DelVLAN(200)
+
+	// What was configured must be what is listed. A datapath that accepts
+	// a membership and cannot say so afterwards cannot be audited.
+	member := func(vid int) (VLANMember, bool) {
+		vl, err := sw.VLANs()
+		if err != nil {
+			bad("VLANs: %v", err)
+			return VLANMember{}, false
+		}
+		for _, v := range vl {
+			if v.VID != vid {
+				continue
+			}
+			for _, m := range v.Members {
+				if m.Port == p0 {
+					return m, true
+				}
+			}
+		}
+		return VLANMember{}, false
+	}
+
+	// One native VLAN per port: a second untagged membership replaces the
+	// first, because an untagged frame can only go into one VLAN.
+	if err := sw.SetPortVLAN(p0, 100, false); err != nil {
+		bad("SetPortVLAN(%s, 100, untagged): %v", p0, err)
+	}
+	if err := sw.SetPortVLAN(p0, 200, false); err != nil {
+		bad("SetPortVLAN(%s, 200, untagged): %v", p0, err)
+	}
+	if m, ok := member(200); !ok || m.Tagged {
+		bad("%s was made an untagged member of 200 and VLANs does not list it so", p0)
+	}
+	if _, ok := member(100); ok {
+		bad("%s is still in vlan 100 after its native vlan moved to 200: "+
+			"a port has one native vlan", p0)
+	}
+
+	// Tagged alongside the native VLAN is a trunk.
+	if err := sw.SetPortVLAN(p0, 100, true); err != nil {
+		bad("SetPortVLAN(%s, 100, tagged): %v", p0, err)
+	}
+	if m, ok := member(100); !ok || !m.Tagged {
+		bad("%s was made a tagged member of 100 and VLANs does not list it so", p0)
+	}
+	if _, ok := member(200); !ok {
+		bad("adding a tagged vlan removed %s's native vlan", p0)
+	}
+
+	if err := sw.DelPortVLAN(p0, 100); err != nil {
+		bad("DelPortVLAN: %v", err)
+	} else if _, ok := member(100); ok {
+		bad("%s was removed from vlan 100 and VLANs still lists it", p0)
+	}
+	if err := sw.DelPortVLAN(p0, 200); err != nil {
+		bad("DelPortVLAN: %v", err)
+	}
+
+	probs = append(probs, checkSVIs(sw, caps)...)
+	return probs
+}
+
+func checkSVIs(sw Switch, caps Capabilities) []error {
+	err := sw.AddSVI(200)
+	if probs := wantSupport(caps.SVIs, err, "AddSVI", "Capabilities.SVIs"); len(probs) > 0 || !caps.SVIs {
+		return probs
+	}
+	var probs []error
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	name := SVIName(200)
+
+	if vl, err := sw.VLANs(); err != nil {
+		bad("VLANs: %v", err)
+	} else {
+		found := false
+		for _, v := range vl {
+			found = found || (v.VID == 200 && v.SVI)
+		}
+		if !found {
+			bad("AddSVI(200) succeeded and VLANs does not report an SVI on 200")
+		}
+	}
+	// An SVI is an L3 interface: it takes an address like a port does.
+	if caps.L3 {
+		addr := netip.MustParsePrefix("10.99.200.1/24")
+		if err := sw.AddAddress(name, addr); err != nil {
+			bad("AddAddress(%s): %v", name, err)
+		} else if err := sw.DelAddress(name, addr); err != nil {
+			bad("DelAddress(%s): %v", name, err)
+		}
+	}
+	// Deleting a VLAN out from under its routed interface would leave an
+	// interface with addresses and nothing to route for.
+	if err := sw.DelVLAN(200); err == nil {
+		bad("DelVLAN(200) succeeded while %s existed; it must be refused", name)
+		_ = sw.AddVLAN(200)
+	}
+	if err := sw.DelSVI(200); err != nil {
+		bad("DelSVI: %v", err)
+	}
+	if err := sw.AddSVI(4000); err == nil {
+		bad("AddSVI on a vlan that does not exist succeeded")
+		_ = sw.DelSVI(4000)
 	}
 	return probs
 }

@@ -44,6 +44,7 @@
 #include "tapbridge.h"
 #include "acl.h"
 #include "query.h"
+#include "vlan.h"
 
 static int query_unit;
 
@@ -255,9 +256,61 @@ static int route_cb(int unit, int index, bcm_l3_route_t *r, void *ud)
 	return BCM_E_NONE;
 }
 
+/* The reply to a write: ok, an error with its reason, or unsupported. */
+static void reply(FILE *out, int rv, const char *err)
+{
+	if (rv == 0) {
+		fprintf(out, "{\"ok\":true}\n");
+		return;
+	}
+	fprintf(out, "{\"ok\":false,\"error\":");
+	json_str(out, err[0] != '\0' ? err : "failed");
+	fprintf(out, "%s}\n", rv == -2 ? ",\"unsupported\":true" : "");
+}
+
+/*
+ * VLANs and SVIs, switchapi 1.2. Matched on the op field exactly rather than
+ * by substring like the rest: "vlan.port" is a prefix of "vlan.port.del", and
+ * a request carries port names that could contain anything.
+ */
+static int handle_vlan(FILE *out, const char *req)
+{
+	char op[32], port[64], err[160];
+	int vid = req_int(req, "vid", 0), rv;
+
+	req_str(req, "op", op, sizeof(op));
+	req_str(req, "port", port, sizeof(port));
+	err[0] = '\0';
+	if (strcmp(op, "vlans") == 0) {
+		nosaic_vlan_query(out);
+		return 1;
+	} else if (strcmp(op, "vlan.add") == 0) {
+		rv = nosaic_vlan_add(vid, err, sizeof(err));
+	} else if (strcmp(op, "vlan.del") == 0) {
+		rv = nosaic_vlan_del(vid, err, sizeof(err));
+	} else if (strcmp(op, "vlan.port") == 0) {
+		rv = nosaic_vlan_port_set(port, vid,
+					  strstr(req, "\"tagged\":true") != NULL,
+					  err, sizeof(err));
+	} else if (strcmp(op, "vlan.port.del") == 0) {
+		rv = nosaic_vlan_port_del(port, vid, err, sizeof(err));
+	} else if (strcmp(op, "svi.add") == 0) {
+		rv = nosaic_svi_add(vid, err, sizeof(err));
+	} else if (strcmp(op, "svi.del") == 0) {
+		rv = nosaic_svi_del(vid, err, sizeof(err));
+	} else {
+		return 0;
+	}
+	reply(out, rv, err);
+	return 1;
+}
+
 static void handle(FILE *out, const char *req)
 {
 	int i;
+
+	if (handle_vlan(out, req))
+		return;
 
 	/*
 	 * Matched by substring rather than parsed.
@@ -529,11 +582,18 @@ static void handle(FILE *out, const char *req)
 		 * The width comes from the chip rather than from a constant here: it
 		 * is what the silicon reports it can do, which is the same rule the
 		 * port speeds follow.
+		 *
+		 * ⚠ AND VLANS WERE REPORTED BEFORE THEY WERE THERE. This said
+		 * "VLANs":true while every vlan.* request fell through to
+		 * "unsupported" -- the capability model's one rule broken the
+		 * other way round from ECMP. They are real now (vlan.c), and so
+		 * are SVIs. L2Learning stays false: the chip learns, but l2.fdb
+		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.1\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.2\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
-			"\"MaxVLANs\":4094,\"L2Learning\":true,\"L3\":true,"
+			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
 			"\"ACL\":%s,\"ACLEntries\":%d,"
 			"\"ACL6\":%s,\"ACL6Entries\":%d}}\n",
@@ -717,6 +777,10 @@ static void *serve(void *arg)
 
 int nosaic_query_start(int unit, const char *path)
 {
+	/* The VLAN table answers here, so it starts with the thing that serves
+	 * it: every datapath calls this, and none has to be told separately. */
+	nosaic_vlan_start(unit);
+
 	struct sockaddr_un a;
 	pthread_t th;
 	int fd, *arg;

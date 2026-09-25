@@ -43,29 +43,37 @@ const usage = `nosaic — a network OS for end-of-service-life switches and rout
 
 usage: nosaic <command> [args]
 
-available now
+building (on a build host)
   version                      print the build identity
   check                        validate the repository against the invariants
   boards                       list board ports and their status
+  board scaffold <id>          start a new board directory
   pkg build <name> --arch A    build a package from its recipe
   pkg info <file.nos>          show a package's manifest
   pkg verify <file.nos>        re-derive every digest in a package
   pkg order [--profile P]      list recipes in dependency order
   build [board]                assemble a board's image; lists boards if omitted
                                --allow-stale: compose packages older than their source
-  upgrade status <disk>        show which slot is active or on trial
-  upgrade install <img> [--slot b]       install into the inactive slot
+  docs index                   regenerate the board index
 
 on a running switch
-  show ports | routes | caps    what the datapath is doing
-  interface <name> up|down      administrative state
-  interface <name> mtu <n>      set the MTU
-  route add <prefix> via <ip> dev <port>
+  show ports | routes | vlans | acl | caps
+                               what the datapath is doing
+  interface <name> up|down     administrative state
+  interface <name> mtu <n>     set the MTU
+  route add <prefix> via <ip> dev <port> [via <ip> dev <port>...]
   route del <prefix>
-
-not yet implemented
-  upgrade                      A/B image upgrade          (M3)
-  platform hal                 report board sensors       (M6)
+  acl add <seq> <rule>         an access-list rule; see docs/acl.md
+  acl del <seq>
+  vlan add|del <vid>           a VLAN; see docs/vlan.md
+  switchport <port> access <vid>
+  switchport <port> trunk <vid,...> [native <vid>]
+  switchport <port> none       a port's whole VLAN membership; none routes again
+  svi add|del <vid>            the routed interface vlan<vid>
+  verify contract              run the switchapi conformance suite on this datapath
+  config show [pattern] | get <name> | set <name> <value> | unset <name> | files
+  upgrade status | install <img> [--slot a|b] | commit | confirm
+  platform <command>           the board itself; "nosaic platform" lists them
 
 `
 
@@ -183,7 +191,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl":
+	case "show", "interface", "route", "acl", "vlan", "svi", "switchport":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -748,7 +756,7 @@ func switchCmd(args []string) error {
 	switch args[0] {
 	case "show":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: nosaic show <ports|routes|acl|caps>")
+			return fmt.Errorf("usage: nosaic show <ports|routes|vlans|acl|caps>")
 		}
 		return showCmd(c, args[1], args[2:])
 
@@ -779,6 +787,15 @@ func switchCmd(args []string) error {
 
 	case "acl":
 		return aclCmd(c, args[1:])
+
+	case "vlan":
+		return vlanCmd(c, args[1:])
+
+	case "svi":
+		return sviCmd(c, args[1:])
+
+	case "switchport":
+		return switchportCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -794,6 +811,7 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		fmt.Fprintf(w, "contract\t%s\n", caps.Contract)
 		fmt.Fprintf(w, "ports\t%d max\n", caps.MaxPorts)
 		fmt.Fprintf(w, "vlans\t%v\n", caps.VLANs)
+		fmt.Fprintf(w, "svis\t%v\n", caps.SVIs)
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
 		if caps.ACL {
 			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)
@@ -1009,6 +1027,9 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 			fmt.Fprintf(w, "%d\t%s\t%s\t%d\t%s\n", r.Seq, action, match, r.Packets, status)
 		}
 		return nil
+
+	case "vlans":
+		return showVLANs(c, w)
 
 	case "routes":
 		routes, err := c.Routes()
@@ -1394,8 +1415,14 @@ func verifyCmd(args []string) error {
 	case "ports", "routes":
 		return fmt.Errorf("`verify %s` is implemented in the C CLI and not yet "+
 			"here; `nosaic show %s` reports the datapath's own view", what, what)
+	case "contract":
+		c, err := nosdclient.Dial(os.Getenv("NOSD_SOCKET"))
+		if err != nil {
+			return err
+		}
+		return verifyContract(c)
 	}
-	return fmt.Errorf("usage: nosaic verify <ports|routes>")
+	return fmt.Errorf("usage: nosaic verify <contract|ports|routes>")
 }
 
 // humanBytes keeps the pool figures readable: 64 MiB is a size an operator

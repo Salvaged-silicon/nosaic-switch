@@ -146,6 +146,39 @@ Four things keep this from decaying:
   Otherwise the first chip ported defines the contract by accident, and every chip after it
   contorts to fit a model chosen for unrelated reasons.
 
+### What the contract holds
+
+`internal/switchapi` is versioned. A minor version adds a call or a capability;
+changing the meaning of an existing call is a major version, and every
+implementation changes with it in the same commit, the virtual one included.
+
+| version | added |
+|---|---|
+| 1.0 | ports, admin state, MTU, counters, VLANs (write-only), FDB, addresses, routes with ECMP |
+| 1.1 | access lists: `ACLs`, `SetACL`, `DelACL` ([acl.md](acl.md)) |
+| 1.2 | VLANs you can read back and undo, and routed VLAN interfaces: `VLANs`, `DelPortVLAN`, `AddSVI`, `DelSVI` ([vlan.md](vlan.md)) |
+
+1.2 also fixed a model the earlier calls only implied. **A port is routed
+until it joins a VLAN, and switched while it is in one.** A routed port is a
+tap with its own private VLAN and router interface. A switched port is a
+member of user VLANs, and its VLAN's SVI, `vlan<VID>`, is the routed interface
+instead. There is no mode to set: membership is the mode. An untagged
+membership is the port's native VLAN, and a port has one.
+
+The conformance suite (`switchapi.Check`) checks behaviour, not just return
+codes: what was configured must read back. `nosaic verify contract` points it
+at whatever datapath is running, over its socket.
+
+Two things sit beside the contract rather than in it, because they are about
+the switch rather than about a chip:
+
+- **The management port is in a VRF** ([vrf.md](vrf.md)), so its routes
+  never mix with the table the chip mirrors.
+- **The datapath's addresses are derived from the switch's own MAC.** Every
+  tap and SVI MAC comes from one base that each switch works out at boot, from
+  its identity PROM or its own `network.conf`, so no two NOSaic switches hand
+  out the same addresses. See [vlan.md](vlan.md#addresses).
+
 **The CLI is not always the same program, and that is the part that nearly broke this.**
 The Go toolchain has ppc64 and ppc64le and has never had 32-bit big-endian PowerPC, so a
 board on that architecture cannot run the Go CLI and runs a C one instead. For a while
@@ -157,7 +190,9 @@ Two implementations are acceptable; two vocabularies are not. Both now ask the s
 the same socket and print the same columns, and the two are checked against each other by
 running them side by side on a board that can host either: `show caps` and `show ports`
 come back byte-for-byte identical. An architecture the compiler cannot reach is not a
-reason for a switch to be operated differently.
+reason for a switch to be operated differently. The VLAN commands followed the same rule:
+`vlan`, `switchport`, `svi` and `show vlans` exist in both, with the same grammar and the
+same end-state semantics, and the AS5610 was driven through the C one to prove it.
 
 ## Image layout and upgrades
 

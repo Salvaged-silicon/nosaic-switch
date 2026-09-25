@@ -46,6 +46,12 @@ static const char usage[] =
 "  show ports              the ports, as the datapath reports them\n"
 "  show routes             the chip's forwarding table\n"
 "  show acl                the access-list rules and what each has matched\n"
+"  show vlans              the VLANs, their members and their SVIs\n"
+"\n"
+"  vlan add|del <vid>      create or remove a VLAN\n"
+"  switchport <port> access <vid> | trunk <vid,...> [native <vid>] | none\n"
+"                          a port's whole VLAN membership; none routes again\n"
+"  svi add|del <vid>       the routed interface vlan<vid>\n"
 "\n"
 "  acl add <seq> <rule>    add or replace an access-list rule; it is persisted\n"
 "                          as the setting acl_<seq> and applied at once\n"
@@ -394,11 +400,19 @@ int main(int argc, char **argv)
 			return nosaic_show_routes();
 		if (argc > 2 && strcmp(argv[2], "acl") == 0)
 			return nosaic_show_acl();
-		fprintf(stderr, "usage: nosaic show <ports|routes|acl|caps>\n");
+		if (argc > 2 && strcmp(argv[2], "vlans") == 0)
+			return nosaic_show_vlans();
+		fprintf(stderr, "usage: nosaic show <ports|routes|vlans|acl|caps>\n");
 		return 2;
 	}
 	if (strcmp(argv[1], "acl") == 0)
 		return nosaic_acl_cmd(argc, argv);
+	if (strcmp(argv[1], "vlan") == 0)
+		return nosaic_vlan_cmd(argc, argv);
+	if (strcmp(argv[1], "svi") == 0)
+		return nosaic_svi_cmd(argc, argv);
+	if (strcmp(argv[1], "switchport") == 0)
+		return nosaic_switchport_cmd(argc, argv);
 	if (strcmp(argv[1], "upgrade") == 0)
 		return nosaic_upgrade(argc, argv);
 	if (strcmp(argv[1], "platform") != 0) {

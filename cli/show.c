@@ -101,6 +101,7 @@ int nosaic_show_caps(void)
 	snprintf(s, sizeof(s), "%d max", nosaic_jint(resp, "MaxPorts", 0));
 	put(&t, r, 0, "ports");    put(&t, r++, 1, s);
 	put(&t, r, 0, "vlans");    put(&t, r++, 1, nosaic_jbool(resp, "VLANs", 0) ? "true" : "false");
+	put(&t, r, 0, "svis");     put(&t, r++, 1, nosaic_jbool(resp, "SVIs", 0) ? "true" : "false");
 	put(&t, r, 0, "l3");       put(&t, r++, 1, nosaic_jbool(resp, "L3", 0) ? "true" : "false");
 	if (nosaic_jbool(resp, "ACL", 0)) {
 		snprintf(s, sizeof(s), "yes, %d rules", nosaic_jint(resp, "ACLEntries", 0));

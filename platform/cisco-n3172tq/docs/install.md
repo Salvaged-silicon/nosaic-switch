@@ -218,13 +218,16 @@ failure, resets with nothing else — which reads as the transfer having failed.
 With it you get the image classification, every segment header, both load
 confirmations and the handoff.
 
-**How far this gets today:** kernel loaded, initrd loaded, our command line
-accepted, `big_linux_boot` — and then the board resets with no kernel output at
-all. That is a real and narrow remaining bug, not a transport problem, and it
-is analysed in
-[hardware.md](hardware.md#netbooting-the-loader-does-it-ipxe-cannot) with three
-eliminated causes (the exec address, `setup_sects`, and KASLR) and the
-prerequisite for the next experiment.
+**How far this gets today: all the way.** Since 2026-09-18 the NBI boots our
+kernel to userspace, and it is how the lab unit runs. The three loader defects
+that used to reset the board silently -- the 512-byte vtag 17, the vtag 20 tail
+padding, and the half-written `efi_loader_signature` -- are worked around by
+`nbi_build.py`, and the details are in
+[hardware.md](hardware.md#netbooting-the-loader-does-it-ipxe-cannot).
+
+Once the loader is interrupted, type the two commands slowly, one character at a
+time. The lab's console server has a driver race that can silence this port
+under sustained two-way traffic ([README](../README.md#running-it-today)).
 
 The loader keeps its own IP configuration in CMOS, independent of anything the
 OS sets, and it survived everything done here:

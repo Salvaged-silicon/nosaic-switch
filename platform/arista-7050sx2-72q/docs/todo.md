@@ -48,7 +48,31 @@ and how it was proven is in
 
 ## Required — the switch does not come up working without these
 
-### A port can link and carry nothing until the datapath is restarted
+### ~~A port can link and carry nothing until the datapath is restarted~~ — fixed 2026-09-24
+
+**Cause:** td2p started linkscan but never gave any port a linkscan mode, so
+linkscan scanned nothing. `bcm_port_enable_set` turns the MAC on only if the
+port has link at that moment (sdk `port.c:9033`), and the only thing that turns
+it on later is `bcm_port_update`, which linkscan calls. A port whose far end
+was down at bring-up therefore kept its MAC off for good. Its link query fell
+back to the PHY and said `link=1`, and linkscan's never-corrected "all up" link
+bitmap let `bcm_tx` build descriptors, so `tx-ok` counted.
+`datapath/td2p/sdk.c` now does what td2 already did:
+`bcm_linkscan_mode_set_pbm(..., BCM_LINKSCAN_MODE_HW)` after the enable loop.
+
+**Proven here.** The SX2 datapath was restarted while the 7050TX-64's datapath
+was re-initialising, so Et52/Et53 had no link (`tx-nolink=34`). The TX then
+came up and the SX2 was not touched again (nosd up 449 s through the whole
+test). Both ports went to `in-uc=9 in-nuc=34 out-uc=7 out-nuc=24`, OSPF reached
+Full on each, and ping ran at 0.59 ms. Before the fix, exactly this sequence
+needed a restart.
+
+It also explains the refuted `EPC_LINK_BMAP` theory below. The bitmap was
+all-ones because nothing ever ran on a link change, not because this board
+does not maintain it. Expect it to track link now.
+
+The history follows, kept because the reasoning is what led here.
+
 
 Caught in the act on 2026-09-22, on Ethernet49, by the detector in
 `tapbridge.c` — the first specimen with numbers rather than a recollection.
@@ -101,6 +125,27 @@ rather than argued.
 That leaves the empty-cage-at-boot circumstance above as the live hypothesis,
 and `linkmap` as a standing check: if a port ever IS absent from the bitmap
 while its interface reports up, the fault is named outright.
+
+**A second specimen, 2026-09-24, and it narrows the hypothesis.** Et52 and
+Et53, both to the 7050TX-64, after this switch rebooted while the TX was also
+rebooting:
+
+```
+et52  link=1  tx-ok=21  tx-nolink=33  out-uc=0  out-nuc=0  in-uc=0  in-nuc=0
+et53  link=1  tx-ok=21  tx-nolink=33  out-uc=0  out-nuc=0  in-uc=0  in-nuc=0
+```
+
+Both cages had their optics in throughout. The only thing that was absent
+when the datapath came up was the far end's link (`tx-nolink=33` is the
+datapath trying to send before the TX was up). Et49 and Et54, whose far ends
+were up at the time, came up normally in the same boot. A datapath restart
+once the TX was up cleared both ports at once: OSPF went Full on each and the
+MAC counted traffic both ways.
+
+So an empty cage is not needed. **Far end down when the datapath
+initialises** is enough, and that is the ordinary case whenever two lab
+switches reboot together. The empty-cage-at-boot specimen above had that
+condition too.
 
 Until then the detector is the mitigation — it names the port and says the
 restart clears it, which is the difference between a five-minute fix and the
@@ -171,6 +216,27 @@ metric beats OSPF's at equal prefix length. It is a pin and not a solution: it
 names one network, and any other prefix the switch learns can do the same
 again. The real answer is a **management VRF** — eth0 and its routes in a
 separate table, which is also what an operator expects on a switch.
+
+**Done 2026-09-24, on this board.** network.conf takes `vrf mgmt table 1001`,
+then `vrf mgmt` on eth0's `iface` and `route` lines (see
+`config/network.conf.example`), and the pin is gone. After a cold boot with the
+new SWI (slot b, committed by its own trial):
+
+- eth0 is `master mgmt`. Table 1001 holds eth0's v4 and v6 subnets and both
+  defaults, and the main table holds only front-panel routes, with nothing
+  `dev eth0` in either family.
+- ssh answers on eth0 (`tcp_l3mdev_accept=1`). A 20 MB pull over it takes
+  3.52 s against 3.56 s with the pin, so the rate is the pinned one, not 21 KB/s.
+- Four OSPF adjacencies are Full, and 13 routes are in DEFIP with 0 failed.
+  FRR sees the VRF (`show vrf`: `vrf mgmt id 4 table 1001`).
+- From the default VRF the build host is "Network is unreachable". Inside
+  (`ping -I mgmt`) it answers, and so does the v6 gateway.
+
+What this did not reproduce is the original failure. OSPF is not carrying the
+build network today, so nothing competes with eth0 for it. With the VRF that
+failure cannot recur, because OSPF's routes go into a table eth0's traffic
+never consults. The kernel is outside the A/B slot, and the SWI from before
+this change is on flash as `nosaic-ab-prevrf.swi`.
 
 ### SSH lands on root, not on the login account
 

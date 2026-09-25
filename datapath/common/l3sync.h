@@ -5,9 +5,13 @@
 #include <bcm/types.h>
 
 /* Give the chip a router interface on a port. Call once per routed port,
- * with the same MAC, VLAN and MTU the tap has. */
+ * with the same MAC, VLAN and MTU the tap has. Safe from any thread. */
 int nosaic_l3_add_intf(int unit, const char *ifname, int port, int vlan,
 		       const bcm_mac_t mac, int mtu);
+
+/* An SVI's interface: port is -1, and next hops find their port in the L2
+ * table. Deleting one keeps its slot for the VLAN to have back. */
+void nosaic_l3_del_intf(const char *ifname);
 
 /* Mirror the current kernel FIB into the chip. Cheap to call repeatedly. */
 void nosaic_l3_poll(void);

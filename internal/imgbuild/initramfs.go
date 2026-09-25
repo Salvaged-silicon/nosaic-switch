@@ -207,24 +207,58 @@ mount_flash() {
     return 1
 }
 
+# ⚠ WAIT FOR THE DATA PARTITION TOO, NOT ONLY FOR THE FLASH.
+#
+# mount_flash() learned to wait for a USB stick; this lookup did not, and it is
+# the same race. The AS5610's disk is a USB DOM: on 2026-09-24 a new kernel
+# reached this line before usb-storage had attached sda, findfs found nothing,
+# and the box booted STATELESS -- tmpfs for /mnt/data, so no configuration, no
+# trial state and the image's stale management address -- while its real data
+# partition appeared a moment later, untouched. It had been winning the race
+# on the previous kernel by luck. Nothing said "data partition missing" in a
+# way anyone would see, because the switch forwarded and held OSPF regardless.
+#
+# So both are tried together, once a second, for the same bound mount_flash
+# uses: a partitioned board mounts its data partition the moment it appears,
+# a flash board its image the moment the stick appears, and a board with
+# neither waits exactly as long as it did before. mount_flash is asked for one
+# pass per round (FLASH_OPTIONAL=yes); the rounds are counted here.
 PERSIST=no
-DATA="$(findfs LABEL=nosaic-data 2>/dev/null || echo /dev/vda4)"
-if mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
-    echo "NOSAIC-INITRAMFS data partition mounted ($DATA)"
-    # This board keeps its state in partitions, so its slots are partitions
-    # too and no bootloader filesystem needs waiting for.
+_dwaited=0
+_after=""
+while :; do
+    [ "$_dwaited" -gt 0 ] && _after=" after ${_dwaited}s"
+    DATA="$(findfs LABEL=nosaic-data 2>/dev/null)"
+    [ -z "$DATA" ] && [ -b /dev/vda4 ] && DATA=/dev/vda4
+    if [ -n "$DATA" ] && mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
+        echo "NOSAIC-INITRAMFS data partition mounted ($DATA)$_after"
+        # This board keeps its state in partitions, so its slots are
+        # partitions too and no bootloader filesystem needs waiting for.
+        FLASH_OPTIONAL=yes
+        mkdir -p /mnt/data/config /mnt/data/secrets
+        PERSIST=yes
+        break
+    fi
     FLASH_OPTIONAL=yes
-    mkdir -p /mnt/data/config /mnt/data/secrets
-    PERSIST=yes
-elif mount_flash && [ -f "$FLASH/nosaic-data.img" ] \
-     && mount -o loop "$FLASH/nosaic-data.img" /mnt/data 2>/dev/null; then
-    echo "NOSAIC-INITRAMFS data image mounted ($FLASH/nosaic-data.img)"
-    mkdir -p /mnt/data/config /mnt/data/secrets
-    PERSIST=yes
-else
-    echo "NOSAIC-INITRAMFS-WARN no data partition; booting stateless"
-    mount -t tmpfs tmpfs /mnt/data || fail "cannot mount a fallback writable layer"
-fi
+    if mount_flash && [ -f "$FLASH/nosaic-data.img" ] \
+       && mount -o loop "$FLASH/nosaic-data.img" /mnt/data 2>/dev/null; then
+        FLASH_OPTIONAL=no
+        echo "NOSAIC-INITRAMFS data image mounted ($FLASH/nosaic-data.img)$_after"
+        mkdir -p /mnt/data/config /mnt/data/secrets
+        PERSIST=yes
+        break
+    fi
+    FLASH_OPTIONAL=no
+    # A flash that is there and holds no data image will not grow one: stop
+    # waiting, as this did before the loop existed.
+    if [ "$_dwaited" -ge 15 ] || { [ -n "$FLASH" ] && [ ! -f "$FLASH/nosaic-data.img" ]; }; then
+        echo "NOSAIC-INITRAMFS-WARN no data partition after ${_dwaited}s; booting stateless"
+        mount -t tmpfs tmpfs /mnt/data || fail "cannot mount a fallback writable layer"
+        break
+    fi
+    _dwaited=$((_dwaited + 1))
+    sleep 1
+done
 
 # A record of what this boot decided, where it can be read afterwards.
 #

@@ -36,19 +36,22 @@
 # two present different MACs, and a shared address leaves a stale ARP entry
 # upstream every time the box changes OS -- inbound blackholes while outbound
 # works, which reads exactly like a dead switch.
-iface eth0 <address>/<prefix> mac <this switch's management MAC>
-iface eth0 <address>/<prefix> mac <this switch's management MAC>
-route default via <gateway>
-route default via <gateway>
+# The management VRF. eth0 and its routes live in table 1001, not the main
+# table the datapath mirrors into the chip and routes transit traffic through.
+# ssh answers on eth0 anyway: apply-network.sh turns tcp_l3mdev_accept on, so
+# services listening in the default VRF accept connections from it. Needs a
+# kernel with CONFIG_NET_VRF, which is outside the A/B slot -- see
+# recipes/linux/config/common.fragment.
+vrf mgmt table 1001
+iface eth0 <address>/<prefix> mac <this switch's management MAC> vrf mgmt
+route default via <gateway> vrf mgmt
 
-# ⚠ PIN THE MANAGEMENT PATH BEFORE ANY ROUTING PROTOCOL RUNS.
-#
-# OSPF on a front-panel port will happily learn a route covering the subnet this
-# box is managed from, and a more specific learned route beats the default -- so
-# the box drops off the network the moment the adjacency comes up, with the
-# default still present and still correct. That happened on this board under the
-# predecessor, and the console was the only way back in.
-route default via <gateway>
+# No "pin" for the build network any more. It was a static route out of
+# eth0, there because OSPF learned the management subnet over the front panel
+# and the box's own replies followed it through the CPU punt path. With eth0 in
+# the management VRF those replies are routed in table 1001, where OSPF's
+# routes never go. Traffic the switch ORIGINATES in the default VRF (an scp
+# from the switch, say) still follows the main table.
 
 # The router id, and the one address that does not depend on a link staying up.
 iface lo <router-id>/32
@@ -66,3 +69,21 @@ iface et50 <address>/<prefix> mtu 1600
 # pair, so it is a backup path that stays available rather than one that carries
 # transit.
 iface et52 <address>/<prefix> mtu 1600
+
+# ── VLANs and routed VLAN interfaces ─────────────────────────────────────────
+# Optional. A port is routed until a switchport line puts it in a VLAN, and
+# routed again when it leaves the last one. The routed VLAN interface is
+# vlan<VID>, and an iface line on it creates it. docs/vlan.md has the model.
+#
+#   vlan <vid>
+#   switchport <port> access <vid>
+#   switchport <port> trunk <vid>[,<vid>...] [native <vid>]
+#   iface vlan<vid> <address>/<prefix> [mtu <n>]
+#
+# Reserved on this board -- the datapath's per-port VLANs: 1001-1052.
+#
+# vlan 10
+# vlan 20
+# switchport et1 access 10
+# switchport et49 trunk 10,20 native 1
+# iface vlan10 <address>/<prefix> mtu 1600

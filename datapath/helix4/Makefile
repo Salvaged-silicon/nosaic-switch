@@ -35,7 +35,7 @@ CFLAGS  += $(shell cat $(SDK_DEFINES_FILE))
 CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"helix4\" -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
-OBJS    += ../common/tapbridge.o ../common/l3sync.o ../common/query.o
+OBJS    += ../common/tapbridge.o ../common/l3sync.o ../common/query.o ../common/vlan.o
 endif
 
 # sdk.o is always built. Without SDK_DIR it compiles to a stub that says the
@@ -59,6 +59,7 @@ sdk.o:  sdk.c  bde.h sdk.h ../common/mmio.h ../common/props.h
 ../common/props.o: ../common/props.c ../common/props.h
 ../common/dmapool.o: ../common/dmapool.c ../common/dmapool.h
 ../common/tapbridge.o: ../common/tapbridge.c ../common/tapbridge.h
+../common/vlan.o: ../common/vlan.c ../common/vlan.h ../common/tapbridge.h ../common/l3sync.h
 ../common/l3sync.o: ../common/l3sync.c ../common/l3sync.h ../common/props.h
 ../common/query.o: ../common/query.c ../common/query.h ../common/tapbridge.h
 

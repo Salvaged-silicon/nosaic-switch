@@ -875,6 +875,49 @@ int nosaic_sdk_ports(int unit)
 				port, erv, bcm_errmsg(erv));
 	}
 
+	/*
+	 * ⚠ GIVE EVERY PORT A LINKSCAN MODE, OR A PORT DOWN NOW NEVER CARRIES.
+	 *
+	 * bcm_linkscan_enable_set above starts the thread. It does not tell it to
+	 * scan anything: a port is scanned only once it has a mode, and nothing
+	 * here ever gave one. td2 learned this first (td2/sdk.c, the same call).
+	 *
+	 * What it costs on this chip is specific. bcm_port_enable_set turns the
+	 * MAC on only if the port has link at that moment (sdk port.c:9033,
+	 * "if (link || loopback ...) MAC_ENABLE_SET(TRUE)"). For a port whose
+	 * far end is down at bring-up, the only thing that turns it on later is
+	 * _bcm_port_update(link=1), and linkscan is its only caller. With no mode
+	 * that never happens, and the port stays like that until the daemon
+	 * restarts:
+	 *
+	 *  - link=1, because with no mode a link query falls back to reading the
+	 *    PHY directly;
+	 *  - tx-ok counting, because linkscan's link bitmap starts as "every port
+	 *    up" and nothing corrects it, so bcm_tx builds descriptors;
+	 *  - out-uc/out-nuc and in-* at zero, because the MAC is off.
+	 *
+	 * That is the "link and carry nothing until the datapath is restarted"
+	 * fault in docs/todo.md, and it explains both specimens. Et49 on
+	 * 2026-09-22 had an empty cage and a dark far end. Et52/Et53 on
+	 * 2026-09-24 had optics fitted and the 7050TX-64 rebooting. In both
+	 * cases the far end was down at enable, and ports whose far end was up
+	 * were fine.
+	 *
+	 * HW mode, as on td2. Linkscan then calls bcm_port_update on every
+	 * transition, which enables and disables the MAC and keeps the link
+	 * bitmap and EPC_LINK_BMAP honest. The speed and interface are not
+	 * re-applied: bring_up_40g() above says why that breaks these ports.
+	 */
+	{
+		int lrv = bcm_linkscan_mode_set_pbm(unit, cfg.port,
+						    BCM_LINKSCAN_MODE_HW);
+
+		if (lrv < 0)
+			fprintf(stderr, "nosd-td2p: bcm_linkscan_mode_set_pbm returned "
+				"%d (%s); a port whose far end is down now will "
+				"never carry traffic\n", lrv, bcm_errmsg(lrv));
+	}
+
 	/* Give the PHYs time to negotiate. A cage with a cable in it does not
 	 * report link the instant it is enabled, and a survey run immediately
 	 * finds nothing and looks like a wrong port map. */
