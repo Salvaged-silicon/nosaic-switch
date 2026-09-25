@@ -5,11 +5,15 @@
 A network operating system for **end-of-service-life switches and routers** — hardware
 the vendor has abandoned, given a modern, open, maintained OS.
 
-> **Two switches run NOSaic from their own flash and forward packets in hardware.**
-> An Arista 7050SX2-72Q and an Edgecore AS5610-52X — different CPU architectures,
-> different Broadcom generations, the same operating system and the same commands.
-> Both hold OSPFv2 and OSPFv3 adjacencies, take A/B upgrades that the switch itself
-> commits or rolls back, and come back from a cold power cut on their own.
+> **Four switches run NOSaic and forward packets in hardware.** An Arista
+> 7050SX2-72Q, an Arista 7050TX-64 and an Edgecore AS5610-52X run from their own
+> flash; a Cisco Nexus 3172TQ netboots it. They span two CPU architectures, three
+> Broadcom generations and three vendors, and run one operating system with one
+> set of commands. They route with OSPF, and switch and route VLANs in silicon —
+> access, trunk and routed VLAN interfaces, proven between NOSaic switches on
+> three chip families. Their management ports sit in a VRF of their own. The ones
+> installed to flash take A/B upgrades that the switch itself commits or rolls
+> back, and come back from a cold power cut on their own.
 >
 > Nothing is called *production*, and nothing will be until it has run somewhere that
 > matters for longer than a lab afternoon. Each board states what has been demonstrated
@@ -99,10 +103,12 @@ the chip, not from configuration. The test written against veth passes unmodifie
 against hardware, which is what turns "the same commands on every switch" from a
 design commitment into a demonstrated one.
 
-What is genuinely still open on this board is smaller and specific: ECMP is
-untested, the `prefdl` SEEPROM is not read yet so the management MAC comes from
-configuration rather than from the board, and `fanread` returns garbage while
-temperatures, PSU presence and fan control all read correctly.
+What is genuinely still open on this board is smaller and specific. The
+`prefdl` SEEPROM is not read yet, so the management MAC comes from configuration
+rather than from the board: the datapath now derives its own addresses from that
+configured MAC, so this no longer leaks into anything else. And `fanread` returns
+garbage, while temperatures, PSU presence and fan control all read correctly.
+ECMP, once on this list, has routed in hardware since 2026-09-11.
 
 **The DMA pool reclaims now, and did not.** Both datapaths handed out the
 chip's DMA region by bumping a pointer, with a free that did nothing, on the
@@ -126,8 +132,43 @@ board's gitignored `config/authorized_keys`. Login takes 0.096 s where the
 
 Everything else outstanding is in each board's own list:
 **[7050SX2](platform/arista-7050sx2-72q/docs/todo.md)** ·
-**[virt-x86_64](platform/virt-x86_64/docs/todo.md)** ·
-**[AS5610-52X](platform/edgecore-as5610-52x/docs/todo.md)**.
+**[7050TX-64](platform/arista-7050tx-64/docs/todo.md)** ·
+**[AS5610-52X](platform/edgecore-as5610-52x/docs/todo.md)** ·
+**[Nexus 3172TQ](platform/cisco-n3172tq/docs/todo.md)** ·
+**[virt-x86_64](platform/virt-x86_64/docs/todo.md)**.
+
+## Switching, not only routing
+
+For most of its life NOSaic ran every front-panel port as a routed port. It
+switches now, in the chip, and the contract that says how is
+**switchapi 1.2**:
+
+- **VLANs and SVIs** ([docs/vlan.md](docs/vlan.md)). A port is routed until it
+  joins a VLAN; `switchport` makes it an access port or a trunk with a native
+  VLAN, and `svi add` gives the VLAN a routed interface, `vlan<VID>`. It was
+  proven with traffic between NOSaic switches on Trident2+, Trident2 and Trident+:
+  - tagged and native VLANs on one trunk;
+  - OSPF over an SVI;
+  - frames switched between access ports;
+  - packets routed from a routed port into a tagged VLAN.
+
+  Every one of those happened in silicon with the CPU's counters flat. The same
+  contract runs on the virtual board over a Linux bridge, and `make
+  dataplane-test` drives it on every build.
+- **A management VRF** ([docs/vrf.md](docs/vrf.md)). eth0 lives in its own
+  routing table, so what the front panel learns can never capture the switch's
+  own management traffic. That once cut an image pull to 21 KB/s and had to be
+  held off with a hand-written pin route.
+- **Access lists** ([docs/acl.md](docs/acl.md)). Ingress rules for IPv4 and
+  IPv6, in the field processor, with hit counters.
+- **Addresses of its own.** Every port and SVI MAC is derived from the switch's
+  own address, read at boot from its identity PROM or its own configuration, so
+  no two NOSaic switches hand out the same ones.
+
+`nosaic verify contract` runs the contract's conformance suite against whatever
+datapath is running, over its socket. The checks that gate the reference
+implementation apply unchanged to a switch in a rack. The commands are in
+[docs/cli.md](docs/cli.md).
 
 ## The second architecture
 
@@ -162,6 +203,20 @@ nosaic board scaffold edgecore-as5610-52x \
 `nosaic check` then refuses the board until its documentation is real rather
 than the template's, which is how the three pages every board carries stay
 worth reading.
+
+## And two more
+
+The **[Arista 7050TX-64](platform/arista-7050tx-64/)** is the copper sibling of
+the SX2: Trident2 rather than Trident2+, and 48 ports of 10GBASE-T behind
+external PHYs that need their firmware loaded over MDIO before a single port
+will link. It boots from its own flash, routes over its 40G and copper links,
+and was the far end of the first VLAN trunk between two NOSaic switches.
+
+The **[Cisco Nexus 3172TQ](platform/cisco-n3172tq/)** is the first board whose
+vendor never meant it to run anything else. Its firmware is the bootloader, so
+the way in was the vendor loader's own TFTP boot with three of its defects
+worked around. It netboots NOSaic, cools itself through its own platform HAL,
+routes over copper and 40G, and takes its addresses from its identity PROM.
 
 If you have one of these switches, the ordered path from a rack to a forwarding
 box is **[the walkthrough](platform/arista-7050sx2-72q/docs/walkthrough.md)**.
@@ -206,7 +261,9 @@ section above says so; where it is not yet demonstrated on silicon, it says that
   each other on a board that can host either — `show caps` and `show ports` come back
   byte-for-byte identical, and so does the list of `upgrade` subcommands.
 - **Honest about capability.** Silicon varies. Every board advertises what it supports, and
-  an unsupported operation is reported rather than silently doing less.
+  an unsupported operation is reported rather than silently doing less. A conformance
+  suite checks that the two agree, and it runs against the hardware as well as the
+  virtual board.
 - **A/B images with rollback.** An immutable image under an overlay, two slots, trial boots
   and automatic rollback. Config is shared across slots; package overlays are not.
 
