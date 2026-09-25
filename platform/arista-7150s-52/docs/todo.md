@@ -57,7 +57,22 @@ committed, as on every other board.
       (`--wait`) then exits non-zero, keeping the A/B semantics
 - [x] **`boot0` dry-run bug fixed** — the `ma1` cycle ran before the `testonly`
       exit, so a dry run left the interface down and broke the next netboot
-- [ ] `config/authorized_keys` for network login — gitignored and per-operator,
+- [x] **installed on flash and boots NOSaic by default, 2026-09-25.**
+      `/mnt/flash/NOSaic.swi` with `boot-config` → `SWI=flash:/NOSaic.swi`. The
+      EOS image stays (436 MB, 450 MB still free) and reverting is one line —
+      `boot-config.eos` next to it holds the original. NOSaic can mount
+      `/dev/sda1` itself, so it updates its own flash image and the vendor OS
+      is no longer needed for anything.
+- [x] **network login works** — `config/authorized_keys` installed. ⚠ The keys
+      land on **root**, not the login account: dropbear refuses any account
+      whose password field is blank before it looks at a key, and `admin` has
+      none. So `ssh root@`, not `ssh admin@`.
+- [ ] **the SSH host key does not persist across reboots.** The rootfs is a
+      read-only squashfs, so dropbear regenerates into tmpfs every boot and
+      every connection trips `REMOTE HOST IDENTIFICATION HAS CHANGED`. Harmless
+      in a lab and wrong in a product — it trains operators to ignore the one
+      warning that matters. The key belongs on the data partition.
+- [ ] ~~`config/authorized_keys` for network login~~ — gitignored and per-operator,
       so created on the machine that builds, not committed
 - [x] **`boot_mib` / `slot_mib` / `data_mib` set from a measured image** —
       64/128/128. A slot's content is 57 MiB (kernel 13.6 + rootfs 43.4), and
