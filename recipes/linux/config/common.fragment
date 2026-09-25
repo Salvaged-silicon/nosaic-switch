@@ -105,6 +105,14 @@ CONFIG_VLAN_8021Q=m
 # network.conf with a vrf line does not bring this with it: the SWI (Aristas)
 # or the FIT partition (AS5610) has to be pushed too, or the VRF line fails
 # with "vrf mgmt table N FAILED" and the management port stays where it was.
+#
+# ⚠ AND IPv6 BUILT IN, WHICH ONE DEFCONFIG DOES NOT DO. arm64's defconfig
+# has CONFIG_IPV6=m, and NET_VRF "depends on IPV6 || IPV6=n": with IPv6 a
+# module, VRF can only be one too, and the check below turned "y" into "m"
+# the first time CI built aarch64. A switch whose IPv6 is a module that
+# nothing on a minimal image loads also has no IPv6 routing, which is worse
+# than the VRF.
+CONFIG_IPV6=y
 CONFIG_IP_ADVANCED_ROUTER=y
 CONFIG_IP_MULTIPLE_TABLES=y
 CONFIG_IPV6_MULTIPLE_TABLES=y
