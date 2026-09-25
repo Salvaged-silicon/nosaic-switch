@@ -52,7 +52,8 @@ static const char *rvstr(int rv)
 	case FM_OK:      return "ok";
 	case FM_EOFFBUS: return "CHIP IS OFF THE PCIe BUS";
 	case FM_EUNSAFE: return "refused as unsafe";
-	case FM_ENOADDR: return "address not established";
+	case FM_ENOADDR: return "not attempted";
+	case FM_ETIMEOUT: return "TIMED OUT";
 	default:         return "failed";
 	}
 }

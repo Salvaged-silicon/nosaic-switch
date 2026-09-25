@@ -163,6 +163,102 @@ tests for `0xffffffff` will not notice. `fm_alive()` tests `PIN_STRAP` instead.
   and useful. Where a section's *conclusion* is superseded, it is superseded by
   this one.
 
+## The documented cold boot runs, 2026-09-25
+
+**Table 4-1 executes end to end on this board and leaves the chip in the same
+boot state as a forwarding EOS chip.** No replay, no vendor blob — the public
+datasheet's twelve steps, three register addresses measured here, and the
+board's own reset pulse.
+
+```
+   1   ok   chip out of reset and on the bus
+   2   ok   boot from CPU selected
+   3   ok   core logic and EPLs to normal operating mode
+   4   ok   PLL locked
+   5   ok   EPL, PCIe, MSB, SPICO/SBUS out of soft reset
+            released, MSB last after the boot commands
+   6   ok   BOOT 1: initialize FFU slice numbers
+   7   ok   BOOT 2: apply bank memory repairs
+   8   ok   BOOT 3: initialize all scheduler freelists
+   9  skip  PCIe serdes up and out of reset
+  10  skip  memory initialised (CRM, or software fill)
+```
+
+### The three addresses that were missing
+
+All three were gaps that made the sequence refuse rather than guess. **live**
+
+| register | word | how it was settled |
+|---|---|---|
+| `SOFT_RESET` | `0x000009` | reads `0x1f` cold — all five module bits — and `0x00` on a forwarding EOS chip |
+| `PLL_STATUS` | `0x01c046` | `0x3` cold, `0x7` on EOS, `0x0f` after our boot; `[1:0]` PLLs, `[3:2]` DLLs |
+| `BOOT_STATUS` | `0x01c022` | **it is `BOOT_CTRL`** — there is no separate register |
+
+`SOFT_RESET` is at word 9, almost at the bottom of the address space, which is
+why sweeping `0x1a000`, `0x1b000`, `0x1c000`, `0x1d000` and `0x1e000` for it
+found nothing. Its bits are PCIe 0, MSB 1, FIBM 2, JSS 3, EPL 4, and a set bit
+means *held*. A cold chip reading `0x1f` is precisely the datasheet's "default
+value is to assert reset on all modules".
+
+`BOOT_CTRL`'s two readings decode cleanly under one layout, which is what makes
+it believable rather than merely asserted:
+
+```
+   cold  0x320  =  EepromLoadDone (bit 5),  Command 0
+   warm  0x313  =  CommandDone    (bit 4),  Command 3   <- the LAST of the
+                                                            three Table 4-1
+                                                            commands
+```
+
+⚠ **MSB comes out of reset LAST.** Releasing the core fabric before the boot
+controller's bank-repair and freelist commands have run drops the CPU into an
+unconfigured fabric and hangs it. So step 7 is split: everything except MSB
+before the commands, MSB after.
+
+### The state it reaches, against EOS
+
+MGMT block, 4096 words, three ways. **live**
+
+| word | cold | after our boot | EOS | |
+|---|---|---|---|---|
+| `0x1c022` | `00000320` | `00000313` | `00000313` | ✅ `BOOT_CTRL` |
+| `0x1c03a` | `00000000` | `ffffffff` | `ffffffff` | ✅ scan config |
+| `0x1c03b` | `00000000` | `ffffffff` | `ffffffff` | ✅ scan chain |
+| `0x1c046` | `00000003` | `0000000f` | `00000007` | PLLs+DLLs; ours locks one more than EOS |
+| `0x1c045` | `00000000` | `00000003` | `00000000` | we write DLL enable; EOS does not read back |
+| `0x1c048` | `00000000` | `00000000` | `0008bb2c` | SWEEPER — configuration, not boot |
+| `0x1c01e` | `00000000` | `00000000` | `fffc0000` | configuration |
+| `0x1c049`/`4b`/`4c`/`50` | `0` | `0` | set | configuration |
+
+Our boot matches EOS on exactly the words Table 4-1 specifies. The seventeen
+that still differ are **post-boot configuration** — the sweeper, interrupt
+masks, per-block setup — which is M4 work and not part of the documented cold
+boot. That is the expected shape of the result, not a shortfall.
+
+### ✅ Running Table 4-1 fixes the EPL read hazard
+
+The experiment this page said nobody had run. **live**
+
+```
+   before the sequence:  read 0x0e3b02  ->  chip off the bus, PIN_STRAP = 0
+   after  the sequence:  read 0x0e3b02  ->  0x00080000, PIN_STRAP = 0x208
+```
+
+So the hazard is not permanent and not mysterious: the EPL block is unreadable
+until the boot controller's commands have run, and safe afterwards.
+`fm_hazard()` refuses it until `fm_boot_mark_done()`, which `fm_boot_cold()`
+calls itself on success.
+
+This does **not** unlock the ECC bank memories. Those are a separate guard
+waiting on step 12's memory initialisation, which is not written yet.
+
+### ⚠ A second read hazard: `0x1a000`
+
+Reading the 4096 words at `0x1a000` takes a pre-boot chip off the bus, the same
+way EPL does. Found while sweeping for `SOFT_RESET`. `0x1b000`, `0x1d000` and
+`0x1e000` are all safe. Not yet identified, and not yet guarded, because
+nothing needs to read it. **live**
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

@@ -50,8 +50,13 @@
  */
 #define FM6000_BLK_MGMT		0x01c000
 #define FM6000_BLK_CRM		0x01f000
-#define FM6000_BLK_EPL		0x0e3000
-#define FM6000_BLK_EPL_SPAN	0x002000
+/* ⚠ The EPL block is 0x0e0000..0x0effff, a full 64K words. An earlier version
+ * of this file had it at 0x0e3000 spanning 0x2000, which was where traffic to
+ * it had been *observed* rather than where it starts -- and since reading an
+ * uninitialised EPL word takes the chip off the bus, a block bound that is too
+ * narrow is a guard with a hole in it. */
+#define FM6000_BLK_EPL		0x0e0000
+#define FM6000_BLK_EPL_SPAN	0x010000
 #define FM6000_BLK_CM		0x110000
 #define FM6000_BLK_MOD		0x150000
 #define FM6000_BLK_MOD_END	0x15ffff
@@ -120,6 +125,64 @@
  * [DS §4.2 Table 4-1 names it; address UNKNOWN] */
 /* #define FM6000_BOOT_STATUS	?? */
 
+/*
+ * SOFT_RESET -- Table 4-1 step 7, and it is nowhere near the other boot
+ * registers.
+ *
+ * Word 0x9. Not in the MGMT block at all, which is why sweeping 0x1c000,
+ * 0x1a000, 0x1b000, 0x1d000 and 0x1e000 for it found nothing: it sits almost at
+ * the bottom of the address space.
+ *
+ * A SET bit means that block is HELD in reset. Confirmed on this board
+ * 2026-09-25: reads 0x00000000 warm, under EOS, with the chip forwarding --
+ * which is what "every module released" has to look like.
+ *
+ * ⚠ ORDER MATTERS FOR MSB. Releasing the core fabric before the boot
+ * controller's bank-repair and freelist commands have run drops the CPU into an
+ * unconfigured fabric and hangs it. Release it last.
+ */
+#define FM6000_SOFT_RESET		0x000009
+#define FM6000_SOFT_RESET_PCIE		(1u << 0)	/* PCIe controller */
+#define FM6000_SOFT_RESET_MSB		(1u << 1)	/* core fabric: parser, FFU, L2AR */
+#define FM6000_SOFT_RESET_FIBM		(1u << 2)	/* in-band management mailbox */
+#define FM6000_SOFT_RESET_JSS		(1u << 3)	/* SerDes micro (SPICO) and SBus */
+#define FM6000_SOFT_RESET_EPL		(1u << 4)	/* Ethernet Port Logic */
+
+/*
+ * PLL and DLL. Table 4-1 step 6.
+ *
+ * 0x0f is everything locked: PLLs in [1:0], DLLs in [3:2]. Measured on this
+ * board 2026-09-25 -- 0x3 on a chip that has had nothing but a reset pulse
+ * (both PLLs locked, neither DLL), 0x7 warm under EOS. So the PLLs lock on
+ * their own and the DLLs are what bring-up has to do something about.
+ *
+ * DLL_CTRL reads 0 in both states, so it is write-only or its enable does not
+ * read back; nothing here depends on reading it. [UNKNOWN]
+ */
+#define FM6000_PLL_STATUS		0x01c046
+#define FM6000_PLL_STATUS_LOCKED_ALL	0x0000000f
+#define FM6000_PLL_STATUS_PLL_MASK	0x00000003
+#define FM6000_DLL_CTRL			0x01c045
+#define FM6000_DLL_CTRL_ENABLE		0x00000003
+
+/*
+ * BOOT_STATUS is BOOT_CTRL. There is no separate register: Table 4-1 says to
+ * write BOOT_CTRL:Command and poll BOOT_STATUS:CommandDone, and both live at
+ * 0x1c022.
+ *
+ * Measured on this board 2026-09-25, and the two readings decode cleanly under
+ * this layout, which is what makes it believable rather than merely asserted:
+ *
+ *   cold  0x320  = EepromLoadDone, Command 0     (nothing commanded yet)
+ *   warm  0x313  = CommandDone, Command 3        (3 is the LAST of the three
+ *                                                 Table 4-1 commands)
+ *
+ * Bits 8 and 9 are set in both and are not identified. [UNKNOWN]
+ */
+#define FM6000_BOOT_CTRL_CMD_MASK	0x0000000f
+#define FM6000_BOOT_STATUS_CMD_DONE	(1u << 4)
+#define FM6000_BOOT_CTRL_EEPROM_DONE	(1u << 5)
+
 /* The scan chain. Table 4-1 step 5 is a single write of 0xFFFFFFFF to
  * SCAN_CHAIN_DATA_IN to put the core logic and the EPLs into normal operating
  * mode. [DS §4.2 Table 4-1 step 5 for the operation; RE for the addresses]
@@ -172,6 +235,11 @@
  * [DS §4.2 Table 4-1 step 6 names it; address UNKNOWN] */
 #define FM6000_PLL_LOCK_MAX_MS		80
 
+/* No documented bound for a boot-controller command. 500 ms is far longer than
+ * any of the three should need and short enough that a wedged one is reported
+ * rather than waited on. [OURS] */
+#define FM6000_BOOT_CMD_MAX_MS		500
+
 /*
  * BOOT_CTRL:Command codes. [DS §4.2, Table 4-1 and the BOOT command list]
  *
@@ -198,20 +266,25 @@
  * PCS type once at boot -- so a bring-up built from a port-flap trace misses it
  * entirely and the port simply never links. [RE]
  *
- * ⚠⚠ DO NOT READ THIS ADDRESS ON AN UNCONFIGURED CHIP. Measured on the bench
- * 2026-09-25, over the local bus: reading word 0x0e3b02 after nothing but a
- * reset pulse takes the chip off the bus. PIN_STRAP, which is a hardware strap
- * and reads 0x208 on any live chip, reads 0 from that moment on, and stays 0
- * until the next reset pulse. Reads of MGMT and the other blocks either side of
- * it are harmless -- it is the EPL block specifically.
+ * ⚠⚠ DO NOT READ THIS ADDRESS BEFORE THE COLD BOOT HAS RUN. Measured on the
+ * bench 2026-09-25, over the local bus: reading word 0x0e3b02 after nothing but
+ * a reset pulse takes the chip off the bus. PIN_STRAP, which is a hardware
+ * strap and reads 0x208 on any live chip, reads 0 from that moment on, and
+ * stays 0 until the next reset pulse. Reads of MGMT and the blocks either side
+ * are harmless -- it is EPL specifically.
  *
- * So the whole EPL block is refused by fm_hazard() until the boot sequence has
- * run. The earlier note here claimed a cold chip reads 0x00080000; that value
- * came from the vendor trace, where the chip had already been initialised, and
- * it is not what cold hardware does.
+ * AND IT IS FIXED BY RUNNING TABLE 4-1. Same word, same board, immediately
+ * after fm_boot_cold() succeeds: reads 0x00080000, chip still answering. So
+ * fm_hazard() refuses the EPL block until fm_boot_mark_done(), and not after.
+ *
+ * That also rehabilitates a note this file used to carry and that I removed as
+ * wrong: "a cold chip reads 0x00080000". It does -- for a chip that has been
+ * through the boot sequence but not yet configured. It is not what a chip that
+ * has had only a reset pulse does, because that chip does not survive the read.
  */
-#define FM6000_EPL_CFG_B		0x0e3b02	/* [OURS] warm 0x00090003 */
-#define FM6000_EPL_CFG_B_10GBASE_R	0x00090003
+#define FM6000_EPL_CFG_B		0x0e3b02	/* [OURS] */
+#define FM6000_EPL_CFG_B_10GBASE_R	0x00090003	/* configured, forwarding */
+#define FM6000_EPL_CFG_B_POST_BOOT	0x00080000	/* booted, not configured */
 
 /* A port that is up reads 0x8c0 in PORT_STATUS. [RE] The register's address is
  * per-EPL and the per-port stride is not established. [UNKNOWN] */

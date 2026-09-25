@@ -43,6 +43,65 @@ static void set(struct fm_boot_report *rep, int step, int rv, const char *note)
 	rep->reached = step;
 }
 
+/*
+ * Poll until (read & mask) == want, or the deadline passes.
+ *
+ * Every wait in Table 4-1 is of this shape and each one needs a bound: a chip
+ * that never sets the bit must produce a named failure rather than a hang, on
+ * a box whose only recovery is the watchdog.
+ */
+static int poll_bits(struct fm6000 *d, uint32_t word, uint32_t mask,
+		     uint32_t want, unsigned ms)
+{
+	unsigned waited;
+	uint32_t v = 0;
+	int rv;
+
+	for (waited = 0;; waited++) {
+		rv = fm_rd(d, word, &v);
+		if (rv != FM_OK)
+			return rv;
+		if ((v & mask) == want)
+			return FM_OK;
+		if (waited >= ms)
+			return FM_ETIMEOUT;
+		nap_ms(1);
+	}
+}
+
+/* Drive SOFT_RESET to `held`, where a set bit means that module stays down. */
+static int release_modules(struct fm6000 *d, uint32_t held)
+{
+	held &= FM6000_SOFT_RESET_PCIE | FM6000_SOFT_RESET_MSB |
+		FM6000_SOFT_RESET_FIBM | FM6000_SOFT_RESET_JSS |
+		FM6000_SOFT_RESET_EPL;
+	return fm_wr(d, FM6000_SOFT_RESET, held);
+}
+
+/*
+ * One boot-controller command: write it into BOOT_CTRL:Command, then wait for
+ * CommandDone in the same register.
+ *
+ * CommandDone is read back from the register the command was written to, so
+ * the read that follows the write is not a formality -- it is the only
+ * confirmation that the boot controller saw anything at all.
+ */
+static int boot_command(struct fm6000 *d, uint32_t cmd)
+{
+	uint32_t v = 0;
+	int rv;
+
+	rv = fm_rd(d, FM6000_BOOT_CTRL, &v);
+	if (rv != FM_OK)
+		return rv;
+	v = (v & ~FM6000_BOOT_CTRL_CMD_MASK) | (cmd & FM6000_BOOT_CTRL_CMD_MASK);
+	rv = fm_wr(d, FM6000_BOOT_CTRL, v);
+	if (rv != FM_OK)
+		return rv;
+	return poll_bits(d, FM6000_BOOT_CTRL, FM6000_BOOT_STATUS_CMD_DONE,
+			 FM6000_BOOT_STATUS_CMD_DONE, FM6000_BOOT_CMD_MAX_MS);
+}
+
 int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 {
 	int rv;
@@ -63,9 +122,11 @@ int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 		    "no BAR mapped -- is the chip still held in reset by the SCD?");
 		return FM_ERR;
 	}
-	if (fm_check_offbus(d) == 1) {
+	if (fm_alive(d) != 1) {
 		set(rep, FM_STEP_RESET_RELEASED, FM_EOFFBUS,
-		    "chip is not answering config space");
+		    "chip is not answering. On the local bus that means it has "
+		    "had no reset PULSE -- being found with the resets clear is "
+		    "not the same thing");
 		return FM_EOFFBUS;
 	}
 	set(rep, FM_STEP_RESET_RELEASED, FM_OK, NULL);
@@ -103,49 +164,121 @@ int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 	/*
 	 * Step 6. Initialise the PLL and wait for lock, 80 ms maximum.
 	 *
-	 * We cannot poll PLL_STATUS because we do not know where it is, and we
-	 * cannot initialise the PLL for the same reason. Waiting the documented
-	 * maximum is the correct conservative behaviour for the wait; it is NOT
-	 * a substitute for the initialisation, so this step is honest about
-	 * being incomplete rather than reporting success for a sleep.
+	 * The PLLs lock by themselves -- measured, a chip that has had nothing
+	 * but a reset pulse already reads 0x3 -- so what this step waits for in
+	 * practice is the two DLLs in bits [3:2]. Enabling them is a write to
+	 * DLL_CTRL, which does not read back, so the only evidence either way is
+	 * PLL_STATUS.
 	 */
-	nap_ms(FM6000_PLL_LOCK_MAX_MS);
-	set(rep, FM_STEP_PLL, FM_ENOADDR,
-	    "PLL_STATUS address not established; waited the documented 80 ms "
-	    "maximum but did not initialise or confirm lock");
+	rv = fm_wr(d, FM6000_DLL_CTRL, FM6000_DLL_CTRL_ENABLE);
+	if (rv != FM_OK) {
+		set(rep, FM_STEP_PLL, rv, "write to DLL_CTRL failed");
+		return rv;
+	}
+	rv = poll_bits(d, FM6000_PLL_STATUS, FM6000_PLL_STATUS_LOCKED_ALL,
+		       FM6000_PLL_STATUS_LOCKED_ALL, FM6000_PLL_LOCK_MAX_MS);
+	if (rv != FM_OK) {
+		uint32_t v = 0;
+
+		(void)fm_rd(d, FM6000_PLL_STATUS, &v);
+		/* Not fatal by itself: the PLLs are what the rest of the
+		 * sequence needs and they are in the low two bits. Report it
+		 * and carry on, so one unlocked DLL does not hide whether the
+		 * boot commands work. */
+		set(rep, FM_STEP_PLL, rv,
+		    (v & FM6000_PLL_STATUS_PLL_MASK) == FM6000_PLL_STATUS_PLL_MASK
+		    ? "PLLs locked but a DLL did not within 80 ms -- continuing"
+		    : "PLLs did not lock within 80 ms");
+	} else {
+		set(rep, FM_STEP_PLL, FM_OK, NULL);
+	}
 
 	/*
-	 * Everything below is unreachable today and is left in place because it
-	 * is the specification, and because the next person's job is to delete
-	 * these refusals one at a time as the addresses are found.
+	 * Step 7, FIRST HALF. SOFT_RESET holds five modules down and each has to
+	 * be released -- but NOT all of them here.
 	 *
-	 * Step 7   SOFT_RESET holds EPL, PCIe, MSB and SPICO/SBUS at reset by
-	 *          default and each must be released. A cold chip reads 0x16 and
-	 *          bring-up drives it to 0 -- we know the VALUE and not the
-	 *          ADDRESS.
-	 *
-	 * Steps 8-10  BOOT_CTRL:Command = 1, then 2, then 3, each polled on
-	 *          BOOT_STATUS:CommandDone. We have a candidate address for
-	 *          BOOT_CTRL (0x1c022, from watching a working boot) but not its
-	 *          field layout, and no address at all for BOOT_STATUS. Writing
-	 *          a command into the wrong field of the right register is
-	 *          exactly the kind of near-miss this file refuses to make.
-	 *
-	 *          Step 9 is the one that matters most: "apply bank memory
-	 *          repairs" is the documented answer to the wall the prior work
-	 *          spent twenty-five phases on.
-	 *
-	 * Step 11  PCIe is already up -- we are talking to the chip over it.
-	 *
-	 * Step 12  Initialise memory, either by programming the CRM and
-	 *          launching it or, in the datasheet's own words, "software
-	 *          writes memory manually". The second is what this port will
-	 *          do: it is a bulk writer, so it turns the per-write bus check
-	 *          off and owes one at the end (see fm_set_write_check), and
-	 *          when it completes it is the ONLY thing entitled to call
-	 *          fm_bank_mark_initialised().
+	 * ⚠ MSB, the core fabric, is released LAST, after the boot controller's
+	 * commands in steps 8-10. Releasing it into a fabric whose bank repairs
+	 * and freelists have not been applied hangs the CPU. So this releases
+	 * everything except MSB, and step 10 finishes the job.
 	 */
-	return FM_ENOADDR;
+	rv = release_modules(d, (uint32_t)~FM6000_SOFT_RESET_MSB);
+	if (rv != FM_OK) {
+		set(rep, FM_STEP_MODULES, rv,
+		    "could not release the non-MSB modules in SOFT_RESET");
+		return rv;
+	}
+	set(rep, FM_STEP_MODULES, FM_OK, "MSB deliberately still held");
+
+	/*
+	 * Steps 8, 9 and 10. Three boot-controller commands, each written into
+	 * BOOT_CTRL:Command and each polled to completion on CommandDone in the
+	 * same register.
+	 *
+	 * Step 9 is the one that matters most: applying the bank memory repairs
+	 * is the documented answer to the ECC hazard that makes half this chip
+	 * untouchable, and it is what fm_bank_mark_initialised() is waiting for.
+	 */
+	rv = boot_command(d, FM6000_BOOT_CMD_FFU_SLICE_NUMBERS);
+	set(rep, FM_STEP_FFU_SLICES, rv, rv == FM_OK ? NULL : "command 1 did not complete");
+	if (rv != FM_OK)
+		return rv;
+
+	rv = boot_command(d, FM6000_BOOT_CMD_BANK_MEMORY_REPAIRS);
+	set(rep, FM_STEP_BANK_REPAIR, rv, rv == FM_OK ? NULL : "command 2 did not complete");
+	if (rv != FM_OK)
+		return rv;
+
+	rv = boot_command(d, FM6000_BOOT_CMD_FREELISTS_ALL);
+	set(rep, FM_STEP_FREELISTS, rv, rv == FM_OK ? NULL : "command 3 did not complete");
+	if (rv != FM_OK)
+		return rv;
+
+	/*
+	 * Step 7, SECOND HALF. Now the fabric has its repairs and its freelists,
+	 * so MSB can come out of reset.
+	 */
+	rv = release_modules(d, 0);
+	if (rv != FM_OK) {
+		set(rep, FM_STEP_MODULES, rv, "could not release MSB");
+		return rv;
+	}
+	/* set() also moves rep->reached, and this one moves it backwards to step
+	 * 7. Put it back, or the report stops printing at MODULES and hides the
+	 * three commands that just succeeded. */
+	rep->step[FM_STEP_MODULES].note = "released, MSB last after the boot commands";
+	rep->reached = FM_STEP_FREELISTS;
+
+	/*
+	 * Step 11. PCIe.
+	 *
+	 * Nothing to do here and nothing to wait for. We are talking to the chip
+	 * over the SCD's local bus, not over PCIe, and the endpoint is expected
+	 * to be absent until it is configured -- which is a later job, for
+	 * whatever wants packet DMA. Saying "ok" would claim a link that has not
+	 * been brought up.
+	 */
+	set(rep, FM_STEP_PCIE, FM_ENOADDR,
+	    "not attempted: the PCIe block is configured separately, and "
+	    "nothing before packet DMA needs it");
+
+	/*
+	 * Step 12. Initialise memory. Either program the CRM and launch it, or,
+	 * in the datasheet's own words, "software writes memory manually".
+	 *
+	 * Not written yet. It is a bulk writer, so it turns the per-write bus
+	 * check off and owes one at the end (see fm_set_write_check), and when
+	 * it completes it is the ONLY thing entitled to call
+	 * fm_bank_mark_initialised().
+	 */
+	set(rep, FM_STEP_MEMORY_INIT, FM_ENOADDR, "not written yet");
+
+	/* The EPL block is now safe to read. Measured: the same word that takes
+	 * the chip off the bus before this sequence returns 0x00080000 after it,
+	 * with the chip still answering. The ECC bank memories are NOT unlocked
+	 * -- they wait for step 12. */
+	fm_boot_mark_done(d);
+	return FM_OK;
 }
 
 void fm_boot_report_print(const struct fm_boot_report *rep)
@@ -161,7 +294,8 @@ void fm_boot_report_print(const struct fm_boot_report *rep)
 		}
 		switch (rep->step[i].rv) {
 		case FM_OK:       mark = " ok "; break;
-		case FM_ENOADDR:  mark = "GAP "; break;
+		case FM_ENOADDR:  mark = "skip"; break;
+		case FM_ETIMEOUT: mark = "TIME"; break;
 		case FM_EOFFBUS:  mark = "OFF!"; break;
 		case FM_EUNSAFE:  mark = "STOP"; break;
 		default:          mark = "FAIL"; break;

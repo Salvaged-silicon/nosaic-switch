@@ -277,8 +277,21 @@ const char *fm_block_name(uint32_t word)
 	return "?";
 }
 
+void fm_boot_mark_done(struct fm6000 *d)
+{
+	d->boot_done = 1;
+}
+
 const char *fm_hazard(const struct fm6000 *d, uint32_t word)
 {
+	/* EPL is the one block whose hazard the documented boot sequence
+	 * actually clears, so it is checked against its own flag rather than
+	 * against the bank one. */
+	if (word >= FM6000_BLK_EPL && word < FM6000_BLK_EPL + FM6000_BLK_EPL_SPAN)
+		return d->boot_done ? NULL :
+		       "EPL block: READING it before the cold boot has run takes "
+		       "the chip off the bus (measured 2026-09-25 at 0x0e3b02). "
+		       "Run fm_boot_cold() first";
 	if (d->banks_ready)
 		return NULL;
 	if (fm_is_bank(word))
@@ -286,10 +299,6 @@ const char *fm_hazard(const struct fm6000 *d, uint32_t word)
 		       "chip off the PCIe bus";
 	if (word == FM6000_ESCHED_READ_HAZARD)
 		return "ESCHED 0x2000: READING this off-buses a cold chip";
-	if (word >= FM6000_BLK_EPL && word < FM6000_BLK_EPL + FM6000_BLK_EPL_SPAN)
-		return "EPL block, uninitialised: READING it off-buses a chip "
-		       "that has had nothing but a reset pulse (measured "
-		       "2026-09-25 at 0x0e3b02)";
 	return NULL;
 }
 

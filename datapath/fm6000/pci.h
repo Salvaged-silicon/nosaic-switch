@@ -76,6 +76,11 @@ struct fm6000 {
 	int                offbus;
 	/* Set only when the bank memories have actually been initialised. */
 	int                banks_ready;
+	/* Set once the documented cold boot has run. Unlocks the EPL block,
+	 * which is hazardous to read before it and safe after -- measured. It
+	 * does NOT unlock the ECC bank memories; those wait for banks_ready,
+	 * which is a later and separate thing. */
+	int                boot_done;
 	/* Whether every write is followed by a config-space check. See
 	 * fm_set_write_check(). Defaults on. */
 	int                check_writes;
@@ -212,6 +217,20 @@ void fm_clear_offbus(struct fm6000 *d);
  * The guard is the cheapest protection this port has.
  */
 void fm_bank_mark_initialised(struct fm6000 *d);
+
+/*
+ * Declare the documented cold boot run, unlocking the EPL block.
+ *
+ * Separate from fm_bank_mark_initialised() because the two facts are separate.
+ * Measured on this board 2026-09-25: reading an EPL word after nothing but a
+ * reset pulse takes the chip off the local bus, and reading the same word after
+ * Table 4-1 steps 5-10 returns 0x00080000 with the chip still answering. The
+ * ECC bank memories are NOT made safe by that -- they need the memory
+ * initialisation in step 12, which is a different guard.
+ *
+ * fm_boot_cold() calls this itself on success. Nothing else should.
+ */
+void fm_boot_mark_done(struct fm6000 *d);
 
 /* Whether a word address falls in a bank memory. Exposed so a tool can say
  * why it will not read something. */

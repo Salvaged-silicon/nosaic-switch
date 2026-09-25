@@ -25,6 +25,11 @@
  * report can separate "not implemented" from "went wrong". */
 #define FM_ENOADDR	-4
 
+/* A documented wait that did not finish. Distinct from FM_ERR because it says
+ * the address was right and the chip answered -- it just never set the bit,
+ * which points at the step before rather than at this one. */
+#define FM_ETIMEOUT	-5
+
 enum fm_boot_step {
 	FM_STEP_RESET_RELEASED = 1,	/* 1-3: hardware + boot controller */
 	FM_STEP_BOOT_METHOD,		/* 4: boot from CPU, chip is stalled */

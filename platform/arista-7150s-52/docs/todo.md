@@ -355,8 +355,24 @@ hang rather than an error.
 The deliverable is not a sequence that works. It is a sequence where every write
 has a reason, in code, parameterised by the board.
 
-- [ ] clocks, `BOOT_CTRL`, soft reset — each with the value and why it is that
-      value
+- [x] **the documented cold boot runs end to end, 2026-09-25** — Table 4-1
+      steps 1-10, every step `ok`, verified on hardware. `BOOT_CTRL` ends at
+      `0x313`, bit-for-bit what a forwarding EOS chip reads, and `SOFT_RESET`
+      at `0x00`. The three addresses that were gaps are settled: `SOFT_RESET`
+      word `0x9` (`0x1f` cold = all five modules held), `PLL_STATUS` `0x1c046`,
+      and `BOOT_STATUS` — which is `BOOT_CTRL`, there is no second register.
+      MSB is released *after* the boot commands, not with the others.
+- [x] **running it fixes the EPL read hazard** — the experiment `hardware.md`
+      said nobody had run. Before: reading `0x0e3b02` takes the chip off the
+      bus. After: `0x00080000`, chip still answering. `fm_hazard()` now refuses
+      EPL only until `fm_boot_mark_done()`.
+- [ ] **step 12, memory initialisation** — the CRM, or a software fill. It is
+      the last unwritten step of Table 4-1 and the only thing entitled to call
+      `fm_bank_mark_initialised()`.
+- [ ] **the 17 MGMT words our boot does not set** — SWEEPER `0x1c048`, the
+      interrupt masks at `0x1c001`/`0x1c002`, `0x1c01e`, `0x1c049`/`4b`/`4c`/
+      `50`. These are configuration rather than boot, so they belong here only
+      as a list of what M4 has to account for.
 - [ ] SBus master and SerDes SPICO up
 - [ ] **find the parser Action SRAM** in the register map: where it is, how many
       slices this part has, how a slice's SRAM is indexed by state. The
