@@ -153,6 +153,18 @@ committed, as on every other board.
       cold *and* warm, and `READ_IOUT` is non-zero cold — the regulator is
       delivering current before anything NOSaic does. **The power hypothesis is
       closed.**
+- [x] **the root port sees no device and no link cold.** `LnkSta = 0x1100`
+      (DLActive clear, speed 0) and `SltSta = 0x0000` (PresDet clear) against
+      `5GT/s x4 DLActive+ PresDet+` warm. The host side is fine; the FM6000 is
+      not driving its PCIe receivers. See
+      [hardware.md](hardware.md#the-root-port-sees-nothing-no-link-no-presence)
+- [ ] **the question is now the chip's own boot sequence, not the board's.**
+      `SOFT_RESET` holds the FM6000's PCIe block at reset by default, and
+      Table 4-1 step 11 says the BOOT ROM sets up the PCIe SerDes and releases
+      it — inside the chip, before a host can help. Look at: the `BOOT_MODE`
+      straps (`PIN_STRAP` read `0x208` warm), the serial EEPROM the boot
+      controller reads and whether this board has one, and what `CHIP_RESET_N`
+      is actually wired to versus the SCD's `alta` bit
 - [ ] **the PCIe link itself is the remaining place to look.** Powered, clocked
       and out of reset, and still not on the bus, means the link is not
       training. Look at the RS780 root port `00:04.0` — its link status cold

@@ -418,6 +418,48 @@ runs, which is what you would expect of a chip that is powered and idle.
 So the power hypothesis is closed too, and closed in the most useful way: not
 "we could not find a difference" but "the thing is measurably on".
 
+### The root port sees nothing: no link, no presence
+
+The RS780 root port at `00:04.0`, read in both states. Warm, via `lspci -vv`:
+
+```
+LnkSta:  Speed 5GT/s, Width x4, DLActive+
+SltSta:  PresDet+
+```
+
+Cold, from the raw config space (PCIe capability at `0x58`, so `LnkSta` is at
+`0x6a` and `SltSta` at `0x72`):
+
+```
+0x58: 10 a0 42 01  20 80 00 00  10 09 00 00  42 0c 30 f7
+0x68: 00 00 00 11  60 00 24 00  08 10 00 00  18 00 01 00
+
+   LnkCap = 0xf7300c42        the port can do 5GT/s x4
+   LnkSta = 0x1100            speed 0, DLActive = 0   ← THE LINK IS NOT UP
+   SltSta = 0x0000            PresDet = 0             ← NO DEVICE DETECTED
+```
+
+**Cold, the root port does not even detect a device**, let alone train a link.
+Warm it is `x4` at 5GT/s with the data link layer active.
+
+That is the clearest statement of the problem yet, and it rules out a whole
+class of explanation. The host side is fine — the port is capable, configured,
+and given a bus number and a window by the kernel. Nothing is wrong upstream of
+the endpoint. **The FM6000 simply is not driving its PCIe receivers.**
+
+Which fits the one piece of the datasheet that has been sitting unexamined.
+`SOFT_RESET` holds the chip's own PCIe block at reset by default, and Table 4-1
+step 11 reads *"If PCIe is used, BOOT ROM must setup PCIe SerDes and take PCIe
+out of reset"*. That is work done **inside the chip, by its boot ROM**, before
+any host can talk to it — and it is the step nothing on this board has been
+shown to perform.
+
+So the question has changed shape. It is no longer "what on the board must be
+programmed first", which three measured negatives have answered with *nothing*.
+It is **"why does the chip's own boot sequence not bring its PCIe up"** — which
+is about `BOOT_MODE` straps, the serial EEPROM the boot controller reads, and
+what `CHIP_RESET_N` is actually wired to.
+
 ### Three hypotheses, all measured, all wrong
 
 ### What ruling three things out actually tells us
