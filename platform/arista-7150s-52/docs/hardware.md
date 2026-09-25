@@ -481,6 +481,84 @@ failure made every later verdict garbage, in the shape of "everything failed".
 The sweep now verifies recovery and **aborts** rather than reporting. A harness
 that cannot distinguish those two states produces confident nonsense.
 
+## The SBus, from the datasheet and the bench — in progress, 2026-09-25
+
+§9.4 documents the SerDes serial bus, which is the route to every lane. This
+section is **not finished**: the addressing is established and a working
+transaction is not.
+
+### What the datasheet gives, and it is a lot
+
+**96 Ethernet SerDes and 4 PCIe SerDes** on one slow ring, up to 6 µs per
+access. 96 is exactly the number of per-lane structures the EPL sweep found,
+and the 24 EPLs it implies is exactly the number of per-EPL ones — the
+datasheet and the bench agree without being made to. **documented + live**
+
+The command sequence is given outright (§9.4), which makes this one of the
+few parts of this chip that needs no reverse engineering at all:
+
+```c
+    SBUS_REQUEST = data;                    /* writes only */
+    SBUS_COMMAND = EXECUTE_BIT + (op << 16) + (device << 8) + reg;
+    while (SBUS_COMMAND & BUSY_BIT) yield();
+    data = SBUS_RESPONSE;                   /* reads only */
+    SBUS_COMMAND = 0;
+```
+
+⚠ The datasheet prints `READ << 16` in **both** the read and the write
+examples. The write one is a typo.
+
+Only one master may have a command outstanding: the response register is
+shared, and §9.4 spells out how two masters racing gives one of them the
+other's answer. Nothing in the chip prevents it.
+
+### Table 9-4, the EPL-to-SBus map
+
+Each EPL owns four consecutive SBus addresses. The order is a physical ring
+order and is **not** the EPL numbering, so it cannot be computed:
+
+| SBus | EPL | | SBus | EPL | | SBus | EPL |
+|---|---|---|---|---|---|---|---|
+| 1 | PCIe | | 33 | EPL[19] | | 65 | EPL[22] |
+| 5 | EPL[1] | | 37 | EPL[20] | | 69 | EPL[23] |
+| 9 | EPL[3] | | 41 | EPL[14] | | 73 | EPL[24] |
+| 13 | EPL[5] | | 45 | EPL[9] | | 77 | EPL[2] |
+| 17 | **EPL[7]** ⚠ | | 49 | EPL[11] | | 81 | EPL[4] |
+| 21 | EPL[16] | | 53 | EPL[13] | | 85 | EPL[6] |
+| 25 | EPL[17] | | 57 | EPL[15] | | 89 | EPL[8] |
+| 29 | EPL[18] | | 61 | EPL[21] | | 93 | EPL[10] |
+| | | | | | | 97 | EPL[12] |
+
+⚠ **Datasheet erratum.** Table 9-4 prints `EPL[6]` twice — at SBus 17 and at
+SBus 85. The rest of the table is complete for EPL[1]–EPL[24], and the only
+number missing is **7**, which sits exactly where the first `EPL[6]` is. Read
+SBus 17 as EPL[7]. Stated here because a table that silently maps two
+different EPLs to one number will send somebody after a dark port for days.
+
+So a lane's SBus device id is `table[epl] + lane`, lane 0–3.
+
+### What the bench adds, and what it does not
+
+`SBUS_CFG` `0x0f000`, `SBUS_COMMAND` `0x0f001`, `SBUS_REQUEST` `0x0f002`,
+`SBUS_RESPONSE` `0x0f003` — all present and idle after our boot sequence.
+**live**
+
+Writing a command and reading it back confirms the field layout exactly: a
+command of device `0xfe`, op `0x22`, register 0 reads back with `22FE00` in
+the low three bytes, untouched. **live**
+
+Of the top byte: **bit 24 is EXECUTE** (it is what we set), **bit 25 behaves
+as BUSY**, and **bit 28 appears after a transaction has been attempted**.
+Candidate positions above 25 do not stick, so the field is narrow.
+**derived**
+
+⚠ **No successful transaction yet, and this is the open end.** Every attempt
+leaves `SBUS_RESPONSE` at zero. `SBUS_CFG` holds only bit 0 on this chip —
+writing 2, 3, 4 or 5 reads back 0 or 1 — so the clock-ratio field the
+datasheet says "should be set to 4" is **not** the low bits of that register,
+and where it is has not been found. That is the next thing to establish, and
+until it is, nothing here should be read as a working SerDes path.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

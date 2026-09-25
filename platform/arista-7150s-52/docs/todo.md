@@ -470,6 +470,17 @@ has a reason, in code, parameterised by the board.
 - [x] **the EPL block is mapped** — 24 EPLs × 4 lanes at stride `0x80` from
       `0x0e0400`, two structures interleaved, with `EPL_CFG_A`/`B` landing
       where independently known. ⚠ Above `0x0e6400` it is still fatal to read.
+- [x] **the SBus is documented, and Table 9-4 maps EPL to SBus address.** §9.4
+      gives the command sequence outright. 96 Ethernet SerDes and 24 EPLs,
+      matching the block sweep exactly. ⚠ Table 9-4 prints `EPL[6]` twice and
+      omits `EPL[7]`; SBus 17 is EPL[7].
+- [x] **the SBUS_COMMAND field layout is confirmed on hardware** — register
+      `[7:0]`, device `[15:8]`, op `[23:16]`, EXECUTE bit 24, bit 25 behaves
+      as BUSY, bit 28 appears after a transaction.
+- [ ] ⚠ **no successful SBus transaction yet.** `SBUS_RESPONSE` stays zero.
+      `SBUS_CFG` holds only bit 0, so the clock-ratio field the datasheet says
+      should be 4 is not the low bits of that register and has not been
+      located. **This is the blocker for every SerDes step below it.**
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable
