@@ -158,6 +158,21 @@ committed, as on every other board.
       `5GT/s x4 DLActive+ PresDet+` warm. The host side is fine; the FM6000 is
       not driving its PCIe receivers. See
       [hardware.md](hardware.md#the-root-port-sees-nothing-no-link-no-presence)
+- [x] **the chip's PCIe comes up from an SPI boot ROM, and only from there.**
+      Datasheet §7.2: the PCIe pairs are held inactive until initialised "via
+      an external ROM". `PIN_STRAP = 0x208` with `bootMode[2:0]` at bits 9..7
+      (per the vendor's register header, which also confirms `PIN_STRAP_STAT`
+      is `MGMT2+0x021` = `0x1c021`) gives **`BOOT_MODE = 0x4` — boot from SPI
+      serial ROM**. The host cannot substitute for this: it would need PCIe to
+      do it
+- [ ] **find out what owns the SPI flash.** The SCD has its own SPI block at
+      BAR0 `0x7900`. If the boot flash is shared between it and the FM6000 —
+      the ordinary way to build this, so the host can reprogram it — then
+      something arbitrates, and on a cold board the default owner may not be
+      the chip. That would explain every measurement so far
+- [ ] **check whether `CHIP_RESET_N` is the SCD's `alta` bit at all.** The
+      straps are latched when it de-asserts, and a chip whose straps were never
+      latched has no boot mode
 - [ ] **the question is now the chip's own boot sequence, not the board's.**
       `SOFT_RESET` holds the FM6000's PCIe block at reset by default, and
       Table 4-1 step 11 says the BOOT ROM sets up the PCIe SerDes and releases

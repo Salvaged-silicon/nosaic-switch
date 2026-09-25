@@ -460,6 +460,57 @@ It is **"why does the chip's own boot sequence not bring its PCIe up"** — whic
 is about `BOOT_MODE` straps, the serial EEPROM the boot controller reads, and
 what `CHIP_RESET_N` is actually wired to.
 
+### The chip boots its PCIe from an SPI ROM, and that is the whole problem
+
+§7.2 of the datasheet states it outright:
+
+> *"At power up, the PCIe differential pairs are in a reset state and the PCIe
+> interface is inactive until the PCIe differential pairs are initialized. This
+> requires the PCIe block of the switch to be initialized via an external ROM,
+> both SPI Flash and I²C EEPROM are supported and can be selected by boot mode
+> set via the GPIO[9..7] settings."*
+
+**The host cannot do this.** There is no order of operations from the CPU that
+brings up a PCIe link the CPU can only reach over PCIe. An external ROM does it
+or nothing does.
+
+Which boot mode this board straps is now established from two independent
+directions, rather than assumed:
+
+- the vendor's register header puts `PIN_STRAP_STAT` at `MGMT2 + 0x021` —
+  `0x1c021`, exactly where we read it — with `bootMode0/1/2` at bits 7, 8 and 9;
+- this chassis reads `PIN_STRAP = 0x208`, so bit 9 is set and bits 7 and 8 are
+  clear: **`BOOT_MODE = 0x4`**;
+- and Table 3-1 gives `0x4` as *"Boot from SPI serial boot ROM, image address
+  pointer at offset 0."*
+
+So the FM6000 here boots from an **SPI flash**, and that flash holds the image
+that initialises its PCIe. The chip is not failing to be powered, clocked or
+released — all three are measured — it is failing to *read its boot ROM*, or
+never being asked to.
+
+### What that suggests is in the way
+
+The SCD has an SPI block of its own, at BAR0 `0x7900`. If the boot flash is
+shared between the SCD and the FM6000 — which is the ordinary way to build
+this, so that the host can reprogram it — then something has to decide which of
+the two masters owns the bus, and on a cold board that has never been told, the
+default may not be the FM6000.
+
+That would explain every measurement taken so far: rails on, clock programmed,
+resets released, boot ROM unreadable, PCIe never initialised, root port seeing
+no device at all.
+
+It also explains why the vendor's boot path contains no `resetClear`. If
+releasing the chip is not what starts it, there is nothing for `NorCalInit` to
+release.
+
+**Next, in order:** what the SCD's SPI block at `0x7900` is connected to and
+whether it arbitrates; whether the board has a separate SPI flash for the Alta
+or shares the one the SCD uses; and whether `CHIP_RESET_N` is the SCD's `alta`
+bit at all, since the straps are latched on *its* de-assertion and a chip whose
+straps were never latched has no boot mode.
+
 ### Three hypotheses, all measured, all wrong
 
 ### What ruling three things out actually tells us
