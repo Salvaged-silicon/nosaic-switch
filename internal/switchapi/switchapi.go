@@ -53,7 +53,11 @@ import (
 // Capabilities.SVIs. It also pinned down what SetPortVLAN already implied but
 // never said: an untagged membership is the port's native VLAN, and a port has
 // at most one.
-const Version = "1.2"
+//
+// 1.3 added link aggregation: LAGs, AddLAG, SetLAGMembers and DelLAG, gated by
+// Capabilities.LAGs, with LACP gated by Capabilities.LACP. A LAG is an
+// interface named po<N>, accepted wherever a port name is.
+const Version = "1.3"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -81,6 +85,14 @@ type Capabilities struct {
 	// SVIs is routed VLAN interfaces: an L3 interface named vlan<VID> that
 	// routes for every port in the VLAN, which is what Cisco calls an SVI.
 	SVIs bool
+
+	// LAGs is link aggregation: port-channels the chip load-shares across.
+	// LACP is the negotiated kind; without it a LAG is static, every member
+	// with link carries traffic.
+	LAGs          bool
+	MaxLAGs       int
+	MaxLAGMembers int
+	LACP          bool
 
 	L2Learning bool
 	MaxFDB     int
@@ -181,6 +193,25 @@ type VLANMember struct {
 // thing on every board.
 func SVIName(vid int) string { return fmt.Sprintf("vlan%d", vid) }
 
+// LAG is one link aggregation group, a port-channel.
+type LAG struct {
+	Name    string
+	LACP    bool
+	Members []LAGMember
+}
+
+// LAGMember is one port of a LAG. Active is whether it is carrying traffic
+// now: link up and, for LACP, collecting and distributing -- a member that is
+// configured but not active is the thing an operator needs to see.
+type LAGMember struct {
+	Port   string
+	Active bool
+}
+
+// LAGName is the interface a LAG appears as: po1, po2 ... One spelling on
+// every datapath, like SVIName.
+func LAGName(n int) string { return fmt.Sprintf("po%d", n) }
+
 // FDBEntry is one learned or static MAC.
 type FDBEntry struct {
 	MAC    string
@@ -230,6 +261,19 @@ type Switch interface {
 	// takes addresses through AddAddress like a port does. DelSVI removes it.
 	AddSVI(vid int) error
 	DelSVI(vid int) error
+
+	// Link aggregation.
+	//
+	// AddLAG creates the LAG, static or LACP; an existing one keeps its
+	// members and changes mode. SetLAGMembers states its whole membership:
+	// ports it does not name leave, and are ordinary ports again. A member
+	// must be neither switched nor in another LAG. DelLAG removes it and frees
+	// its members. A LAG's name is accepted wherever a port name is -- in
+	// SetPortVLAN, AddAddress, PortStatus -- except as another LAG's member.
+	AddLAG(name string, lacp bool) error
+	SetLAGMembers(name string, ports []string) error
+	DelLAG(name string) error
+	LAGs() ([]LAG, error)
 
 	// Access lists. See acl.go. SetACL adds the rule or replaces the one with
 	// the same sequence number; DelACL removes it; ACLs lists every rule the

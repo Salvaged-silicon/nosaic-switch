@@ -57,7 +57,7 @@ building (on a build host)
   docs index                   regenerate the board index
 
 on a running switch
-  show ports | routes | vlans | acl | caps
+  show ports | routes | vlans | lags | acl | caps
                                what the datapath is doing
   interface <name> up|down     administrative state
   interface <name> mtu <n>     set the MTU
@@ -70,6 +70,8 @@ on a running switch
   switchport <port> trunk <vid,...> [native <vid>]
   switchport <port> none       a port's whole VLAN membership; none routes again
   svi add|del <vid>            the routed interface vlan<vid>
+  lag <poN> lacp|static <port,...>
+  lag <poN> none               a port-channel's whole membership; none removes it
   verify contract              run the switchapi conformance suite on this datapath
   config show [pattern] | get <name> | set <name> <value> | unset <name> | files
   upgrade status | install <img> [--slot a|b] | commit | confirm
@@ -191,7 +193,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl", "vlan", "svi", "switchport":
+	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -756,7 +758,7 @@ func switchCmd(args []string) error {
 	switch args[0] {
 	case "show":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: nosaic show <ports|routes|vlans|acl|caps>")
+			return fmt.Errorf("usage: nosaic show <ports|routes|vlans|lags|acl|caps>")
 		}
 		return showCmd(c, args[1], args[2:])
 
@@ -796,6 +798,9 @@ func switchCmd(args []string) error {
 
 	case "switchport":
 		return switchportCmd(c, args[1:])
+
+	case "lag":
+		return lagCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -812,6 +817,12 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		fmt.Fprintf(w, "ports\t%d max\n", caps.MaxPorts)
 		fmt.Fprintf(w, "vlans\t%v\n", caps.VLANs)
 		fmt.Fprintf(w, "svis\t%v\n", caps.SVIs)
+		if caps.LAGs {
+			fmt.Fprintf(w, "lags\tyes, %d of up to %d ports, lacp %v\n",
+				caps.MaxLAGs, caps.MaxLAGMembers, caps.LACP)
+		} else {
+			fmt.Fprintf(w, "lags\tno\n")
+		}
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
 		if caps.ACL {
 			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)
@@ -1030,6 +1041,9 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 
 	case "vlans":
 		return showVLANs(c, w)
+
+	case "lags":
+		return showLAGs(c, w)
 
 	case "routes":
 		routes, err := c.Routes()

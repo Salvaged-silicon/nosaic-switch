@@ -43,6 +43,7 @@ type Switch struct {
 	names []string
 	nft   bool // nftables works here, so access lists are real
 	vlans bool // the bridge tool is here, so VLANs and SVIs are real
+	lags  bool // the kernel has bonding, so LAGs and LACP are real
 	acls  map[int]switchapi.ACLRule
 }
 
@@ -54,7 +55,7 @@ func New(cfg Config) *Switch {
 	if cfg.Peer == "" {
 		cfg.Peer = "-p"
 	}
-	s := &Switch{cfg: cfg, nft: nftWorks(), vlans: bridgeWorks(), acls: map[int]switchapi.ACLRule{}}
+	s := &Switch{cfg: cfg, nft: nftWorks(), vlans: bridgeWorks(), lags: bondWorks(), acls: map[int]switchapi.ACLRule{}}
 	for i := 1; i <= cfg.Ports; i++ {
 		s.names = append(s.names, fmt.Sprintf("swp%d", i))
 	}
@@ -69,17 +70,21 @@ func New(cfg Config) *Switch {
 // claiming something it does not do.
 func (s *Switch) Capabilities() switchapi.Capabilities {
 	return switchapi.Capabilities{
-		Contract:   switchapi.Version,
-		Driver:     "virt",
-		MaxPorts:   s.cfg.Ports,
-		VLANs:      s.vlans,
-		MaxVLANs:   4094 * b2i(s.vlans),
-		SVIs:       s.vlans,
-		L2Learning: false,
-		L3:         true,
-		IPv6:       true,
-		ECMP:       true,
-		MaxECMP:    32,
+		Contract:      switchapi.Version,
+		Driver:        "virt",
+		MaxPorts:      s.cfg.Ports,
+		VLANs:         s.vlans,
+		MaxVLANs:      4094 * b2i(s.vlans),
+		SVIs:          s.vlans,
+		LAGs:          s.lags,
+		MaxLAGs:       64 * b2i(s.lags),
+		MaxLAGMembers: 16 * b2i(s.lags),
+		LACP:          s.lags,
+		L2Learning:    false,
+		L3:            true,
+		IPv6:          true,
+		ECMP:          true,
+		MaxECMP:       32,
 		// Real when nftables works in this namespace, absent when it does
 		// not; see acl.go. The counts are nominal: nftables has no fixed
 		// table, and a number an operator can size against beats "unknown".
@@ -159,6 +164,10 @@ func (s *Switch) known(name string) error {
 		if n == name {
 			return nil
 		}
+	}
+	// A LAG is accepted wherever a port is.
+	if s.lags && isLAG(name) {
+		return nil
 	}
 	return fmt.Errorf("no such port %q", name)
 }

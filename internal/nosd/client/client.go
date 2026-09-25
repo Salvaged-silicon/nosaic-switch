@@ -303,6 +303,31 @@ func (c *Client) DelSVI(vid int) error {
 	return c.call(proto.OpDelSVI, proto.VLANArgs{VID: vid}, nil)
 }
 
+func (c *Client) AddLAG(name string, lacp bool) error {
+	return c.call(proto.OpAddLAG, proto.LAGArgs{Name: name, LACP: lacp}, nil)
+}
+
+func (c *Client) SetLAGMembers(name string, ports []string) error {
+	// Never omitted: an empty membership is a statement, "no members", and
+	// omitempty would turn it into a request with nothing in it.
+	if ports == nil {
+		ports = []string{}
+	}
+	return c.call(proto.OpSetLAGMembers, struct {
+		Name  string   `json:"name"`
+		Ports []string `json:"ports"`
+	}{name, ports}, nil)
+}
+
+func (c *Client) DelLAG(name string) error {
+	return c.call(proto.OpDelLAG, proto.LAGArgs{Name: name}, nil)
+}
+
+func (c *Client) LAGs() ([]switchapi.LAG, error) {
+	var l []switchapi.LAG
+	return l, c.call(proto.OpLAGs, nil, &l)
+}
+
 func (c *Client) FDB() ([]switchapi.FDBEntry, error) {
 	var f []switchapi.FDBEntry
 	return f, c.call(proto.OpFDB, nil, &f)

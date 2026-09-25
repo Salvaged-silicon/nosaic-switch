@@ -34,27 +34,33 @@ type Config struct {
 // DefaultCaps is what a fully featured software datapath claims.
 func DefaultCaps() switchapi.Capabilities {
 	return switchapi.Capabilities{
-		Contract:    switchapi.Version,
-		Driver:      "mem",
-		MaxPorts:    64,
-		VLANs:       true,
-		MaxVLANs:    4094,
-		SVIs:        true,
-		L2Learning:  true,
-		L3:          true,
-		IPv6:        true,
-		ECMP:        true,
-		MaxECMP:     8,
-		ACL:         true,
-		ACLEntries:  1024,
-		ACL6:        true,
-		ACL6Entries: 512,
-		Counters:    true,
+		Contract:      switchapi.Version,
+		Driver:        "mem",
+		MaxPorts:      64,
+		VLANs:         true,
+		MaxVLANs:      4094,
+		SVIs:          true,
+		LAGs:          true,
+		MaxLAGs:       64,
+		MaxLAGMembers: 8,
+		LACP:          true,
+		L2Learning:    true,
+		L3:            true,
+		IPv6:          true,
+		ECMP:          true,
+		MaxECMP:       8,
+		ACL:           true,
+		ACLEntries:    1024,
+		ACL6:          true,
+		ACL6Entries:   512,
+		Counters:      true,
 	}
 }
 
 type port struct {
 	name    string
+	lag     string // the LAG this port is a member of, "" if none
+	isLAG   bool   // this "port" is a LAG interface itself
 	adminUp bool
 	mtu     int
 	vlans   map[int]bool
@@ -70,6 +76,7 @@ type Switch struct {
 	byName  map[string]*port
 	vlans   map[int]bool
 	svis    map[int]*port // routed VLAN interfaces, keyed by VID
+	lags    map[string]*lag
 	routes  map[netip.Prefix]switchapi.Route
 	acls    map[int]switchapi.ACLRule
 }
@@ -90,6 +97,7 @@ func New(cfg Config) *Switch {
 		byName: map[string]*port{},
 		vlans:  map[int]bool{},
 		svis:   map[int]*port{},
+		lags:   map[string]*lag{},
 		routes: map[netip.Prefix]switchapi.Route{},
 		acls:   map[int]switchapi.ACLRule{},
 	}
@@ -229,7 +237,7 @@ func (s *Switch) DelVLAN(vid int) error {
 		return fmt.Errorf("vlan %d has a routed interface; remove %s first", vid, switchapi.SVIName(vid))
 	}
 	delete(s.vlans, vid)
-	for _, p := range s.ports {
+	for _, p := range s.switchable() {
 		delete(p.vlans, vid)
 	}
 	return nil
@@ -244,6 +252,9 @@ func (s *Switch) SetPortVLAN(name string, vid int, tagged bool) error {
 	p, err := s.lookup(name)
 	if err != nil {
 		return err
+	}
+	if p.lag != "" {
+		return fmt.Errorf("%s is a member of %s; put %s in the VLAN instead", name, p.lag, p.lag)
 	}
 	if !s.vlans[vid] {
 		return fmt.Errorf("vlan %d does not exist", vid)
@@ -284,7 +295,7 @@ func (s *Switch) VLANs() ([]switchapi.VLAN, error) {
 	for vid := range s.vlans {
 		v := switchapi.VLAN{VID: vid}
 		_, v.SVI = s.svis[vid]
-		for _, p := range s.ports {
+		for _, p := range s.switchable() {
 			if tagged, ok := p.vlans[vid]; ok {
 				v.Members = append(v.Members, switchapi.VLANMember{Port: p.name, Tagged: tagged})
 			}
@@ -449,4 +460,140 @@ func (s *Switch) DelACL(seq int) error {
 	}
 	delete(s.acls, seq)
 	return nil
+}
+
+type lag struct {
+	lacp    bool
+	members []string
+	port    *port // the LAG as an interface: VLANs, addresses, status
+}
+
+func validLAGName(name string) error {
+	var n int
+	if _, err := fmt.Sscanf(name, "po%d", &n); err != nil || n < 1 || switchapi.LAGName(n) != name {
+		return fmt.Errorf("%q is not a LAG name: po1, po2 ...", name)
+	}
+	return nil
+}
+
+func (s *Switch) AddLAG(name string, lacp bool) error {
+	if !s.cfg.Caps.LAGs {
+		return switchapi.Unsupported("link aggregation")
+	}
+	if lacp && !s.cfg.Caps.LACP {
+		return switchapi.Unsupported("lacp")
+	}
+	if err := validLAGName(name); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l, ok := s.lags[name]; ok {
+		l.lacp = lacp
+		return nil
+	}
+	if s.cfg.Caps.MaxLAGs > 0 && len(s.lags) >= s.cfg.Caps.MaxLAGs {
+		return fmt.Errorf("%s: all %d LAGs are in use", name, s.cfg.Caps.MaxLAGs)
+	}
+	p := &port{name: name, isLAG: true, adminUp: true, mtu: 1500,
+		vlans: map[int]bool{}, addrs: map[netip.Prefix]bool{}}
+	s.lags[name] = &lag{lacp: lacp, port: p}
+	s.byName[name] = p
+	return nil
+}
+
+func (s *Switch) SetLAGMembers(name string, ports []string) error {
+	if !s.cfg.Caps.LAGs {
+		return switchapi.Unsupported("link aggregation")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.lags[name]
+	if !ok {
+		return fmt.Errorf("%s does not exist", name)
+	}
+	if s.cfg.Caps.MaxLAGMembers > 0 && len(ports) > s.cfg.Caps.MaxLAGMembers {
+		return fmt.Errorf("%s: %d members, at most %d", name, len(ports), s.cfg.Caps.MaxLAGMembers)
+	}
+	want := map[string]bool{}
+	for _, n := range ports {
+		p, err := s.lookup(n)
+		if err != nil {
+			return err
+		}
+		switch {
+		case p.isLAG:
+			return fmt.Errorf("%s is a LAG and cannot be a member of one", n)
+		case p.lag != "" && p.lag != name:
+			return fmt.Errorf("%s is already a member of %s", n, p.lag)
+		case len(p.vlans) > 0:
+			return fmt.Errorf("%s is a switched port; take it out of its VLANs first", n)
+		}
+		want[n] = true
+	}
+	for _, n := range l.members {
+		if !want[n] {
+			s.byName[n].lag = ""
+		}
+	}
+	l.members = nil
+	for _, p := range s.ports {
+		if want[p.name] {
+			p.lag = name
+			l.members = append(l.members, p.name)
+		}
+	}
+	return nil
+}
+
+func (s *Switch) DelLAG(name string) error {
+	if !s.cfg.Caps.LAGs {
+		return switchapi.Unsupported("link aggregation")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, ok := s.lags[name]
+	if !ok {
+		return nil
+	}
+	for _, n := range l.members {
+		s.byName[n].lag = ""
+	}
+	delete(s.lags, name)
+	delete(s.byName, name)
+	return nil
+}
+
+func (s *Switch) LAGs() ([]switchapi.LAG, error) {
+	if !s.cfg.Caps.LAGs {
+		return nil, switchapi.Unsupported("link aggregation")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []switchapi.LAG
+	for name, l := range s.lags {
+		g := switchapi.LAG{Name: name, LACP: l.lacp}
+		for _, m := range l.members {
+			// No links in memory: a member is active when its port is up.
+			g.Members = append(g.Members, switchapi.LAGMember{Port: m, Active: s.byName[m].adminUp})
+		}
+		out = append(out, g)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// switchable is everything that can be in a VLAN: the front-panel ports, then
+// the LAGs in name order. Callers hold s.mu.
+func (s *Switch) switchable() []*port {
+	out := append([]*port(nil), s.ports...)
+	names := make([]string, 0, len(s.lags))
+	for n := range s.lags {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		out = append(out, s.lags[n].port)
+	}
+	return out
 }

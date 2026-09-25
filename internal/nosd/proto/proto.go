@@ -88,28 +88,32 @@ func (e remoteError) Unwrap() error {
 // Operation names. Strings rather than numbers so a capture is readable and a
 // mismatched client says what it asked for.
 const (
-	OpCapabilities = "capabilities"
-	OpPorts        = "ports"
-	OpPortStatus   = "port.status"
-	OpSetPortAdmin = "port.admin"
-	OpSetPortMTU   = "port.mtu"
-	OpPortCounters = "port.counters"
-	OpAddVLAN      = "vlan.add"
-	OpDelVLAN      = "vlan.del"
-	OpSetPortVLAN  = "vlan.port"
-	OpDelPortVLAN  = "vlan.port.del"
-	OpVLANs        = "vlans"
-	OpAddSVI       = "svi.add"
-	OpDelSVI       = "svi.del"
-	OpFDB          = "l2.fdb"
-	OpAddAddress   = "l3.addr.add"
-	OpDelAddress   = "l3.addr.del"
-	OpAddRoute     = "l3.route.add"
-	OpDelRoute     = "l3.route.del"
-	OpRoutes       = "l3.routes"
-	OpACL          = "acl"
-	OpSetACL       = "acl.set"
-	OpDelACL       = "acl.del"
+	OpCapabilities  = "capabilities"
+	OpPorts         = "ports"
+	OpPortStatus    = "port.status"
+	OpSetPortAdmin  = "port.admin"
+	OpSetPortMTU    = "port.mtu"
+	OpPortCounters  = "port.counters"
+	OpAddVLAN       = "vlan.add"
+	OpDelVLAN       = "vlan.del"
+	OpSetPortVLAN   = "vlan.port"
+	OpDelPortVLAN   = "vlan.port.del"
+	OpVLANs         = "vlans"
+	OpAddSVI        = "svi.add"
+	OpDelSVI        = "svi.del"
+	OpAddLAG        = "lag.add"
+	OpSetLAGMembers = "lag.members"
+	OpDelLAG        = "lag.del"
+	OpLAGs          = "lags"
+	OpFDB           = "l2.fdb"
+	OpAddAddress    = "l3.addr.add"
+	OpDelAddress    = "l3.addr.del"
+	OpAddRoute      = "l3.route.add"
+	OpDelRoute      = "l3.route.del"
+	OpRoutes        = "l3.routes"
+	OpACL           = "acl"
+	OpSetACL        = "acl.set"
+	OpDelACL        = "acl.del"
 )
 
 // Argument shapes.
@@ -124,6 +128,13 @@ type VLANArgs struct {
 	VID    int    `json:"vid"`
 	Port   string `json:"port,omitempty"`
 	Tagged bool   `json:"tagged,omitempty"`
+}
+
+// LAGArgs is a LAG by name; Ports is its whole membership for lag.members.
+type LAGArgs struct {
+	Name  string   `json:"name"`
+	LACP  bool     `json:"lacp,omitempty"`
+	Ports []string `json:"ports,omitempty"`
 }
 
 type AddrArgs struct {
