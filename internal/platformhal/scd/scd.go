@@ -282,6 +282,33 @@ func (s *SCD) ReleaseSwitchChip(ctx context.Context) error {
 		return s.enableAndWait(ctx)
 	}
 
+	// ⚠ ASSERT BEFORE RELEASING. The chip wants an EDGE, not an absence.
+	//
+	// This used to clear the held bits and stop, on the reasoning that a bit
+	// already set means the chip is already in reset and setting it again
+	// achieves nothing. The 7150S-52 says otherwise, and the evidence is in
+	// the vendor's own boot log: at the moment its chip appears, the root port
+	// logs a link DOWN and then a link UP 104 ms apart --
+	//
+	//     pcielw 0000:00:04.0:pcie04: link down
+	//     pcielw 0000:00:04.0:pcie04: link up
+	//     pci 0000:02:00.0: [8086:155b] type 00 class 0x020000
+	//
+	// -- and on a port with nothing attached there is no link to lose. That
+	// pair is the endpoint being taken down and brought back, not arriving.
+	// Arista's own board code does the same thing explicitly: it reads the SET
+	// port, sets every reset field, writes it, and only then reads the CLEAR
+	// port and releases them.
+	//
+	// Costs nothing where it was already right: this runs only in the branch
+	// where the chip is held, so on a board whose reset is genuinely asserted
+	// the write is a no-op and the release that follows is unchanged.
+	s.write32(resetSet, (1<<bitSwitchCore)|(1<<bitSwitchPCIe))
+	s.trace("asserted core and pcie before release: %#08x", s.read32(resetBase))
+	if err := sleepCtx(ctx, pcieResetDelay); err != nil {
+		return err
+	}
+
 	s.write32(resetClear, 1<<bitSwitchCore)
 	s.trace("after clearing core (bit %d): %#08x", bitSwitchCore, s.read32(resetBase))
 	if err := sleepCtx(ctx, pcieResetDelay); err != nil {
