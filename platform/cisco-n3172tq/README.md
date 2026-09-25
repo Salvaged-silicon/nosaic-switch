@@ -35,11 +35,11 @@ this machine.
 | Disk | **1944 MiB internal eUSB flash**, behind EHCI — not SATA |
 | Front panel | **48 × 10GBASE-T + 6 × 40G QSFP+** — 54 ports, 72 ASIC logical ports |
 | Management | `mgmt0` at PCI `01:00.1` (`8086:0438`, `igb`), MAC `b4:de:31:3f:a5:c0` |
-| Boot | **UEFI firmware directly** → EDK2 shell → our `BOOTX64.EFI`, from disk or USB; or the vendor loader's TFTP + NBI, which loads but does not yet hand off |
+| Boot | **UEFI firmware directly** → EDK2 shell → our `BOOTX64.EFI`, from disk or USB; or the vendor loader's TFTP + NBI, which is how the lab unit runs today |
 | Console | `ttyS0` @ **9600** |
 | Board codename | **`quickzinc2`** (`qz2`) — Cisco's, and it is how the firmware refers to this board throughout |
 | Vendor OS | NX-OS 7.0(3)I7(9) |
-| Status | **bringup** — boots, cools, routes; 48 copper and 6 × 40G up |
+| Status | **bringup** — boots, cools, routes; 48 copper and 6 × 40G up; netbooted, with the management VRF and VLAN/SVI support (switchapi 1.2) |
 
 - **[Hardware reference](docs/hardware.md)** — the block diagram, the boot
   chain, the port map, the four platform transports, and the quirks
@@ -282,6 +282,34 @@ mux driver silently needs), `HWMON`, a shortlist of sensor drivers as modules,
 and busybox's `i2c*` applets. A switch that cannot read its own temperature is
 one nobody should leave running, so that path ships even though the HAL that
 will use it does not exist yet.
+
+## Running it today
+
+The lab unit is netbooted, not installed: the vendor loader TFTPs an NBI and
+hands off to our kernel ([install](docs/install.md#netbooting-use-the-loaders-tftp-not-ipxe)).
+Being RAM-booted, it has no data partition and no ssh key, so its
+configuration is baked into the NBI at build time. Copy `network.site.conf`
+and `frr.site.conf` in as `network.conf` and `frr.conf` for the build and
+remove them afterwards: `make check` refuses to pass with them in the tree.
+The generated `portmap.conf`, `polarity.conf` and `retimer.conf` have to be
+there too, or nosd restart-loops.
+
+As of 2026-09-25 it runs the same build as the other lab switches:
+- **the management VRF** ([docs/vrf.md](../../docs/vrf.md)), mgmt0 as `eth0`
+  in table 1001;
+- **addresses from its own ID PROM**: `switch-mac.sh` asks `nosaic platform
+  mac` for `b4:de:31:3f:a5:c0`, so the tap and SVI MACs are `02:31:3f:a5:c0:xx`
+  rather than the `02:00:00:00:00:xx` it shared, index for index, with the
+  7050TX-64;
+- **VLANs and SVIs** (switchapi 1.2). Same td2 datapath as the 7050TX-64,
+  where trunks are proven. Nothing has been driven through this board yet.
+
+⚠ **The console server can lose this port.** Three times on 2026-09-24/25,
+port 30 of the 2811 went silent: the telnet negotiation arrives and then
+nothing does. It happened twice after a Ctrl-L spam into a live shell and once
+during a loader catch. The cause is most likely a receive/transmit race in the
+2811's `nm32a` driver, and only a cold cycle of the 2811 cleared it. At a
+loader that is already interrupted, type slowly and do not spam.
 
 ## Reverse engineering
 

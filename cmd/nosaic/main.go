@@ -43,29 +43,37 @@ const usage = `nosaic — a network OS for end-of-service-life switches and rout
 
 usage: nosaic <command> [args]
 
-available now
+building (on a build host)
   version                      print the build identity
   check                        validate the repository against the invariants
   boards                       list board ports and their status
+  board scaffold <id>          start a new board directory
   pkg build <name> --arch A    build a package from its recipe
   pkg info <file.nos>          show a package's manifest
   pkg verify <file.nos>        re-derive every digest in a package
   pkg order [--profile P]      list recipes in dependency order
   build [board]                assemble a board's image; lists boards if omitted
                                --allow-stale: compose packages older than their source
-  upgrade status <disk>        show which slot is active or on trial
-  upgrade install <img> [--slot b]       install into the inactive slot
+  docs index                   regenerate the board index
 
 on a running switch
-  show ports | routes | caps    what the datapath is doing
-  interface <name> up|down      administrative state
-  interface <name> mtu <n>      set the MTU
-  route add <prefix> via <ip> dev <port>
+  show ports | routes | vlans | acl | caps
+                               what the datapath is doing
+  interface <name> up|down     administrative state
+  interface <name> mtu <n>     set the MTU
+  route add <prefix> via <ip> dev <port> [via <ip> dev <port>...]
   route del <prefix>
-
-not yet implemented
-  upgrade                      A/B image upgrade          (M3)
-  platform hal                 report board sensors       (M6)
+  acl add <seq> <rule>         an access-list rule; see docs/acl.md
+  acl del <seq>
+  vlan add|del <vid>           a VLAN; see docs/vlan.md
+  switchport <port> access <vid>
+  switchport <port> trunk <vid,...> [native <vid>]
+  switchport <port> none       a port's whole VLAN membership; none routes again
+  svi add|del <vid>            the routed interface vlan<vid>
+  verify contract              run the switchapi conformance suite on this datapath
+  config show [pattern] | get <name> | set <name> <value> | unset <name> | files
+  upgrade status | install <img> [--slot a|b] | commit | confirm
+  platform <command>           the board itself; "nosaic platform" lists them
 
 `
 

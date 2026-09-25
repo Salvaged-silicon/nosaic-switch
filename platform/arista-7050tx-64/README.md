@@ -34,6 +34,14 @@ cabled 40G links. Measured on the hardware:
   switch, installed into the inactive slot by the running CLI, and booted; an
   image the health check declined was left to roll back, and a healthy one
   committed itself.
+- **VLAN trunks and SVIs** ([docs/vlan.md](../../docs/vlan.md)). et49 as
+  `trunk 100 native 200` to the 7050SX2's Et52, with an SVI in each VLAN at
+  both ends: tagged and native both carried traffic, OSPF went Full over the
+  native SVI, and the SX2 routed into the tagged VLAN to this box in hardware.
+  The first td2 board proven, so the Trident2 datapath does VLANs as the
+  Trident2+ one does.
+- **The management VRF** ([docs/vrf.md](../../docs/vrf.md)): eth0 in
+  table 1001, no pin route, and all five adjacencies unaffected.
 - **The chip initialises.** `soc_misc_init`, `soc_mmu_init`, `bcm_attach`,
   `bcm_init` and `bcm_stat_init` all complete, 52 ports are created from the
   generated port map, and the four QSFP cages land on SDK ports 49, 53, 57 and

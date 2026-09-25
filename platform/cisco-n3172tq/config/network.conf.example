@@ -129,3 +129,21 @@ iface eth1_54 <address>/<prefix> mtu 1600
 # in it (AVF2146U0TX) it linked to the Edgecore at 40G immediately, while
 # panel 54's module (AVF2146U1DH) has never linked to anything.
 iface eth1_53 <address>/<prefix> mtu 1600
+
+# ── VLANs and routed VLAN interfaces ─────────────────────────────────────────
+# Optional. A port is routed until a switchport line puts it in a VLAN, and
+# routed again when it leaves the last one. The routed VLAN interface is
+# vlan<VID>, and an iface line on it creates it. docs/vlan.md has the model.
+#
+#   vlan <vid>
+#   switchport <port> access <vid>
+#   switchport <port> trunk <vid>[,<vid>...] [native <vid>]
+#   iface vlan<vid> <address>/<prefix> [mtu <n>]
+#
+# Reserved on this board -- the datapath's per-port VLANs: 1001-1054.
+#
+# vlan 10
+# vlan 20
+# switchport eth1_1 access 10
+# switchport eth1_54 trunk 10,20 native 1
+# iface vlan10 <address>/<prefix> mtu 1600

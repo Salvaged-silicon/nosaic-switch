@@ -17,6 +17,8 @@ the vendor has abandoned, given a modern, open, maintained OS.
 > [where it has got to](#where-it-has-got-to) for the measurements behind that.
 > [docs/DESIGN.md](docs/DESIGN.md) is where it is going;
 > [docs/MILESTONES.md](docs/MILESTONES.md) is what lands when.
+> Operating one: [the CLI](docs/cli.md), [VLANs and SVIs](docs/vlan.md),
+> [the management VRF](docs/vrf.md), [access lists](docs/acl.md).
 
 ## The switches
 

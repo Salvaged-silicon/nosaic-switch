@@ -53,6 +53,18 @@ The board runs as a router. On the switch, verified rather than assumed:
   boots on trial, judges itself against its own datapath and commits; one built
   with an empty port map — it boots, answers ssh and does not forward — burns
   all three attempts and the switch returns to the slot it was on, unattended.
+- **VLANs and SVIs, in the chip** ([docs/vlan.md](../../docs/vlan.md)).
+  Et52 and Et54 as access ports in one VLAN, with both neighbours' /29s on its
+  SVI: OSPF went Full with both over the SVI, 20/20 pings switched between the
+  two neighbours, and 20/20 were routed in from Et53 and out through the SVI.
+  The CPU counters were flat for both, so the chip did it. As a trunk to the
+  7050TX-64 and to the AS5610, tagged 100 plus native 200, both VLANs carried
+  traffic and OSPF ran over the native SVI;
+- **the management VRF** ([docs/vrf.md](../../docs/vrf.md)): eth0 is in
+  table 1001, the pin route is gone, and transfers run at the pinned rate;
+- **its addresses are its own**: tap and SVI MACs are derived at boot from
+  eth0's MAC in this switch's network.conf. The `tap_mac_base` on flash is now
+  redundant, because it matches.
 
 ## Worth knowing
 

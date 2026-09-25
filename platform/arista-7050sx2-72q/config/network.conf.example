@@ -101,3 +101,21 @@ iface et54 <address>/<prefix> mtu 1600
 # place to state it is a second place for it to drift.
 iface eth0 <ipv6-address>/<prefix> vrf mgmt
 route default via <ipv6-address> vrf mgmt
+
+# ── VLANs and routed VLAN interfaces ─────────────────────────────────────────
+# Optional. A port is routed until a switchport line puts it in a VLAN, and
+# routed again when it leaves the last one. The routed VLAN interface is
+# vlan<VID>, and an iface line on it creates it. docs/vlan.md has the model.
+#
+#   vlan <vid>
+#   switchport <port> access <vid>
+#   switchport <port> trunk <vid>[,<vid>...] [native <vid>]
+#   iface vlan<vid> <address>/<prefix> [mtu <n>]
+#
+# Reserved on this board -- the datapath's per-port VLANs: 1001-1054.
+#
+# vlan 10
+# vlan 20
+# switchport et1 access 10
+# switchport et52 trunk 10,20 native 1
+# iface vlan10 <address>/<prefix> mtu 1600

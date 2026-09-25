@@ -117,7 +117,10 @@ known to work on this hardware actually do.
 
 The point is that a port is forwarding and fully usable while being alone in its
 VLAN, so there is nothing to bridge to and no loop to form whatever the cabling
-looks like. Bridging becomes something you ask for.
+looks like. Bridging becomes something you ask for -- and since 2026-09-24 you
+can: `nosaic switchport` takes a port out of its service VLAN and into user
+VLANs ([VLANs and SVIs](#vlans-and-svis) below). Every 3300+port VID stays
+reserved, tapped or not, so `vlan add` refuses them.
 
 Emptying VLAN 1 is not tidiness. EdgeNOS's note is specific: leaving it
 populated lets the chip's L2 forwarding pick the wrong egress when the CPU
@@ -243,6 +246,34 @@ control plane's existing punt rule counting exactly the twenty replies sent
 through it. And the SDK's ingress-port bitmap reaches only one of the chip's
 two pipelines on this board, so a rule scoped to one port matched every other
 until the port went into the key instead.
+
+## VLANs and SVIs
+
+    nosaic vlan add 100
+    nosaic switchport swp51 trunk 100 native 200
+    nosaic svi add 100
+
+Through the C CLI, the same words as everywhere else
+([docs/vlan.md](../../docs/vlan.md)). On 2026-09-24, swp51 was a trunk to the
+7050SX2's Et54 with an SVI in each VLAN at both ends:
+- tagged 100 and native 200 both passed traffic, and OSPF ran over the native
+  SVI;
+- the TX's traffic arriving on the routed swp52 was routed by this chip into
+  the tagged VLAN, out of swp51, 20/20, with the CPU counters showing only
+  background traffic.
+
+That last test found that this chip's L2 table reports swp51 as (module 1,
+port 19). The Trident+ spans two module ids, so l3sync's first egress for the
+SVI neighbour went out of a dark 10G port. `nosaic_l2_port()` translates it
+now.
+
+Two more things are specific to this board:
+- **Addresses.** The tap and SVI MACs are derived at boot from eth0's MAC in
+  network.conf, `80:a2:35:81:ca:ae`, so they are `02:35:81:ca:ae:xx`, where
+  they used to be the `02:00:00:00:00:xx` every NOSaic switch shared.
+- **The management VRF** ([docs/vrf.md](../../docs/vrf.md)) runs here. It
+  needed the FIT rewritten, since the kernel is outside the A/B slot, and that
+  boot found the initramfs was not waiting for the USB disk.
 
 ## What is left before this replaces EdgeNOS
 

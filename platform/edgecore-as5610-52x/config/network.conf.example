@@ -104,3 +104,21 @@ iface swp8 <address>/<prefix> mtu 1600
 # They live beside this file in network.site.conf, which is gitignored, and the
 # switch reads /mnt/data/config/network.conf in preference to this one -- so
 # the complete configuration goes on the box without passing through here.
+
+# ── VLANs and routed VLAN interfaces ─────────────────────────────────────────
+# Optional. A port is routed until a switchport line puts it in a VLAN, and
+# routed again when it leaves the last one. The routed VLAN interface is
+# vlan<VID>, and an iface line on it creates it. docs/vlan.md has the model.
+#
+#   vlan <vid>
+#   switchport <port> access <vid>
+#   switchport <port> trunk <vid>[,<vid>...] [native <vid>]
+#   iface vlan<vid> <address>/<prefix> [mtu <n>]
+#
+# Reserved on this board -- the datapath's per-port VLANs: 3300 + port, for every port on the chip.
+#
+# vlan 10
+# vlan 20
+# switchport swp1 access 10
+# switchport swp49 trunk 10,20 native 1
+# iface vlan10 <address>/<prefix> mtu 1600
