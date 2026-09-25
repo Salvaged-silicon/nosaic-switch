@@ -178,9 +178,19 @@ committed, as on every other board.
       readable), and the FM6000 appears at t=173 **by rescan**. So the release
       is done by **EOS userspace after the SCD driver is fully initialised** —
       not by the driver and not by `NorCalInit`
-- [ ] **find the EOS userspace agent that releases it**, in the window between
-      `scd device initialization complete` and the rescan. That is the last
-      unexamined actor
+- [x] **it is a reset PULSE, not a release.** `dmesg` shows `pcielw` logging a
+      link **down** and then a link **up** 104 ms apart at t=173, immediately
+      before the chip is enumerated. On a port with nothing attached there is
+      no link to lose, so that is the endpoint being taken down and brought
+      back. This port has only ever cleared the reset bits; the vendor's
+      diagnostics assert *then* clear, which was read as ceremony
+- [ ] **RUN THE PULSE**: cold, write `0x106` to `resetSet` (`0xe1004000`), then
+      `0x106` to `resetClear` (`0xe1004010`), then look. Needs the rebuilt
+      image — `devmem` and `CONFIG_HOTPLUG_PCI_PCIE` both landed after the last
+      one was built
+- [x] `CONFIG_HOTPLUG_PCI_PCIE` enabled, so a chip whose link comes up is
+      enumerated without a manual rescan — which is what `pcielw` does for the
+      vendor
 - [ ] **so either the straps never latched, or `CHIP_RESET_N` is not the SCD's
       `alta` bit.** Those are the two remaining explanations and they are
       distinguishable: find what drives `CHIP_RESET_N` on this board — `thorn`

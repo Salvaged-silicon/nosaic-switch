@@ -26,6 +26,22 @@ CONFIG_SERIAL_8250_CONSOLE=y
 # no Broadcom PHY driver at all on x86_64 -- drivers/net/phy/broadcom.c is not
 # even built -- so the PHY gets no clock-delay handling and tg3 reports "No PHY
 # devices" and aborts. BCM_NET_PHYLIB comes with it and is not listed.
+# Native PCIe hotplug, so a device whose link comes up is enumerated without
+# being asked twice.
+#
+# This is not about hot-swapping anything. On the 7150S-52 the switch ASIC is
+# soldered down and absent from the bus until the board brings it up, and the
+# vendor's boot shows their own module watching the root port and enumerating
+# the chip the instant the link trains:
+#
+#     pcielw 0000:00:04.0:pcie04: link up
+#     pci 0000:02:00.0: [8086:155b] type 00 class 0x020000
+#
+# Without pciehp the same event produces nothing until somebody writes
+# /sys/bus/pci/rescan, which turns "did the chip come up?" into a question you
+# can only answer by asking again -- and makes a bring-up experiment depend on
+# polling at the right moment.
+CONFIG_HOTPLUG_PCI_PCIE=y
 CONFIG_BROADCOM_PHY=y
 CONFIG_I2C_PIIX4=y
 CONFIG_I2C_CHARDEV=y

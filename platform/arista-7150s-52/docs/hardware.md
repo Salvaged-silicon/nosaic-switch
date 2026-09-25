@@ -572,6 +572,48 @@ write at all.** The interface looked promising (`powerGood`, `powerStatus`,
 `powerCycle`, `scdReset`, `clockSelect`, `initValues`) and the initialisation
 touches none of it.
 
+### It is a reset PULSE, not a release
+
+The 17-second gap is not empty. `dmesg` in that window:
+
+```
+  t=163.4  tg3 ma1: Link is up at 1000 Mbps       (management, unrelated)
+  t=173.538907  pcielw 0000:00:04.0:pcie04: link down
+  t=173.538917  pcielw 0000:00:04.0:pcie04: link down processing complete
+  t=173.642583  pcielw 0000:00:04.0:pcie04: link up
+  t=173.642613  pci 0000:02:00.0: [8086:155b] type 00 class 0x020000
+```
+
+**A link down and a link up, 104 milliseconds apart.** On a port with nothing
+attached there is no link to lose, so that pair is not the chip arriving — it is
+the chip being *taken down and brought back*. Something in EOS userspace
+toggled the endpoint's reset at t=173, and the link came up on the far side of
+it.
+
+That matters because **this port has only ever released.** Every attempt so far
+reads the reset register, finds `alta`+`sol`+`rpt` asserted, clears them, and
+waits. The vendor's own diagnostics do something different and it has been
+visible in the disassembly since the beginning:
+
+```python
+reset = scd.hal.resetSet.rd();    reset.rpt=1; reset.alta=1; reset.sol=1;  resetSet.wr(reset)
+reset = scd.hal.resetClear.rd();  reset.rpt=1; reset.alta=1; reset.sol=1;  resetClear.wr(reset)
+```
+
+Assert, then release. A pulse. It was read as ceremony around a release; the
+link-down/link-up pair says it is the point.
+
+**This is the next experiment**, and it is cheap: on a cold board write `0x106`
+to `resetSet` (`0xe1004000`), then `0x106` to `resetClear` (`0xe1004010`), and
+watch. It is the same class of write already done safely several times, to the
+same register.
+
+`pcielw` is also worth noting as a difference in kind: it is an Arista kernel
+module watching the root port, and it is what turns a link-up into an
+enumerated device. NOSaic had `CONFIG_HOTPLUG_PCI` but not
+`CONFIG_HOTPLUG_PCI_PCIE`, so the same event would have produced nothing until
+somebody wrote `/sys/bus/pci/rescan`. Now enabled.
+
 ### What that suggests is in the way
 
 The SCD has an SPI block of its own, at BAR0 `0x7900`. If the boot flash is
