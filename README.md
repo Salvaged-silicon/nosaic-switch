@@ -11,7 +11,7 @@ the vendor has abandoned, given a modern, open, maintained OS.
 > Broadcom generations and three vendors, and run one operating system with one
 > set of commands. They route with OSPF, and switch and route VLANs in silicon —
 > access, trunk and routed VLAN interfaces, proven between NOSaic switches on
-> three chip families. Their management ports sit in a VRF of their own. The ones
+> three chip families, and bundle links into LACP port-channels. Their management ports sit in a VRF of their own. The ones
 > installed to flash take A/B upgrades that the switch itself commits or rolls
 > back, and come back from a cold power cut on their own.
 >
@@ -22,7 +22,8 @@ the vendor has abandoned, given a modern, open, maintained OS.
 > [docs/DESIGN.md](docs/DESIGN.md) is where it is going;
 > [docs/MILESTONES.md](docs/MILESTONES.md) is what lands when.
 > Operating one: [the CLI](docs/cli.md), [VLANs and SVIs](docs/vlan.md),
-> [the management VRF](docs/vrf.md), [access lists](docs/acl.md).
+> [link aggregation](docs/lag.md), [the management VRF](docs/vrf.md),
+> [access lists](docs/acl.md).
 
 ## The switches
 
@@ -141,7 +142,7 @@ Everything else outstanding is in each board's own list:
 
 For most of its life NOSaic ran every front-panel port as a routed port. It
 switches now, in the chip, and the contract that says how is
-**switchapi 1.2**:
+**switchapi 1.3**:
 
 - **VLANs and SVIs** ([docs/vlan.md](docs/vlan.md)). A port is routed until it
   joins a VLAN; `switchport` makes it an access port or a trunk with a native
@@ -155,6 +156,12 @@ switches now, in the chip, and the contract that says how is
   Every one of those happened in silicon with the CPU's counters flat. The same
   contract runs on the virtual board over a Linux bridge, and `make
   dataplane-test` drives it on every build.
+- **Link aggregation** ([docs/lag.md](docs/lag.md)). `lag po1 lacp
+  et52,et53` bundles ports into `po1`, static or negotiated by LACP, routed or
+  as a VLAN trunk. The chip hashes traffic across the members, and the
+  datapath keeps the trunk to the members that have link and, for LACP, the
+  partner's agreement. It was proven between NOSaic switches on Trident2+,
+  Trident2 and Trident+, with failover under traffic in well under a second.
 - **A management VRF** ([docs/vrf.md](docs/vrf.md)). eth0 lives in its own
   routing table, so what the front panel learns can never capture the switch's
   own management traffic. That once cut an image pull to 21 KB/s and had to be

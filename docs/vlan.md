@@ -59,7 +59,7 @@ AS5610):
     nosaic svi del <vid>
 
     nosaic show vlans
-    nosaic show caps                 vlans / svis, contract 1.2
+    nosaic show caps                 vlans / svis, contract 1.3
 
 `switchport` **states the port's whole membership**, not a change. Whatever
 the line does not name is removed, so
@@ -103,9 +103,14 @@ to 10.0.10.0/24 leaves by whichever of them the destination is behind.
   | 7050SX2-72Q, Nexus 3172TQ | 1001–1054, one per declared port (`tap_<port>=` in `asic.conf`) |
   | 7050TX-64 | 1001–1052, likewise |
   | AS5610-52X | 3300 + port, for **every** port on the chip, tapped or not |
+  | every board | 4001–4064, one per LAG ([lag.md](lag.md)) |
 
   The per-port VLANs are what the `tap_` lines in each board's `asic.conf`
   (`taps.conf` on the AS5610) declare. VLAN 1 is allowed.
+
+A LAG, `po<N>`, is an interface like a port: `switchport po1 trunk 10,20`
+puts all its members in those VLANs as one, and `show vlans` lists it by its
+own name. [lag.md](lag.md).
 
 ## In network.conf
 
