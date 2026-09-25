@@ -291,6 +291,8 @@ Being RAM-booted, it has no data partition and no ssh key, so its
 configuration is baked into the NBI at build time. Copy `network.site.conf`
 and `frr.site.conf` in as `network.conf` and `frr.conf` for the build and
 remove them afterwards: `make check` refuses to pass with them in the tree.
+`config/authorized_keys` is gitignored as well, but unlike the site files it
+can stay in the tree.
 The generated `portmap.conf`, `polarity.conf` and `retimer.conf` have to be
 there too, or nosd restart-loops.
 
@@ -301,8 +303,19 @@ As of 2026-09-25 it runs the same build as the other lab switches:
   mac` for `b4:de:31:3f:a5:c0`, so the tap and SVI MACs are `02:31:3f:a5:c0:xx`
   rather than the `02:00:00:00:00:xx` it shared, index for index, with the
   7050TX-64;
-- **VLANs and SVIs** (switchapi 1.2). Same td2 datapath as the 7050TX-64,
-  where trunks are proven. Nothing has been driven through this board yet.
+- **VLANs and SVIs**, proven on 2026-09-25 ([docs/vlan.md](../../docs/vlan.md)).
+  eth1_54 was set to `trunk 100 native 200` against the 7050SX2's Et49, with
+  an SVI in each VLAN at both ends:
+  - tagged and native both carried traffic, and OSPF went Full over the
+    native SVI;
+  - traffic from the 7050TX-64 arriving on the routed eth1_31 was routed by
+    this chip into the tagged VLAN, 20/20, with the next hop resolved to
+    eth1_54 from the L2 table and the CPU counters not moving at all;
+- **ssh by key.** A netbooted image has no data partition, so a key cannot
+  come from `/mnt/data/secrets`. The board's gitignored
+  `config/authorized_keys` is baked into the image instead, the same file
+  the other boards use, and `ssh root@<address>` works like on any other
+  board.
 
 ⚠ **The console server can lose this port.** Three times on 2026-09-24/25,
 port 30 of the 2811 went silent: the telnet negotiation arrives and then
