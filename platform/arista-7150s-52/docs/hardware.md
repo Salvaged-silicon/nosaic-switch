@@ -327,6 +327,62 @@ has, so these are more likely the board's own SEEPROMs. That matters because
 which is not located yet"*, and because `config/network.conf` currently states
 a MAC address by hand for want of one. Not yet read. **derived**
 
+## Step 12 runs, and the bank model was wrong, 2026-09-25
+
+Table 4-1 now completes. Only step 11, PCIe, is skipped, and deliberately.
+
+### There is one bank memory, not three
+
+This page used to say there were three — STATS, MCAST_MID, MCAST_POST — each
+`0x20000` words. Filling them on hardware says otherwise. **live**
+
+| address | what a fill does |
+|---|---|
+| `0x200000`–`0x23ffff` | **262144 words, filled in one go, chip fine.** A memory — and *twice* the modelled span; the old `0x20000` stopped halfway through it. |
+| `0x240000` | **Not a memory.** 54 words in, writing **`0x240036`** takes the chip off the bus. |
+| `0x260000` | **Not a memory.** 20 words in, writing **`0x260014`** does the same. |
+
+Both fatal words were bisected exactly rather than bounded — binary search on
+the fill count, with a reset pulse and a re-boot between trials, which costs
+about ten seconds each now the box stays on NOSaic.
+
+So the two "MCAST" addresses are **register blocks** that happen to sit where
+traffic to them was once observed, and treating a register block as fillable
+memory is how you lose a chip. `fm_is_bank()` now covers the one real memory,
+and `fm_hazard()` refuses those two words outright.
+
+### What the fill achieves, and what it does not
+
+**Achieves exactly what the step is for.** Before it, reading `0x200000` takes
+the chip off the bus; after it, the read is safe and the chip keeps answering.
+That is the whole purpose of "initialise memory", and it is now verified rather
+than assumed.
+
+**Does not tell us what the region contains.** It does not read back the
+pattern written, and the readback is not a simple function of it: **UNKNOWN**
+
+```
+   wrote 0xa5a5a5a5  ->  reads 0x12180018 0x521a1800 0x0a080a48 ...
+   wrote 0x00000000  ->  reads 0x12180018 0x521a1800 0x0a080a48 ...  (identical)
+   wrote 0xffffffff  ->  reads 0x00000000 ...
+   wrote 0x00000001  ->  reads 0x00000000 ...
+```
+
+Stable across repeated reads, so it is not a counter and not noise. Writing
+zero and writing `0xa5a5a5a5` produce the *same* readback, so the value read is
+not derived from the value written. Something else decides it. That is a
+separate investigation and step 12 does not depend on the answer.
+
+### ⚠ The guard cannot be answered by the chip here
+
+`fm_boot_already_done()` works because the chip records its own boot state. There
+is no equivalent question for "have the banks been filled", so a fresh process
+starts with `banks_ready` clear and refuses the region — correctly. Reads of a
+filled bank therefore belong in the process that filled it, which is why
+`fm6000-probe --meminit` characterises the region itself instead of leaving it
+to a second invocation. The alternative is a flag that turns the guard off, and
+that is the one thing `pci.h` says not to build.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

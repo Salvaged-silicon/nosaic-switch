@@ -288,15 +288,32 @@ int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 	    "nothing before packet DMA needs it");
 
 	/*
-	 * Step 12. Initialise memory. Either program the CRM and launch it, or,
-	 * in the datasheet's own words, "software writes memory manually".
+	 * Step 12. Initialise memory. The datasheet offers two routes -- program
+	 * the CRM and launch it, or "software writes memory manually" -- and
+	 * this is the second, because it needs nothing but the bulk writer and
+	 * the CRM's command register map is not known.
 	 *
-	 * Not written yet. It is a bulk writer, so it turns the per-write bus
-	 * check off and owes one at the end (see fm_set_write_check), and when
-	 * it completes it is the ONLY thing entitled to call
-	 * fm_bank_mark_initialised().
+	 * ⚠ ONE BANK, NOT THREE. This used to be described as three memories of
+	 * 0x20000 words. Filling them on hardware says otherwise: 0x200000 runs
+	 * to 0x23ffff and takes a fill fine, and 0x240000 and 0x260000 are
+	 * register blocks where the fill dies 54 and 20 words in. See regs.h.
+	 *
+	 * What the fill achieves is exactly what the step is for: before it,
+	 * reading 0x200000 takes the chip off the bus; after it, the read is
+	 * safe. What the region then CONTAINS is a separate question and is not
+	 * answered -- it does not read back the pattern written, so it is not
+	 * plain 32-bit RAM.
 	 */
-	set(rep, FM_STEP_MEMORY_INIT, FM_ENOADDR, "not written yet");
+	rv = fm_mem_fill(d, FM6000_BANK_STATS_BASE, FM6000_BANK_STATS_SPAN, 0);
+	if (rv != FM_OK) {
+		set(rep, FM_STEP_MEMORY_INIT, rv,
+		    "the chip stopped answering during the STATS fill");
+		return rv;
+	}
+	fm_bank_mark_initialised(d);
+	set(rep, FM_STEP_MEMORY_INIT, FM_OK,
+	    "STATS filled and readable; 0x240000 and 0x260000 are register "
+	    "blocks, not banks, and are left alone");
 
 	/* The EPL block is now safe to read. Measured: the same word that takes
 	 * the chip off the bus before this sequence returns 0x00080000 after it,

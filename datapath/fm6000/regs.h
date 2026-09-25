@@ -81,13 +81,40 @@
  * [RE for the addresses; DS §4.2 Table 4-1 steps 9 and 12 for the fact that
  *  initialising them is a documented part of boot]
  */
+/*
+ * ⚠ THE OLD MODEL HERE WAS WRONG, AND MEASURING IT COST A DOZEN RESET PULSES.
+ *
+ * It said there were three bank memories -- STATS, MCAST_MID, MCAST_POST --
+ * each 0x20000 words. Filling them on hardware 2026-09-25 says otherwise:
+ *
+ *   0x200000 .. 0x23ffff   262144 words, filled in one go, chip fine.
+ *                          This IS a memory, and it is TWICE the modelled
+ *                          span: the old 0x20000 stopped halfway through it.
+ *
+ *   0x240000               NOT a memory. 54 words in, writing 0x240036 takes
+ *                          the chip off the bus.
+ *
+ *   0x260000               NOT a memory. 20 words in, writing 0x260014 does
+ *                          the same.
+ *
+ * Both were bisected exactly rather than bounded. So there is one bank memory
+ * on this part as far as anything here knows, the two "MCAST" addresses are
+ * register blocks that happen to sit where traffic to them was once observed,
+ * and treating a register block as fillable memory is how you lose a chip.
+ * [OURS, measured]
+ */
 #define FM6000_BANK_STATS_BASE		FM6000_BLK_STATS
-#define FM6000_BANK_MCAST_MID_BASE	FM6000_BLK_MCAST_MID
-#define FM6000_BANK_MCAST_POST_BASE	FM6000_BLK_MCAST_POST
-/* Extent is not established. One word is known dangerous in each; treating the
- * whole 0x20000-word span as dangerous is the conservative reading and costs
- * nothing until something needs a register inside one. [assumed] */
-#define FM6000_BANK_SPAN		0x020000
+#define FM6000_BANK_STATS_SPAN		0x040000
+
+/*
+ * Words whose WRITE is measured to take the chip off the bus.
+ *
+ * Reading them has not been tried, so the guard refuses both directions: the
+ * cost of refusing a read nobody needs is nothing, and the cost of finding out
+ * is a reset pulse and a re-boot of the chip.
+ */
+#define FM6000_FATAL_WRITE_1		0x240036
+#define FM6000_FATAL_WRITE_2		0x260014
 
 /*
  * MGMT block registers.

@@ -245,6 +245,30 @@ void fm_bank_mark_initialised(struct fm6000 *d);
  */
 void fm_boot_mark_done(struct fm6000 *d);
 
+/*
+ * Write `val` into every word of a bank memory, so its ECC bits become valid.
+ *
+ * This is Table 4-1 step 12's "software writes memory manually", and it is the
+ * one function entitled to write into a bank the guard is still refusing --
+ * refusing reads of an uninitialised bank is the whole point of the guard, and
+ * the way out of that state is to write the bank, so the writer cannot be
+ * subject to it. It is deliberately the only bypass, and it is here rather than
+ * exposed as a flag so there is exactly one of them.
+ *
+ * ⚠ WRITES, NOT READS. Writing a full 32-bit word stores data and ECC together
+ * and is safe on an uninitialised bank; READING one is what raises the
+ * uncorrectable error that takes the chip off the bus. Nothing here reads.
+ *
+ * The per-write bus check is turned off for the burst and restored after --
+ * 393,216 words with a sysfs read each would take half a minute for
+ * information nobody wants per word -- and one check is done at the end. So a
+ * failure says "some write in this bank did it", which for a uniform fill is
+ * all there is to know.
+ *
+ * Returns FM_OK, or FM_EOFFBUS if the chip left the bus during the fill.
+ */
+int fm_mem_fill(struct fm6000 *d, uint32_t base, uint32_t words, uint32_t val);
+
 /* Whether a word address falls in a bank memory. Exposed so a tool can say
  * why it will not read something. */
 int fm_is_bank(uint32_t word);

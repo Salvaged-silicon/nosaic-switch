@@ -39,6 +39,11 @@ static void usage(void)
 "  (no command)          identify the chip and read what is safe to read\n"
 "  --dump WORD COUNT     dump COUNT words from word address WORD\n"
 "  --read WORD           read one word\n"
+"  --fill WORD COUNT     write zeros into COUNT words from WORD. The bulk\n"
+"                        writer on its own, for finding where a bank really\n"
+"                        begins and ends. WRITES.\n"
+"  --meminit             Table 4-1 step 12: fill the bank memories so their\n"
+"                        ECC is valid, then prove they can be read. WRITES.\n"
 "  --boot                run the documented cold-boot sequence and report\n"
 "                        (this WRITES -- see Table 4-1 in the board's\n"
 "                         docs/hardware.md before using it)\n"
@@ -50,7 +55,7 @@ static const char *rvstr(int rv)
 {
 	switch (rv) {
 	case FM_OK:      return "ok";
-	case FM_EOFFBUS: return "CHIP IS OFF THE PCIe BUS";
+	case FM_EOFFBUS: return "CHIP STOPPED ANSWERING";
 	case FM_EUNSAFE: return "refused as unsafe";
 	case FM_ENOADDR: return "not attempted";
 	case FM_ETIMEOUT: return "TIMED OUT";
@@ -158,6 +163,99 @@ static int cmd_dump(struct fm6000 *d, uint32_t base, uint32_t count)
 	return 0;
 }
 
+/*
+ * Table 4-1 step 12, done carefully enough to watch.
+ *
+ * The order matters and is the whole design: fill each bank FIRST and only
+ * then read one back. A read of an uninitialised bank is what takes the chip
+ * off the bus, so a "check before we start" would be the very thing we are
+ * trying to survive. Writes are safe -- a full 32-bit write stores data and
+ * ECC together.
+ *
+ * Liveness is checked after every bank rather than at the end, so a bank that
+ * kills the chip is named instead of leaving three suspects.
+ */
+static int cmd_meminit(struct fm6000 *d, uint32_t pattern)
+{
+	uint32_t v = 0;
+	int rv, i;
+
+	if (fm_boot_already_done(d) != 1) {
+		printf("The chip has not been through the cold boot. Step 12 comes\n"
+		       "after the boot controller's commands, not before: run\n"
+		       "  fm6000-probe --lbus --boot\n");
+		return 1;
+	}
+
+	/*
+	 * One bank memory, not three. The two addresses this used to fill --
+	 * 0x240000 and 0x260000 -- are register blocks, and filling them takes
+	 * the chip off the bus 54 and 20 words in respectively. See regs.h.
+	 */
+	printf("Filling STATS, 0x%06x for %u words with 0x%08x.\n\n",
+	       FM6000_BANK_STATS_BASE, FM6000_BANK_STATS_SPAN, pattern);
+	printf("  writing ... ");
+	fflush(stdout);
+	/* A recognisable pattern, not zero: zero is what half the chip reads
+	 * anyway, so filling with it makes "our write landed" and "nothing is
+	 * there" look identical. */
+	rv = fm_mem_fill(d, FM6000_BANK_STATS_BASE, FM6000_BANK_STATS_SPAN,
+			 pattern);
+	if (rv != FM_OK) {
+		printf("%s\n", rvstr(rv));
+		return 2;
+	}
+	printf("filled, chip still answering\n");
+
+	/* Only now is the claim true, and only this path may make it. */
+	fm_bank_mark_initialised(d);
+	printf("\nDeclared initialised. Reading it back -- this is the read that\n"
+	       "would have taken the chip off the bus before the fill.\n\n");
+
+	rv = fm_rd(d, FM6000_BANK_STATS_BASE, &v);
+	printf("  0x%06x = ", FM6000_BANK_STATS_BASE);
+	if (rv != FM_OK) {
+		printf("%s\n", rvstr(rv));
+		return 2;
+	}
+	printf("0x%08x%s\n", v,
+	       v == pattern ? "   <-- the pattern we wrote" : "   <-- NOT the pattern");
+	if (fm_alive(d) != 1) {
+		printf("\nThe chip stopped answering on that read.\n");
+		return 2;
+	}
+
+	/*
+	 * Characterise it here rather than from a second invocation, because a
+	 * fresh process has banks_ready clear and the guard -- correctly --
+	 * refuses it. Reads of a filled bank belong in the process that filled
+	 * it; the alternative is a flag that turns the guard off, which is the
+	 * one thing pci.h says not to build.
+	 */
+	printf("\n  eight words from the base:\n");
+	for (i = 0; i < 8; i++) {
+		uint32_t w = 0;
+
+		if (fm_rd(d, FM6000_BANK_STATS_BASE + i, &w) != FM_OK)
+			break;
+		printf("    0x%06x  0x%08x\n", FM6000_BANK_STATS_BASE + i, w);
+	}
+	printf("\n  the same word four times (does it move on its own?):\n    ");
+	for (i = 0; i < 4; i++) {
+		uint32_t w = 0;
+
+		if (fm_rd(d, FM6000_BANK_STATS_BASE, &w) != FM_OK)
+			break;
+		printf("0x%08x ", w);
+	}
+	printf("\n");
+
+	printf("\nStep 12 done for STATS: the fill made it readable, which is what\n"
+	       "the step is for. The other memories are not mapped -- 0x240000 and\n"
+	       "0x260000 are register blocks, not banks.\n");
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct fm6000 dev;
@@ -238,6 +336,21 @@ int main(int argc, char **argv)
 	} else if (strcmp(argv[i], "--dump") == 0 && i + 2 < argc) {
 		rc = cmd_dump(&dev, (uint32_t)strtoul(argv[i + 1], NULL, 0),
 			      (uint32_t)strtoul(argv[i + 2], NULL, 0));
+	} else if (strcmp(argv[i], "--fill") == 0 && i + 2 < argc) {
+		uint32_t base = (uint32_t)strtoul(argv[i + 1], NULL, 0);
+		uint32_t n = (uint32_t)strtoul(argv[i + 2], NULL, 0);
+
+		printf("filling 0x%06x for %u words... ", base, n);
+		fflush(stdout);
+		rv = fm_mem_fill(&dev, base, n, 0);
+		printf("%s\n", rv == FM_OK ? "chip still answering" : rvstr(rv));
+		rc = rv == FM_OK ? 0 : 2;
+	} else if (strcmp(argv[i], "--meminit") == 0) {
+		uint32_t pat = 0xa5a5a5a5;
+
+		if (i + 1 < argc)
+			pat = (uint32_t)strtoul(argv[i + 1], NULL, 0);
+		rc = cmd_meminit(&dev, pat);
 	} else if (strcmp(argv[i], "--boot") == 0) {
 		struct fm_boot_report rep;
 

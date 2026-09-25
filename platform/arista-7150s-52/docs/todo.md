@@ -450,9 +450,20 @@ has a reason, in code, parameterised by the board.
       said nobody had run. Before: reading `0x0e3b02` takes the chip off the
       bus. After: `0x00080000`, chip still answering. `fm_hazard()` now refuses
       EPL only until `fm_boot_mark_done()`.
-- [ ] **step 12, memory initialisation** — the CRM, or a software fill. It is
-      the last unwritten step of Table 4-1 and the only thing entitled to call
-      `fm_bank_mark_initialised()`.
+- [x] **step 12, memory initialisation — done 2026-09-25.** The software fill,
+      not the CRM. Before it, reading `0x200000` takes the chip off the bus;
+      after it the read is safe. Table 4-1 now completes but for step 11.
+- [x] **the bank model was wrong and is now measured.** One memory
+      (`0x200000`–`0x23ffff`, twice the modelled span), not three. `0x240000`
+      and `0x260000` are register blocks whose fills die at `0x240036` and
+      `0x260014` — both bisected exactly.
+- [ ] **what the STATS region actually holds.** The fill makes it readable but
+      it does not read back what was written, and writing `0` and `0xa5a5a5a5`
+      give the *same* readback, so the value is not derived from the write.
+      Stable across reads, so not a counter. Needs its own look.
+- [ ] **step 11, PCIe** — `fmPlatformSetupPCIe` is six registers we have
+      addresses for (`0x01002`, `0x01400`, `0x01416`, `0x01418`, `0x0141d`,
+      `0x01435`) and have never tried. Needed for packet DMA, not before.
 - [ ] **the 17 MGMT words our boot does not set** — SWEEPER `0x1c048`, the
       interrupt masks at `0x1c001`/`0x1c002`, `0x1c01e`, `0x1c049`/`4b`/`4c`/
       `50`. These are configuration rather than boot, so they belong here only

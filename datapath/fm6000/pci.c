@@ -238,17 +238,8 @@ int fm_check_offbus(struct fm6000 *d)
 
 int fm_is_bank(uint32_t word)
 {
-	static const uint32_t base[] = {
-		FM6000_BANK_STATS_BASE,
-		FM6000_BANK_MCAST_MID_BASE,
-		FM6000_BANK_MCAST_POST_BASE,
-	};
-	size_t i;
-
-	for (i = 0; i < sizeof(base) / sizeof(base[0]); i++)
-		if (word >= base[i] && word < base[i] + FM6000_BANK_SPAN)
-			return 1;
-	return 0;
+	return word >= FM6000_BANK_STATS_BASE &&
+	       word < FM6000_BANK_STATS_BASE + FM6000_BANK_STATS_SPAN;
 }
 
 const char *fm_block_name(uint32_t word)
@@ -265,15 +256,12 @@ const char *fm_block_name(uint32_t word)
 		return "MOD";
 	if (word >= FM6000_BLK_L2F && word < FM6000_BLK_L2F + 0x20000)
 		return "L2F";
-	if (word >= FM6000_BANK_STATS_BASE &&
-	    word < FM6000_BANK_STATS_BASE + FM6000_BANK_SPAN)
-		return "STATS (bank)";
-	if (word >= FM6000_BANK_MCAST_MID_BASE &&
-	    word < FM6000_BANK_MCAST_MID_BASE + FM6000_BANK_SPAN)
-		return "MCAST_MID (bank)";
-	if (word >= FM6000_BANK_MCAST_POST_BASE &&
-	    word < FM6000_BANK_MCAST_POST_BASE + FM6000_BANK_SPAN)
-		return "MCAST_POST (bank)";
+	if (fm_is_bank(word))
+		return "STATS (bank memory)";
+	if (word >= FM6000_BLK_MCAST_MID && word < FM6000_BLK_MCAST_MID + 0x1000)
+		return "0x240000 block";
+	if (word >= FM6000_BLK_MCAST_POST && word < FM6000_BLK_MCAST_POST + 0x1000)
+		return "0x260000 block";
 	return "?";
 }
 
@@ -289,8 +277,44 @@ void fm_boot_mark_done(struct fm6000 *d)
 	d->boot_done = 1;
 }
 
+int fm_mem_fill(struct fm6000 *d, uint32_t base, uint32_t words, uint32_t val)
+{
+	int saved, rv = FM_OK;
+	uint32_t i;
+
+	if (d->regs == NULL)
+		return FM_ERR;
+	if (d->offbus)
+		return FM_EOFFBUS;
+	if ((uint64_t)(base + words) * 4 > d->bar_bytes)
+		return FM_ERR;
+
+	saved = d->check_writes;
+	d->check_writes = 0;
+	for (i = 0; i < words; i++) {
+		nosaic_mmio_wr32((void *)((char *)d->regs + (base + i) * 4), val);
+		d->writes++;
+	}
+	nosaic_mmio_barrier();
+	d->check_writes = saved;
+
+	/* The one check the burst owes. On the local bus a dead chip answers
+	 * zeros rather than ones, so ask the liveness beacon rather than config
+	 * space -- fm_alive() picks the right question for the transport. */
+	if (fm_alive(d) == 0)
+		rv = FM_EOFFBUS;
+	return rv;
+}
+
 const char *fm_hazard(const struct fm6000 *d, uint32_t word)
 {
+	/* Measured fatal, and not conditional on anything: these were found by
+	 * bisecting a fill that killed the chip, and nothing has established a
+	 * state in which they are safe. */
+	if (word == FM6000_FATAL_WRITE_1 || word == FM6000_FATAL_WRITE_2)
+		return "writing this word is measured to take the chip off the "
+		       "bus (2026-09-25); reading it has not been tried";
+
 	/* EPL is the one block whose hazard the documented boot sequence
 	 * actually clears, so it is checked against its own flag rather than
 	 * against the bank one. */
