@@ -728,7 +728,7 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.7\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.8\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
