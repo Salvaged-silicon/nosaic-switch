@@ -47,8 +47,8 @@ static void usage(void)
 "  --bist [config]       configure the memory controllers and run the BIST\n"
 "                        march. 'config' stops after the controllers. WRITES,\n"
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
-"  --try-pair EPL SBUS   confirm or refute one EPL-to-SBus pairing. It\n"
-"                        cannot sweep; see the comment on why\n"
+"  --try-pair EPL SBUS   confirm or refute one EPL-to-SBus pairing\n"
+"  --sweep-pairs         find every EPL's SBus address by trying them\n"
 "  --spico N             is the SPICO running? post an interrupt and see\n"
 "  --dfe N               run the RX equaliser adaptation for port N\n"
 "  --sbus                bring the SerDes bus up and read one lane per EPL\n"
@@ -605,6 +605,71 @@ int main(int argc, char **argv)
 		if (rc != 0)
 			printf("  nothing moved -- this pairing is wrong, or the\n"
 			       "  lane has no optic and needs one to show more\n");
+	} else if (strcmp(argv[i], "--sweep-pairs") == 0) {
+		/*
+		 * Find every EPL's SBus address by trying them.
+		 *
+		 * --try-pair can confirm one pairing, so the map is just that
+		 * run over the candidates. What makes it affordable is doing it
+		 * in one process: a trial is two register reads and a lane
+		 * enable, about two seconds, and nothing needs rebooting unless
+		 * the chip actually falls over.
+		 *
+		 * The signal is a TRANSITION. A lane that has already been
+		 * brought up stays up, so each trial compares that EPL's
+		 * PORT_STATUS before and after, and a candidate is only
+		 * accepted when it moves the value.
+		 *
+		 * Table 9-4's addresses, in its own order.
+		 */
+		static const unsigned cand[] = {
+			5, 77, 9, 81, 13, 85, 17, 89, 45, 93, 49, 97,
+			53, 41, 57, 21, 25, 29, 33, 37, 61, 65, 69, 73
+		};
+		unsigned e, c, found = 0;
+		int taken[24] = { 0 };
+
+		(void)fm_sbus_start(&dev);
+		printf("EPL  SBus  (trying %zu candidates each)\n",
+		       sizeof(cand) / sizeof(cand[0]));
+		for (e = 1; e <= 24; e++) {
+			uint32_t b4 = 0, af = 0;
+			int hit = -1;
+
+			for (c = 0; c < sizeof(cand) / sizeof(cand[0]); c++) {
+				struct fm_port probe = { 0, (int)e, 0, (int)cand[c],
+							 0, 0, 4, 0, 5 };
+				struct fm_lane_report lrep;
+
+				if (taken[c])
+					continue;
+				if (fm_rd(&dev, FM6000_EPL_LANE(e, 0), &b4) != FM_OK)
+					break;
+				(void)fm_lane_enable(&dev, &probe, &lrep);
+				if (fm_rd(&dev, FM6000_EPL_LANE(e, 0), &af) != FM_OK)
+					break;
+				if (af != b4) {
+					hit = (int)c;
+					break;
+				}
+				if (fm_alive(&dev) != 1) {
+					printf(" %2u   chip died trying %u -- stopping\n",
+					       e, cand[c]);
+					goto sweep_done;
+				}
+			}
+			if (hit >= 0) {
+				taken[hit] = 1;
+				found++;
+				printf(" %2u   %3u   0x%08x -> 0x%08x\n",
+				       e, cand[hit], b4, af);
+			} else {
+				printf(" %2u     ?   no candidate moved it\n", e);
+			}
+		}
+sweep_done:
+		printf("\n%u of 24 EPLs mapped\n", found);
+		rc = found == 24 ? 0 : 2;
 	} else if (strcmp(argv[i], "--sbus") == 0) {
 		rc = cmd_sbus(&dev);
 	} else if (strcmp(argv[i], "--meminit") == 0) {

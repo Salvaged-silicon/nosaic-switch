@@ -1303,9 +1303,42 @@ paired with 14".
 
 A test that needs the answer to ask the question is not a test.
 `fm6000-probe --try-pair EPL SBUS` now takes both and confirms or refutes one
-pairing; both known ones check out. Sweeping properly is 24 × 24 = 576 trials
-at about ten seconds each, which is possible and has not been judged worth it
-yet.
+pairing; both known ones check out.
+
+### ⚠ Then I built the sweep anyway, twice, and both were wrong
+
+**In one process:** produced a complete, clean-looking table of all 24 EPLs.
+It is wrong. It puts EPL 16 on SBus 49 when the known pairing is 69 — which
+it gave to EPL 24. The cause is that it never reboots: by EPL 16 it has
+enabled a dozen SerDes, and with that much state an EPL's gates alone move
+its PORT_STATUS, so whichever candidate is tried first gets the credit.
+
+**The control that proves it**, from a clean boot each time:
+
+```
+   EPL 16 + SBus 69   moved 0x015 -> 0x815
+   EPL 16 + SBus 49   nothing
+   EPL 16 + SBus  5   nothing
+   EPL 16 + SBus 97   nothing
+```
+
+So the signal is specific **from a clean chip and only from one**.
+
+**With a reboot per trial:** correct in principle and impractical. I put the
+recovery inside the candidate loop, making it 576 reboots rather than 24, and
+it ran for forty minutes, reached EPL 12, then wedged the box hard enough
+that three recovery attempts failed and the harness aborted.
+
+⚠ The abort is the part that worked. It stopped rather than reporting, and
+the eleven pairings it did collect are **not recorded here** — there is no
+known pairing among EPLs 1-11 to check them against, so they are unvalidated
+and an unvalidated table is what this whole section is about not producing.
+
+The watchdog then power-cycled the box and NOSaic came back by itself, which
+is the second time that recovery path has earned its place.
+
+**The permutation remains unknown for 22 of 24 EPLs**, and a third attempt at
+sweeping is not the next thing to try.
 
 ## Confirmed on the bench, 2026-09-22
 
