@@ -207,6 +207,9 @@ func (s *Switch) SetPortVLAN(name string, vid int, tagged bool) error {
 	if _, err := ipCmd("link", "set", name, "master", bridgeName); err != nil {
 		return err
 	}
+	if err := s.applySTPPort(name); err != nil {
+		return err
+	}
 	m, err := bridgeVLANs()
 	if err != nil {
 		return err

@@ -46,6 +46,7 @@
 #include "query.h"
 #include "vlan.h"
 #include "lag.h"
+#include "rstp.h"
 
 static int query_unit;
 
@@ -379,6 +380,15 @@ static int handle_lag(FILE *out, const char *req)
 		rv = nosaic_lag_members(name, ports, n, err, sizeof(err));
 	} else if (strcmp(op, "lag.del") == 0) {
 		rv = nosaic_lag_del(name, err, sizeof(err));
+	} else if (strcmp(op, "stp") == 0) {
+		nosaic_rstp_query(out);
+		return 1;
+	} else if (strcmp(op, "stp.set") == 0) {
+		rv = nosaic_rstp_set(strstr(req, "\"enabled\":true") != NULL,
+				     req_int(req, "priority", 32768), err, sizeof(err));
+	} else if (strcmp(op, "stp.port") == 0) {
+		rv = nosaic_rstp_port(name, strstr(req, "\"edge\":true") != NULL,
+				      req_int(req, "cost", 0), err, sizeof(err));
 	} else if (strcmp(op, "port.admin") == 0) {
 		rv = port_admin(name, strstr(req, "\"up\":true") != NULL, err, sizeof(err));
 	} else {
@@ -675,20 +685,21 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.3\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.4\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
 			"\"ACL\":%s,\"ACLEntries\":%d,"
 			"\"ACL6\":%s,\"ACL6Entries\":%d,"
 			"\"LAGs\":%s,\"MaxLAGs\":%d,\"MaxLAGMembers\":%d,"
-			"\"LACP\":%s}}\n",
+			"\"LACP\":%s,\"STP\":%s}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
 			maxecmp > 1 ? "true" : "false", maxecmp,
 			acl.v4 ? "true" : "false", acl.v4_total,
 			acl.v6 ? "true" : "false", acl.v6_total,
 			maxlags > 0 ? "true" : "false", maxlags, maxlagm,
-			maxlags > 0 ? "true" : "false");
+			maxlags > 0 ? "true" : "false",
+			nosaic_rstp_supported() ? "true" : "false");
 		return;
 	}
 
@@ -869,6 +880,7 @@ int nosaic_query_start(int unit, const char *path)
 	 * it: every datapath calls this, and none has to be told separately. */
 	nosaic_vlan_start(unit);
 	nosaic_lag_start(unit);
+	nosaic_rstp_start(unit);
 
 	struct sockaddr_un a;
 	pthread_t th;

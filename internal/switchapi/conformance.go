@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +70,7 @@ func Check(sw Switch) []error {
 	if len(ports) >= 2 {
 		probs = append(probs, checkLAGs(sw, caps, p0, ports[1].Name)...)
 	}
+	probs = append(probs, checkSTP(sw, caps, p0)...)
 	probs = append(probs, checkL3(sw, caps, p0)...)
 
 	probs = append(probs, checkACLs(sw, caps, p0)...)
@@ -489,4 +491,102 @@ func hasRoute(routes []Route, p netip.Prefix) bool {
 		}
 	}
 	return false
+}
+
+// checkSTP is what one bridge can check about its own spanning tree without
+// knowing who its neighbours are: configuration reads back, nonsense is
+// refused, a switched interface appears with its cost, and "no root port" means
+// "I am the root". It leaves spanning tree off, as it found a fresh datapath.
+func checkSTP(sw Switch, caps Capabilities, p0 string) []error {
+	err := sw.SetSTP(STPConfig{Enabled: false, Priority: STPDefaultPriority})
+	if probs := wantSupport(caps.STP, err, "SetSTP", "Capabilities.STP"); len(probs) > 0 || !caps.STP {
+		return probs
+	}
+	var probs []error
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	defer func() {
+		_ = sw.SetSTP(STPConfig{Enabled: false, Priority: STPDefaultPriority})
+		_ = sw.SetSTPPort(p0, STPPortConfig{})
+	}()
+
+	if err := sw.SetSTP(STPConfig{Enabled: true, Priority: 1000}); err == nil {
+		bad("SetSTP accepted priority 1000, which is not a multiple of 4096")
+	}
+	if err := sw.SetSTPPort("swp-nonexistent", STPPortConfig{}); err == nil {
+		bad("SetSTPPort on an unknown port succeeded")
+	}
+	if err := sw.SetSTPPort(p0, STPPortConfig{Cost: -1}); err == nil {
+		bad("SetSTPPort accepted cost -1")
+	}
+	if err := sw.SetSTPPort(p0, STPPortConfig{Cost: 1234}); err != nil {
+		bad("SetSTPPort(%s, cost 1234): %v", p0, err)
+	}
+	if err := sw.SetSTP(STPConfig{Enabled: true, Priority: 4096}); err != nil {
+		return append(probs, fmt.Errorf("SetSTP(on, 4096): %w", err))
+	}
+
+	// A switched interface is in the tree.
+	if caps.VLANs {
+		if err := sw.AddVLAN(301); err == nil {
+			defer sw.DelVLAN(301)
+			if err := sw.SetPortVLAN(p0, 301, true); err == nil {
+				defer sw.DelPortVLAN(p0, 301)
+			} else {
+				bad("SetPortVLAN(%s, 301): %v", p0, err)
+			}
+		}
+	}
+	st, err := sw.STP()
+	if err != nil {
+		return append(probs, fmt.Errorf("STP: %w", err))
+	}
+	if !st.Enabled || st.Priority != 4096 {
+		bad("STP reports enabled=%v priority=%d after SetSTP(on, 4096)", st.Enabled, st.Priority)
+	}
+	if !strings.HasPrefix(st.BridgeID, "1000.") {
+		bad("bridge ID %q does not carry priority 4096 as 1000.<mac>", st.BridgeID)
+	}
+	if (st.RootPort == "") != (st.RootID == st.BridgeID) {
+		bad("root port %q and root %s disagree about whether this bridge (%s) is the root",
+			st.RootPort, st.RootID, st.BridgeID)
+	}
+	if caps.VLANs {
+		var found bool
+		for _, p := range st.Ports {
+			if p.Port != p0 {
+				continue
+			}
+			found = true
+			if p.Cost != 1234 {
+				bad("%s reports path cost %d, configured 1234", p0, p.Cost)
+			}
+			switch p.Role {
+			case "root", "designated", "alternate", "backup", "disabled":
+			default:
+				bad("%s has role %q", p0, p.Role)
+			}
+			switch p.State {
+			case "discarding", "learning", "forwarding":
+			default:
+				bad("%s has state %q", p0, p.State)
+			}
+		}
+		if !found {
+			bad("%s is in VLAN 301 but not in the spanning tree", p0)
+		}
+	}
+
+	if err := sw.SetSTP(STPConfig{Enabled: false, Priority: STPDefaultPriority}); err != nil {
+		bad("SetSTP(off): %v", err)
+	} else if st, err := sw.STP(); err == nil {
+		if st.Enabled {
+			bad("STP still enabled after SetSTP(off)")
+		}
+		for _, p := range st.Ports {
+			if p.State != "forwarding" {
+				bad("spanning tree is off but %s is %s", p.Port, p.State)
+			}
+		}
+	}
+	return probs
 }

@@ -45,6 +45,10 @@ type Switch struct {
 	vlans bool // the bridge tool is here, so VLANs and SVIs are real
 	lags  bool // the kernel has bonding, so LAGs and LACP are real
 	acls  map[int]switchapi.ACLRule
+	// stpPorts is each interface's spanning-tree configuration, applied when
+	// it joins the bridge. The only virt state not read back from the kernel:
+	// a port's cost lives on it only while it is a bridge port.
+	stpPorts stpPortCfg
 }
 
 // New builds a virtual switch. Nothing is created until Start.
@@ -80,6 +84,7 @@ func (s *Switch) Capabilities() switchapi.Capabilities {
 		MaxLAGs:       64 * b2i(s.lags),
 		MaxLAGMembers: 16 * b2i(s.lags),
 		LACP:          s.lags,
+		STP:           s.vlans,
 		L2Learning:    false,
 		L3:            true,
 		IPv6:          true,

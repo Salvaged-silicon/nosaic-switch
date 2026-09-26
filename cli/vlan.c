@@ -348,3 +348,112 @@ int nosaic_show_lags(void)
 	free(resp);
 	return 0;
 }
+
+/*
+ * nosaic stp on [priority <n>] | stp off | stp port <port> [edge] [cost <n>]
+ *
+ * The end state, like cmd/nosaic/stp.go: "stp on" without a priority is the
+ * default priority, and "stp port swp1" alone puts swp1 back to defaults.
+ */
+int nosaic_stp_cmd(int argc, char **argv)
+{
+	static const char usage[] =
+		"usage: nosaic stp on [priority <n>]\n"
+		"       nosaic stp off\n"
+		"       nosaic stp port <port> [edge] [cost <n>]\n";
+	char req[256];
+	int i, edge = 0, cost = 0;
+
+	if (argc >= 3 && (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0)) {
+		int on = strcmp(argv[2], "on") == 0, prio = 32768;
+
+		if (on && argc == 5 && strcmp(argv[3], "priority") == 0)
+			prio = atoi(argv[4]);
+		else if (argc != 3) {
+			fputs(usage, stderr);
+			return 2;
+		}
+		snprintf(req, sizeof(req), "{\"op\":\"stp.set\",\"args\":"
+			 "{\"enabled\":%s,\"priority\":%d}}", on ? "true" : "false", prio);
+		return ask(req);
+	}
+	if (argc < 4 || strcmp(argv[2], "port") != 0) {
+		fputs(usage, stderr);
+		return 2;
+	}
+	for (i = 4; i < argc; i++) {
+		if (strcmp(argv[i], "edge") == 0)
+			edge = 1;
+		else if (strcmp(argv[i], "cost") == 0 && i + 1 < argc)
+			cost = atoi(argv[++i]);
+		else {
+			fputs(usage, stderr);
+			return 2;
+		}
+	}
+	snprintf(req, sizeof(req), "{\"op\":\"stp.port\",\"args\":"
+		 "{\"name\":\"%s\",\"edge\":%s,\"cost\":%d}}", argv[3],
+		 edge ? "true" : "false", cost);
+	return ask(req);
+}
+
+int nosaic_show_stp(void)
+{
+	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"stp\"}");
+	char bridge[32], root[32], rport[64];
+	const char *m;
+
+	if (resp == NULL) {
+		nosaic_query_explain(NOSAIC_QUERY_SOCKET);
+		return 1;
+	}
+	if (strstr(resp, "\"ok\":true") == NULL) {
+		char err[256];
+
+		nosaic_jstr(resp, "error", err, sizeof(err));
+		fprintf(stderr, "nosaic: %s\n", err[0] ? err : resp);
+		free(resp);
+		return 1;
+	}
+	if (!nosaic_jbool(resp, "Enabled", 0)) {
+		printf("spanning tree is off; every switched port forwards. Turn it on with: nosaic stp on\n");
+		free(resp);
+		return 0;
+	}
+	nosaic_jstr(resp, "BridgeID", bridge, sizeof(bridge));
+	nosaic_jstr(resp, "RootID", root, sizeof(root));
+	nosaic_jstr(resp, "RootPort", rport, sizeof(rport));
+	printf("%-18s%-20spriority %d\n", "bridge", bridge, nosaic_jint(resp, "Priority", 0));
+	if (rport[0] == '\0')
+		printf("%-18s%-20sthis bridge\n", "root", root);
+	else
+		printf("%-18s%-20scost %d via %s\n", "root", root,
+		       nosaic_jint(resp, "RootCost", 0), rport);
+	printf("%-18s%d\n\n", "topology changes", nosaic_jint(resp, "TopologyChanges", 0));
+	m = strstr(resp, "\"Ports\":[");
+	if (m == NULL || m[9] == ']') {
+		printf("no switched ports; spanning tree runs on ports and LAGs in a VLAN\n");
+		free(resp);
+		return 0;
+	}
+	printf("%-8s%-12s%-12s%-10s%s\n", "PORT", "ROLE", "STATE", "COST", "EDGE");
+	/* {"Port":"swp1","Role":"root","State":"forwarding","Edge":false,"Cost":2000,...} */
+	while ((m = strstr(m, "{\"Port\":\"")) != NULL) {
+		char port[64], role[16], state[16], rec[512];
+		const char *e = strchr(m, '}');
+		size_t n = e ? (size_t)(e - m + 1) : strlen(m);
+
+		if (n >= sizeof(rec))
+			n = sizeof(rec) - 1;
+		memcpy(rec, m, n);
+		rec[n] = '\0';
+		nosaic_jstr(rec, "Port", port, sizeof(port));
+		nosaic_jstr(rec, "Role", role, sizeof(role));
+		nosaic_jstr(rec, "State", state, sizeof(state));
+		printf("%-8s%-12s%-12s%-10d%s\n", port, role, state,
+		       nosaic_jint(rec, "Cost", 0), nosaic_jbool(rec, "Edge", 0) ? "edge" : "-");
+		m++;
+	}
+	free(resp);
+	return 0;
+}

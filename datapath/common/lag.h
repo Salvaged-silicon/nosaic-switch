@@ -51,7 +51,10 @@ int nosaic_lag_port_claimed(int port);
 int nosaic_lag_pick(int key, unsigned hash);
 /* Keep one member per LAG in a flood bitmap, so a partner gets one copy. */
 void nosaic_lag_flood_mask(bcm_pbmp_t *pbm, unsigned hash);
-/* The LAG a trunk id belongs to, 0 if none. */
+/* The LAG a trunk id belongs to, 0 if none; and a LAG's trunk id, -1 if none. */
 int nosaic_lag_of_tid(int tid);
+int nosaic_lag_tid(int key);
+/* How many of a LAG's members are distributing. */
+int nosaic_lag_active(int key);
 
 #endif

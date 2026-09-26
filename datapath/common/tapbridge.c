@@ -118,6 +118,7 @@
 #include "tapbridge.h"
 #include "vlan.h"
 #include "lag.h"
+#include "rstp.h"
 
 #define TAP_MTU        9216
 #define MIN_FRAME      60
@@ -613,6 +614,17 @@ static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len)
 	/* A LAG in the VLAN gets one copy, not one per member: its partner
 	 * would take every copy as a separate frame. */
 	nosaic_lag_flood_mask(&pbm, frame_hash(buf));
+	/* And not out of a port the spanning tree is blocking: the CPU's
+	 * transmit names its ports and bypasses the chip's own state check. */
+	{
+		bcm_pbmp_t in;
+		bcm_port_t q;
+
+		BCM_PBMP_ASSIGN(in, pbm);
+		BCM_PBMP_ITER(in, q)
+			if (!nosaic_rstp_forwarding(q))
+				BCM_PBMP_PORT_REMOVE(pbm, q);
+	}
 	if (BCM_PBMP_IS_NULL(pbm)) {
 		t->tx_nolink++;                     /* a VLAN with no members */
 		return -1;

@@ -195,6 +195,27 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(lags)
 
+	case proto.OpSetSTP:
+		var a proto.STPArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetSTP(switchapi.STPConfig{Enabled: a.Enabled, Priority: a.Priority}))
+
+	case proto.OpSetSTPPort:
+		var a proto.STPPortArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetSTPPort(a.Name, switchapi.STPPortConfig{Edge: a.Edge, Cost: a.Cost}))
+
+	case proto.OpSTP:
+		st, err := s.sw.STP()
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(st)
+
 	case proto.OpAddSVI, proto.OpDelSVI:
 		if err := json.Unmarshal(req.Args, &v); err != nil {
 			return proto.ErrorResponse(err)

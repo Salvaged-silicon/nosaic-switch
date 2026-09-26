@@ -44,6 +44,7 @@ func DefaultCaps() switchapi.Capabilities {
 		MaxLAGs:       64,
 		MaxLAGMembers: 8,
 		LACP:          true,
+		STP:           true,
 		L2Learning:    true,
 		L3:            true,
 		IPv6:          true,
@@ -79,6 +80,7 @@ type Switch struct {
 	lags    map[string]*lag
 	routes  map[netip.Prefix]switchapi.Route
 	acls    map[int]switchapi.ACLRule
+	stpst   *stpState
 }
 
 // New builds a simulated switch.
