@@ -354,6 +354,30 @@ Both fatal words were bisected exactly rather than bounded — binary search on
 the fill count, with a reset pulse and a re-boot between trials, which costs
 about ten seconds each now the box stays on NOSaic.
 
+⚠ **And then re-bisected, because the first harness could not be trusted.** Two
+runs of it disagreed about `0x260000`, reporting `0x260010` and `0x260014` from
+the same script — they contradicted each other on the same trial, 20 words
+"kills" against 20 words "ok". The cause is the one already described for the
+EPL sweep: recovery was not verified, so a trial whose chip was *already* dead
+reports "kills", and since a false "kills" moves the upper bound down, the
+search is biased toward smaller indices.
+
+The harness now **verifies recovery, retries it three times, and aborts** if it
+cannot get the chip back, and it runs **three trials per point** and prints
+`NOT REPRODUCIBLE` rather than averaging a disagreement away. Re-run under it,
+both values come back unanimous at every point:
+
+```
+  0x240036    3/3 at every point
+  0x260014    3/3 at every point
+```
+
+So the numbers above are right and the earlier disagreement was the harness,
+not the chip. The lesson is the general one and it has now cost time twice on
+this board: **a recover-and-retry harness that cannot distinguish "this killed
+it" from "it was already dead" does not produce weak evidence, it produces
+confident wrong answers** — and a bisect converges on one of them regardless.
+
 So the two "MCAST" addresses are **register blocks** that happen to sit where
 traffic to them was once observed, and treating a register block as fillable
 memory is how you lose a chip. `fm_is_bank()` now covers the one real memory,
