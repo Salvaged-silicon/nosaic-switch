@@ -500,6 +500,18 @@ int nosaic_show_stp(void)
 	printf("%-18shello %d s, forward delay %d s, max age %d s\n", "times",
 	       nosaic_jint(resp, "HelloTime", 0), nosaic_jint(resp, "ForwardDelay", 0),
 	       nosaic_jint(resp, "MaxAge", 0));
+	/* A bridge below the root runs on the root's times, not its own. */
+	{
+		int rh = nosaic_jint(resp, "RootHelloTime", 0);
+		int rf = nosaic_jint(resp, "RootForwardDelay", 0);
+		int rm = nosaic_jint(resp, "RootMaxAge", 0);
+
+		if (rh && (rh != nosaic_jint(resp, "HelloTime", 0) ||
+			   rf != nosaic_jint(resp, "ForwardDelay", 0) ||
+			   rm != nosaic_jint(resp, "MaxAge", 0)))
+			printf("%-18shello %d s, forward delay %d s, max age %d s\n",
+			       "root times", rh, rf, rm);
+	}
 	printf("%-18s%d\n\n", "topology changes", nosaic_jint(resp, "TopologyChanges", 0));
 	m = strstr(resp, "\"Ports\":[");
 	if (m == NULL || m[9] == ']') {

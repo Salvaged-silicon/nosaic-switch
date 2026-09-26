@@ -99,6 +99,12 @@ func showSTP(c *nosdclient.Client, w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "root\t%s\tcost %d via %s\n", st.RootID, st.RootCost, st.RootPort)
 	}
 	fmt.Fprintf(w, "times\thello %d s, forward delay %d s, max age %d s\t\n", st.HelloTime, st.ForwardDelay, st.MaxAge)
+	// A bridge below the root runs on the root's times, not its own.
+	if st.RootHelloTime != 0 && (st.RootHelloTime != st.HelloTime ||
+		st.RootForwardDelay != st.ForwardDelay || st.RootMaxAge != st.MaxAge) {
+		fmt.Fprintf(w, "root times\thello %d s, forward delay %d s, max age %d s\t\n",
+			st.RootHelloTime, st.RootForwardDelay, st.RootMaxAge)
+	}
 	fmt.Fprintf(w, "topology changes\t%d\t\n\n", st.TopologyChanges)
 	if len(st.Ports) == 0 {
 		fmt.Fprintln(w, "no switched ports; spanning tree runs on ports and LAGs in a VLAN")

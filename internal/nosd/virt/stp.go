@@ -209,6 +209,11 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 	out.RootCost = bd.RootPathCost
 	out.TopologyChanges = bd.TopologyChange
 	out.HelloTime, out.ForwardDelay, out.MaxAge = bd.HelloTime/100, bd.ForwardDelay/100, bd.MaxAge/100
+	// The kernel reports the times in use, which a bridge that is not the
+	// root takes from the root. It keeps its configured ones (bridge_max_age
+	// and the rest) but does not report them, so on this board the two sets
+	// read the same.
+	out.RootHelloTime, out.RootForwardDelay, out.RootMaxAge = out.HelloTime, out.ForwardDelay, out.MaxAge
 	for _, d := range l {
 		if d.Master != bridgeName {
 			continue

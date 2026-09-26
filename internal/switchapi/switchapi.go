@@ -77,7 +77,12 @@ import (
 // SetLACPSystemPriority for LACP (rate, active or passive, priorities);
 // timers and a port priority in STPConfig and STPPortConfig; timers and the
 // heartbeat port in MLAGConfig. Every one defaults, at zero, to what 1.6 did.
-const Version = "1.7"
+//
+// 1.8 added the times the tree runs on to STPStatus: RootHelloTime,
+// RootForwardDelay and RootMaxAge, the root's, as its BPDUs carry them. A
+// bridge that is not the root uses those, not its own configured ones, so the
+// configured times alone cannot say what a running tree is doing.
+const Version = "1.8"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -306,9 +311,14 @@ type STPStatus struct {
 	RootPort        string // "" when this bridge is the root
 	TopologyChanges int
 	Ports           []STPPort
-	HelloTime       int
+	HelloTime       int // this bridge's, as configured
 	ForwardDelay    int
 	MaxAge          int
+	// The times in use: the root's, as received, or this bridge's own when
+	// it is the root. Seconds, like the configured ones.
+	RootHelloTime    int
+	RootForwardDelay int
+	RootMaxAge       int
 }
 
 // STPPort is one switched interface in the tree. Role is root, designated,

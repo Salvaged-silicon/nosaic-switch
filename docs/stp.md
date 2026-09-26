@@ -50,7 +50,9 @@ after it puts swp1 back to the defaults.
 - The bridge times default to 802.1D's: hello 2 s, forward delay 15 s, max
   age 20 s. They are checked together, as 802.1D-2004 17.14 requires:
   `2 x (forward-delay - 1) >= max-age >= 2 x (hello + 1)`. A switch that is not
-  the root uses the root's times, as the standard says.
+  the root uses the root's times, as the standard says. `show stp` then shows
+  both: `times` is this switch's configuration, `root times` what the tree
+  runs on.
 - A port's `priority`, 16 to 240 in steps of 16 (default 128), breaks a tie
   between two ports to the same bridge.
 - `edge` marks a port as having a host on it, not a bridge. It forwards at
@@ -64,6 +66,8 @@ after it puts swp1 back to the defaults.
 
     bridge            8000.023581caae50   priority 32768
     root              1000.02a8eb93f650   cost 500 via swp51
+    times             hello 2 s, forward delay 15 s, max age 20 s
+    root times        hello 1 s, forward delay 10 s, max age 12 s
     topology changes  6
 
     PORT    ROLE        STATE       COST      EDGE

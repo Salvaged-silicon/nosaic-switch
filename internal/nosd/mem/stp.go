@@ -80,6 +80,8 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 		RootID:   id,
 	}
 	out.HelloTime, out.ForwardDelay, out.MaxAge = switchapi.STPTimes(st.cfg)
+	// One bridge, always the root: its own times are the tree's.
+	out.RootHelloTime, out.RootForwardDelay, out.RootMaxAge = out.HelloTime, out.ForwardDelay, out.MaxAge
 	for _, p := range s.switchable() {
 		if len(p.vlans) == 0 || p.lag != "" {
 			continue

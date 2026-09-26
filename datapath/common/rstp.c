@@ -1054,9 +1054,14 @@ void nosaic_rstp_query(FILE *out)
 	if (bridge_id[2] == 0 && bridge_id[3] == 0)
 		set_bridge_id();
 	fprintf(out, "{\"ok\":true,\"result\":{\"Enabled\":%s,\"Priority\":%d,"
-		"\"HelloTime\":%d,\"ForwardDelay\":%d,\"MaxAge\":%d,\"BridgeID\":",
+		"\"HelloTime\":%d,\"ForwardDelay\":%d,\"MaxAge\":%d,"
+		"\"RootHelloTime\":%d,\"RootForwardDelay\":%d,\"RootMaxAge\":%d,\"BridgeID\":",
 		enabled ? "true" : "false", priority, hello_ms / 1000, fwd_delay_ms / 1000,
-		max_age_ms / 1000);
+		max_age_ms / 1000,
+		/* the times in use: the root's, from its BPDUs, or ours as the root */
+		(enabled && root_key >= 0 ? root_times.hello : hello_ms) / 1000,
+		(enabled && root_key >= 0 ? root_times.fwd : fwd_delay_ms) / 1000,
+		(enabled && root_key >= 0 ? root_times.max_age : max_age_ms) / 1000);
 	put_id(out, bridge_id);
 	fprintf(out, ",\"RootID\":");
 	put_id(out, enabled && (root_pv[0] | root_pv[2]) ? root_pv + PV_ROOT : bridge_id);
