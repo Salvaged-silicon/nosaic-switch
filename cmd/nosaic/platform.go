@@ -76,6 +76,8 @@ func platformCmd(args []string) error {
 	switch rest[0] {
 	case "status":
 		return platformStatus(hal, b)
+	case "mac":
+		return boardMAC(hal)
 	case "release-asic":
 		return releaseASIC(hal, b)
 	case "asic":
@@ -295,6 +297,27 @@ func platformStatus(hal platformhal.HAL, b *board.Board) error {
 		}
 	}
 	return w.Flush()
+}
+
+// boardMAC prints the base MAC the board was manufactured with, and nothing
+// else -- no label, no newline decoration -- because its caller is a shell
+// script substituting it into `ip link set address`.
+//
+// Exists as its own command rather than as a field of `platform status`
+// because parsing a status table in a boot script is how a formatting change
+// becomes an outage.
+func boardMAC(hal platformhal.HAL) error {
+	h, ok := hal.(interface{ BoardMAC() (string, error) })
+	if !ok {
+		return fmt.Errorf("%w: this board cannot read its own MAC",
+			platformhal.ErrUnsupported)
+	}
+	mac, err := h.BoardMAC()
+	if err != nil {
+		return err
+	}
+	fmt.Println(mac)
+	return nil
 }
 
 // releaseASIC brings the switch chip onto the bus.

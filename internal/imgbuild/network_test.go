@@ -42,3 +42,29 @@ func TestApplyNetworkWaitsForTheDatapath(t *testing.T) {
 		}
 	}
 }
+
+// `mac board` is what makes an image chassis-independent: the MAC belongs to
+// the unit, not to the build. A literal in a config file means flashing the
+// same image onto two switches of a model gives them one address between them.
+func TestMACCanComeFromTheBoardRatherThanTheConfigFile(t *testing.T) {
+	for _, want := range []string{
+		`[ "$mac" = "board" ]`, // recognises the token
+		`nosaic platform mac`,  // and asks the hardware for it
+	} {
+		if !strings.Contains(applyNetwork, want) {
+			t.Errorf("the apply script does not contain %q", want)
+		}
+	}
+
+	// A failed lookup must not take the management interface away with it.
+	// That interface is the way back into a switch whose datapath is down.
+	i := strings.Index(applyNetwork, `nosaic platform mac`)
+	j := strings.Index(applyNetwork, `if [ -n "$mac" ] && [ "$have_mac" != "$mac" ]`)
+	if i < 0 || j < 0 || i > j {
+		t.Fatal("the board lookup should happen before the set, and both should exist")
+	}
+	if !strings.Contains(applyNetwork[i:j], "leaving the driver's own address") {
+		t.Error("a failed board lookup should say so and continue, not abort " +
+			"and leave the switch with no management network")
+	}
+}

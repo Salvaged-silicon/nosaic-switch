@@ -120,6 +120,27 @@ while read -r kind name rest; do
     mtu=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="mtu") print $(i+1)}')
     mac=$(echo "$rest" | awk '{for(i=1;i<=NF;i++) if($i=="mac") print $(i+1)}')
 
+    # A mac of "board" means ask the hardware, and it is what a board should say.
+    #
+    # A literal MAC in a configuration file makes the IMAGE chassis-specific:
+    # flash it onto a second switch of the same model and two boxes claim one
+    # address. The value belongs to the unit, not to the build, so the unit is
+    # asked for it.
+    #
+    # A failure here leaves $mac empty, which leaves the interface on whatever
+    # the driver gave it -- usually a random address. That is bad and it is
+    # better than the alternatives: refusing to configure the interface would
+    # take away the management network, which is the one way back into a
+    # switch whose datapath is not up. So it is loud in the log and it
+    # continues.
+    if [ "$mac" = "board" ]; then
+        mac=$(nosaic platform mac 2>/dev/null)
+        if [ -z "$mac" ]; then
+            say "$name WANTED its MAC from the board and could not read it;" \
+                "leaving the driver's own address, which may be random"
+        fi
+    fi
+
     if ! ip link show "$name" >/dev/null 2>&1; then
         missing=$((missing + 1))
         echo "$name" >> "$ABSENT"

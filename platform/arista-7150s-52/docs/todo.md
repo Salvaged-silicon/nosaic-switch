@@ -418,11 +418,18 @@ Features that do not need the ASIC, measured and working 2026-09-25:
       ⚠ It uses **SMBus** reads, not the `I2C_RDWR` the as4610 helper uses —
       the PIIX4 controller does not implement raw i2c transfers, so that
       helper could not be shared however much it looks like it should be.
-- [ ] **delete the hardcoded MAC from `config/network.conf`.** `BoardMAC()`
-      exists and works; what is missing is the network configuration
-      consuming it instead of a literal. The sibling 7050SX2 carries the same
-      stopgap and the same note, and now the same fix is available to it once
-      its own EEPROM is located.
+- [x] **the hardcoded MAC is gone; the image is chassis-independent.**
+      `config/network.conf` says `mac board`, the apply script asks
+      `nosaic platform mac`, and that reads the prefdl. Verified on a fresh
+      boot: tg3 probes with a random `fa:d8:a4:8c:00:3a` and the interface
+      ends up with `44:4c:a8:31:5d:aa` off the EEPROM.
+      ⚠ A failed lookup logs loudly and **continues** with the driver's
+      address rather than refusing to configure the interface — losing the
+      management network is worse than a wrong MAC on a box whose datapath is
+      down.
+- [ ] **the sibling 7050SX2 still carries the literal-MAC stopgap.** The fix
+      is now available to it: state `platform_hal.prefdl` and change the
+      config to `mac board`. Its EEPROM's location has not been found.
 - [ ] ~~the board PREFDL is not located~~ — it is a shipping defect
       rather than a tidiness one.** `config/network.conf` states this
       chassis's MAC, so the image is chassis-specific: flash it on a second
