@@ -124,6 +124,15 @@ int nosaic_show_caps(void)
 	} else {
 		put(&t, r, 0, "ecmp"); put(&t, r++, 1, "no");
 	}
+	if (nosaic_jbool(resp, "LAGs", 0)) {
+		snprintf(s, sizeof(s), "yes, %d, up to %d members each%s",
+			 nosaic_jint(resp, "MaxLAGs", 0),
+			 nosaic_jint(resp, "MaxLAGMembers", 0),
+			 nosaic_jbool(resp, "LACP", 0) ? ", lacp" : "");
+		put(&t, r, 0, "lags"); put(&t, r++, 1, s);
+	} else {
+		put(&t, r, 0, "lags"); put(&t, r++, 1, "no");
+	}
 	emit(&t);
 	free(resp);
 	return 0;
