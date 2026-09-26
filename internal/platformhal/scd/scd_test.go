@@ -2,6 +2,7 @@ package scd
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -228,5 +229,23 @@ func TestReleaseDoesNotWaitForAChipThatEnumeratesAfterConfiguration(t *testing.T
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("release is still waiting for a chip that cannot appear yet")
+	}
+}
+
+// A board that has not been told where its identity EEPROM is must say so,
+// not guess. Probing addresses on an SMBus that carries PSU controllers is
+// not a safe way to find one, and an identity taken from the build
+// configuration would report what the image was compiled for rather than what
+// the switch is -- which defeats the only reason to read the thing.
+func TestIdentityIsRefusedWhenTheBoardDoesNotSayWhereItIs(t *testing.T) {
+	s := fake(0x8000)
+	if _, err := s.Board(); err == nil {
+		t.Fatal("Board() succeeded with no prefdl location, want a refusal")
+	} else if !errors.Is(err, platformhal.ErrUnsupported) {
+		t.Errorf("Board() error = %v, want ErrUnsupported so the caller can "+
+			"tell 'this board cannot' from 'this read failed'", err)
+	}
+	if _, err := s.BoardMAC(); err == nil {
+		t.Error("BoardMAC() succeeded with no prefdl location, want a refusal")
 	}
 }

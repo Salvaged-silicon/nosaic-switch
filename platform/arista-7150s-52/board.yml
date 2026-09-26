@@ -135,6 +135,21 @@ platform_hal:
   # is what `release-asic` did until 2026-09-25.
   switch_pcie_after_config: true
 
+  # The board identity EEPROM, carrying model, serial, hardware revision and
+  # the base MAC.
+  #
+  # ⚠ NOT ON THE SCD. Everything else here is behind the SCD's SMBus
+  # accelerators; this is address 0x52 on **host** i2c bus 1 -- the PIIX4
+  # southbridge bus that also carries the board CPLD at 0x23. Sweeping the
+  # SCD's accelerators for it found the 52 cages and the two PSU FRU EEPROMs
+  # and never could have found this.
+  #
+  # Located 2026-09-26 by loop-mounting the EOS image off our own flash and
+  # reading `GenprefdlPlugin/Raven.py`, which names `idseeprom --device=1.0x52`.
+  # Confirmed by the MAC matching the one this board's config has been
+  # asserting by hand.
+  prefdl: {bus: 1, addr: 0x52}
+
   # The board's SMBus, recovered by scanning it 2026-09-25 with NOSaic's own
   # scdsmbus -- accelerators 0..9 exist, 10 and up answer "no response".
   #

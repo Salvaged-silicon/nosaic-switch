@@ -455,6 +455,16 @@ type PlatformHAL struct {
 	// release that waits for the endpoint to appear waits for something that
 	// cannot happen yet, times out, and reports a working board as broken.
 	SwitchPCIeAfterConfig bool `yaml:"switch_pcie_after_config"`
+	// Prefdl is where the board's identity EEPROM sits on a HOST i2c bus --
+	// not on the controller's SMBus accelerators, which is where everything
+	// else on an Arista board lives.
+	//
+	// Stated because it cannot be found by looking: an SMBus carrying PSU
+	// controllers and transceivers is not somewhere to probe addresses
+	// hopefully, and on this family the identity EEPROM is not even on that
+	// bus. Absent means the board does not know where its own is, which is
+	// the honest state for a board nobody has found it on.
+	Prefdl *platformhal.I2CAddr `yaml:"prefdl"`
 
 	// SMBus is where the board's sensors and fan controller sit on the
 	// controller's SMBus. Optional, because a board may have none -- but a

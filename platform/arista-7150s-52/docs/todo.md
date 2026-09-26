@@ -411,9 +411,18 @@ Features that do not need the ASIC, measured and working 2026-09-25:
       `GenprefdlPlugin/Raven.py`, which names `idseeprom --device=1.0x52`.
       Also carries SKU `DCS-7150S-52-CL`, SID `SantaRosa`, HwRev, serial, and
       ⚠ the **Alta core rail voltages** in a board-specific code `09`.
-- [ ] **write the prefdl reader** and delete the hardcoded MAC. The sibling
-      7050SX2 carries the same stopgap and the same note; they should go
-      together.
+- [x] **the prefdl reader is written and the board identifies itself.**
+      `platform status` now reports `DCS-7150S-52-CL serial JPE17060680 rev
+      12.04 sid SantaRosa`, read off the chassis. `internal/platformhal/prefdl`
+      decodes; the SCD HAL reads it from `platform_hal.prefdl` board data.
+      ⚠ It uses **SMBus** reads, not the `I2C_RDWR` the as4610 helper uses —
+      the PIIX4 controller does not implement raw i2c transfers, so that
+      helper could not be shared however much it looks like it should be.
+- [ ] **delete the hardcoded MAC from `config/network.conf`.** `BoardMAC()`
+      exists and works; what is missing is the network configuration
+      consuming it instead of a literal. The sibling 7050SX2 carries the same
+      stopgap and the same note, and now the same fix is available to it once
+      its own EEPROM is located.
 - [ ] ~~the board PREFDL is not located~~ — it is a shipping defect
       rather than a tidiness one.** `config/network.conf` states this
       chassis's MAC, so the image is chassis-specific: flash it on a second

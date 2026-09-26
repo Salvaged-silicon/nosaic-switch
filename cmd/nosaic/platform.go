@@ -178,6 +178,7 @@ func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
 		SwitchResetBits:        b.PlatformHAL.SwitchResetBits,
 		SwitchResetAlwaysPulse: b.PlatformHAL.SwitchResetAlwaysPulse,
 		SwitchPCIeAfterConfig:  b.PlatformHAL.SwitchPCIeAfterConfig,
+		Prefdl:                 b.PlatformHAL.Prefdl,
 		BoardData:              b.PlatformHAL.N3172TQ,
 	})
 	if err != nil {

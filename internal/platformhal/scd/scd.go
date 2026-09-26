@@ -187,6 +187,8 @@ type SCD struct {
 	// pcieAfterConfig means the chip enumerates only once configured, so
 	// releasing reset must not wait for it.
 	pcieAfterConfig bool
+	// prefdl locates the board identity EEPROM on a host i2c bus, or is nil.
+	prefdl *platformhal.I2CAddr
 
 	// lamps is the board's chassis-lamp map, loaded once on first use from a
 	// generated file. Cached including the failure: a board without the map
@@ -239,6 +241,7 @@ func Open(cfg platformhal.Config) (*SCD, error) {
 		resetBits:       cfg.SwitchResetBits,
 		alwaysPulse:     cfg.SwitchResetAlwaysPulse,
 		pcieAfterConfig: cfg.SwitchPCIeAfterConfig,
+		prefdl:          cfg.Prefdl,
 		close:           func() error { munmapFile(bar); return f.Close() },
 	}, nil
 }

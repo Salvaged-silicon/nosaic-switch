@@ -40,6 +40,9 @@ type Config struct {
 	// SwitchPCIeAfterConfig says the chip enumerates only after the datapath
 	// has configured it, so releasing reset must not wait for it to appear.
 	SwitchPCIeAfterConfig bool
+	// Prefdl locates the board identity EEPROM on a host i2c bus. Nil if the
+	// board has not stated one.
+	Prefdl *I2CAddr
 	// I2C is where the board's platform devices sit on its Linux i2c buses,
 	// for boards whose controller is not an SCD. Optional and mutually
 	// exclusive with SMBus in practice, though nothing enforces that: a
