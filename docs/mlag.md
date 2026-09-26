@@ -133,7 +133,7 @@ silent too, the peer is gone, and this switch carries on alone.
 
 **Spanning tree** leaves MLAG interfaces and the peer-link alone: they forward.
 
-### Two bugs the hardware found
+### Four bugs the hardware found
 
 - ⚠ **`BCM_PORT_FLOOD_BLOCK_ALL` is not "all kinds of flooding".** It is the
   ingress port's egress mask, `ING_EGRMSKBMAP`, and it stops known unicast
@@ -154,6 +154,20 @@ silent too, the peer is gone, and this switch carries on alone.
     both halves came up together.
 
   Hence the 2.5 s settling rule, and an immediate hello on any change.
+- ⚠ **Spanning tree set the MLAG ports back to discarding.** It took them out
+  of the tree correctly, marking them disabled and forwarding. But a later
+  pass in the same run holds every disabled port discarding, and it caught
+  them too. Every MLAG test before the integration test ran with spanning
+  tree off, so nothing showed it. With both configured from network.conf,
+  the peer-link and the MLAG interface were blocked.
+- ⚠ **The MAC sync's table walk starved the hellos.** The L2 table was walked
+  for every hello while holding the MLAG lock. The SDK's walk cleared 532
+  bytes of uncached DMA buffer per table entry, so one walk of the 7050SX2's
+  table took over a second of CPU. With hellos at 500 ms and dead at 2 s,
+  the TX gave the SX2 up every few seconds, and the receive thread stalled
+  behind the lock with every packet to the CPU. The SDK is patched
+  (`recipes/openbcm/patches/0002`), and the walk now runs outside the lock,
+  at most once a second. Hellos carry the last walk's MACs.
 
 ## Not yet
 
