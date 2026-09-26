@@ -97,7 +97,10 @@ struct fm6000 {
 #define FM_ERR		-1	/* ordinary failure: bad argument, no device */
 #define FM_EOFFBUS	-2	/* the chip has left the PCIe bus */
 #define FM_EUNSAFE	-3	/* refused: not safe to touch this yet */
-/* -4 is FM_ENOADDR, in boot.h: an address the sequence needs and we lack. */
+/* A step we know we need and cannot do yet -- an address never established,
+ * or a routine never decoded. Distinct from FM_ERR so a report can separate
+ * "not implemented" from "went wrong", which are different kinds of news. */
+#define FM_ENOADDR	-4
 /* A wait that did not finish. Distinct from FM_ERR because it says the address
  * was right and the chip answered -- it just never set the bit, which points
  * at the step before rather than at this one. */

@@ -23,6 +23,7 @@
 
 #include "boot.h"
 #include "sbus.h"
+#include "serdes.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -40,6 +41,8 @@ static void usage(void)
 "  (no command)          identify the chip and read what is safe to read\n"
 "  --dump WORD COUNT     dump COUNT words from word address WORD\n"
 "  --read WORD           read one word\n"
+"  --port-up N           run the SerDes lane enable for front-panel port N\n"
+"                        (1-8 only; the rest have no established placement)\n"
 "  --sbus                bring the SerDes bus up and read one lane per EPL\n"
 "  --fill WORD COUNT     write zeros into COUNT words from WORD. The bulk\n"
 "                        writer on its own, for finding where a bank really\n"
@@ -412,6 +415,32 @@ int main(int argc, char **argv)
 		rv = fm_mem_fill(&dev, base, n, 0);
 		printf("%s\n", rv == FM_OK ? "chip still answering" : rvstr(rv));
 		rc = rv == FM_OK ? 0 : 2;
+	} else if (strcmp(argv[i], "--port-up") == 0 && i + 1 < argc) {
+		const struct fm_port *p = fm_port_lookup(atoi(argv[i + 1]));
+		struct fm_lane_report lrep;
+		uint32_t before = 0;
+
+		if (p == NULL) {
+			printf("port %s: no established SerDes placement. Only\n"
+			       "ports 1-8 are known -- the EPL-to-SBus permutation\n"
+			       "for the other EPLs has not been worked out.\n",
+			       argv[i + 1]);
+			rc = 3;
+		} else if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			rc = 1;
+		} else if ((rv = fm_sbus_start(&dev)) != FM_OK) {
+			printf("could not start the SBus: %s\n", rvstr(rv));
+			rc = 2;
+		} else {
+			(void)fm_lane_status(&dev, p, &before);
+			printf("port %d: EPL %d lane %d, SBus device %#02x\n",
+			       p->port, p->epl, p->lane, p->dev);
+			printf("PORT_STATUS before 0x%08x\n\n", before);
+			rv = fm_lane_enable(&dev, p, &lrep);
+			fm_lane_report_print(&lrep);
+			rc = (lrep.port_status & (1u << 11)) ? 0 : 2;
+		}
 	} else if (strcmp(argv[i], "--sbus") == 0) {
 		rc = cmd_sbus(&dev);
 	} else if (strcmp(argv[i], "--meminit") == 0) {

@@ -21,9 +21,6 @@
 
 #include "pci.h"
 
-/* An address we know we need and do not yet have. Distinct from FM_ERR so a
- * report can separate "not implemented" from "went wrong". */
-#define FM_ENOADDR	-4
 
 
 enum fm_boot_step {
