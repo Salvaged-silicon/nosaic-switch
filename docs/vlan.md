@@ -5,21 +5,22 @@ interface for a whole VLAN, `vlan<VID>`, which is what Cisco calls
 `interface Vlan10`. switchapi 1.2. The switching and the routing both happen
 in the chip.
 
-Proven on 2026-09-24 on all three Broadcom families in the lab, between
-NOSaic switches, with traffic:
+Proven on 2026-09-24/25 on all three Broadcom families in the lab and on all
+four of its NOSaic switches, between NOSaic switches, with traffic:
 
 | board | chip | datapath | access | trunk + native | routed into the VLAN by the chip |
 |---|---|---|---|---|---|
 | [Arista 7050SX2-72Q](../platform/arista-7050sx2-72q/README.md) | Trident2+ | td2p | ✅ | ✅ | ✅ |
 | [Arista 7050TX-64](../platform/arista-7050tx-64/README.md) | Trident2 | td2 | — | ✅ | — |
 | [Edgecore AS5610-52X](../platform/edgecore-as5610-52x/README.md) | Trident+ | tdp | — | ✅ | ✅ |
-| [Cisco Nexus 3172TQ](../platform/cisco-n3172tq/README.md) | Trident2 | td2 | — | — | — |
+| [Cisco Nexus 3172TQ](../platform/cisco-n3172tq/README.md) | Trident2 | td2 | — | ✅ | ✅ |
 
-A dash is "not tested on that board", not "does not work". The 3172TQ runs
-the same td2 datapath as the 7050TX-64 and reports the capability; nothing
-has been driven through it yet. The virtual board implements the same
-contract with a Linux bridge, and `make dataplane-test` drives it with
-traffic on every build.
+A dash is "not tested on that board", not "does not work". On the 3172TQ,
+eth1_54 as a trunk to the 7050SX2's Et49 carried tagged and native traffic
+with OSPF over the native SVI, and its chip routed 20/20 packets from the
+routed eth1_31 into the tagged VLAN with the CPU counters unchanged. The
+virtual board implements the same contract with a Linux bridge, and `make
+dataplane-test` drives it with traffic on every build.
 
 ## The model: every port is routed until it is switched
 
