@@ -20,6 +20,7 @@ as `admin` and use `doas nosaic ...`; `sudo` is a shim onto it.
 | `show lags` | LAGs, their mode, and which members carry traffic | ✅ | ✅ |
 | `show stp` | the spanning tree: bridge, root, and each port's role and state | ✅ | ✅ |
 | `show mlag` | the MLAG pair: role, peer, heartbeat, and each MLAG interface | ✅ | ✅ |
+| `show gateways` | the virtual gateways and their MAC | ✅ | ✅ |
 | `show acl` | access-list rules and their hit counts | ✅ | ✅ |
 | `show caps` | what this datapath can do, and the contract version | ✅ | ✅ |
 | `show dma` | the SDK's DMA pool, by allocation name | ✅ | ✅ |
@@ -84,6 +85,14 @@ turned on. [stp.md](stp.md).
 
 Both CLIs. One of a pair of switches presenting a LAG with the same MLAG id as
 one LACP partner. [mlag.md](mlag.md).
+
+### Virtual gateway
+
+    gateway add|del <svi> <address/len>
+    gateway mac <mac>
+
+Both CLIs. A gateway address both switches of a pair answer for and route
+for. [gateway.md](gateway.md).
 
 ## Settings
 

@@ -34,28 +34,29 @@ type Config struct {
 // DefaultCaps is what a fully featured software datapath claims.
 func DefaultCaps() switchapi.Capabilities {
 	return switchapi.Capabilities{
-		Contract:      switchapi.Version,
-		Driver:        "mem",
-		MaxPorts:      64,
-		VLANs:         true,
-		MaxVLANs:      4094,
-		SVIs:          true,
-		LAGs:          true,
-		MaxLAGs:       64,
-		MaxLAGMembers: 8,
-		LACP:          true,
-		STP:           true,
-		MLAG:          true,
-		L2Learning:    true,
-		L3:            true,
-		IPv6:          true,
-		ECMP:          true,
-		MaxECMP:       8,
-		ACL:           true,
-		ACLEntries:    1024,
-		ACL6:          true,
-		ACL6Entries:   512,
-		Counters:      true,
+		Contract:       switchapi.Version,
+		Driver:         "mem",
+		MaxPorts:       64,
+		VLANs:          true,
+		MaxVLANs:       4094,
+		SVIs:           true,
+		LAGs:           true,
+		MaxLAGs:        64,
+		MaxLAGMembers:  8,
+		LACP:           true,
+		STP:            true,
+		MLAG:           true,
+		VirtualGateway: true,
+		L2Learning:     true,
+		L3:             true,
+		IPv6:           true,
+		ECMP:           true,
+		MaxECMP:        8,
+		ACL:            true,
+		ACLEntries:     1024,
+		ACL6:           true,
+		ACL6Entries:    512,
+		Counters:       true,
 	}
 }
 
@@ -83,6 +84,8 @@ type Switch struct {
 	acls    map[int]switchapi.ACLRule
 	stpst   *stpState
 	mlag    switchapi.MLAGConfig
+	vmac    string
+	gws     map[switchapi.VirtualGateway]bool
 }
 
 // New builds a simulated switch.
@@ -332,6 +335,11 @@ func (s *Switch) DelSVI(vid int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.svis, vid)
+	for g := range s.gws {
+		if g.SVI == switchapi.SVIName(vid) {
+			delete(s.gws, g)
+		}
+	}
 	return nil
 }
 

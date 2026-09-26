@@ -48,6 +48,7 @@
 #include "lag.h"
 #include "rstp.h"
 #include "mlag.h"
+#include "gateway.h"
 
 static int query_unit;
 
@@ -402,6 +403,22 @@ static int handle_lag(FILE *out, const char *req)
 				     req_int(req, "priority", 32768), err, sizeof(err));
 	} else if (strcmp(op, "lag.mlag") == 0) {
 		rv = nosaic_mlag_set_lag(name, req_int(req, "mlag", 0), err, sizeof(err));
+	} else if (strcmp(op, "gateways") == 0) {
+		nosaic_gw_query(out);
+		return 1;
+	} else if (strcmp(op, "gateway.mac") == 0) {
+		char mac[32];
+
+		req_str(req, "mac", mac, sizeof(mac));
+		rv = nosaic_gw_set_mac(mac, err, sizeof(err));
+	} else if (strcmp(op, "gateway.add") == 0 || strcmp(op, "gateway.del") == 0) {
+		char svi[32], prefix[64];
+
+		req_str(req, "svi", svi, sizeof(svi));
+		req_str(req, "prefix", prefix, sizeof(prefix));
+		rv = strcmp(op, "gateway.add") == 0 ?
+		     nosaic_gw_add(svi, prefix, err, sizeof(err)) :
+		     nosaic_gw_del(svi, prefix, err, sizeof(err));
 	} else if (strcmp(op, "port.admin") == 0) {
 		rv = port_admin(name, strstr(req, "\"up\":true") != NULL, err, sizeof(err));
 	} else {
@@ -698,14 +715,14 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.5\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.6\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
 			"\"ACL\":%s,\"ACLEntries\":%d,"
 			"\"ACL6\":%s,\"ACL6Entries\":%d,"
 			"\"LAGs\":%s,\"MaxLAGs\":%d,\"MaxLAGMembers\":%d,"
-			"\"LACP\":%s,\"STP\":%s,\"MLAG\":%s}}\n",
+			"\"LACP\":%s,\"STP\":%s,\"MLAG\":%s,\"VirtualGateway\":%s}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
 			maxecmp > 1 ? "true" : "false", maxecmp,
 			acl.v4 ? "true" : "false", acl.v4_total,
@@ -713,7 +730,8 @@ static void handle(FILE *out, const char *req)
 			maxlags > 0 ? "true" : "false", maxlags, maxlagm,
 			maxlags > 0 ? "true" : "false",
 			nosaic_rstp_supported() ? "true" : "false",
-			nosaic_mlag_supported() ? "true" : "false");
+			nosaic_mlag_supported() ? "true" : "false",
+			nosaic_gw_supported() ? "true" : "false");
 		return;
 	}
 
@@ -896,6 +914,7 @@ int nosaic_query_start(int unit, const char *path)
 	nosaic_lag_start(unit);
 	nosaic_rstp_start(unit);
 	nosaic_mlag_start(unit);
+	nosaic_gw_start(unit);
 
 	struct sockaddr_un a;
 	pthread_t th;

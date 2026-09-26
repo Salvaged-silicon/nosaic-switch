@@ -2,6 +2,7 @@ package switchapi
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 )
 
@@ -52,6 +53,31 @@ func ValidMLAG(c MLAGConfig) error {
 	}
 	if c.Priority < 0 || c.Priority > 65535 {
 		return fmt.Errorf("mlag priority %d: must be 0 to 65535", c.Priority)
+	}
+	return nil
+}
+
+// ValidVirtualMAC checks a virtual gateway MAC: six octets, and unicast -- a
+// multicast source address is dropped by every host that receives one.
+func ValidVirtualMAC(mac string) error {
+	hw, err := net.ParseMAC(mac)
+	if err != nil || len(hw) != 6 {
+		return fmt.Errorf("virtual mac %q is not a MAC address", mac)
+	}
+	if hw[0]&1 != 0 {
+		return fmt.Errorf("virtual mac %s is multicast; it must be unicast", mac)
+	}
+	return nil
+}
+
+// ValidVirtualGateway checks a gateway address: IPv4, for now, since IPv6
+// needs neighbour discovery answered with the virtual MAC too.
+func ValidVirtualGateway(addr netip.Prefix) error {
+	if !addr.Addr().Is4() {
+		return fmt.Errorf("virtual gateway %s: IPv4 only", addr)
+	}
+	if addr.Bits() < 1 || addr.Bits() > 32 {
+		return fmt.Errorf("virtual gateway %s: prefix length", addr)
 	}
 	return nil
 }

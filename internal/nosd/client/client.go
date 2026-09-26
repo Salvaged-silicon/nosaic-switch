@@ -350,6 +350,23 @@ func (c *Client) MLAG() (switchapi.MLAGStatus, error) {
 	return st, c.call(proto.OpMLAG, nil, &st)
 }
 
+func (c *Client) SetVirtualMAC(mac string) error {
+	return c.call(proto.OpSetVirtualMAC, proto.GatewayArgs{MAC: mac}, nil)
+}
+
+func (c *Client) AddVirtualGateway(svi string, addr netip.Prefix) error {
+	return c.call(proto.OpAddGateway, proto.GatewayArgs{SVI: svi, Prefix: addr.String()}, nil)
+}
+
+func (c *Client) DelVirtualGateway(svi string, addr netip.Prefix) error {
+	return c.call(proto.OpDelGateway, proto.GatewayArgs{SVI: svi, Prefix: addr.String()}, nil)
+}
+
+func (c *Client) VirtualGateways() ([]switchapi.VirtualGateway, error) {
+	var g []switchapi.VirtualGateway
+	return g, c.call(proto.OpGateways, nil, &g)
+}
+
 func (c *Client) LAGs() ([]switchapi.LAG, error) {
 	var l []switchapi.LAG
 	return l, c.call(proto.OpLAGs, nil, &l)

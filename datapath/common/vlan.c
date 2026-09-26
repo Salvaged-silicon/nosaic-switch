@@ -47,6 +47,7 @@
 #include "l3sync.h"
 #include "lag.h"
 #include "rstp.h"
+#include "gateway.h"
 #include "tapbridge.h"
 #include "vlan.h"
 
@@ -657,6 +658,7 @@ int nosaic_svi_del(int vid, char *err, size_t n)
 	snprintf(name, sizeof(name), "vlan%d", vid);
 	svi_vid[vid] = 0;
 	nosaic_l3_del_intf(name);
+	nosaic_gw_svi_gone(vid);         /* its gateways go with it */
 	nosaic_tap_svi_del(vid);
 	bcm_vlan_port_remove(vlan_unit, (bcm_vlan_t)vid, cpu_pbm);
 	pthread_mutex_unlock(&vlan_lock);
