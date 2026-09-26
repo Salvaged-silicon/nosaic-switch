@@ -1095,12 +1095,57 @@ The SBus scan does find device `0xFD` -- the datasheet's reserved SPICO id --
 answering with three non-zero registers, so the controller is present. Whether
 it is *running code* is a different question and has not been established.
 
-⚠ This is the first thing on this board that points at the SPICO firmware
-mattering for more than DFE tuning. It does not overturn the fibre-only
-claim -- the prior investigation got a 10GBASE-SR link with no Intel firmware
-and that stands -- but it means the route by which they did it is not yet
-reproduced here, and the next step is to find out what sets RX termination
-when SPICO is not answering.
+### SPICO is confirmed not running, and that is not the problem
+
+Posted a SPICO interrupt -- a write to the SerDes' register 3 with the answer
+polled from register 4 -- and **register 4 never moved in 200 polls**. So
+nothing is answering and every `spico_int` step in the vendor sequence,
+including the rx-termination one, is a silent no-op here. **live**
+
+That looked like the cause. It is not, and the prior investigation's own
+measurements say why.
+
+### ⚠ Signal detect never sets, even on a port that forwards
+
+`SPICO-RE.md`, measuring a working fibre port and a non-working copper one on
+a stripped no-SPICO boot:
+
+> PLL lock and signal detect are IDENTICAL on both ports — reg `0x0f` = `0x3f`
+> and reg `0x14` = `0x14` on dev `0x45` (et2) and `0x49` (et1).
+
+**`reg 0x14` = `0x14`, bit 6 clear, on the port that carries traffic.** So the
+wait this port had on that bit was waiting for something that does not happen,
+and the threshold sweep that "moved nothing at either end of its range" moved
+nothing because there was nothing to move. That is the third value taken from
+the superseded version of the sequence rather than the corrected one, after
+the PLL bits and the missing datapath enable.
+
+Our lane now reads `0x0f` = `0x3f` and `0x14` = `0x14`: **identical to a
+working fibre port.** The SerDes is not the problem.
+
+### The real acceptance test, and where we actually are
+
+```
+   their et1, fibre, forwarding   PORT_STATUS 0x000008c0   LANE_STATUS 0x00000940
+   their et2, copper, no lock     PORT_STATUS 0x00000815   LANE_STATUS 0x00000000
+   ours,      fibre               PORT_STATUS 0x00000815   LANE_STATUS 0x00000000
+```
+
+LANE_STATUS is the lane's own `+0x38`, which this page's live-versus-dark diff
+had already shown as `0x940` on a live lane without knowing what it was called.
+The port code now waits on that instead of on signal detect, and it reports an
+honest failure rather than a misleading one.
+
+⚠ **We are in the copper port's state while holding a fibre port's optics.**
+That is the shape of the remaining problem. Their et1 locked with no Intel
+firmware, so fibre demonstrably can -- but it was running the whole of
+EdgeNOS: parser, CM, MOD, scheduler, the lot. Ours has had Table 4-1, the lane
+enable and the two EPL gates and nothing else. Receiver lock is a PCS
+function, and the PCS does not run on a fabric nobody has configured.
+
+So the next question is not "what else does the SerDes need" -- the SerDes
+matches a working one register for register. It is **how much of the rest of
+the chip has to be up before the PCS will lock.**
 
 ## Confirmed on the bench, 2026-09-22
 

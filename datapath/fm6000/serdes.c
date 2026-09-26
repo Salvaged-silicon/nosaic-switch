@@ -271,10 +271,39 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 	if (rv != FM_OK)
 		return rv;
 
-	rv = wait_bits(d, dev, 20, 0x40u);
-	set(rep, FM_LANE_SIGNAL, rv, "wait reg 20 bit 6: signal detect",
-	    rv == FM_ETIMEOUT ? "5 s and no signal -- check the optic's own rx "
-				"power before suspecting this" : NULL);
+	/*
+	 * ⚠ THE ACCEPTANCE TEST IS LANE_STATUS, NOT SIGNAL DETECT.
+	 *
+	 * This used to wait on reg 20 bit 6 and report a timeout. That wait was
+	 * wrong: a port that links and forwards reads reg 20 = 0x14 with bit 6
+	 * CLEAR, exactly as a dark one does -- measured on this chassis on both
+	 * a working and a non-working port, which is why sweeping the threshold
+	 * across its whole range moved nothing. There was nothing to move.
+	 *
+	 * What separates the two is the lane's own status word at +0x38:
+	 * 0x940 on a lane that has locked, 0x00000000 on one that has not. So
+	 * that is what is waited on, and PORT_STATUS 0x8c0 is its confirmation
+	 * at the port level.
+	 */
+	{
+		uint32_t ls = 0;
+		unsigned k;
+
+		rv = FM_ETIMEOUT;
+		for (k = 0; k < LANE_WAIT_MS; k++) {
+			if (fm_rd(d, FM6000_EPL_LANE(p->epl, p->lane) + 0x38, &ls) != FM_OK)
+				break;
+			if (ls != 0) {
+				rv = FM_OK;
+				break;
+			}
+			nap_ms(1);
+		}
+		rep->lane_status = ls;
+	}
+	set(rep, FM_LANE_LOCK, rv, "wait lane +0x38: receiver lock",
+	    rv == FM_ETIMEOUT ? "stays 0x00000000 -- the receiver is not "
+				"recovering the signal" : NULL);
 
 	/* One-shot DFE kick. Harmless if signal detect never came. */
 	{
@@ -358,7 +387,9 @@ void fm_lane_report_print(const struct fm_lane_report *rep)
 		if (rep->step[i].note != NULL)
 			printf("            %s\n", rep->step[i].note);
 	}
-	printf("\n  PORT_STATUS 0x%08x   SerXmit(11)=%d RxLinkUp(6)=%d HeartbeatOk(7)=%d\n",
+	printf("\n  LANE_STATUS 0x%08x   (0x940 on a locked lane, 0 on a dark one)\n",
+	       rep->lane_status);
+	printf("  PORT_STATUS 0x%08x   SerXmit(11)=%d RxLinkUp(6)=%d HeartbeatOk(7)=%d\n",
 	       rep->port_status,
 	       (rep->port_status >> 11) & 1,
 	       (rep->port_status >> 6) & 1,

@@ -43,6 +43,7 @@ static void usage(void)
 "  --read WORD           read one word\n"
 "  --port-up N           run the SerDes lane enable for front-panel port N\n"
 "                        (1-8 only; the rest have no established placement)\n"
+"  --spico N             is the SPICO running? post an interrupt and see\n"
 "  --dfe N               run the RX equaliser adaptation for port N\n"
 "  --sbus                bring the SerDes bus up and read one lane per EPL\n"
 "  --fill WORD COUNT     write zeros into COUNT words from WORD. The bulk\n"
@@ -459,6 +460,67 @@ int main(int argc, char **argv)
 			printf("PORT_STATUS 0x%08x -> 0x%08x  RxLinkUp(6)=%d\n",
 			       before, after, (after >> 6) & 1);
 			rc = (after & (1u << 6)) ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--spico") == 0 && i + 1 < argc) {
+		const struct fm_port *p = fm_port_lookup(atoi(argv[i + 1]));
+		uint32_t v = 0;
+		unsigned rc2 = 0, k;
+
+		if (p == NULL) {
+			printf("port %s: no established SerDes placement\n", argv[i + 1]);
+			rc = 3;
+		} else {
+			(void)fm_sbus_start(&dev);
+
+			/* The SBus block's own registers. §9.4.1 says SBUS_SPICO
+			 * carries the controller's Reset and Enable, and where it
+			 * sits is not established -- so print the block and look. */
+			printf("SBus block registers:\n");
+			for (k = 0; k < 8; k++) {
+				uint32_t w = 0;
+
+				if (fm_rd(&dev, FM6000_SBUS_CFG + k, &w) == FM_OK)
+					printf("  0x%05x = 0x%08x\n", FM6000_SBUS_CFG + k, w);
+			}
+
+			/* Does the SPICO device answer at all? */
+			v = 0;
+			rv = fm_sbus_txn(&dev, FM_SBUS_OP_READ, FM_SBUS_DEV_SPICO,
+					 2, 0, &v, &rc2);
+			printf("\nSPICO device 0x%02x reg 2: rc=%u data=0x%08x%s\n",
+			       FM_SBUS_DEV_SPICO, rc2, v,
+			       rc2 == FM_SBUS_RC_OK ? "" : "   <-- not answering");
+
+			/*
+			 * A SPICO interrupt: post a command in the SerDes' own
+			 * register 3 and read the answer from register 4. If no
+			 * firmware is running, nothing answers and register 4
+			 * stays where it was -- which is the difference between
+			 * "rx termination was set" and "that step silently did
+			 * nothing", and it is the question this command exists
+			 * to settle.
+			 */
+			(void)fm_sbus_read(&dev, (uint8_t)p->dev, 4, &v);
+			printf("\nbefore interrupt: SerDes reg 4 = 0x%08x\n", v);
+			rv = fm_sbus_write(&dev, (uint8_t)p->dev, 3,
+					   (0x2bu << 16) | 1u);   /* rx termination */
+			printf("posted rx-termination interrupt: %s\n", rvstr(rv));
+			for (k = 0; k < 200; k++) {
+				uint32_t w = 0;
+
+				if (fm_sbus_read(&dev, (uint8_t)p->dev, 4, &w) != FM_OK)
+					break;
+				if (w != v) {
+					printf("reg 4 answered 0x%08x after %u polls "
+					       "-- SPICO IS RUNNING\n", w, k);
+					break;
+				}
+			}
+			if (k >= 200)
+				printf("reg 4 never moved in 200 polls -- nothing is "
+				       "answering, so every spico_int step in the\n"
+				       "vendor sequence is a no-op on this chip\n");
+			rc = 0;
 		}
 	} else if (strcmp(argv[i], "--sbus") == 0) {
 		rc = cmd_sbus(&dev);

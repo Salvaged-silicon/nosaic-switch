@@ -73,7 +73,7 @@ enum fm_lane_step {
 	FM_LANE_EPL,		/* EPL_CFG_B PcsSel, EPL_CFG_A Active */
 	FM_LANE_TXEQ,		/* regs 61, 62, 65 */
 	FM_LANE_DATAPATH,	/* reg 13: datapath enable */
-	FM_LANE_SIGNAL,		/* wait reg 0x14 bit 6 */
+	FM_LANE_LOCK,		/* wait lane +0x38: receiver lock */
 	FM_LANE__COUNT
 };
 
@@ -81,6 +81,7 @@ struct fm_lane_report {
 	struct { int rv; const char *what; const char *note; } step[FM_LANE__COUNT];
 	int reached;
 	uint32_t port_status;	/* the lane's PORT_STATUS after the attempt */
+	uint32_t lane_status;	/* the lane's +0x38: 0x940 locked, 0 dark */
 };
 
 /*

@@ -577,13 +577,19 @@ has a reason, in code, parameterised by the board.
       `0x2b` moves -- but settles at `0x07`, not `0x03`. And equalisation
       refines a recovered signal rather than creating one, so it was never
       going to fix "no signal detect".
-- [ ] ⚠ **RX termination, and whether SPICO has to be running.** The older
-      vendor sequence sets it through a SPICO interrupt --
-      `spico_int(dev, 0x2b, 1)`, "rx termination" -- and a missing input
-      termination gives exactly this: a receiver reporting nothing at any
-      threshold. SBus device `0xFD` answers, so the controller is present;
-      whether it is running code is not established. This is the first thing
-      here pointing at SPICO mattering beyond DFE.
+- [x] **SPICO is confirmed not running** — a posted interrupt leaves the
+      SerDes' reg 4 unmoved in 200 polls, so every `spico_int` step is a
+      no-op. Not the cause, though: a forwarding fibre port reads the same
+      `reg 0x0f`=`0x3f` and `reg 0x14`=`0x14` our lane does.
+- [x] **the acceptance test is LANE_STATUS, not signal detect.** Bit 6 of
+      reg 0x14 never sets, even on a port carrying traffic. The lane's
+      `+0x38` is the real one: `0x940` locked, `0` dark.
+- [ ] ⚠ **how much of the chip must be up before the PCS will lock?** Our
+      SerDes matches a working one register for register, and LANE_STATUS is
+      still `0`. The prior work's fibre port locked with no Intel firmware
+      but was running all of EdgeNOS — parser, CM, MOD, scheduler. We have
+      Table 4-1, the lane enable and two EPL gates. Receiver lock is a PCS
+      function and the PCS does not run on an unconfigured fabric.
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable
