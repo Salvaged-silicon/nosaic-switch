@@ -57,7 +57,7 @@ building (on a build host)
   docs index                   regenerate the board index
 
 on a running switch
-  show ports | routes | vlans | lags | stp | mlag | acl | caps
+  show ports | routes | vlans | lags | stp | mlag | gateways | acl | caps
                                what the datapath is doing
   interface <name> up|down     administrative state
   interface <name> mtu <n>     set the MTU
@@ -77,6 +77,8 @@ on a running switch
                                one port's or LAG's settings; see docs/stp.md
   mlag on peer-link <port> [peer-address <ip>] [priority <n>] | mlag off
                                one of an MLAG pair; see docs/mlag.md
+  gateway add|del <svi> <address/len> | gateway mac <mac>
+                               a virtual gateway both of a pair answer for
   verify contract              run the switchapi conformance suite on this datapath
   config show [pattern] | get <name> | set <name> <value> | unset <name> | files
   upgrade status | install <img> [--slot a|b] | commit | confirm
@@ -198,7 +200,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "stp", "mlag":
+	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "stp", "mlag", "gateway":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -763,7 +765,7 @@ func switchCmd(args []string) error {
 	switch args[0] {
 	case "show":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: nosaic show <ports|routes|vlans|lags|stp|mlag|acl|caps>")
+			return fmt.Errorf("usage: nosaic show <ports|routes|vlans|lags|stp|mlag|gateways|acl|caps>")
 		}
 		return showCmd(c, args[1], args[2:])
 
@@ -810,6 +812,8 @@ func switchCmd(args []string) error {
 		return stpCmd(c, args[1:])
 	case "mlag":
 		return mlagCmd(c, args[1:])
+	case "gateway":
+		return gatewayCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -838,6 +842,7 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		}
 		fmt.Fprintf(w, "stp\t%v\n", caps.STP)
 		fmt.Fprintf(w, "mlag\t%v\n", caps.MLAG)
+		fmt.Fprintf(w, "virtual gateway\t%v\n", caps.VirtualGateway)
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
 		if caps.ACL {
 			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)
@@ -1065,6 +1070,9 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 
 	case "mlag":
 		return showMLAG(c, w)
+
+	case "gateways":
+		return showGateways(c, w)
 
 	case "routes":
 		routes, err := c.Routes()

@@ -81,6 +81,9 @@ void nosaic_tap_svi_del(int vid);
  * nosaic_tap_svi_del(vid). Its transmit goes to one distributing member. */
 int  nosaic_tap_lag_add(int vid, const char *name, unsigned char mac[6], int lag);
 
+/* Send a frame the datapath originates into VLAN vid through its SVI. */
+int  nosaic_tap_svi_xmit(int vid, const unsigned char *frame, int len);
+
 /* Send a frame the datapath originates (an LACPDU) out of one port. */
 int  nosaic_tap_xmit(int port, int vid, const unsigned char *frame, int len);
 

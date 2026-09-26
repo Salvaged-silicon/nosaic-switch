@@ -67,7 +67,12 @@ import (
 // Two switches joined by a peer-link present a LAG with the same MLAG id as
 // one LACP partner, so a device dual-homed to both bundles its links to the
 // pair as one LAG.
-const Version = "1.5"
+//
+// 1.6 added the virtual gateway: SetVirtualMAC, AddVirtualGateway,
+// DelVirtualGateway and VirtualGateways, gated by Capabilities.VirtualGateway.
+// An address on an SVI that both switches of a pair answer for with the same
+// MAC, and both route for, so a host's default gateway outlives either one.
+const Version = "1.6"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -111,6 +116,11 @@ type Capabilities struct {
 	// MLAG is a LAG whose members are split across this switch and a peer
 	// (classic peer-link MLAG).
 	MLAG bool
+
+	// VirtualGateway is a shared gateway address on an SVI: answered with
+	// a virtual MAC, and routed for in the chip, by every switch that has
+	// it -- both of an MLAG pair, active-active.
+	VirtualGateway bool
 
 	L2Learning bool
 	MaxFDB     int
@@ -324,6 +334,19 @@ type MLAGInterface struct {
 	State string
 }
 
+// VirtualGateway is one shared gateway address on an SVI. MAC is the virtual
+// MAC it is answered with, the same for every gateway on the switch.
+type VirtualGateway struct {
+	SVI     string
+	Address netip.Prefix
+	MAC     string
+}
+
+// DefaultVirtualMAC is the virtual gateway MAC when none is configured: the
+// IANA VRRP MAC for virtual router 1. Both switches of a pair must use the
+// same one; a second pair in the same VLANs needs another.
+const DefaultVirtualMAC = "00:00:5e:00:01:01"
+
 // MLAGMaxID is the largest MLAG id.
 const MLAGMaxID = 1000
 
@@ -409,6 +432,18 @@ type Switch interface {
 	SetMLAG(cfg MLAGConfig) error
 	SetLAGMLAG(name string, id int) error
 	MLAG() (MLAGStatus, error)
+
+	// Virtual gateway.
+	//
+	// SetVirtualMAC sets the MAC every virtual gateway on this switch is
+	// answered with; it must be a unicast MAC, and the same on both of a
+	// pair. AddVirtualGateway puts a shared address on an existing SVI
+	// (IPv4; the prefix is the SVI's subnet); DelVirtualGateway takes it
+	// off. Deleting the SVI takes its gateways with it.
+	SetVirtualMAC(mac string) error
+	AddVirtualGateway(svi string, addr netip.Prefix) error
+	DelVirtualGateway(svi string, addr netip.Prefix) error
+	VirtualGateways() ([]VirtualGateway, error)
 
 	// Access lists. See acl.go. SetACL adds the rule or replaces the one with
 	// the same sequence number; DelACL removes it; ACLs lists every rule the

@@ -119,6 +119,7 @@
 #include "vlan.h"
 #include "lag.h"
 #include "rstp.h"
+#include "gateway.h"
 
 #define TAP_MTU        9216
 #define MIN_FRAME      60
@@ -324,6 +325,46 @@ static bcm_rx_t tap_deliver(struct tap *t, bcm_pkt_t *pkt)
 	return BCM_RX_HANDLED;
 }
 
+static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len);
+
+/*
+ * A frame for a VLAN with a virtual gateway (gateway.c), before it goes to the
+ * SVI's tap. An ARP request for a gateway address is answered here, with the
+ * virtual MAC, and goes no further: the kernel would answer it with the SVI's
+ * own MAC. A frame sent TO the virtual MAC has its destination rewritten to
+ * the tap's, or the kernel drops it as someone else's. Returns 1 if the frame
+ * was consumed. The frame arrives tagged: the ethertype is at 16.
+ */
+static int gateway_rx(struct tap *t, bcm_pkt_t *pkt)
+{
+	unsigned char *d = pkt->pkt_data[0].data, vmac[6], r[42];
+	int len = (int)pkt->pkt_data[0].len;
+	uint32_t tip;
+
+	if (len < 16 + 28 || d[12] != 0x81 || d[13] != 0x00)
+		return 0;
+	nosaic_gw_mac(vmac);
+	if (memcmp(d, vmac, 6) == 0)
+		memcpy(d, t->mac, 6);
+	if (d[16] != 0x08 || d[17] != 0x06 || d[24] != 0 || d[25] != 1)
+		return 0;                               /* not an ARP request */
+	memcpy(&tip, d + 16 + 26, 4);                   /* target protocol address */
+	if (!nosaic_gw_is(t->vlan, tip))
+		return 0;
+	/* The reply: to the asker, from the virtual MAC. */
+	memcpy(r, d + 16 + 10, 6);                      /* its sender hardware address */
+	memcpy(r + 6, vmac, 6);
+	r[12] = 0x08; r[13] = 0x06;
+	r[14] = 0; r[15] = 1; r[16] = 0x08; r[17] = 0; r[18] = 6; r[19] = 4;
+	r[20] = 0; r[21] = 2;                           /* reply */
+	memcpy(r + 22, vmac, 6);
+	memcpy(r + 28, &tip, 4);
+	memcpy(r + 32, d + 16 + 10, 6);
+	memcpy(r + 38, d + 16 + 16, 4);                 /* its sender protocol address */
+	tap_tx_svi(t, r, sizeof(r));
+	return 1;
+}
+
 static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 {
 	int i, vid;
@@ -357,7 +398,13 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 		pthread_rwlock_rdlock(&svi_lock);
 		for (i = 0; i < nsvi; i++) {
 			if (svis[i].fd >= 0 && svis[i].vlan == vid) {
-				bcm_rx_t r = tap_deliver(&svis[i], pkt);
+				bcm_rx_t r;
+
+				if (nosaic_gw_on(vid) && gateway_rx(&svis[i], pkt)) {
+					pthread_rwlock_unlock(&svi_lock);
+					return BCM_RX_HANDLED;
+				}
+				r = tap_deliver(&svis[i], pkt);
 
 				pthread_rwlock_unlock(&svi_lock);
 				return r;
@@ -676,6 +723,20 @@ int nosaic_tap_xmit(int port, int vid, const unsigned char *frame, int len)
 	BCM_PBMP_CLEAR(pbm);
 	BCM_PBMP_PORT_ADD(pbm, port);
 	return tap_send(&ctl, frame, len, pbm, pbm);
+}
+
+/* A frame the datapath originates into a VLAN, as its SVI would send it: a
+ * virtual gateway's gratuitous ARP. */
+int nosaic_tap_svi_xmit(int vid, const unsigned char *frame, int len)
+{
+	int i, rv = -1;
+
+	pthread_rwlock_rdlock(&svi_lock);
+	for (i = 0; i < nsvi; i++)
+		if (svis[i].fd >= 0 && svis[i].vlan == vid && !svis[i].lag)
+			rv = tap_tx_svi(&svis[i], frame, len);
+	pthread_rwlock_unlock(&svi_lock);
+	return rv;
 }
 
 /* Create one tap device, up, with its own MAC. */

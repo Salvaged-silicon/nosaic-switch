@@ -238,6 +238,30 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(st)
 
+	case proto.OpSetVirtualMAC, proto.OpAddGateway, proto.OpDelGateway:
+		var a proto.GatewayArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		if req.Op == proto.OpSetVirtualMAC {
+			return done(s.sw.SetVirtualMAC(a.MAC))
+		}
+		p, err := netip.ParsePrefix(a.Prefix)
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		if req.Op == proto.OpAddGateway {
+			return done(s.sw.AddVirtualGateway(a.SVI, p))
+		}
+		return done(s.sw.DelVirtualGateway(a.SVI, p))
+
+	case proto.OpGateways:
+		g, err := s.sw.VirtualGateways()
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(g)
+
 	case proto.OpAddSVI, proto.OpDelSVI:
 		if err := json.Unmarshal(req.Args, &v); err != nil {
 			return proto.ErrorResponse(err)

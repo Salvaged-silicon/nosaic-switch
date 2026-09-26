@@ -569,3 +569,57 @@ int nosaic_show_mlag(void)
 	free(resp);
 	return 0;
 }
+
+/*
+ * nosaic gateway mac <mac> | gateway add|del <svi> <address/len>
+ */
+int nosaic_gateway_cmd(int argc, char **argv)
+{
+	char req[256];
+
+	if (argc == 4 && strcmp(argv[2], "mac") == 0) {
+		snprintf(req, sizeof(req), "{\"op\":\"gateway.mac\",\"args\":{\"mac\":\"%s\"}}",
+			 argv[3]);
+		return ask(req);
+	}
+	if (argc != 5 || (strcmp(argv[2], "add") != 0 && strcmp(argv[2], "del") != 0)) {
+		fprintf(stderr, "usage: nosaic gateway mac <mac> | gateway add|del <svi> <address/len>\n");
+		return 2;
+	}
+	snprintf(req, sizeof(req), "{\"op\":\"gateway.%s\",\"args\":{\"svi\":\"%s\","
+		 "\"prefix\":\"%s\"}}", argv[2], argv[3], argv[4]);
+	return ask(req);
+}
+
+int nosaic_show_gateways(void)
+{
+	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"gateways\"}");
+	const char *m;
+	int any = 0;
+
+	if (resp == NULL) {
+		nosaic_query_explain(NOSAIC_QUERY_SOCKET);
+		return 1;
+	}
+	for (m = resp; (m = strstr(m, "{\"SVI\":\"")) != NULL; m++) {
+		char svi[32], addr[64], mac[32], rec[256];
+		const char *e = strchr(m, '}');
+		size_t n = e ? (size_t)(e - m + 1) : strlen(m);
+
+		if (n >= sizeof(rec))
+			n = sizeof(rec) - 1;
+		memcpy(rec, m, n);
+		rec[n] = '\0';
+		nosaic_jstr(rec, "SVI", svi, sizeof(svi));
+		nosaic_jstr(rec, "Address", addr, sizeof(addr));
+		nosaic_jstr(rec, "MAC", mac, sizeof(mac));
+		if (!any)
+			printf("%-10s%-20s%s\n", "SVI", "ADDRESS", "MAC");
+		any = 1;
+		printf("%-10s%-20s%s\n", svi, addr, mac);
+	}
+	if (!any)
+		printf("no virtual gateways; add one with: nosaic gateway add vlan10 10.0.10.254/24\n");
+	free(resp);
+	return 0;
+}

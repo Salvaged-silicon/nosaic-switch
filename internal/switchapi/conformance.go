@@ -72,6 +72,7 @@ func Check(sw Switch) []error {
 		probs = append(probs, checkMLAG(sw, caps, p0, ports[1].Name)...)
 	}
 	probs = append(probs, checkSTP(sw, caps, p0)...)
+	probs = append(probs, checkGateway(sw, caps)...)
 	probs = append(probs, checkL3(sw, caps, p0)...)
 
 	probs = append(probs, checkACLs(sw, caps, p0)...)
@@ -688,6 +689,71 @@ func checkMLAG(sw Switch, caps Capabilities, p0, p1 string) []error {
 			if i.LAG == "po2" {
 				bad("po2 is still an MLAG interface after SetLAGMLAG(po2, 0)")
 			}
+		}
+	}
+	return probs
+}
+
+// checkGateway: a virtual gateway needs an SVI, IPv4 and a unicast MAC; it
+// reads back with the MAC; and it goes with its SVI.
+func checkGateway(sw Switch, caps Capabilities) []error {
+	gw := netip.MustParsePrefix("10.98.2.254/24")
+	err := sw.SetVirtualMAC(DefaultVirtualMAC)
+	if probs := wantSupport(caps.VirtualGateway, err, "SetVirtualMAC", "Capabilities.VirtualGateway"); len(probs) > 0 || !caps.VirtualGateway {
+		return probs
+	}
+	var probs []error
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	if err := sw.SetVirtualMAC("01:00:5e:00:00:01"); err == nil {
+		bad("SetVirtualMAC accepted a multicast MAC")
+	}
+	if !caps.VLANs || !caps.SVIs {
+		return probs // a gateway lives on an SVI; with none to make, the MAC is all there is
+	}
+	if err := sw.AddVirtualGateway("vlan302", gw); err == nil {
+		bad("AddVirtualGateway accepted vlan302 before it was an SVI")
+	}
+	if err := sw.AddVLAN(302); err != nil {
+		return append(probs, fmt.Errorf("AddVLAN(302): %w", err))
+	}
+	defer sw.DelVLAN(302)
+	if err := sw.AddSVI(302); err != nil {
+		return append(probs, fmt.Errorf("AddSVI(302): %w", err))
+	}
+	defer sw.DelSVI(302)
+	if err := sw.AddVirtualGateway("vlan302", netip.MustParsePrefix("2001:db8::1/64")); err == nil {
+		bad("AddVirtualGateway accepted an IPv6 address")
+	}
+	if err := sw.AddVirtualGateway("vlan302", gw); err != nil {
+		return append(probs, fmt.Errorf("AddVirtualGateway(vlan302, %s): %w", gw, err))
+	}
+	has := func() (VirtualGateway, bool) {
+		gs, err := sw.VirtualGateways()
+		if err != nil {
+			bad("VirtualGateways: %v", err)
+		}
+		for _, g := range gs {
+			if g.SVI == "vlan302" && g.Address == gw {
+				return g, true
+			}
+		}
+		return VirtualGateway{}, false
+	}
+	if g, ok := has(); !ok {
+		bad("vlan302 %s was added but VirtualGateways does not list it", gw)
+	} else if g.MAC != DefaultVirtualMAC {
+		bad("the gateway reports MAC %q, set %s", g.MAC, DefaultVirtualMAC)
+	}
+	if err := sw.DelVirtualGateway("vlan302", gw); err != nil {
+		bad("DelVirtualGateway: %v", err)
+	} else if _, ok := has(); ok {
+		bad("vlan302 %s is still listed after DelVirtualGateway", gw)
+	}
+	if err := sw.AddVirtualGateway("vlan302", gw); err == nil {
+		if err := sw.DelSVI(302); err != nil {
+			bad("DelSVI(302): %v", err)
+		} else if _, ok := has(); ok {
+			bad("vlan302's gateway outlived vlan302")
 		}
 	}
 	return probs
