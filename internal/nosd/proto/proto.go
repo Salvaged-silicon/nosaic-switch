@@ -111,6 +111,10 @@ const (
 	OpSetMLAG       = "mlag.set"
 	OpSetLAGMLAG    = "lag.mlag"
 	OpMLAG          = "mlag"
+	OpSetVirtualMAC = "gateway.mac"
+	OpAddGateway    = "gateway.add"
+	OpDelGateway    = "gateway.del"
+	OpGateways      = "gateways"
 	OpFDB           = "l2.fdb"
 	OpAddAddress    = "l3.addr.add"
 	OpDelAddress    = "l3.addr.del"
@@ -169,6 +173,13 @@ type MLAGArgs struct {
 type LAGMLAGArgs struct {
 	Name string `json:"name"`
 	ID   int    `json:"mlag"`
+}
+
+// GatewayArgs names an SVI and an address, or carries the virtual MAC.
+type GatewayArgs struct {
+	SVI    string `json:"svi,omitempty"`
+	Prefix string `json:"prefix,omitempty"`
+	MAC    string `json:"mac,omitempty"`
 }
 
 type AddrArgs struct {

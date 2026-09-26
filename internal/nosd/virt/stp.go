@@ -3,6 +3,7 @@ package virt
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -226,4 +227,17 @@ func (s *Switch) SetMLAG(switchapi.MLAGConfig) error { return switchapi.Unsuppor
 func (s *Switch) SetLAGMLAG(string, int) error       { return switchapi.Unsupported("mlag") }
 func (s *Switch) MLAG() (switchapi.MLAGStatus, error) {
 	return switchapi.MLAGStatus{}, switchapi.Unsupported("mlag")
+}
+
+// Virtual gateways would need a macvlan per address, answered with the
+// virtual MAC; not done on the virtual board. Refused, as the capability says.
+func (s *Switch) SetVirtualMAC(string) error { return switchapi.Unsupported("virtual gateway") }
+func (s *Switch) AddVirtualGateway(string, netip.Prefix) error {
+	return switchapi.Unsupported("virtual gateway")
+}
+func (s *Switch) DelVirtualGateway(string, netip.Prefix) error {
+	return switchapi.Unsupported("virtual gateway")
+}
+func (s *Switch) VirtualGateways() ([]switchapi.VirtualGateway, error) {
+	return nil, switchapi.Unsupported("virtual gateway")
 }

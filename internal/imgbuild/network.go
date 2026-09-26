@@ -195,7 +195,7 @@ fi
 # $1 = "quiet" while waiting for the datapath, whose ports do not exist yet.
 apply_vlans() {
 command -v nosaic >/dev/null 2>&1 || return 0
-grep -Eq '^(vlan|switchport|lag|stp|mlag)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+grep -Eq '^(vlan|switchport|lag|stp|mlag|gateway)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
 # LAGs first, in a pass of their own: a switchport or iface line may name one,
 # and it has to exist before it can be put in a VLAN or given an address.
 while read -r kind a mode ports; do
@@ -236,6 +236,19 @@ while read -r kind a rest; do
             esac
             ;;
     esac
+done < "$CONF"
+# Virtual gateways last: they live on SVIs, which exist now. The MAC first,
+# so the addresses are answered with it from the start.
+#
+#     gateway mac 00:00:5e:00:01:01
+#     gateway vlan10 10.0.10.254/24
+while read -r kind a b; do
+    [ "$kind" = "gateway" ] && [ "$a" = "mac" ] && [ -n "$b" ] || continue
+    out=$(nosaic gateway mac "$b" 2>&1) || say "gateway mac $b FAILED: $out" "$1"
+done < "$CONF"
+while read -r kind a b; do
+    [ "$kind" = "gateway" ] && [ "$a" != "mac" ] && [ -n "$b" ] || continue
+    out=$(nosaic gateway add "$a" "$b" 2>&1) || say "gateway $a $b FAILED: $out" "$1"
 done < "$CONF"
 }
 
