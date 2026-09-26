@@ -15,8 +15,8 @@ Proven on 2026-09-26, between NOSaic switches, with traffic:
 |---|---|---|---|---|---|---|---|
 | [Arista 7050SX2-72Q](../platform/arista-7050sx2-72q/README.md) | Trident2+ | td2p | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [Edgecore AS5610-52X](../platform/edgecore-as5610-52x/README.md) | Trident+ | tdp | ✅ | ✅ | ✅ | ✅ | ✅ |
-| [Arista 7050TX-64](../platform/arista-7050tx-64/README.md) | Trident2 | td2 | — | — | — | — | — |
-| [Cisco Nexus 3172TQ](../platform/cisco-n3172tq/README.md) | Trident2 | td2 | — | — | — | — | — |
+| [Arista 7050TX-64](../platform/arista-7050tx-64/README.md) | Trident2 | td2 | ✅ | ✅ | — | — | — |
+| [Cisco Nexus 3172TQ](../platform/cisco-n3172tq/README.md) | Trident2 | td2 | ✅ | ✅ | — | — | — |
 
 A dash is "not tested on that board", not "does not work". The virtual board
 runs the Linux bridge's own spanning tree, which is 802.1D rather than
@@ -104,6 +104,17 @@ On the AS5610 and the 7050SX2:
   were lost across both changes.
 - **Transit in the chip.** 200 pings routed from the TX through the AS5610
   into the tree's VLAN, with the AS5610's SVI tap counters unchanged.
+
+On the Nexus 3172TQ and the 7050TX-64, over their two 10G copper links:
+
+- **A loop, broken.** The TX was root. The Nexus made eth1_31 its root port
+  and eth1_32 an alternate. The TX's et32 was forwarding by agreement within
+  six seconds of the loop closing.
+- **Root port lost.** eth1_31 shut under a 20-per-second ping: eth1_32 took
+  over, and eth1_31 took back its role when it came back. 23 of 400 pings were
+  lost, about a second. That is the copper link going down, not the tree: the
+  LAG tests over the same cables lost the same second
+  ([lag.md](lag.md#what-was-measured)).
 
 ## How it works in the chip
 
