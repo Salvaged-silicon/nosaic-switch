@@ -1210,6 +1210,63 @@ So the next move is not to bisect `0x145ea4`. It is to reproduce the preboot
 the replay was captured after. Until then, both scaffold routes fail in the
 same way and for the same reason.
 
+## The memory BIST works; the replay path is a chain, 2026-09-26
+
+### ✅ BIST and memory-controller configuration, ported and passing
+
+`datapath/fm6000/bist.c`. Configures the chip's memory controllers and runs
+the defect/repair march. **live**
+
+```
+   controllers configured  yes
+   march completed         yes after 29 ms
+   BM_ENGINE_STATUS        0x00000000
+   result registers set    0 (want 0)
+```
+
+This is not Table 4-1 step 9. That step asks the boot controller to apply the
+fusebox's recorded repairs; this establishes the controllers those memories
+are reached through at all.
+
+⚠⚠ **The controller writes are paced, and this hazard hangs the HOST.**
+Writing the `0x1d200`-`0x1d6ff` block back to back hard hangs the machine
+issuing the writes — not an off-bus chip that a reset pulse recovers, but a
+box that needs its power cycled. Pacing is **on by default** here, 50 µs,
+unlike the original where it defaulted to none behind an environment
+variable. A default that can wedge the host is not a default.
+
+### ⚠ "OFF-BUS at line N" is where the tool CHECKED, not where it broke
+
+The replay tool reported the fault at line **16384** twice, which is exactly
+2¹⁴ and should have been suspicious immediately. Running the first 16,000
+lines alone printed `DONE` — and `PIN=0x00000000`. The chip had died during
+them and the tool only noticed at its periodic check.
+
+So `0x145ea4`, recorded here earlier as the fault, was the **detection
+point**. Bisecting properly, with verified recovery, gives the real one:
+
+```
+   first fatal line: 2271      0001f000 <- 00000001
+```
+
+`0x1f000` is the CRM block's control register, and that write is the **CRM
+launch** — the datasheet's first option for step 12's memory initialisation,
+where this port chose the second, a software fill.
+
+### ⚠ And it is a chain, not a blocker
+
+Removing all 129 CRM-launch writes lets the replay past line 2271 and it dies
+further on, at a different address. Each fault fixed reveals the next.
+
+That is the honest read on this route. The replay was captured from a chip
+EOS had already prepared, ours is prepared differently, and every place the
+two states differ is a separate fault to find. It is not one missing step.
+
+⚠ Note also that the BIST — the leading hypothesis for this — **did not
+change the outcome**: the replay dies in the same place with the memory
+controllers configured as without. Worth having anyway, and not the answer
+here.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

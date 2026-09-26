@@ -24,6 +24,7 @@
 #include "boot.h"
 #include "sbus.h"
 #include "serdes.h"
+#include "bist.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -43,6 +44,9 @@ static void usage(void)
 "  --read WORD           read one word\n"
 "  --port-up N           run the SerDes lane enable for front-panel port N\n"
 "                        (1-8 only; the rest have no established placement)\n"
+"  --bist [config]       configure the memory controllers and run the BIST\n"
+"                        march. 'config' stops after the controllers. WRITES,\n"
+"                        and unpaced writes here hang the HOST -- see bist.h.\n"
 "  --spico N             is the SPICO running? post an interrupt and see\n"
 "  --dfe N               run the RX equaliser adaptation for port N\n"
 "  --sbus                bring the SerDes bus up and read one lane per EPL\n"
@@ -521,6 +525,32 @@ int main(int argc, char **argv)
 				       "answering, so every spico_int step in the\n"
 				       "vendor sequence is a no-op on this chip\n");
 			rc = 0;
+		}
+	} else if (strcmp(argv[i], "--bist") == 0) {
+		struct fm_bist_report brep;
+		int cfg_only = (i + 1 < argc && strcmp(argv[i + 1], "config") == 0);
+
+		if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			rc = 1;
+		} else {
+			printf("⚠ the memory-controller writes are paced because "
+			       "unpaced ones hang the HOST, not the chip.\n\n");
+			rv = cfg_only ? fm_bist_configure_only(&dev, 0, &brep)
+				      : fm_bist_memory_init(&dev, 0, &brep);
+			printf("  controllers configured  %s\n",
+			       brep.configured ? "yes" : "NO");
+			if (!cfg_only) {
+				printf("  march completed         %s", brep.marched ? "yes" : "NO");
+				if (brep.marched)
+					printf(" after %u ms", brep.march_ms);
+				printf("\n  BM_ENGINE_STATUS        0x%08x\n", brep.status);
+				printf("  result registers set    %u (want 0)\n", brep.defects);
+			}
+			printf("  chip                    %s\n",
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			printf("\n%s\n", rv == FM_OK ? "ok" : rvstr(rv));
+			rc = rv == FM_OK ? 0 : 2;
 		}
 	} else if (strcmp(argv[i], "--sbus") == 0) {
 		rc = cmd_sbus(&dev);
