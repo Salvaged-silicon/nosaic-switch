@@ -1190,6 +1190,30 @@ static void poll_routes(void)
 	}
 }
 
+/*
+ * ⚠ A NEIGHBOUR'S ADDRESS CAN MOVE TO ANOTHER OF OUR INTERFACES.
+ *
+ * A host entry is keyed by the IP alone, so when the address that was behind
+ * swp1 turns up behind po5 -- the link folded into a LAG, or re-addressed --
+ * adding it again fails with EXISTS, and the chip goes on sending that
+ * neighbour's traffic out of the old port. That is what happened on an
+ * AS5610 when swp1 and swp2 became po5: pings from the switch itself worked,
+ * and every routed packet for the far end died. The entry is replaced in
+ * place instead, and the record of where it used to be is dropped, so that
+ * moving it back is not mistaken for "already done".
+ */
+static void host_forget(uint32_t ip)
+{
+	int i;
+
+	for (i = 0; i < nhs; ) {
+		if (hs[i].ip == ip)
+			hs[i] = hs[--nhs];
+		else
+			i++;
+	}
+}
+
 static int host_seen(int ifx, uint32_t ip)
 {
 	int i;
@@ -1259,9 +1283,14 @@ static void poll_hosts(void)
 		h.l3a_ip_addr = v;
 		h.l3a_intf = eg;
 		rv = bcm_l3_host_add(l3_unit, &h);
+		if (rv == BCM_E_EXISTS) {               /* moved: see host_forget */
+			h.l3a_flags |= BCM_L3_REPLACE;
+			rv = bcm_l3_host_add(l3_unit, &h);
+		}
 		if (rv != BCM_E_NONE)
 			continue;
 
+		host_forget(v);
 		hs[nhs].ifx = ifx;
 		hs[nhs].ip = v;
 		nhs++;
@@ -1482,6 +1511,19 @@ static void poll_routes6(void)
 	}
 }
 
+/* host_forget, for v6. */
+static void host6_forget(const uint8_t *ip)
+{
+	int i;
+
+	for (i = 0; i < nhs6; ) {
+		if (memcmp(hs6[i].ip, ip, 16) == 0)
+			hs6[i] = hs6[--nhs6];
+		else
+			i++;
+	}
+}
+
 static int host6_seen(int ifx, const uint8_t *ip)
 {
 	int i;
@@ -1521,9 +1563,14 @@ static void host6_add(int ifindex, const uint8_t *ip, const uint8_t *mac, void *
 	memcpy(h.l3a_ip6_addr, ip, 16);
 	h.l3a_intf = eg;
 	rv = bcm_l3_host_add(l3_unit, &h);
+	if (rv == BCM_E_EXISTS) {                       /* moved: see host_forget */
+		h.l3a_flags |= BCM_L3_REPLACE;
+		rv = bcm_l3_host_add(l3_unit, &h);
+	}
 	if (rv != BCM_E_NONE)
 		return;
 
+	host6_forget(ip);
 	memcpy(hs6[nhs6].ip, ip, 16);
 	hs6[nhs6].ifx = ifx;
 	nhs6++;
