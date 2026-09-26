@@ -170,6 +170,8 @@ fi
 # VLANs, switch ports and routed VLAN interfaces, before the addresses.
 #
 #     lag po1 lacp swp49,swp50
+#     mlag on peer-link po1 peer-address 10.10.34.3
+#     lag po7 lacp swp49 mlag 7
 #     stp on priority 4096
 #     stp port swp1 edge
 #     vlan 10
@@ -193,12 +195,18 @@ fi
 # $1 = "quiet" while waiting for the datapath, whose ports do not exist yet.
 apply_vlans() {
 command -v nosaic >/dev/null 2>&1 || return 0
-grep -Eq '^(vlan|switchport|lag|stp)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+grep -Eq '^(vlan|switchport|lag|stp|mlag)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
 # LAGs first, in a pass of their own: a switchport or iface line may name one,
 # and it has to exist before it can be put in a VLAN or given an address.
 while read -r kind a mode ports; do
     [ "$kind" = "lag" ] && [ -n "$a" ] || continue
     out=$(nosaic lag "$a" "$mode" $ports 2>&1) || say "lag $a $mode $ports FAILED: $out" "$1"
+done < "$CONF"
+# MLAG next: its peer-link may be a LAG, which exists now.
+while read -r kind rest; do
+    [ "$kind" = "mlag" ] && [ -n "$rest" ] || continue
+    # shellcheck disable=SC2086 -- rest is the mlag arguments, word-split on purpose
+    out=$(nosaic mlag $rest 2>&1) || say "mlag $rest FAILED: $out" "$1"
 done < "$CONF"
 # Spanning tree next, before any port joins a VLAN: with it on, a port that
 # joins starts out discarding, and a loop in the file is never a loop on the

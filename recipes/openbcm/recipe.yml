@@ -51,6 +51,7 @@ source:
 
 patches:
   - patches/0001-build-with-a-modern-toolchain.patch
+  - patches/0002-l2-traverse-buffer-sized-to-the-table.patch
 
 build:
   # The build runs in systems/linux/user/common, which is where the targets
