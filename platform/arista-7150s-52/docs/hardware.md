@@ -1147,6 +1147,69 @@ So the next question is not "what else does the SerDes need" -- the SerDes
 matches a working one register for register. It is **how much of the rest of
 the chip has to be up before the PCS will lock.**
 
+## Running the scaffold: where it stops, exactly, 2026-09-26
+
+The scaffold exists to get a lane to link so block-by-block replacement has an
+oracle. Two ways of running it were tried and both stop in the same kind of
+place. **live**
+
+### The 41 blocks, run in order
+
+Blocks 1-5 -- `cminit` `safinit` `ffuinit` `l2linit` `parserinit` -- run
+clean. **Block 6, `modinit`, takes the chip off the bus.**
+
+That is what the file predicts: *"TABLE ONLY, deliberately: emits the 3855
+registers written exactly once and leaves the 306 multi-write control
+registers in the replay."* A block built as a substitution inside a sequence
+leaves its own block half-configured when run alone.
+
+### The whole replay, run directly
+
+`fm6000_fullreplay` retargeted to the SCD local bus. It is runnable in
+principle -- the replay's highest address is `0x3fc7ff`, so all 373,345
+writes fit inside BAR1's 16 MB window, and it touches neither of the two
+words measured fatal here. It has its own off-bus detection and reports
+precisely:
+
+```
+   OFF-BUS at line 16384 (0x145ea4 <- 0x00000000)
+   ABORTED: 16384 ops, mmio=14365 sbus=673 timeouts=0, PIN=0x00000000
+```
+
+The context is a **sequential zero-fill**, `0x145e00` upward, and it dies 164
+words into a 304-word run -- having already completed an identical 304-word
+run at `0x145c00`. A uniform fill failing partway through, after its twin
+succeeded, is not a property of that address.
+
+### What the replay's own fills say about memory
+
+Extracted every run of consecutive words written zero, as a way of finding
+the memories without guessing. There are **four**, and they are small:
+
+```
+   0x01f080 .. 0x01f23f    448 words
+   0x113040 .. 0x11313f    256 words
+   0x145c00 .. 0x145d2f    304 words
+   0x145e00 .. 0x145f2f    304 words     <- died 164 words in
+```
+
+So these are table clears, not the big ECC sweeps Table 4-1 step 12 is about.
+Our step 12 fills STATS and the replay does not fill it at all -- it is
+already done by the time this capture starts.
+
+### ⚠ Which is the point: the replay assumes a chip we have not built
+
+It was recorded from EOS's boot, from a state EOS had already established.
+Ours is Table 4-1 and nothing else. The prior work ran this file from
+EdgeNOS's own `init-m1`, whose `fm6000_preboot` includes a **BIST and memory
+repair pass** (`fm6000_bist_memory_init`) that this port does not do at all --
+Table 4-1's step 9 issues the boot controller's bank-repair *command*, which
+is not the same thing.
+
+So the next move is not to bisect `0x145ea4`. It is to reproduce the preboot
+the replay was captured after. Until then, both scaffold routes fail in the
+same way and for the same reason.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted
