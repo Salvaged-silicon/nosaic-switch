@@ -11,8 +11,8 @@ the vendor has abandoned, given a modern, open, maintained OS.
 > Broadcom generations and three vendors, and run one operating system with one
 > set of commands. They route with OSPF, and switch and route VLANs in silicon —
 > access, trunk and routed VLAN interfaces, proven between NOSaic switches on
-> three chip families, bundle links into LACP port-channels, and break
-> switching loops with rapid spanning tree. Their management ports sit in a VRF of their own. The ones
+> three chip families, bundle links into LACP port-channels, break
+> switching loops with rapid spanning tree, and pair up for MLAG. Their management ports sit in a VRF of their own. The ones
 > installed to flash take A/B upgrades that the switch itself commits or rolls
 > back, and come back from a cold power cut on their own.
 >
@@ -23,7 +23,7 @@ the vendor has abandoned, given a modern, open, maintained OS.
 > [docs/DESIGN.md](docs/DESIGN.md) is where it is going;
 > [docs/MILESTONES.md](docs/MILESTONES.md) is what lands when.
 > Operating one: [the CLI](docs/cli.md), [VLANs and SVIs](docs/vlan.md),
-> [link aggregation](docs/lag.md), [spanning tree](docs/stp.md),
+> [link aggregation](docs/lag.md), [spanning tree](docs/stp.md), [MLAG](docs/mlag.md),
 > [the management VRF](docs/vrf.md),
 > [access lists](docs/acl.md).
 
@@ -144,7 +144,7 @@ Everything else outstanding is in each board's own list:
 
 For most of its life NOSaic ran every front-panel port as a routed port. It
 switches now, in the chip, and the contract that says how is
-**switchapi 1.4**:
+**switchapi 1.5**:
 
 - **VLANs and SVIs** ([docs/vlan.md](docs/vlan.md)). A port is routed until it
   joins a VLAN; `switchport` makes it an access port or a trunk with a native
@@ -169,6 +169,12 @@ switches now, in the chip, and the contract that says how is
   On a real loop between two NOSaic switches it blocked the redundant link.
   When the forwarding link was cut, it failed over under traffic for two lost
   pings. A LAG works as a port in the tree.
+- **MLAG** ([docs/mlag.md](docs/mlag.md)). Two switches joined by a peer-link
+  present a LAG as one LACP partner, so a device cabled to both bundles the
+  links as one. Between a 7050SX2 and a 7050TX-64, with a Nexus 3172TQ
+  dual-homed, it carried traffic every way without duplicates. It survived
+  losing the device's link to one peer, the peer-link, and the peer itself,
+  the last two without losing a packet.
 - **A management VRF** ([docs/vrf.md](docs/vrf.md)). eth0 lives in its own
   routing table, so what the front panel learns can never capture the switch's
   own management traffic. That once cut an image pull to 21 KB/s and had to be

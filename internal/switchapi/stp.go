@@ -1,6 +1,9 @@
 package switchapi
 
-import "fmt"
+import (
+	"fmt"
+	"net/netip"
+)
 
 // ValidSTPPriority checks a bridge priority: 802.1D-2004 carries it in the top
 // four bits of the bridge ID, so it is 0 to 61440 in steps of 4096. Every
@@ -33,4 +36,22 @@ func STPDefaultCost(mbps int) int {
 		c = 1
 	}
 	return c
+}
+
+// ValidMLAG checks an MLAG configuration that turns MLAG on, the parts that
+// do not depend on the datapath: a peer-link named, a peer address that is an
+// address if given, a priority in 16 bits.
+func ValidMLAG(c MLAGConfig) error {
+	if c.PeerLink == "" {
+		return fmt.Errorf("mlag needs a peer-link")
+	}
+	if c.PeerAddress != "" {
+		if _, err := netip.ParseAddr(c.PeerAddress); err != nil {
+			return fmt.Errorf("mlag peer-address %q is not an address", c.PeerAddress)
+		}
+	}
+	if c.Priority < 0 || c.Priority > 65535 {
+		return fmt.Errorf("mlag priority %d: must be 0 to 65535", c.Priority)
+	}
+	return nil
 }

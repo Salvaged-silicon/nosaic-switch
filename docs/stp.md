@@ -166,5 +166,6 @@ itself.
   bridges do not wait for them.
 - **No BPDU guard, root guard or loop guard.**
 - **Port priority is fixed at 128.**
-- **MLAG**, the next piece of work, will need the tree to treat a peer-link
-  pair as one bridge.
+- **MLAG interfaces and the peer-link are left out of the tree** and forward
+  ([mlag.md](mlag.md)). A pair that ran the tree as one bridge would catch a
+  loop through them.

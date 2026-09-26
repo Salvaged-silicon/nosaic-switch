@@ -42,6 +42,8 @@ int nosaic_lag_cmd(int argc, char **argv);
 int nosaic_show_lags(void);
 int nosaic_stp_cmd(int argc, char **argv);
 int nosaic_show_stp(void);
+int nosaic_mlag_cmd(int argc, char **argv);
+int nosaic_show_mlag(void);
 
 /* What the datapath's DMA pool holds, and which allocation names hold it.
  *

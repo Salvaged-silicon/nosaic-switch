@@ -19,6 +19,7 @@ as `admin` and use `doas nosaic ...`; `sudo` is a shim onto it.
 | `show vlans` | VLANs, their SVI, untagged and tagged members | ✅ | ✅ |
 | `show lags` | LAGs, their mode, and which members carry traffic | ✅ | ✅ |
 | `show stp` | the spanning tree: bridge, root, and each port's role and state | ✅ | ✅ |
+| `show mlag` | the MLAG pair: role, peer, heartbeat, and each MLAG interface | ✅ | ✅ |
 | `show acl` | access-list rules and their hit counts | ✅ | ✅ |
 | `show caps` | what this datapath can do, and the contract version | ✅ | ✅ |
 | `show dma` | the SDK's DMA pool, by allocation name | ✅ | ✅ |
@@ -74,6 +75,15 @@ wherever a port's does, `switchport` included. [lag.md](lag.md).
 
 Both CLIs. Rapid spanning tree over the switched ports and LAGs; off until
 turned on. [stp.md](stp.md).
+
+### MLAG
+
+    mlag on peer-link <port> [peer-address <ip>] [priority <n>]
+    mlag off
+    lag <poN> lacp|static <port,...> mlag <id>
+
+Both CLIs. One of a pair of switches presenting a LAG with the same MLAG id as
+one LACP partner. [mlag.md](mlag.md).
 
 ## Settings
 

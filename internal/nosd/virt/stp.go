@@ -219,3 +219,11 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 	sort.Slice(out.Ports, func(i, j int) bool { return out.Ports[i].Port < out.Ports[j].Port })
 	return out, nil
 }
+
+// MLAG needs a chip: a Linux bond has no way to present one LACP system from
+// two machines. Refused, as the capability says.
+func (s *Switch) SetMLAG(switchapi.MLAGConfig) error { return switchapi.Unsupported("mlag") }
+func (s *Switch) SetLAGMLAG(string, int) error       { return switchapi.Unsupported("mlag") }
+func (s *Switch) MLAG() (switchapi.MLAGStatus, error) {
+	return switchapi.MLAGStatus{}, switchapi.Unsupported("mlag")
+}

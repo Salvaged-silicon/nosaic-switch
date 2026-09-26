@@ -216,6 +216,28 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(st)
 
+	case proto.OpSetMLAG:
+		var a proto.MLAGArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetMLAG(switchapi.MLAGConfig{Enabled: a.Enabled, PeerLink: a.PeerLink,
+			PeerAddress: a.PeerAddress, Priority: a.Priority}))
+
+	case proto.OpSetLAGMLAG:
+		var a proto.LAGMLAGArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetLAGMLAG(a.Name, a.ID))
+
+	case proto.OpMLAG:
+		st, err := s.sw.MLAG()
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(st)
+
 	case proto.OpAddSVI, proto.OpDelSVI:
 		if err := json.Unmarshal(req.Args, &v); err != nil {
 			return proto.ErrorResponse(err)

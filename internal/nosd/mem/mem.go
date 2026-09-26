@@ -45,6 +45,7 @@ func DefaultCaps() switchapi.Capabilities {
 		MaxLAGMembers: 8,
 		LACP:          true,
 		STP:           true,
+		MLAG:          true,
 		L2Learning:    true,
 		L3:            true,
 		IPv6:          true,
@@ -81,6 +82,7 @@ type Switch struct {
 	routes  map[netip.Prefix]switchapi.Route
 	acls    map[int]switchapi.ACLRule
 	stpst   *stpState
+	mlag    switchapi.MLAGConfig
 }
 
 // New builds a simulated switch.
@@ -466,6 +468,7 @@ func (s *Switch) DelACL(seq int) error {
 
 type lag struct {
 	lacp    bool
+	mlag    int
 	members []string
 	port    *port // the LAG as an interface: VLANs, addresses, status
 }
@@ -574,7 +577,7 @@ func (s *Switch) LAGs() ([]switchapi.LAG, error) {
 	defer s.mu.Unlock()
 	var out []switchapi.LAG
 	for name, l := range s.lags {
-		g := switchapi.LAG{Name: name, LACP: l.lacp}
+		g := switchapi.LAG{Name: name, LACP: l.lacp, MLAG: l.mlag}
 		for _, m := range l.members {
 			// No links in memory: a member is active when its port is up.
 			g.Members = append(g.Members, switchapi.LAGMember{Port: m, Active: s.byName[m].adminUp})

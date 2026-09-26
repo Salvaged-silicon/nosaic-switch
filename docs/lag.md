@@ -236,7 +236,7 @@ of the MAC addresses:
 
 ## Not yet
 
-- **MLAG.** A LAG whose members are on two switches. Next, after RSTP.
+- **MLAG** is a LAG whose members are on two switches: [mlag.md](mlag.md).
 - **A member's MTU is not managed.** Set `po<N>`'s MTU to match what the
   neighbour's LAG has. OSPF refuses an adjacency across a mismatch.
 - **LACP is always active with a fast timeout.** There is no passive mode, no

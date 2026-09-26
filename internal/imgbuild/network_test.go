@@ -220,6 +220,7 @@ switchport swp2 trunk 10,20 native 1
 iface vlan10 10.0.10.1/24
 stp on priority 4096
 stp port swp1 edge
+mlag on peer-link po1 peer-address 192.0.2.2
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -239,6 +240,7 @@ stp port swp1 edge
 	for _, want := range []string{
 		"lag po1 lacp swp7,swp8\n",
 		"stp on priority 4096\n", "stp port swp1 edge\n",
+		"mlag on peer-link po1 peer-address 192.0.2.2\n",
 		"vlan add 10\n", "vlan add 20\n",
 		"switchport swp1 access 10\n",
 		"switchport swp2 trunk 10,20 native 1\n",
@@ -250,6 +252,9 @@ stp port swp1 edge
 	}
 	if strings.Index(got, "lag po1") > strings.Index(got, "vlan add 10") {
 		t.Errorf("a LAG must exist before any VLAN line can name it:\n%s", got)
+	}
+	if i := strings.Index(got, "mlag on"); i < strings.Index(got, "lag po1") || i > strings.Index(got, "stp on") {
+		t.Errorf("mlag must come after the LAGs (its peer-link may be one) and before spanning tree:\n%s", got)
 	}
 	if strings.Index(got, "stp port swp1") > strings.Index(got, "switchport swp1") {
 		t.Errorf("spanning tree must be set before any port joins a VLAN, even when its lines come last:\n%s", got)

@@ -66,6 +66,7 @@
 
 #include "l3sync.h"
 #include "lag.h"
+#include "mlag.h"
 #include "tapbridge.h"
 #include "vlan.h"
 
@@ -279,6 +280,9 @@ static void get_peer(const unsigned char *p, struct peer *x)
 
 static void actor_of(int k, const struct member *m, struct peer *a)
 {
+	unsigned char sys[6];
+	unsigned key, off;
+
 	memset(a, 0, sizeof(*a));
 	a->sys_pri = 32768;
 	memcpy(a->sys, sys_mac, 6);
@@ -286,6 +290,13 @@ static void actor_of(int k, const struct member *m, struct peer *a)
 	a->port_pri = 32768;
 	a->port = (unsigned short)(m->port + 1);
 	a->state = m->actor;
+	/* An MLAG interface is half of one LAG across two switches: the pair's
+	 * system and key, and port numbers the peer's cannot collide with. */
+	if (nosaic_mlag_lacp(k, sys, &key, &off)) {
+		memcpy(a->sys, sys, 6);
+		a->key = (unsigned short)key;
+		a->port = (unsigned short)(m->port + 1 + off);
+	}
 }
 
 /* One LACPDU out of one member. Caller holds lag_lock. */
@@ -800,6 +811,7 @@ int nosaic_lag_del(const char *name, char *err, size_t n)
 	if (k == 0 || !lags[k].used)
 		return 0;
 	g = &lags[k];
+	nosaic_mlag_lag_gone(k);
 	nosaic_vlan_lag_forget(k);
 	while (g->n > 0) {
 		struct member gone;
@@ -846,9 +858,9 @@ void nosaic_lag_query(FILE *out)
 
 		if (!g->used)
 			continue;
-		fprintf(out, "%s{\"Name\":\"%s\",\"LACP\":%s,\"Trunk\":%d,"
+		fprintf(out, "%s{\"Name\":\"%s\",\"LACP\":%s,\"MLAG\":%d,\"Trunk\":%d,"
 			"\"SVI\":%s,\"Members\":[", first ? "" : ",", g->name,
-			g->lacp ? "true" : "false", (int)g->tid,
+			g->lacp ? "true" : "false", nosaic_mlag_id(k), (int)g->tid,
 			nosaic_vlan_lag_switched(k) ? "false" : "true");
 		first = 0;
 		for (i = 0; i < g->n; i++) {

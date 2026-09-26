@@ -47,6 +47,7 @@
 #include "vlan.h"
 #include "lag.h"
 #include "rstp.h"
+#include "mlag.h"
 
 static int query_unit;
 
@@ -389,6 +390,18 @@ static int handle_lag(FILE *out, const char *req)
 	} else if (strcmp(op, "stp.port") == 0) {
 		rv = nosaic_rstp_port(name, strstr(req, "\"edge\":true") != NULL,
 				      req_int(req, "cost", 0), err, sizeof(err));
+	} else if (strcmp(op, "mlag") == 0) {
+		nosaic_mlag_query(out);
+		return 1;
+	} else if (strcmp(op, "mlag.set") == 0) {
+		char plink[32], paddr[64];
+
+		req_str(req, "peer_link", plink, sizeof(plink));
+		req_str(req, "peer_address", paddr, sizeof(paddr));
+		rv = nosaic_mlag_set(strstr(req, "\"enabled\":true") != NULL, plink, paddr,
+				     req_int(req, "priority", 32768), err, sizeof(err));
+	} else if (strcmp(op, "lag.mlag") == 0) {
+		rv = nosaic_mlag_set_lag(name, req_int(req, "mlag", 0), err, sizeof(err));
 	} else if (strcmp(op, "port.admin") == 0) {
 		rv = port_admin(name, strstr(req, "\"up\":true") != NULL, err, sizeof(err));
 	} else {
@@ -685,21 +698,22 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.4\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.5\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
 			"\"ACL\":%s,\"ACLEntries\":%d,"
 			"\"ACL6\":%s,\"ACL6Entries\":%d,"
 			"\"LAGs\":%s,\"MaxLAGs\":%d,\"MaxLAGMembers\":%d,"
-			"\"LACP\":%s,\"STP\":%s}}\n",
+			"\"LACP\":%s,\"STP\":%s,\"MLAG\":%s}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
 			maxecmp > 1 ? "true" : "false", maxecmp,
 			acl.v4 ? "true" : "false", acl.v4_total,
 			acl.v6 ? "true" : "false", acl.v6_total,
 			maxlags > 0 ? "true" : "false", maxlags, maxlagm,
 			maxlags > 0 ? "true" : "false",
-			nosaic_rstp_supported() ? "true" : "false");
+			nosaic_rstp_supported() ? "true" : "false",
+			nosaic_mlag_supported() ? "true" : "false");
 		return;
 	}
 
@@ -881,6 +895,7 @@ int nosaic_query_start(int unit, const char *path)
 	nosaic_vlan_start(unit);
 	nosaic_lag_start(unit);
 	nosaic_rstp_start(unit);
+	nosaic_mlag_start(unit);
 
 	struct sockaddr_un a;
 	pthread_t th;

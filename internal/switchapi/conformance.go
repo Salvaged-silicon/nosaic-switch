@@ -69,6 +69,7 @@ func Check(sw Switch) []error {
 	probs = append(probs, checkVLANs(sw, caps, p0)...)
 	if len(ports) >= 2 {
 		probs = append(probs, checkLAGs(sw, caps, p0, ports[1].Name)...)
+		probs = append(probs, checkMLAG(sw, caps, p0, ports[1].Name)...)
 	}
 	probs = append(probs, checkSTP(sw, caps, p0)...)
 	probs = append(probs, checkL3(sw, caps, p0)...)
@@ -585,6 +586,107 @@ func checkSTP(sw Switch, caps Capabilities, p0 string) []error {
 		for _, p := range st.Ports {
 			if p.State != "forwarding" {
 				bad("spanning tree is off but %s is %s", p.Port, p.State)
+			}
+		}
+	}
+	return probs
+}
+
+// checkMLAG is what one switch can check about MLAG with no peer: the
+// configuration is refused when it is nonsense and reads back when it is not,
+// MLAG ids are unique and appear on the LAG and in the status, and the
+// peer-link cannot be an MLAG interface. It leaves MLAG off.
+func checkMLAG(sw Switch, caps Capabilities, p0, p1 string) []error {
+	err := sw.SetMLAG(MLAGConfig{Enabled: false})
+	if probs := wantSupport(caps.MLAG, err, "SetMLAG", "Capabilities.MLAG"); len(probs) > 0 || !caps.MLAG {
+		return probs
+	}
+	var probs []error
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	if !caps.LAGs {
+		return append(probs, fmt.Errorf("Capabilities.MLAG without Capabilities.LAGs: an MLAG interface is a LAG"))
+	}
+	defer func() {
+		_ = sw.SetMLAG(MLAGConfig{Enabled: false})
+		_ = sw.DelLAG("po2")
+		_ = sw.DelLAG("po3")
+	}()
+
+	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: "swp-nonexistent"}); err == nil {
+		bad("SetMLAG accepted a peer-link that does not exist")
+	}
+	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, PeerAddress: "bogus"}); err == nil {
+		bad("SetMLAG accepted peer address %q", "bogus")
+	}
+	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, PeerAddress: "192.0.2.2", Priority: 100}); err != nil {
+		return append(probs, fmt.Errorf("SetMLAG(peer-link %s): %w", p0, err))
+	}
+	if st, err := sw.MLAG(); err != nil {
+		bad("MLAG: %v", err)
+	} else if !st.Enabled || st.PeerLink != p0 {
+		bad("MLAG reports enabled=%v peer-link %q after SetMLAG(on, %s)", st.Enabled, st.PeerLink, p0)
+	}
+
+	if err := sw.AddLAG("po2", false); err != nil {
+		return append(probs, fmt.Errorf("AddLAG(po2): %w", err))
+	}
+	if err := sw.SetLAGMembers("po2", []string{p1}); err != nil {
+		bad("SetLAGMembers(po2, %s): %v", p1, err)
+	}
+	if err := sw.SetLAGMLAG("po2", MLAGMaxID+1); err == nil {
+		bad("SetLAGMLAG accepted id %d", MLAGMaxID+1)
+	}
+	if err := sw.SetLAGMLAG("po2", 5); err != nil {
+		return append(probs, fmt.Errorf("SetLAGMLAG(po2, 5): %w", err))
+	}
+	if err := sw.AddLAG("po3", false); err == nil {
+		if err := sw.SetLAGMLAG("po3", 5); err == nil {
+			bad("SetLAGMLAG gave po3 the id po2 already has")
+		}
+	}
+	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: "po2"}); err == nil {
+		bad("SetMLAG made MLAG interface po2 the peer-link")
+	}
+	if ls, err := sw.LAGs(); err == nil {
+		for _, l := range ls {
+			if l.Name == "po2" && l.MLAG != 5 {
+				bad("po2 reports MLAG id %d, set 5", l.MLAG)
+			}
+		}
+	}
+	st, err := sw.MLAG()
+	if err != nil {
+		return append(probs, fmt.Errorf("MLAG: %w", err))
+	}
+	switch st.Role {
+	case "primary", "secondary", "none":
+	default:
+		bad("MLAG role %q", st.Role)
+	}
+	var found bool
+	for _, i := range st.Interfaces {
+		if i.LAG != "po2" {
+			continue
+		}
+		found = true
+		if i.ID != 5 {
+			bad("MLAG lists po2 with id %d, set 5", i.ID)
+		}
+		switch i.State {
+		case "active", "local", "peer", "down", "disabled":
+		default:
+			bad("MLAG interface po2 in state %q", i.State)
+		}
+	}
+	if !found {
+		bad("po2 has MLAG id 5 but MLAG does not list it")
+	}
+	if err := sw.SetLAGMLAG("po2", 0); err != nil {
+		bad("SetLAGMLAG(po2, 0): %v", err)
+	} else if st, err := sw.MLAG(); err == nil {
+		for _, i := range st.Interfaces {
+			if i.LAG == "po2" {
+				bad("po2 is still an MLAG interface after SetLAGMLAG(po2, 0)")
 			}
 		}
 	}
