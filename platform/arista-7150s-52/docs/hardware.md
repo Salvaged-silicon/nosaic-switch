@@ -3221,9 +3221,18 @@ prior-art tool uses. The *golden* ring, recovered from the running switch,
 turns out to be a different object — 64 tokens in a fixed service order,
 ports 0–3 Locked and sixty others not, one slow-port mask written rather than
 five, and the replace-token registers cleared either side of the commit
-strobes; 175 writes. `ssched.c` now programs that, exactly, and the engine
-still does not advance it. So the remaining difference is state established
-somewhere else, not the ring.
+strobes; 175 writes. `ssched.c` now programs that, and the engine
+still does not advance it.
+
+**That is now proven rather than believed.** `ssched.c`'s output was dumped
+through a recording stub and compared against the reference sequence:
+**175 of 175 writes, same addresses, same values, same order.** The prior
+work's own generator says the 64 token values have no formula that fits and
+reproduces them verbatim; ours computes them from a port list and lands on
+the identical sequence, port 2's out-of-order token included. Removing the
+five sweeper words — the one place we write more than the golden sequence
+does — changes nothing either. So the ring's contents are eliminated as the
+cause, and the remaining difference is state established somewhere else.
 
 ⚠ Do not use physical port 0 as a find-probe target. The probe writes the
 port number and reads the register back, and for port 0 a ring that never
