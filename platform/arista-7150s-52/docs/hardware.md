@@ -970,7 +970,18 @@ That is not a mapping problem, it is a missing initialisation.
 ## The EPL gates are not enough to light a lane, 2026-09-26
 
 Tested directly, with all four cages populated and their far ends
-transmitting. **live**
+transmitting — confirmed from the modules' own DOM rather than from the
+vendor OS, which is a thing this board can now answer for itself: **live**
+
+| port | module | rx | tx |
+|---|---|---|---|
+| 1 | CISCO-FINISAR FTLX8574D3BCL-CS | **−2.16 dBm** | −1.94 |
+| 2 | CISCO-FINISAR FTLX8571D3BCL-C2 | **−2.01 dBm** | −2.61 |
+| 3 | CISCO-ACCELINK RTXM228-551-C98 | **−2.89 dBm** | −2.93 |
+| 4 | CISCO-FINISAR FTLX8571D3BCL-C2 | **−2.71 dBm** | −3.10 |
+
+Three different module types, all healthy. Port 1 had −2.16 dBm arriving
+throughout the attempt below.
 
 Port 1 is EPL 14 lane 0. Booted the chip, then wrote the two per-EPL
 registers to the exact values a forwarding chip holds:
