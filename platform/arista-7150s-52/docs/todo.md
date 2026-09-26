@@ -403,7 +403,18 @@ Features that do not need the ASIC, measured and working 2026-09-25:
       PCA, `0x0e` SerialNumber, CRC32, V2/V3. From Arista's own open driver.
 - [x] **PSU inventory is available** — both supplies' FRU EEPROMs found and
       read: Emerson DS460S at accel 0 bus 4 and accel 1 bus 0, with serials.
-- [ ] ⚠ **the board PREFDL is still not located, and it is a shipping defect
+- [x] **✅ the PREFDL is located: host i2c-1 address `0x52`**, plain SMBus byte
+      reads, ASCII TLV (2-hex code, 4-hex length, value) with Arista's field
+      codes. Verified by the MAC matching the one hardcoded in
+      `config/network.conf`. Found by loop-mounting the EOS SWI's squashfs off
+      our own flash — it is Stored uncompressed — and reading
+      `GenprefdlPlugin/Raven.py`, which names `idseeprom --device=1.0x52`.
+      Also carries SKU `DCS-7150S-52-CL`, SID `SantaRosa`, HwRev, serial, and
+      ⚠ the **Alta core rail voltages** in a board-specific code `09`.
+- [ ] **write the prefdl reader** and delete the hardcoded MAC. The sibling
+      7050SX2 carries the same stopgap and the same note; they should go
+      together.
+- [ ] ~~the board PREFDL is not located~~ — it is a shipping defect
       rather than a tidiness one.** `config/network.conf` states this
       chassis's MAC, so the image is chassis-specific: flash it on a second
       7150S-52 and two boxes claim one address.

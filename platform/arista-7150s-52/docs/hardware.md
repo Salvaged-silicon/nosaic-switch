@@ -745,10 +745,51 @@ Worth writing down, because the negative space is most of the search. **live**
 The host buses did confirm one thing: **`0x23` on i2c-1 is `thorn`**, which
 makes i2c-1 the bus the earlier investigation called `/sb/1`.
 
-⚠ The remaining lead is the **SCD's SPI**, not any i2c bus — Arista's own
-driver has an `scd-spi.c`, and nothing else on this board is left to look at.
-The other route is to extract `DosBoard` from the EOS SWI, which sits on our
-own flash, and read where the vendor gets it from — that needs no EOS boot.
+### ✅ FOUND: the PREFDL is at i2c-1 address `0x52`
+
+Answered by reading the vendor's own boot script out of the EOS SWI **on our
+own flash**, with no EOS boot: the image is a plain ZIP whose `rootfs-i386.sqsh`
+is **Stored** uncompressed, so it loop-mounts read-only straight from the file.
+
+`/etc/rc.d/init.d/EosReadPrefdl` runs `genprefdl`, which dispatches to a
+per-platform plugin. The one for this board is
+`GenprefdlPlugin/Raven.py` — **raven** being this platform's codename — and it
+reads the base prefdl from **`idseeprom --device=1.0x52`**: bus 1, address
+`0x52`. (It then appends a second, CPU prefdl read from SPI flash via
+`flashUtil`, prefixed `Cpu`. We do not need that one.)
+
+`0x52` on **host i2c-1** — the PIIX4 bus that also carries `thorn` at `0x23` —
+answers plain SMBus byte reads. The earlier sweep missed it by dumping `0x50`
+and inferring the whole `0x50`–`0x57` range was dead from one address.
+
+### The format is ASCII TLV, and the known-answer test passes
+
+Not the binary TLV of Arista's `prefdl.py`, but the same field codes:
+**2 hex digits of code, 4 hex digits of length, then the value.** **live**
+
+| code | field | this chassis |
+|---|---|---|
+| `03` | SKU | **`DCS-7150S-52-CL`** |
+| `0c` | SID | **`SantaRosa`** |
+| `05` | MAC | **`444ca8315daa`** |
+| `02` | MfgTime | `20170217015036` |
+| `0b` | HwRev | `12.04` |
+| `0a` | HwApi | `05.01` |
+| `0d` / `04` | PCA / ASY | `0007922A0` / `0058122A0` |
+| `09` | ⚠ board-specific | `{'AltaVdd':1.01,'AltaVdds':1.0}` |
+
+`03 000f DCS-7150S-52-CL` is fifteen characters and `000f` is fifteen; `0c 0009
+SantaRosa` is nine and `0009` is nine. The codes are Arista's own, from their
+open driver. And the MAC is **exactly** the one `config/network.conf` has been
+asserting by hand since 2026-09-23, which is the test that makes this the board
+PREFDL and not another EEPROM that happens to contain text.
+
+⚠ **Code `09` carries the Alta core rail voltages** — `AltaVdd 1.01`,
+`AltaVdds 1.0`. That is board data the regulator investigation went looking for
+in the CHL8228G, and it was in the prefdl the whole time. It is also why a
+prefdl reader is worth more than just a MAC.
+
+
 
 ### `Cotati.hold` on the flash, identified
 
