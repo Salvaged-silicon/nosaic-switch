@@ -170,6 +170,8 @@ fi
 # VLANs, switch ports and routed VLAN interfaces, before the addresses.
 #
 #     lag po1 lacp swp49,swp50
+#     stp on priority 4096
+#     stp port swp1 edge
 #     vlan 10
 #     switchport swp1 access 10
 #     switchport swp49 trunk 10,20 native 1
@@ -191,12 +193,20 @@ fi
 # $1 = "quiet" while waiting for the datapath, whose ports do not exist yet.
 apply_vlans() {
 command -v nosaic >/dev/null 2>&1 || return 0
-grep -Eq '^(vlan|switchport|lag)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+grep -Eq '^(vlan|switchport|lag|stp)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
 # LAGs first, in a pass of their own: a switchport or iface line may name one,
 # and it has to exist before it can be put in a VLAN or given an address.
 while read -r kind a mode ports; do
     [ "$kind" = "lag" ] && [ -n "$a" ] || continue
     out=$(nosaic lag "$a" "$mode" $ports 2>&1) || say "lag $a $mode $ports FAILED: $out" "$1"
+done < "$CONF"
+# Spanning tree next, before any port joins a VLAN: with it on, a port that
+# joins starts out discarding, and a loop in the file is never a loop on the
+# wire, even for the seconds this pass takes.
+while read -r kind rest; do
+    [ "$kind" = "stp" ] && [ -n "$rest" ] || continue
+    # shellcheck disable=SC2086 -- rest is the stp arguments, word-split on purpose
+    out=$(nosaic stp $rest 2>&1) || say "stp $rest FAILED: $out" "$1"
 done < "$CONF"
 while read -r kind a rest; do
     out=""

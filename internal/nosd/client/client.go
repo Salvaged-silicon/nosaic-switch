@@ -323,6 +323,19 @@ func (c *Client) DelLAG(name string) error {
 	return c.call(proto.OpDelLAG, proto.LAGArgs{Name: name}, nil)
 }
 
+func (c *Client) SetSTP(cfg switchapi.STPConfig) error {
+	return c.call(proto.OpSetSTP, proto.STPArgs{Enabled: cfg.Enabled, Priority: cfg.Priority}, nil)
+}
+
+func (c *Client) SetSTPPort(name string, cfg switchapi.STPPortConfig) error {
+	return c.call(proto.OpSetSTPPort, proto.STPPortArgs{Name: name, Edge: cfg.Edge, Cost: cfg.Cost}, nil)
+}
+
+func (c *Client) STP() (switchapi.STPStatus, error) {
+	var st switchapi.STPStatus
+	return st, c.call(proto.OpSTP, nil, &st)
+}
+
 func (c *Client) LAGs() ([]switchapi.LAG, error) {
 	var l []switchapi.LAG
 	return l, c.call(proto.OpLAGs, nil, &l)
