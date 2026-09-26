@@ -552,11 +552,15 @@ has a reason, in code, parameterised by the board.
       `7e1d7899`, EPL_CFG_B `00090033` (PcsSel is 4 bits per lane, two set),
       PORT_STATUS at per-lane `+0x00` reading `0x8c0`, and the fifteen words
       that differ between a live and a dark lane on the same EPL.
-- [ ] ⚠ **re-establish the cage-to-bus mapping.** It is NOT triangulated:
-      four modules are present and the two NOSaic-side measurements each saw
-      only two, agreeing with each other by sharing a blind spot. Likely an
-      unpowered cage neither answers its EEPROM nor reports presence — test
-      by powering the cages first.
+- [x] **the cage-to-bus mapping is restored, and properly this time.** After
+      the chip had been through EOS, NOSaic sees four modules at accelerator 2
+      buses 0-3 and cages 1-4 present out of all 52 scanned. Sequential, and
+      on evidence that could have contradicted it.
+- [ ] ⚠ **NOSaic must power the cages itself.** That is the step EOS performs
+      and we do not: `0x1DF` is the unconfigured cage register, `0x187`
+      configured-and-empty, `0x180` configured-with-a-module. A module in a
+      cage this board has not powered is invisible — no EEPROM, no presence
+      bit — so transceiver discovery silently under-reports on a cold box.
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable

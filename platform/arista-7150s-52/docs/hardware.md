@@ -935,10 +935,37 @@ OSPF adjacency rather than the interface list.
 corroboration.** Both were taken on a chip whose cages NOSaic has never
 powered, and both under-reported by the same two.
 
-So the cage-to-bus mapping is **not established** beyond cages 1 and 2. It may
-well be right — the likely explanation is that an unpowered cage neither
-answers its EEPROM nor reports presence — but that is now a hypothesis with a
-test rather than a conclusion.
+So the cage-to-bus mapping was **not established** beyond cages 1 and 2. The
+likely explanation was that an unpowered cage neither answers its EEPROM nor
+reports presence.
+
+### ✅ And that hypothesis is confirmed, which restores the mapping
+
+After the chip had been through EOS once and back to NOSaic, the same two
+measurements read differently — because EOS configured the cage registers and
+a NOSaic boot does not reset the SCD: **live**
+
+```
+   before EOS ran     cages 1,2 = 0x1E0, everything else 0x1DF
+                      EEPROMs at accel 2 buses 0 and 1 only
+
+   after EOS ran      cages 1..4 = 0x180 (present), 5..52 = 0x187 (empty)
+                      EEPROMs at accel 2 buses 0, 1, 2 and 3
+```
+
+`0x1DF` is the unconfigured state; `0x187` is configured-and-empty and
+`0x180` configured-with-a-module, the difference being the three status bits
+0-2. Scanning **all 52 cages** and **all seven accelerators** now finds
+exactly four modules, in cages 1 to 4, at accelerator 2 buses 0 to 3.
+
+So the mapping is sequential after all — panel port N at accelerator
+`2 + (N-1)/8`, bus `(N-1)%8` — and it now rests on a measurement that could
+have contradicted it rather than on two that shared a blind spot.
+
+⚠ **What actually goes in NOSaic is the cage power-up**, because that is the
+step EOS performed and NOSaic does not. Until it does, a module in a cage
+this board has not powered is invisible to it: no EEPROM, no presence bit.
+That is not a mapping problem, it is a missing initialisation.
 
 ## Confirmed on the bench, 2026-09-22
 
