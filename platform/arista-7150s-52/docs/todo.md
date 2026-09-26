@@ -615,9 +615,27 @@ invented: it is the order the vendor sequence's own splice points imply.
    ffubstinit
 ```
 
-- [ ] **port the 41 blocks.** This is M4, and it is now a list rather than a
-      question. Each is a block of chip configuration; `serdes_enable` and
-      `lanelink` are already done here as `serdes.c`.
+- [ ] ⚠ **port the 41 blocks — but 29 of them are relocated capture, not
+      generated code.** Classified by their own headers:
+
+      **authored (12):** `safinit` `cmrest` `cmwm` `esched` `l3arslice1..4`
+      `l3artables` `parserfields` `smalltables` `tbl3init` — 123 to 1,886
+      lines each.
+
+      **relocated capture (29):** everything else, and it is where the volume
+      is — `l2arseq` 44,368 lines, `l2arpre` 25,482, `l2linit` 24,629,
+      `eplseq` 23,135, `ffuinit` 8,751.
+
+      `l2arseq`'s own header is explicit: *"29110 writes over 15201
+      registers, emitted in the RECORDED ORDER and NOT reduced… No
+      write-count saving: the win is that the block leaves EOS's file."*
+      That is the vendor's captured write sequence moved into a C array.
+
+      ⚠ **This collides with the constraint this port was started under** —
+      no replay, and nothing in the tree that stops NOSaic being
+      redistributable. Taking the 29 as they are would put tens of thousands
+      of captured vendor writes into this repo. Needs a decision before any
+      of it lands.
 - [ ] ⚠ **forwarding needs more than these.** The same experiment got link
       and no transit: 5 kernel routes instead of 39, et1 rx 0, 0 frames
       through. About 1,800 residual writes no generator covers. That is M5
