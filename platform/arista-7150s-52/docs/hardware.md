@@ -1015,6 +1015,62 @@ forwarding value wholesale was an experiment to find out whether the gates
 alone suffice. They do not, so the question is moot — but if they had, the
 fields would still need decoding before any of it became driver code.
 
+## The transmitter works, the receiver does not, 2026-09-26
+
+```
+   PORT_STATUS 0x00000015 -> 0x00000815
+               SerXmit(11)=1   RxLinkUp(6)=0   HeartbeatOk(7)=0
+               a forwarding lane reads 0x8c0: all three
+```
+
+Port 1 drives light under our own code. Eleven of twelve steps pass. The
+receive half does not come up: signal detect never asserts, with **-2.16 dBm
+arriving at the optic** the whole time, so the light is there and the SerDes
+is not reporting it. **live**
+
+### What moved it
+
+Two corrections to the port, both mine, and both the same mistake -- taking a
+value from the earlier superseded version of the sequence rather than the
+corrected one:
+
+- **PLL lock is reg 15 bit 3 alone**, not bits 0 and 3. Bit 0 does not set on
+  this part, so the wait timed out for five seconds on a chip whose PLL was
+  already locked.
+- **A datapath enable, `reg 13 |= 0x11`**, sits immediately before the
+  signal-detect wait and I dropped it in the rewrite.
+
+And one bug of my own: **`EPL_CFG_B` needs a read-modify-write.** Four lanes
+share it, so writing the PCS selector on its own left `0x00000003` against a
+forwarding chip's `0x00090033` -- taking the other three lanes down and
+clearing what the boot sequence put there. Fixing that is what set SerXmit.
+
+### What has been ruled out for the receiver
+
+All measured, all with light arriving: **live**
+
+| tried | result |
+|---|---|
+| RX polarity inverted (`reg 7` bit 4) | no change |
+| signal-detect threshold swept `0`-`63` (`reg 31[6:1]`) | no change, at any value |
+| the EPL config words `+0x10`-`+0x13`, `+0x34`, `+0x35`, `+0x0c` | no change |
+| `EPL_CFG_A` written to the forwarding `0x7E1D7899` | took, no change |
+| `reg 13` datapath enable | passes, no change |
+
+⚠ `reg 20` (signal detect) reads `0x14` **unchanged through all of it**, which
+is itself a clue: a threshold sweep that moves nothing at either end of its
+range suggests the receiver's analogue front end is not running, rather than
+that it is running and seeing too little.
+
+### What is left
+
+Steps 17-18, the DFE, are the only documented part of the sequence not
+attempted. `SPICO-RE.md` records that the tune state machine **responds to
+host driving with no firmware loaded**, and that `0x2b` can be brought to
+`0x03` -- the value a working fibre lane holds. That is the next thing to
+try, and it belongs in C: driving it from a shell over the network is
+hundreds of process spawns per iteration and does not finish.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

@@ -72,6 +72,7 @@ enum fm_lane_step {
 	FM_LANE_SIGDET,		/* regs 31, 38 */
 	FM_LANE_EPL,		/* EPL_CFG_B PcsSel, EPL_CFG_A Active */
 	FM_LANE_TXEQ,		/* regs 61, 62, 65 */
+	FM_LANE_DATAPATH,	/* reg 13: datapath enable */
 	FM_LANE_SIGNAL,		/* wait reg 0x14 bit 6 */
 	FM_LANE__COUNT
 };

@@ -258,10 +258,31 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 	if (rv != FM_OK)
 		return rv;
 
-	rv = wait_bits(d, dev, 0x14, 0x40u);
-	set(rep, FM_LANE_SIGNAL, rv, "wait reg 0x14 bit 6: signal detect",
+	/*
+	 * ⚠ THE DATAPATH ENABLE, and dropping it is why the receiver saw
+	 * nothing. Everything above configures the lane; this is what puts the
+	 * RX and TX datapaths into service. Without it the transmitter runs --
+	 * SerXmit sets -- and signal detect never asserts no matter what light
+	 * is arriving, which is a confusing failure because the optic reports
+	 * healthy receive power the whole time.
+	 */
+	rv = rmw(d, dev, 13, ~0u, 0x11u, 0);
+	set(rep, FM_LANE_DATAPATH, rv, "reg 13: datapath enable", NULL);
+	if (rv != FM_OK)
+		return rv;
+
+	rv = wait_bits(d, dev, 20, 0x40u);
+	set(rep, FM_LANE_SIGNAL, rv, "wait reg 20 bit 6: signal detect",
 	    rv == FM_ETIMEOUT ? "5 s and no signal -- check the optic's own rx "
 				"power before suspecting this" : NULL);
+
+	/* One-shot DFE kick. Harmless if signal detect never came. */
+	{
+		uint32_t v = 0;
+
+		if (fm_sbus_read(d, dev, 42, &v) == FM_OK)
+			(void)fm_sbus_write(d, dev, 42, (v & ~0x6u) | 0x2u);
+	}
 
 	(void)fm_lane_status(d, p, &rep->port_status);
 	return rv;
@@ -286,8 +307,11 @@ void fm_lane_report_print(const struct fm_lane_report *rep)
 		if (rep->step[i].note != NULL)
 			printf("            %s\n", rep->step[i].note);
 	}
-	printf("\n  PORT_STATUS 0x%08x  %s\n", rep->port_status,
-	       (rep->port_status & (1u << 11)) ? "SerXmit SET -- the lane is transmitting"
-					       : "SerXmit clear -- still dark");
+	printf("\n  PORT_STATUS 0x%08x   SerXmit(11)=%d RxLinkUp(6)=%d HeartbeatOk(7)=%d\n",
+	       rep->port_status,
+	       (rep->port_status >> 11) & 1,
+	       (rep->port_status >> 6) & 1,
+	       (rep->port_status >> 7) & 1);
+	printf("  a forwarding lane reads 0x8c0: all three set\n");
 	fflush(stdout);
 }

@@ -565,6 +565,14 @@ has a reason, in code, parameterised by the board.
       `CFG_A 0x7E1D7899` and `CFG_B 0x00090033` on EPL 14 with a live far end
       leaves PORT_STATUS at the dark `0x15`. The SerDes lane-enable is
       required first; this rules out the cheap path.
+- [x] **port 1 transmits** -- `PORT_STATUS 0x815`, SerXmit set, under our own
+      lane-enable in `datapath/fm6000/serdes.c`.
+- [ ] **the receiver.** Signal detect never asserts with -2.16 dBm arriving.
+      Ruled out: RX polarity, the threshold across its whole range, the EPL
+      config words, `EPL_CFG_A` at its forwarding value, the datapath enable.
+      `reg 20` reads `0x14` unchanged throughout, which points at the RX front
+      end not running rather than at a threshold being wrong.
+      Next: steps 17-18, the DFE, host-driven -- and in C, not shell.
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable
