@@ -3215,6 +3215,20 @@ SBus init, the memory BIST, and the management token's Sync bit — **our two
 earlier generations disagree about that bit and it turns out not to matter**,
 which is worth knowing only so that nobody spends another day on it.
 
+And, since: **the ring's contents are not the problem either.** The first
+implementation here programmed the five-token bootstrap ring our later
+prior-art tool uses. The *golden* ring, recovered from the running switch,
+turns out to be a different object — 64 tokens in a fixed service order,
+ports 0–3 Locked and sixty others not, one slow-port mask written rather than
+five, and the replace-token registers cleared either side of the commit
+strobes; 175 writes. `ssched.c` now programs that, exactly, and the engine
+still does not advance it. So the remaining difference is state established
+somewhere else, not the ring.
+
+⚠ Do not use physical port 0 as a find-probe target. The probe writes the
+port number and reads the register back, and for port 0 a ring that never
+ran and a ring that answered are both `0`.
+
 Still untried, and the leading candidate: the scan-chain memory configuration
 (`0x1c039`–`0x1c03d`). Our prior art found that bank writability is a scan
 *program* rather than a register value, and that direct writes off-bus without

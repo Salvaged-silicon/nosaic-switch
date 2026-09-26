@@ -52,16 +52,54 @@
 	 (((uint32_t)(sync) & 1u) << 10))
 
 /*
- * The bootstrap ring: the four internal ports and the management port.
+ * The ring, as the running switch programs it.
  *
- * Front-panel ports are not enrolled here. They join as they come up, and a
- * ring carrying a port whose datapath is not yet configured is the failure
- * this whole file exists to avoid.
+ * Sixty-four tokens in service order. Four of them -- physical ports 0 to 3,
+ * the ports with no cage -- are Locked, which keeps their slot even when the
+ * port is idle; the other sixty are not. No token sets Sync.
+ *
+ * ⚠ THE ORDER IS THE RING'S SERVICE ORDER AND IS NOT ARBITRARY. Tokens are
+ * inserted in the order the engine will visit them, so this list is the
+ * schedule. Its shape is clearly physical -- runs of four at stride four,
+ * which is what four lanes of an EPL looks like -- but the rule that
+ * generates it has not been derived, so it is written out rather than
+ * computed, and it is written out in full rather than sorted into something
+ * tidier.
+ *
+ * ⚠ IT ENROLS MORE THAN THE FRONT PANEL. Ports 12 to 19 carry tokens and
+ * have no cage on this SKU. They are enrolled by the running switch and the
+ * ring is a fixed-size schedule, so they are enrolled here.
+ *
+ * This is the golden ring recovered from the running switch, and it is a
+ * different thing from the five-token bootstrap ring our earlier prior-art
+ * tool programs -- which is what this file first implemented, and which does
+ * not circulate.
  */
-static const unsigned char ssched_bootstrap[] = { 0, 1, 2, 3, 78 };
+static const unsigned char ssched_ring[] = {
+	20, 24, 28,  0,   21, 25, 29,  1,   22, 26, 30,  3,
+	23, 27, 31, 32,   36, 40, 44, 33,   37, 41, 45, 34,
+	38, 42, 46, 35,   39, 43, 47, 64,   52, 56, 60, 65,
+	53, 57, 61, 66,   54, 58, 62, 67,   55, 59, 63,  2,
+	68, 72, 12, 16,   69, 73, 13, 17,   70, 74, 14, 18,
+	71, 75, 15, 19,
+};
+
+/* The four that keep their slot when idle. */
+static int ssched_locked(unsigned port)
+{
+	return port <= 3;
+}
+
+/*
+ * The visit table: 80 slots, one byte each, naming the port to serve.
+ *
+ * Only the four internal ports and the management port appear. The
+ * front-panel ports are enrolled as tokens above but are not given a fixed
+ * slot -- the engine places them -- which is why this table stays sparse
+ * while the ring carries sixty-four tokens.
+ */
 #define SSCHED_MGMT_PORT 78
 
-/* One slot per byte, four slots per word, slot index == port number. */
 static void ring_slot(uint32_t *visit, unsigned port)
 {
 	visit[port / 4] |= (uint32_t)port << (8 * (port % 4));
@@ -78,8 +116,9 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 
 	for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++)
 		visit[i] = 0;
-	for (i = 0; i < sizeof ssched_bootstrap; i++)
-		ring_slot(visit, ssched_bootstrap[i]);
+	for (i = 0; i <= 3; i++)
+		ring_slot(visit, i);
+	ring_slot(visit, SSCHED_MGMT_PORT);
 
 	/*
 	 * The tick first: it is the clock the whole engine runs on, and every
@@ -103,16 +142,22 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
 
-	/* Seed both directions with the tokens the ring will carry. */
-	for (i = 0; i < sizeof ssched_bootstrap; i++) {
-		unsigned port = ssched_bootstrap[i];
+	/* Clear both replace-token registers before programming. */
+	if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, 0)) != FM_OK)
+		return rv;
+	if ((rv = fm_wr(d, FM6000_SSCHED_TX_REPLACE_TOKEN, 0)) != FM_OK)
+		return rv;
+
+	/* Insert the ring, in service order, both directions. */
+	for (i = 0; i < sizeof ssched_ring; i++) {
+		unsigned port = ssched_ring[i];
 		unsigned sync = (port == SSCHED_MGMT_PORT &&
 				 (flags & FM_SSCHED_SYNC_MGMT)) ? 1 : 0;
-		uint32_t t = SSCHED_TOKEN(port, 1, sync);
+		uint32_t tok = SSCHED_TOKEN(port, ssched_locked(port), sync);
 
-		if ((rv = fm_wr(d, FM6000_SSCHED_RX_INIT_TOKEN, t)) != FM_OK)
+		if ((rv = fm_wr(d, FM6000_SSCHED_RX_INIT_TOKEN, tok)) != FM_OK)
 			return rv;
-		if ((rv = fm_wr(d, FM6000_SSCHED_TX_INIT_TOKEN, t)) != FM_OK)
+		if ((rv = fm_wr(d, FM6000_SSCHED_TX_INIT_TOKEN, tok)) != FM_OK)
 			return rv;
 	}
 	if (!fm_alive(d))
@@ -128,19 +173,10 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
 
-	/* Which ports the engine must give extra slots to. */
-	{
-		static const uint32_t slow[FM6000_SSCHED_SLOW_PORT_WORDS] = {
-			0x0000000fu, 0x0000ffe0u, 0x0000feffu,
-			0x0000fff0u, 0x00000fffu,
-		};
-
-		for (i = 0; i < FM6000_SSCHED_SLOW_PORT_WORDS; i++)
-			if ((rv = fm_wr(d, FM6000_SSCHED_RX_SLOW_PORT(i), slow[i])) != FM_OK)
-				return rv;
-	}
-	if (!fm_alive(d))
-		return FM_EOFFBUS;
+	/* One slow-port mask, not five: the running switch writes only the
+	 * first, and the other four are left as the boot leaves them. */
+	if ((rv = fm_wr(d, FM6000_SSCHED_RX_SLOW_PORT(0), 0x0000000fu)) != FM_OK)
+		return rv;
 
 	/*
 	 * Start it. These are write-1 strobes, and they are checked separately
@@ -156,6 +192,13 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
 
+	/* Clear the replace-token registers again, as the running switch does,
+	 * before they are used as a find-probe below. */
+	if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, 0)) != FM_OK)
+		return rv;
+	if ((rv = fm_wr(d, FM6000_SSCHED_TX_REPLACE_TOKEN, 0)) != FM_OK)
+		return rv;
+
 	/*
 	 * Ask the running engine to find a token.
 	 *
@@ -166,9 +209,9 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	 * stays inside the scheduler block, so it is safe on a chip whose
 	 * egress scheduler is still untouchable.
 	 */
-	for (i = 0; i < sizeof ssched_bootstrap; i++) {
+	for (i = 0; i < sizeof ssched_ring; i++) {
 		uint32_t v = 0;
-		unsigned port = ssched_bootstrap[i];
+		unsigned port = ssched_ring[i];
 
 		if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, port)) != FM_OK)
 			return rv;
@@ -193,6 +236,11 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 				*circulating = 1;
 			break;
 		}
+
+		/* Four probes is enough to tell a running ring from a stopped
+		 * one, and sixty-four at 50 ms each is six seconds of nothing. */
+		if (i >= 3)
+			break;
 	}
 
 	return fm_alive(d) ? FM_OK : FM_EOFFBUS;

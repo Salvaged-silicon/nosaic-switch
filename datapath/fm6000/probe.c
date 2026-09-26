@@ -30,6 +30,7 @@
 #include "ssched.h"
 #include "cmwm.h"
 #include "cmrest.h"
+#include "parser.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -715,6 +716,16 @@ sweep_done:
 			printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
 		}
+	} else if (strcmp(argv[i], "--parser-clear") == 0) {
+		unsigned n = 0;
+
+		rv = fm_parser_fields_clear(&dev, &n);
+		printf("parser seeds cleared: %u words, %s\n", n,
+		       rv == FM_OK ? "ok" : rvstr(rv));
+		printf("  the ports that carry traffic are NOT seeded here; "
+		       "that needs a GLORT assignment\n");
+		printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+		rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
 	} else if (strcmp(argv[i], "--cmrest") == 0) {
 		unsigned n = 0;
 
