@@ -483,6 +483,18 @@ has a reason, in code, parameterised by the board.
       rc 6 = no device. ⚠ Register 0 reads zero on every device, so never
       judge a transaction by its data; `fm_sbus_present()` uses register 2 and
       the result code.
+- [x] **lane baseline taken** — all 96 SerDes read `0x0f`=`0x0a` (not locked)
+      and `0x14`=`0x14` (no signal detect), uniformly. Nothing is enabled, so
+      a lane cannot yet be identified by its signal.
+- [ ] ⚠ **reconcile the FDL `eplId` against the datasheet EPL number.** The
+      FDL says port 1 is `eplId 14 lane 0`; Table 9-4 makes EPL[14] SBus 41,
+      but the prior work recorded port 1's SerDes as SBus `0x49` (73), which
+      is EPL[24]. **Settle this before writing to any lane** — an enable sent
+      to the wrong SerDes looks exactly like a port that will not come up.
+- [ ] **the per-port table needs a home.** EOS's FDL gives RX/TX polarity
+      inversion and TX drive/pre/post per port; they are board routing facts
+      and cannot be computed. `nosd-fm6000` does not read `board.yml` today,
+      so how board data reaches the datapath is an unmade design decision.
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable

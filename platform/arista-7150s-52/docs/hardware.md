@@ -619,6 +619,53 @@ register 2 and judges on the result code.
 answers everything is not answering anything and the only way to tell is to ask
 for something that cannot be there.
 
+## Lane state, and the port-to-SerDes table, 2026-09-26
+
+### Every lane is in the same unconfigured state
+
+Read over the working SBus, all 96 Ethernet SerDes: **live**
+
+```
+   reg 0x0f  (rx_rdy_obs)          0x0a   bit 3 set, bit 0 CLEAR -> not locked
+   reg 0x14  (rx_ib_sig_strength)  0x14   bit 6 CLEAR -> no signal detect
+```
+
+Identical on every lane, including the two whose cages hold optics with a far
+end transmitting into them. That is the correct answer rather than a
+disappointing one: nothing has run the lane-enable sequence, so no receiver is
+powered and signal detect cannot mean anything yet. It also means **a lane
+cannot be identified by its signal until it has been enabled** — the obvious
+shortcut for confirming which SerDes belongs to port 1 is not available.
+
+### The per-port table, from EOS's own FDL
+
+`CotatiP4.fdl altaSfpPorts` carries, per front-panel port: the physical
+("alta") port, EPL id, lane id, RX and TX polarity inversion, and TX drive,
+precursor and postcursor. Polarity and equaliser settings are **board routing
+facts** — they differ per port because the traces do — so they are data this
+port needs and cannot compute.
+
+⚠ It also **independently confirms two things measured here**, which is what
+makes it trustworthy rather than merely convenient:
+
+| | measured here | FDL |
+|---|---|---|
+| front panel 1 → physical | 40 | `alta 40` ✓ |
+| front panel 2 → physical | 20 | `alta 20` ✓ |
+| front panel 3 → physical | 41 | `alta 41` ✓ |
+| cage register base/stride | `0x5010` / `0x10` | `xcvrOffset 0x5010, 0x5020, 0x5030` ✓ |
+
+Three independent derivations of the port map now agree: the vendor agent log,
+the SCD cage registers, and the FDL.
+
+⚠ **Unreconciled: the FDL's `eplId` is not the datasheet's EPL number.** The
+FDL puts port 1 on `eplId 14 lane 0`; Table 9-4 makes EPL[14] SBus 41, while
+the prior investigation recorded port 1's SerDes as SBus `0x49` (73), which is
+Table 9-4's EPL[24]. One of the two numbering schemes is offset or permuted
+and which has not been established. **This has to be settled before writing to
+a lane** — a lane-enable sent to the wrong SerDes is exactly the kind of error
+that presents as "the port stays dark" with every register looking right.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted
