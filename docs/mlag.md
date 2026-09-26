@@ -161,9 +161,7 @@ silent too, the peer is gone, and this switch carries on alone.
   up: up to one 200 ms tick, until the peer hears of it. It did not bite
   in the tests. A reload delay, holding a new half back until the peer has
   confirmed it, would close it.
-- **No shared gateway.** Each peer's SVI has its own address, so a device uses
-  one of them as its gateway, and loses it with that switch. VARP or VRRP
-  would fix that.
+- **A shared gateway** is a separate piece: [gateway.md](gateway.md).
 - **MAC sync is one-way per MAC.** A synced MAC is static on the receiving
   peer until the next sync that no longer lists it, so a host that moves from
   the dual-homed device to an orphan port on that peer is followed only when
