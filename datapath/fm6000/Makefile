@@ -29,7 +29,7 @@ CFLAGS  += -I../common
 CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"fm6000\"
 LDLIBS  += -lpthread
 
-COMMON_OBJS = pci.o
+COMMON_OBJS = pci.o sbus.o
 DAEMON_OBJS = main.o boot.o sock.o $(COMMON_OBJS)
 PROBE_OBJS  = probe.o boot.o $(COMMON_OBJS)
 
@@ -48,6 +48,7 @@ main.o: main.c pci.h regs.h boot.h sock.h
 pci.o:  pci.c pci.h regs.h ../common/mmio.h
 boot.o: boot.c boot.h pci.h regs.h
 sock.o: sock.c sock.h pci.h regs.h
+sbus.o: sbus.c sbus.h pci.h regs.h
 probe.o: probe.c pci.h regs.h boot.h
 
 # Stripping is a separate target rather than -s at link time, so a debug build

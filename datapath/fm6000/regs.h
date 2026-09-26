@@ -153,6 +153,17 @@
 /* #define FM6000_BOOT_STATUS	?? */
 
 /*
+ * The SerDes serial bus controller. [DS §9.4]
+ *
+ * SBUS_CFG's bit 0 holds the controller in reset; see fm_sbus_start() for why
+ * that is not obvious from the datasheet's wording.
+ */
+#define FM6000_SBUS_CFG			0x00f000
+#define FM6000_SBUS_COMMAND		0x00f001
+#define FM6000_SBUS_REQUEST		0x00f002
+#define FM6000_SBUS_RESPONSE		0x00f003
+
+/*
  * SOFT_RESET -- Table 4-1 step 7, and it is nowhere near the other boot
  * registers.
  *

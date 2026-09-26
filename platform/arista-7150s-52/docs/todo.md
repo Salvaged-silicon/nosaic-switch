@@ -477,10 +477,12 @@ has a reason, in code, parameterised by the board.
 - [x] **the SBUS_COMMAND field layout is confirmed on hardware** — register
       `[7:0]`, device `[15:8]`, op `[23:16]`, EXECUTE bit 24, bit 25 behaves
       as BUSY, bit 28 appears after a transaction.
-- [ ] ⚠ **no successful SBus transaction yet.** `SBUS_RESPONSE` stays zero.
-      `SBUS_CFG` holds only bit 0, so the clock-ratio field the datasheet says
-      should be 4 is not the low bits of that register and has not been
-      located. **This is the blocker for every SerDes step below it.**
+- [x] **the SBus works, 2026-09-26.** All 24 EPL lane-0 SerDes answer rc=4 and
+      a device that cannot exist returns rc=6. `SBUS_CFG` bit 0 is a **reset**,
+      not a clock ratio — clearing it is what makes the bus run. rc 4 = ok,
+      rc 6 = no device. ⚠ Register 0 reads zero on every device, so never
+      judge a transaction by its data; `fm_sbus_present()` uses register 2 and
+      the result code.
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable

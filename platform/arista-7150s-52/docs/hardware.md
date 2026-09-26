@@ -505,11 +505,10 @@ failure made every later verdict garbage, in the shape of "everything failed".
 The sweep now verifies recovery and **aborts** rather than reporting. A harness
 that cannot distinguish those two states produces confident nonsense.
 
-## The SBus, from the datasheet and the bench — in progress, 2026-09-25
+## The SBus works, 2026-09-26
 
-§9.4 documents the SerDes serial bus, which is the route to every lane. This
-section is **not finished**: the addressing is established and a working
-transaction is not.
+§9.4 documents the SerDes serial bus, which is the route to every lane.
+**All 24 EPLs answer, and a device that cannot exist is correctly refused.**
 
 ### What the datasheet gives, and it is a lot
 
@@ -576,12 +575,49 @@ as BUSY**, and **bit 28 appears after a transaction has been attempted**.
 Candidate positions above 25 do not stick, so the field is narrow.
 **derived**
 
-⚠ **No successful transaction yet, and this is the open end.** Every attempt
-leaves `SBUS_RESPONSE` at zero. `SBUS_CFG` holds only bit 0 on this chip —
-writing 2, 3, 4 or 5 reads back 0 or 1 — so the clock-ratio field the
-datasheet says "should be set to 4" is **not** the low bits of that register,
-and where it is has not been found. That is the next thing to establish, and
-until it is, nothing here should be read as a working SerDes path.
+### ⚠ `SBUS_CFG` bit 0 is a RESET, and the datasheet's wording hides it
+
+The register "defines the reset state of the SBUS controller and the clock
+ratio", and then §9.4 separately says "the clock ratio should be set to 4" —
+which reads like an instruction to write 4. It is not. On this chip the
+register holds **only bit 0**: write 2, 3, 4 or 5 and it reads back 0 or 1.
+
+With bit 0 **set**, every command hangs with Busy stuck forever. **Clearing it
+is what makes the bus work.** That cost an evening of assuming the clock ratio
+was the problem.
+
+### Result codes, and the control that found them
+
+The controller returns 3 bits in `SBUS_COMMAND[28:26]`. What they mean was
+established with a **negative control**, not by assumption: **live**
+
+| device | non-zero of 64 regs | rc |
+|---|---|---|
+| 5 — EPL[1] lane 0 | **37** | **4** |
+| 6 — EPL[1] lane 1 | **36**, and different values | **4** |
+| 253 — SPICO, `0xFD` | 3 | 4 |
+| 254 — controller, `0xFE` | 13 | 4 |
+| **170, 200 — cannot exist** | **0** | **6** |
+
+So **rc 4 is success and rc 6 is no-such-device**, and both of the datasheet's
+reserved ids answer, which independently confirms the addressing.
+
+⚠ **Do not test a transaction by whether the data is non-zero.** Register 0
+reads `0x00000000` on *every* device on this ring, real or not. A first pass
+that read register 0 across all 24 EPLs got 24 zeros and looked like a
+completely dead bus; it was a completely working one. `fm_sbus_present()` asks
+register 2 and judges on the result code.
+
+### Where it stands
+
+```
+   24 of 24 EPL lane-0 SerDes answered (rc=4)
+   control: device 200 does not exist -> rc=6  (as it should)
+```
+
+`fm6000-probe --lbus --sbus` prints that control every run, because a bus that
+answers everything is not answering anything and the only way to tell is to ask
+for something that cannot be there.
 
 ## Confirmed on the bench, 2026-09-22
 

@@ -22,6 +22,7 @@
 #include <string.h>
 
 #include "boot.h"
+#include "sbus.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -39,6 +40,7 @@ static void usage(void)
 "  (no command)          identify the chip and read what is safe to read\n"
 "  --dump WORD COUNT     dump COUNT words from word address WORD\n"
 "  --read WORD           read one word\n"
+"  --sbus                bring the SerDes bus up and read one lane per EPL\n"
 "  --fill WORD COUNT     write zeros into COUNT words from WORD. The bulk\n"
 "                        writer on its own, for finding where a bank really\n"
 "                        begins and ends. WRITES.\n"
@@ -256,6 +258,71 @@ static int cmd_meminit(struct fm6000 *d, uint32_t pattern)
 	return 0;
 }
 
+/*
+ * Prove the SerDes bus works, or say exactly how it does not.
+ *
+ * The controller's own reserved id answers first because it is the one device
+ * §9.4 guarantees exists -- if that does not respond, nothing about a lane's
+ * silence means anything.
+ */
+static int cmd_sbus(struct fm6000 *d)
+{
+	unsigned epl, rc = 0;
+	uint32_t v = 0, cfg = 0;
+	int rv, answered = 0;
+
+	if (fm_boot_already_done(d) != 1) {
+		printf("The chip has not been booted; the JSS block that holds the\n"
+		       "SBus controller is still in soft reset. Run --boot first.\n");
+		return 1;
+	}
+
+	(void)fm_rd(d, FM6000_SBUS_CFG, &cfg);
+	printf("SBUS_CFG was 0x%08x", cfg);
+	rv = fm_sbus_start(d);
+	(void)fm_rd(d, FM6000_SBUS_CFG, &cfg);
+	printf(", now 0x%08x%s\n\n", cfg, rv == FM_OK ? "" : "  (write failed)");
+
+	printf("controller 0xfe reg 0: ");
+	rv = fm_sbus_txn(d, FM_SBUS_OP_READ, FM_SBUS_DEV_CONTROLLER, 0, 0, &v, &rc);
+	if (rv != FM_OK) {
+		printf("%s\n", rvstr(rv));
+		return 2;
+	}
+	printf("rc=%u data=0x%08x\n", rc, v);
+
+	/* One lane per EPL, which is enough to tell "the ring works" from "one
+	 * device is quiet" without 96 transactions over a 6 us bus. */
+	/* Register 2, not 0. Register 0 reads zero on every device on this
+	 * ring, so asking it makes a working bus look dead. */
+	printf("\nEPL  sbus  reg2        rc\n");
+	for (epl = FM_SBUS_EPL_MIN; epl <= FM_SBUS_EPL_MAX; epl++) {
+		uint8_t dev = fm_sbus_epl_base(epl);
+
+		v = 0;
+		rv = fm_sbus_txn(d, FM_SBUS_OP_READ, dev, 2, 0, &v, &rc);
+		if (rv != FM_OK) {
+			printf(" %2u   %3u   %s\n", epl, dev, rvstr(rv));
+			continue;
+		}
+		printf(" %2u   %3u   0x%08x  %u%s\n", epl, dev, v, rc,
+		       rc == FM_SBUS_RC_NO_DEVICE ? "  no device" : "");
+		if (rc == FM_SBUS_RC_OK)
+			answered++;
+	}
+	printf("\n%d of %d EPL lane-0 SerDes answered (rc=%d)\n",
+	       answered, FM_SBUS_EPL_MAX, FM_SBUS_RC_OK);
+
+	/* A negative control, printed every time. A bus that answers everything
+	 * is not answering anything, and the only way to know which this is is
+	 * to ask for something that cannot be there. */
+	rv = fm_sbus_txn(d, FM_SBUS_OP_READ, 200, 2, 0, &v, &rc);
+	printf("control: device 200 does not exist -> rc=%u%s\n", rc,
+	       rc == FM_SBUS_RC_NO_DEVICE ? "  (as it should)" :
+	       "  ⚠ SAME AS A REAL DEVICE -- this bus is not discriminating");
+	return fm_alive(d) == 1 ? 0 : 2;
+}
+
 int main(int argc, char **argv)
 {
 	struct fm6000 dev;
@@ -345,6 +412,8 @@ int main(int argc, char **argv)
 		rv = fm_mem_fill(&dev, base, n, 0);
 		printf("%s\n", rv == FM_OK ? "chip still answering" : rvstr(rv));
 		rc = rv == FM_OK ? 0 : 2;
+	} else if (strcmp(argv[i], "--sbus") == 0) {
+		rc = cmd_sbus(&dev);
 	} else if (strcmp(argv[i], "--meminit") == 0) {
 		uint32_t pat = 0xa5a5a5a5;
 
