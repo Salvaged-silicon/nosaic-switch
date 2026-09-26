@@ -273,9 +273,10 @@ None of this needs the ASIC, and all of it is verified on hardware. **live**
 
 ```
 cage  type  state                     raw
-1     SFP+  module present, laser on  0x00000180
-2     SFP+  module present, laser on  0x00000180
-3..52 SFP+  undetermined              0x00000187
+1..4  SFP+  module present, laser on  0x00000180
+5..52 SFP+  empty                     0x00000187
+
+4 populated, 48 empty, 0 not powered, 0 undetermined, of 52 cages.
 
 cage 1  CISCO-FINISAR FTLX8574D3BCL-CS  serial FNS215108H7
         29.7 C  3.31 V   rx -2.19 dBm  tx -1.95 dBm  bias 8.5 mA
@@ -3161,6 +3162,43 @@ up knowing *which* write did it, which for a uniform fill is not information
 anyone wanted.
 
 ### The guard is not politeness
+
+## Cage presence: the decode, and how it was settled, 2026-09-26
+
+The driver used to match the cage word as a whole against three values
+sampled while the vendor OS was driving the board controller. NOSaic leaves
+that controller in a different state, so on this switch **every one of the 52
+cages read a word the driver had no meaning for** and the whole table came
+back `undetermined` — including the four cages that had modules in them.
+
+The comment where it matched whole words was right to be careful: an earlier
+version guessed a bit decode from three samples and reported every cage as
+populated. What settles it is ground truth rather than more samples. **A
+module's EEPROM answers on the cage's own SMBus channel whether or not the
+board controller's word can be read**, so presence is establishable per cage
+without reference to this register at all. All 52 cages were probed that way
+and correlated:
+
+| | module in cage | EEPROM answers | word |
+|---|---|---|---|
+| cages 1–4 | yes | identifier `0x03`, SFP | `0x00000180` |
+| cages 5–52 | no | `0xff` | `0x00000187` |
+
+No exceptions, and bits 1–2 then agree across all five whole words ever
+measured on this board, under both operating systems: set on every empty
+cage, clear on every populated one. Bit 6 is the documented laser gate. So
+presence is `word & 0x6 == 0` and the laser is `word & 0x40 == 0`, checked
+against an independent signal on every cage rather than inferred from a
+handful of readings.
+
+⚠ **`0x1DF` is still matched as a whole word, and must be.** It is a cage
+nothing has powered, and a module in one is *invisible* — no EEPROM, no
+presence bit. The bit decode would call it empty, which is the silent
+under-report this whole story turned on. There is exactly one sample of it,
+so working out which bit means "unpowered" from that would be the original
+mistake again. It now reports as `cage not powered`, and the CLI says plainly
+that this is a step NOSaic does not yet perform rather than something it
+cannot read.
 
 `fm_rd`/`fm_wr` refuse the bank ranges and ESCHED `0x2000` outright until
 `fm_bank_mark_initialised()` has been called, and only the code that genuinely

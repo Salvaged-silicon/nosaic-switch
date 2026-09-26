@@ -561,12 +561,14 @@ func showTransceivers(hal platformhal.HAL, args []string) error {
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "cage\ttype\tstate\traw")
-	var populated, empty, unknown int
+	var populated, empty, unknown, unpowered int
 	for _, c := range cages {
 		switch c.State {
 		case scd.PresenceEmpty:
 			empty++
 			continue
+		case scd.PresenceUnconfigured:
+			unpowered++
 		case scd.PresenceUnknown:
 			unknown++
 		default:
@@ -576,8 +578,17 @@ func showTransceivers(hal platformhal.HAL, args []string) error {
 	}
 	w.Flush()
 
-	fmt.Printf("\n%d populated, %d empty, %d undetermined, of %d cages.\n",
-		populated, empty, unknown, len(cages))
+	fmt.Printf("\n%d populated, %d empty, %d not powered, %d undetermined, of %d cages.\n",
+		populated, empty, unpowered, unknown, len(cages))
+
+	if unpowered > 0 {
+		// Not a decoding gap -- a real one. Worth stating as a thing this
+		// switch is not doing rather than as a thing it cannot read.
+		fmt.Println("\nThe cages that are not powered cannot be read at all: a module in\n" +
+			"one answers no EEPROM and reports no presence, so it is invisible\n" +
+			"rather than absent. Powering them is a step the vendor OS performs\n" +
+			"at boot and NOSaic does not yet.")
+	}
 
 	if unknown > 0 {
 		// Worth saying plainly rather than leaving the reader to notice.

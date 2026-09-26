@@ -561,6 +561,12 @@ has a reason, in code, parameterised by the board.
       configured-and-empty, `0x180` configured-with-a-module. A module in a
       cage this board has not powered is invisible — no EEPROM, no presence
       bit — so transceiver discovery silently under-reports on a cold box.
+      ⚠ Still open, and **do not be reassured by this switch reporting all 52
+      cages correctly today**: its SCD was configured by EOS and a NOSaic boot
+      does not reset it, so the cages read `0x187`/`0x180` rather than
+      `0x1DF`. A box that has been power-cycled without EOS is the case that
+      matters, and the decode now names it (`cage not powered`) instead of
+      reporting it as empty — which makes the gap visible, not fixed.
 - [x] **the EPL gates alone do not light a lane** — measured. Writing
       `CFG_A 0x7E1D7899` and `CFG_B 0x00090033` on EPL 14 with a live far end
       leaves PORT_STATUS at the dark `0x15`. The SerDes lane-enable is

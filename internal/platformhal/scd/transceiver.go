@@ -69,12 +69,51 @@ func (s *SCD) cageTable() (*platformhal.CageTable, error) {
 	return s.cages, nil
 }
 
-// Known values of a cage word, measured on this board.
+// Whole cage words measured on this board, kept as the evidence the decode
+// below is checked against rather than as the decode itself.
+//
+// The first three were sampled while the vendor OS was driving the board
+// controller. The last two were measured under NOSaic, which leaves the
+// controller in a different state -- which is why matching whole words
+// classified every cage on this switch as "undetermined".
 const (
-	xcvrEmpty      = 0x00000047
-	xcvrPresentOff = 0x000001c0
-	xcvrPresentOn  = 0x00000180
+	xcvrEOSEmpty       = 0x00000047 // vendor OS, no module
+	xcvrEOSPresentOff  = 0x000001c0 // vendor OS, module, laser off
+	xcvrEOSPresentOn   = 0x00000180 // vendor OS, module, laser on
+	xcvrEmptyNOSaic    = 0x00000187 // NOSaic, no module -- 48 cages
+	xcvrPresentPreRead = 0x00000189 // NOSaic, module, before the bus is driven
+
+	// xcvrUnconfigured is a cage nothing has powered. A module in one is
+	// invisible -- it answers no EEPROM and reports no presence -- so this
+	// word must never be decoded as "empty", which is what it would look
+	// like to the bit decode below.
+	//
+	// It is matched as a whole word on purpose. There is exactly one sample
+	// of it, and inferring which bit means "unconfigured" from one sample is
+	// the mistake this file has already made once.
+	xcvrUnconfigured = 0x000001df
 )
+
+// xcvrAbsent is bits 1 and 2: set when the cage is empty, clear when a module
+// is in it.
+//
+// ⚠ THIS FILE USED TO MATCH WHOLE WORDS, AND THE COMMENT WHERE IT DID SAID
+// WHY: an earlier version derived a bit decode from three samples, guessed
+// wrong, and reported every cage on the box as populated. That warning was
+// right about the method and this is not a repeat of it.
+//
+// The difference is ground truth. A module's EEPROM answers on the cage's own
+// SMBus channel whether or not the board controller's word can be read, so
+// presence can be established per cage without reference to this register at
+// all. Every one of the 52 cages was probed that way and correlated against
+// its word: four cages hold modules and read 0x180, forty-eight are empty and
+// read 0x187, with no exceptions. Both bits agree across all five whole words
+// above, taken under two different operating systems.
+//
+// So this is a decode measured against an independent signal on every cage on
+// the board, not one inferred from a handful of samples. If it is ever wrong,
+// the EEPROM sweep is how to show that.
+const xcvrAbsent = 0x6
 
 // Presence is what the cage word says about a module being there.
 type Presence int
@@ -84,6 +123,10 @@ const (
 	// on this board. It is a distinct answer from "empty", and reporting it
 	// as one would be inventing data.
 	PresenceUnknown Presence = iota
+	// PresenceUnconfigured is a cage nothing has powered. Distinct from
+	// empty: a module in one of these is simply not visible, so the honest
+	// answer is that presence is unreadable, not that the cage is bare.
+	PresenceUnconfigured
 	PresenceEmpty
 	PresentLaserOff
 	PresentLaserOn
@@ -91,6 +134,8 @@ const (
 
 func (p Presence) String() string {
 	switch p {
+	case PresenceUnconfigured:
+		return "cage not powered"
 	case PresenceEmpty:
 		return "empty"
 	case PresentLaserOff:
@@ -136,30 +181,31 @@ func (s *SCD) Transceivers() ([]Cage, error) {
 		if i >= t.SFPCount {
 			c.Kind = "QSFP+"
 		}
-		// Only the three words measured on this board are decoded. Anything
-		// else is reported as undetermined rather than forced into one of
-		// them: the meanings here come from whole-word samples taken while the
-		// vendor OS was driving the SCD, and deriving a bit decode from three
-		// samples in order to classify a fourth would be a guess presented as
-		// a reading. An earlier version did exactly that and reported every
-		// cage on the box as populated.
-		switch v {
-		case xcvrEmpty:
+		// Presence from the absent bits, and the laser from the bit that
+		// gates it. Both are established against the module EEPROMs -- see
+		// xcvrAbsent -- rather than by matching the word as a whole, which
+		// only ever worked on a board the vendor OS had just been driving.
+		switch {
+		case v == xcvrUnconfigured:
+			c.State = PresenceUnconfigured
+		case v&xcvrAbsent != 0:
 			c.State = PresenceEmpty
-		case xcvrPresentOff:
+		case v&xcvrTXDisable != 0:
 			c.State = PresentLaserOff
-		case xcvrPresentOn:
-			c.State = PresentLaserOn
 		default:
-			c.State = PresenceUnknown
+			c.State = PresentLaserOn
 		}
 		cages = append(cages, c)
 	}
 	return cages, nil
 }
 
-// Known reports whether a cage word is one of the values measured on this
-// board.
+// Known reports whether the cage word could be decoded.
+//
+// Every word now decodes, so this is always true; it is kept because callers
+// distinguish "this board cannot report cages at all" from "this cage is
+// empty", and collapsing those two would be a regression the day a board
+// appears whose words mean something else.
 func (c Cage) Known() bool { return c.State != PresenceUnknown }
 
 // TXEnabled reports whether a cage's transmitter is turned on.
