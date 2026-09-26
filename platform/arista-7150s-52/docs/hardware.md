@@ -1267,6 +1267,46 @@ change the outcome**: the replay dies in the same place with the memory
 controllers configured as without. Worth having anyway, and not the answer
 here.
 
+## Four ports transmit, and a mapping method that does not work
+
+### All four live ports reach SerXmit
+
+Ports 1-4, run through the lane enable in turn: **live**
+
+```
+   port 1   PORT_STATUS 0x00000815   SerXmit=1
+   port 2   PORT_STATUS 0x00000815   SerXmit=1
+   port 3   PORT_STATUS 0x00000815   SerXmit=1
+   port 4   PORT_STATUS 0x00000815   SerXmit=1
+```
+
+Identical across **two EPLs and four SerDes devices** (`0x49`, `0x45`, `0x4a`,
+`0x46`), which is what validates the port table and the device mapping rather
+than one lucky lane. The receive half is still dark on all four.
+
+### ⚠ A sweep that cannot work, and why it looked like it could
+
+The FDL numbers EPLs one way and Table 9-4 another, and only two of the
+twenty-four pairings are pinned — EPL 14 to SBus 73 and EPL 16 to SBus 69.
+Two points do not determine a permutation.
+
+The idea was to ask the hardware: enable lane 0 of one SBus address, then look
+at all 24 EPL blocks and see which one's PORT_STATUS moved. Twenty-four trials
+for the whole map.
+
+**It does not work.** PORT_STATUS only moves when the SerDes half *and* the
+EPL half are both configured, so pointing the EPL writes at a fixed block
+makes the test succeed exactly when the guess was already right. The first run
+"identified" EPL 14 from SBus 73 — with 14 hardcoded — and then found nothing
+for SBus 69, which is the correct answer to a question that was really "is 69
+paired with 14".
+
+A test that needs the answer to ask the question is not a test.
+`fm6000-probe --try-pair EPL SBUS` now takes both and confirms or refutes one
+pairing; both known ones check out. Sweeping properly is 24 × 24 = 576 trials
+at about ten seconds each, which is possible and has not been judged worth it
+yet.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

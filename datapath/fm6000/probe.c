@@ -47,6 +47,8 @@ static void usage(void)
 "  --bist [config]       configure the memory controllers and run the BIST\n"
 "                        march. 'config' stops after the controllers. WRITES,\n"
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
+"  --try-pair EPL SBUS   confirm or refute one EPL-to-SBus pairing. It\n"
+"                        cannot sweep; see the comment on why\n"
 "  --spico N             is the SPICO running? post an interrupt and see\n"
 "  --dfe N               run the RX equaliser adaptation for port N\n"
 "  --sbus                bring the SerDes bus up and read one lane per EPL\n"
@@ -552,6 +554,57 @@ int main(int argc, char **argv)
 			printf("\n%s\n", rv == FM_OK ? "ok" : rvstr(rv));
 			rc = rv == FM_OK ? 0 : 2;
 		}
+	} else if (strcmp(argv[i], "--try-pair") == 0 && i + 2 < argc) {
+		/*
+		 * Does this EPL pair with this SBus address?
+		 *
+		 * ⚠ THIS CANNOT SWEEP. It was first written to map the whole
+		 * permutation in 24 trials -- enable one SBus device and see
+		 * which EPL block moves -- and that does not work, because
+		 * PORT_STATUS only moves when the SerDes half AND the EPL half
+		 * are both configured. Pointing the EPL writes at a fixed block
+		 * makes the test succeed exactly when the guess was already
+		 * right: SBus 73 identified EPL 14 only because 14 was
+		 * hardcoded. It needs the answer to ask the question.
+		 *
+		 * So it takes both and confirms or refutes one pairing, which
+		 * is honest and still useful. Sweeping 24x24 is 576 trials at
+		 * about ten seconds each, which is possible and has not been
+		 * judged worth it.
+		 */
+		struct fm_port probe = { 0, 0, 0, 0, 0, 0, 4, 0, 5 };
+		struct fm_lane_report lrep;
+		uint32_t before[25], after = 0;
+		unsigned e, want = (unsigned)strtoul(argv[i + 1], NULL, 0);
+		unsigned base = (unsigned)strtoul(argv[i + 2], NULL, 0);
+
+		(void)fm_sbus_start(&dev);
+		for (e = 1; e <= 24; e++)
+			if (fm_rd(&dev, FM6000_EPL_LANE(e, 0), &before[e]) != FM_OK)
+				before[e] = 0;
+
+		/* Any EPL will do for the register writes the enable makes --
+		 * what is being identified is the SerDes, and EPL 14's block is
+		 * simply somewhere valid to point the EPL half at. */
+		probe.epl = (int)want;
+		probe.dev = (int)base;
+		rv = fm_lane_enable(&dev, &probe, &lrep);
+
+		printf("EPL %u with SBus %u (lane 0): enable %s\n", want, base,
+		       rv == FM_OK ? "completed" : rvstr(rv));
+		rc = 2;
+		for (e = 1; e <= 24; e++) {
+			if (fm_rd(&dev, FM6000_EPL_LANE(e, 0), &after) != FM_OK)
+				continue;
+			if (after != before[e]) {
+				printf("  EPL %u moved: 0x%08x -> 0x%08x\n",
+				       e, before[e], after);
+				rc = 0;
+			}
+		}
+		if (rc != 0)
+			printf("  nothing moved -- this pairing is wrong, or the\n"
+			       "  lane has no optic and needs one to show more\n");
 	} else if (strcmp(argv[i], "--sbus") == 0) {
 		rc = cmd_sbus(&dev);
 	} else if (strcmp(argv[i], "--meminit") == 0) {
