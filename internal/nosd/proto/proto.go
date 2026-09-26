@@ -108,6 +108,9 @@ const (
 	OpSetSTP        = "stp.set"
 	OpSetSTPPort    = "stp.port"
 	OpSTP           = "stp"
+	OpSetMLAG       = "mlag.set"
+	OpSetLAGMLAG    = "lag.mlag"
+	OpMLAG          = "mlag"
 	OpFDB           = "l2.fdb"
 	OpAddAddress    = "l3.addr.add"
 	OpDelAddress    = "l3.addr.del"
@@ -152,6 +155,20 @@ type STPPortArgs struct {
 	Name string `json:"name"`
 	Edge bool   `json:"edge"`
 	Cost int    `json:"cost"`
+}
+
+// MLAGArgs sets the pair; no omitempty, for the same reason as STPArgs.
+type MLAGArgs struct {
+	Enabled     bool   `json:"enabled"`
+	PeerLink    string `json:"peer_link"`
+	PeerAddress string `json:"peer_address"`
+	Priority    int    `json:"priority"`
+}
+
+// LAGMLAGArgs gives a LAG its MLAG id, or 0 to take it back.
+type LAGMLAGArgs struct {
+	Name string `json:"name"`
+	ID   int    `json:"mlag"`
 }
 
 type AddrArgs struct {

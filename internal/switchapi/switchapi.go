@@ -62,7 +62,12 @@ import (
 // Capabilities.STP. One RSTP (IEEE 802.1w) instance covers every VLAN; it
 // runs on switched interfaces -- ports and LAGs that are members of a VLAN --
 // and never on a routed port, which has no L2 neighbour to loop through.
-const Version = "1.4"
+//
+// 1.5 added MLAG: SetMLAG, SetLAGMLAG and MLAG, gated by Capabilities.MLAG.
+// Two switches joined by a peer-link present a LAG with the same MLAG id as
+// one LACP partner, so a device dual-homed to both bundles its links to the
+// pair as one LAG.
+const Version = "1.5"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -102,6 +107,10 @@ type Capabilities struct {
 	// STP is rapid spanning tree (IEEE 802.1w) over the switched
 	// interfaces, one instance for every VLAN.
 	STP bool
+
+	// MLAG is a LAG whose members are split across this switch and a peer
+	// (classic peer-link MLAG).
+	MLAG bool
 
 	L2Learning bool
 	MaxFDB     int
@@ -207,6 +216,9 @@ type LAG struct {
 	Name    string
 	LACP    bool
 	Members []LAGMember
+	// MLAG is the LAG's MLAG id, the same on both peers; 0 for a LAG of
+	// this switch's alone.
+	MLAG int
 }
 
 // LAGMember is one port of a LAG. Active is whether it is carrying traffic
@@ -265,6 +277,55 @@ type STPPort struct {
 	Edge  bool
 	Cost  int
 }
+
+// MLAGConfig makes this switch one of an MLAG pair. PeerLink is the port or
+// LAG to the peer: it carries every VLAN an MLAG interface is in, and the
+// peers' own control traffic. PeerAddress is the peer's management address,
+// for a heartbeat that tells a dead peer from a dead peer-link; empty is no
+// heartbeat, and a peer-link lost is then taken as the peer lost. Priority
+// elects the primary, lower wins, default MLAGDefaultPriority.
+type MLAGConfig struct {
+	Enabled     bool
+	PeerLink    string
+	PeerAddress string
+	Priority    int
+}
+
+// MLAGDefaultPriority is the MLAG priority when none is configured.
+const MLAGDefaultPriority = 32768
+
+// MLAGStatus is the pair as this switch sees it. Role is primary, secondary
+// or none -- no peer heard. PeerLinkUp is the link; PeerAlive is hearing the
+// peer over it; Heartbeat is hearing it over the management network. SystemID
+// is the LACP system every MLAG interface presents, the same on both peers.
+type MLAGStatus struct {
+	Enabled    bool
+	Role       string
+	PeerLink   string
+	PeerLinkUp bool
+	PeerAlive  bool
+	Heartbeat  bool
+	Peer       string
+	SystemID   string
+	Interfaces []MLAGInterface
+	SyncedMACs int
+}
+
+// MLAGInterface is one MLAG id on this switch. Local and Peer are whether
+// each side has members distributing. State is active (both sides), local
+// (this side only), peer (the peer's side only), down, or disabled -- a
+// secondary that has shut its side because the peer-link is gone and the
+// peer is not.
+type MLAGInterface struct {
+	LAG   string
+	ID    int
+	Local bool
+	Peer  bool
+	State string
+}
+
+// MLAGMaxID is the largest MLAG id.
+const MLAGMaxID = 1000
 
 // FDBEntry is one learned or static MAC.
 type FDBEntry struct {
@@ -338,6 +399,16 @@ type Switch interface {
 	SetSTP(cfg STPConfig) error
 	SetSTPPort(name string, cfg STPPortConfig) error
 	STP() (STPStatus, error)
+
+	// MLAG.
+	//
+	// SetMLAG makes this switch one of a pair, or not. SetLAGMLAG gives an
+	// existing LAG an MLAG id, 1 to MLAGMaxID, or 0 to take it back; the
+	// peer's LAG with the same id is the other half. The peer-link cannot
+	// itself be an MLAG interface. MLAG reports the pair.
+	SetMLAG(cfg MLAGConfig) error
+	SetLAGMLAG(name string, id int) error
+	MLAG() (MLAGStatus, error)
 
 	// Access lists. See acl.go. SetACL adds the rule or replaces the one with
 	// the same sequence number; DelACL removes it; ACLs lists every rule the

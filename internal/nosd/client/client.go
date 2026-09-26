@@ -336,6 +336,20 @@ func (c *Client) STP() (switchapi.STPStatus, error) {
 	return st, c.call(proto.OpSTP, nil, &st)
 }
 
+func (c *Client) SetMLAG(cfg switchapi.MLAGConfig) error {
+	return c.call(proto.OpSetMLAG, proto.MLAGArgs{Enabled: cfg.Enabled, PeerLink: cfg.PeerLink,
+		PeerAddress: cfg.PeerAddress, Priority: cfg.Priority}, nil)
+}
+
+func (c *Client) SetLAGMLAG(name string, id int) error {
+	return c.call(proto.OpSetLAGMLAG, proto.LAGMLAGArgs{Name: name, ID: id}, nil)
+}
+
+func (c *Client) MLAG() (switchapi.MLAGStatus, error) {
+	var st switchapi.MLAGStatus
+	return st, c.call(proto.OpMLAG, nil, &st)
+}
+
 func (c *Client) LAGs() ([]switchapi.LAG, error) {
 	var l []switchapi.LAG
 	return l, c.call(proto.OpLAGs, nil, &l)
