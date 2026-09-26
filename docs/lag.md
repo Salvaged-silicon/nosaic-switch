@@ -11,16 +11,16 @@ Proven on 2026-09-25, between NOSaic switches, with traffic:
 |---|---|---|---|---|---|---|---|
 | [Arista 7050SX2-72Q](../platform/arista-7050sx2-72q/README.md) | Trident2+ | td2p | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [Arista 7050TX-64](../platform/arista-7050tx-64/README.md) | Trident2 | td2 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| [Edgecore AS5610-52X](../platform/edgecore-as5610-52x/README.md) | Trident+ | tdp | — | ✅ | ✅ | — | ✅ |
+| [Edgecore AS5610-52X](../platform/edgecore-as5610-52x/README.md) | Trident+ | tdp | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [Cisco Nexus 3172TQ](../platform/cisco-n3172tq/README.md) | Trident2 | td2 | — | ✅ | ✅ | — | ✅ |
 
 The test bed:
 - **SX2 and TX:** two 40G links between them, et52/et53 ↔ et49/et50, run as
   one LAG, first static and then LACP.
-- **AS5610:** has only one link to each neighbour, so its LAG had a single
-  member, swp51, negotiated with LACP against the SX2's et54. That was still
-  the test that mattered on that board: swp51 is on the chip's second module
-  id, where the receive path reports it as port 19.
+- **AS5610:** first a single-member LAG, swp51 against the SX2's et54,
+  because that port is on the chip's second module id, where the receive path
+  reports it as port 19. Then, once swp1 and swp2 were cabled to the SX2's et3
+  and et4 on 2026-09-26, a two-member LAG, po5, in every mode.
 - **Nexus 3172TQ:** tested on 2026-09-26 with an LACP LAG of its two 10G
   copper links to the TX, eth1_31/eth1_32 ↔ et31/et32. That is the case the
   40G tests could not cover: a LAG over the TX's external-PHY copper ports.
@@ -127,7 +127,13 @@ links, unless the item says otherwise.
   nothing.
 - **The AS5610** negotiated LACP on swp51, carried OSPF over po2, routed
   transit traffic into its trunk in the chip, and dropped and recovered the
-  member when the far end's port went down and up.
+  member when the far end's port went down and up. On po5 (swp1, swp2):
+  - LACP, and static;
+  - transit from the TX routed into the trunk, spread over both members;
+  - a member shut under four flows: 4 of 300 pings lost on the two hashed to
+    it, about 200 ms, and it came back when the link did;
+  - po5 as a VLAN trunk with SVIs, fresh ARP every time, and transit routed
+    into the VLAN.
 - **`lag ... none`** gave every member back as a routed port. The lab's
   original per-port adjacencies all came back.
 
@@ -194,7 +200,7 @@ of the MAC addresses:
 - sending to all of them would hand the partner one copy per link;
 - a flood sends one copy per LAG, not one per member.
 
-### Two bugs the hardware found
+### Three bugs the hardware found
 
 - ⚠ **The chip floods back into the trunk a frame came in on.** A broadcast
   that arrives on one member is flooded to one member of each trunk in the
@@ -210,6 +216,13 @@ of the MAC addresses:
   whose hash chose the LAG's later port went nowhere, so an SVI's ARP failed
   while its unicast worked. It looked intermittent, because unicast
   re-validation kept some neighbours alive.
+- ⚠ **A neighbour that moved stayed where it was.** The chip's host entry for
+  a directly attached neighbour is keyed by IP alone. When the SX2's address
+  moved from being behind the AS5610's swp1 to behind po5, adding it again
+  failed with EXISTS, quietly, on every poll. Pings from the AS5610 itself
+  worked, and every routed packet for the SX2 left by swp1, into nothing. Not
+  a LAG bug: any address moved between two of a switch's interfaces did it.
+  l3sync now replaces the entry and forgets where it used to be.
 
 ## Rules the datapath enforces
 
