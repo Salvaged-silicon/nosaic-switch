@@ -200,14 +200,16 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		if err := json.Unmarshal(req.Args, &a); err != nil {
 			return proto.ErrorResponse(err)
 		}
-		return done(s.sw.SetSTP(switchapi.STPConfig{Enabled: a.Enabled, Priority: a.Priority}))
+		return done(s.sw.SetSTP(switchapi.STPConfig{Enabled: a.Enabled, Priority: a.Priority,
+			HelloTime: a.HelloTime, ForwardDelay: a.ForwardDelay, MaxAge: a.MaxAge}))
 
 	case proto.OpSetSTPPort:
 		var a proto.STPPortArgs
 		if err := json.Unmarshal(req.Args, &a); err != nil {
 			return proto.ErrorResponse(err)
 		}
-		return done(s.sw.SetSTPPort(a.Name, switchapi.STPPortConfig{Edge: a.Edge, Cost: a.Cost}))
+		return done(s.sw.SetSTPPort(a.Name, switchapi.STPPortConfig{Edge: a.Edge, Cost: a.Cost,
+			Priority: a.Priority}))
 
 	case proto.OpSTP:
 		st, err := s.sw.STP()
@@ -222,7 +224,23 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 			return proto.ErrorResponse(err)
 		}
 		return done(s.sw.SetMLAG(switchapi.MLAGConfig{Enabled: a.Enabled, PeerLink: a.PeerLink,
-			PeerAddress: a.PeerAddress, Priority: a.Priority}))
+			PeerAddress: a.PeerAddress, Priority: a.Priority, HelloMs: a.HelloMs,
+			DeadMs: a.DeadMs, SettleMs: a.SettleMs, HeartbeatPort: a.HeartbeatPort}))
+
+	case proto.OpSetLAGOptions:
+		var a proto.LAGOptionsArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetLAGOptions(a.Name, switchapi.LAGOptions{Rate: a.Rate,
+			Passive: a.Passive, PortPriority: a.PortPriority}))
+
+	case proto.OpSetLACPPrio:
+		var a proto.PriorityArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetLACPSystemPriority(a.Priority))
 
 	case proto.OpSetLAGMLAG:
 		var a proto.LAGMLAGArgs

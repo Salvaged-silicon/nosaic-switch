@@ -72,7 +72,12 @@ import (
 // DelVirtualGateway and VirtualGateways, gated by Capabilities.VirtualGateway.
 // An address on an SVI that both switches of a pair answer for with the same
 // MAC, and both route for, so a host's default gateway outlives either one.
-const Version = "1.6"
+//
+// 1.7 made the protocols' fixed numbers configurable: SetLAGOptions and
+// SetLACPSystemPriority for LACP (rate, active or passive, priorities);
+// timers and a port priority in STPConfig and STPPortConfig; timers and the
+// heartbeat port in MLAGConfig. Every one defaults, at zero, to what 1.6 did.
+const Version = "1.7"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -229,7 +234,25 @@ type LAG struct {
 	// MLAG is the LAG's MLAG id, the same on both peers; 0 for a LAG of
 	// this switch's alone.
 	MLAG int
+	// Options is the LAG's LACP settings, as SetLAGOptions left them, and
+	// SystemPriority the switch's (SetLACPSystemPriority).
+	Options        LAGOptions
+	SystemPriority int
 }
+
+// LAGOptions tunes a LAG's LACP. Rate is "fast" (a LACPDU a second, a
+// partner timed out after three) or "slow" (every 30 s, 90 s); "" is fast.
+// Passive answers a partner's LACP but never starts it. PortPriority, 1 to
+// 65535, orders which links a partner chooses when it cannot use them all;
+// 0 is the default, 32768.
+type LAGOptions struct {
+	Rate         string
+	Passive      bool
+	PortPriority int
+}
+
+// LACPDefaultPriority is LACP's default system and port priority.
+const LACPDefaultPriority = 32768
 
 // LAGMember is one port of a LAG. Active is whether it is carrying traffic
 // now: link up and, for LACP, collecting and distributing -- a member that is
@@ -249,6 +272,12 @@ func LAGName(n int) string { return fmt.Sprintf("po%d", n) }
 type STPConfig struct {
 	Enabled  bool
 	Priority int
+	// Bridge times in seconds, 0 for the 802.1D default: hello 2, forward
+	// delay 15, max age 20. 802.1D-2004 17.14 bounds them together:
+	// 2 x (forward delay - 1) >= max age >= 2 x (hello + 1).
+	HelloTime    int
+	ForwardDelay int
+	MaxAge       int
 }
 
 // STPDefaultPriority is IEEE 802.1D's default bridge priority.
@@ -261,6 +290,9 @@ const STPDefaultPriority = 32768
 type STPPortConfig struct {
 	Edge bool
 	Cost int
+	// Priority is the port priority, 16 to 240 in steps of 16; 0 is the
+	// default, 128. Lower wins a tie between two ports to the same bridge.
+	Priority int
 }
 
 // STPStatus is the spanning tree as this bridge sees it. IDs are written the
@@ -274,6 +306,9 @@ type STPStatus struct {
 	RootPort        string // "" when this bridge is the root
 	TopologyChanges int
 	Ports           []STPPort
+	HelloTime       int
+	ForwardDelay    int
+	MaxAge          int
 }
 
 // STPPort is one switched interface in the tree. Role is root, designated,
@@ -281,11 +316,12 @@ type STPStatus struct {
 // forwarding. Edge is the operational value: an interface configured as an
 // edge that has heard a BPDU is not one.
 type STPPort struct {
-	Port  string
-	Role  string
-	State string
-	Edge  bool
-	Cost  int
+	Port     string
+	Role     string
+	State    string
+	Edge     bool
+	Cost     int
+	Priority int
 }
 
 // MLAGConfig makes this switch one of an MLAG pair. PeerLink is the port or
@@ -299,6 +335,14 @@ type MLAGConfig struct {
 	PeerLink    string
 	PeerAddress string
 	Priority    int
+	// Timers in milliseconds, 0 for the default: a hello every 1000, the
+	// peer given up after 3500 without one, and 2500 for a flood block to
+	// come off (see docs/mlag.md). HeartbeatPort is the UDP port of the
+	// management heartbeat, 0 for 47101.
+	HelloMs       int
+	DeadMs        int
+	SettleMs      int
+	HeartbeatPort int
 }
 
 // MLAGDefaultPriority is the MLAG priority when none is configured.
@@ -309,16 +353,22 @@ const MLAGDefaultPriority = 32768
 // peer over it; Heartbeat is hearing it over the management network. SystemID
 // is the LACP system every MLAG interface presents, the same on both peers.
 type MLAGStatus struct {
-	Enabled    bool
-	Role       string
-	PeerLink   string
-	PeerLinkUp bool
-	PeerAlive  bool
-	Heartbeat  bool
-	Peer       string
-	SystemID   string
-	Interfaces []MLAGInterface
-	SyncedMACs int
+	Enabled       bool
+	Role          string
+	PeerLink      string
+	PeerLinkUp    bool
+	PeerAlive     bool
+	Heartbeat     bool
+	Peer          string
+	SystemID      string
+	Interfaces    []MLAGInterface
+	SyncedMACs    int
+	PeerAddress   string
+	Priority      int
+	HelloMs       int
+	DeadMs        int
+	SettleMs      int
+	HeartbeatPort int
 }
 
 // MLAGInterface is one MLAG id on this switch. Local and Peer are whether
@@ -409,6 +459,10 @@ type Switch interface {
 	// its members. A LAG's name is accepted wherever a port name is -- in
 	// SetPortVLAN, AddAddress, PortStatus -- except as another LAG's member.
 	AddLAG(name string, lacp bool) error
+	// SetLAGOptions tunes an existing LAG's LACP; SetLACPSystemPriority is
+	// the switch's LACP system priority, 1 to 65535, 0 for 32768.
+	SetLAGOptions(name string, o LAGOptions) error
+	SetLACPSystemPriority(p int) error
 	SetLAGMembers(name string, ports []string) error
 	DelLAG(name string) error
 	LAGs() ([]LAG, error)

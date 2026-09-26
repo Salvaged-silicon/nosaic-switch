@@ -39,6 +39,9 @@ type ipBridgeDetail struct {
 		InfoSlaveKind string `json:"info_slave_kind"`
 		InfoData      struct {
 			STPState       int    `json:"stp_state"`
+			HelloTime      int    `json:"hello_time"`
+			ForwardDelay   int    `json:"forward_delay"`
+			MaxAge         int    `json:"max_age"`
 			Priority       int    `json:"priority"`
 			RootID         string `json:"root_id"`
 			BridgeID       string `json:"bridge_id"`
@@ -49,6 +52,7 @@ type ipBridgeDetail struct {
 		InfoSlaveData struct {
 			State            string `json:"state"`
 			Cost             int    `json:"cost"`
+			Priority         int    `json:"priority"`
 			No               string `json:"no"`
 			DesignatedBridge string `json:"designated_bridge"`
 		} `json:"info_slave_data"`
@@ -96,17 +100,27 @@ func (s *Switch) SetSTP(cfg switchapi.STPConfig) error {
 	if err := switchapi.ValidSTPPriority(cfg.Priority); err != nil {
 		return err
 	}
+	if err := switchapi.ValidSTPTimes(cfg); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureBridge(); err != nil {
 		return err
+	}
+	// Configured times as given; left at zero, the shortened ones this
+	// board uses so a test converges in seconds.
+	hello, fwd, maxAge := stpHello, stpFwd, stpMaxAge
+	if cfg.HelloTime != 0 || cfg.ForwardDelay != 0 || cfg.MaxAge != 0 {
+		h, f, m := switchapi.STPTimes(cfg)
+		hello, fwd, maxAge = strconv.Itoa(h*100), strconv.Itoa(f*100), strconv.Itoa(m*100)
 	}
 	on := "0"
 	if cfg.Enabled {
 		on = "1"
 	}
 	_, err := ipCmd("link", "set", bridgeName, "type", "bridge",
-		"hello_time", stpHello, "forward_delay", stpFwd, "max_age", stpMaxAge,
+		"hello_time", hello, "forward_delay", fwd, "max_age", maxAge,
 		"priority", strconv.Itoa(cfg.Priority), "stp_state", on)
 	return err
 }
@@ -116,6 +130,9 @@ func (s *Switch) SetSTPPort(name string, cfg switchapi.STPPortConfig) error {
 		return switchapi.Unsupported("spanning tree")
 	}
 	if err := switchapi.ValidSTPCost(cfg.Cost); err != nil {
+		return err
+	}
+	if err := switchapi.ValidSTPPortPriority(cfg.Priority); err != nil {
 		return err
 	}
 	if s.known(name) != nil && !(s.lags && isLAG(name)) {
@@ -148,7 +165,14 @@ func (s *Switch) applySTPPort(name string) error {
 		if cost == 0 {
 			cost = switchapi.STPDefaultCost(virtMbps)
 		}
-		_, err := ipCmd("link", "set", "dev", name, "type", "bridge_slave", "cost", strconv.Itoa(cost))
+		// The kernel bridge's port priority is 802.1D-1998's six bits: the
+		// 2004 value divided by four, 128 being its 32.
+		prio := s.stpPorts[name].Priority
+		if prio == 0 {
+			prio = 128
+		}
+		_, err := ipCmd("link", "set", "dev", name, "type", "bridge_slave",
+			"cost", strconv.Itoa(cost), "priority", strconv.Itoa(prio/4))
 		return err
 	}
 	return nil
@@ -184,13 +208,14 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 	out.RootID = normID(bd.RootID)
 	out.RootCost = bd.RootPathCost
 	out.TopologyChanges = bd.TopologyChange
+	out.HelloTime, out.ForwardDelay, out.MaxAge = bd.HelloTime/100, bd.ForwardDelay/100, bd.MaxAge/100
 	for _, d := range l {
 		if d.Master != bridgeName {
 			continue
 		}
 		sd := d.LinkInfo.InfoSlaveData
 		no, _ := strconv.ParseInt(strings.TrimPrefix(sd.No, "0x"), 16, 32)
-		p := switchapi.STPPort{Port: d.IfName, Cost: sd.Cost}
+		p := switchapi.STPPort{Port: d.IfName, Cost: sd.Cost, Priority: sd.Priority * 4}
 		switch sd.State {
 		case "forwarding":
 			p.State = "forwarding"

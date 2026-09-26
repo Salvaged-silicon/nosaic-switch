@@ -18,8 +18,10 @@
 int  nosaic_rstp_start(int unit);
 
 /* The contract calls. 0, -1 with a reason in err, or -2 for unsupported. */
-int  nosaic_rstp_set(int enabled, int priority, char *err, size_t errlen);
-int  nosaic_rstp_port(const char *name, int edge, int cost, char *err, size_t errlen);
+int  nosaic_rstp_set(int enabled, int priority, int hello, int fwd_delay, int max_age,
+		     char *err, size_t errlen);
+int  nosaic_rstp_port(const char *name, int edge, int cost, int priority,
+		      char *err, size_t errlen);
 void nosaic_rstp_query(FILE *out);
 int  nosaic_rstp_supported(void);
 

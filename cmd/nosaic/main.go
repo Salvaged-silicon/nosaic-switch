@@ -70,12 +70,15 @@ on a running switch
   switchport <port> trunk <vid,...> [native <vid>]
   switchport <port> none       a port's whole VLAN membership; none routes again
   svi add|del <vid>            the routed interface vlan<vid>
-  lag <poN> lacp|static <port,...> [mlag <id>]
+  lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow] [mode active|passive] [port-priority <n>]
+  lacp system-priority <n>     the switch's LACP system priority
   lag <poN> none               a port-channel's whole membership; none removes it
-  stp on [priority <n>] | off  rapid spanning tree over the switched ports
-  stp port <port> [edge] [cost <n>]
+  stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>] | stp off
+                               rapid spanning tree over the switched ports
+  stp port <port> [edge] [cost <n>] [priority <n>]
                                one port's or LAG's settings; see docs/stp.md
-  mlag on peer-link <port> [peer-address <ip>] [priority <n>] | mlag off
+  mlag on peer-link <port> [peer-address <ip>] [priority <n>]
+          [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>] | mlag off
                                one of an MLAG pair; see docs/mlag.md
   gateway add|del <svi> <address/len> | gateway mac <mac>
                                a virtual gateway both of a pair answer for
@@ -200,7 +203,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "stp", "mlag", "gateway":
+	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -808,6 +811,8 @@ func switchCmd(args []string) error {
 
 	case "lag":
 		return lagCmd(c, args[1:])
+	case "lacp":
+		return lacpCmd(c, args[1:])
 	case "stp":
 		return stpCmd(c, args[1:])
 	case "mlag":

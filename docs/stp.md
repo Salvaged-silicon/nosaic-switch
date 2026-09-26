@@ -37,9 +37,9 @@ in check; spanning tree is for the switched ones.
 
 The same on the Go CLI and the C CLI:
 
-    nosaic stp on [priority <n>]
+    nosaic stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>]
     nosaic stp off
-    nosaic stp port <port> [edge] [cost <n>]
+    nosaic stp port <port> [edge] [cost <n>] [priority <n>]
     nosaic show stp
 
 `stp on` without a priority is the default, 32768. Lower wins the root
@@ -47,6 +47,12 @@ election. The priority goes from 0 to 61440 in steps of 4096. Like `switchport`
 and `lag`, each line states the end state: `stp port swp1` with nothing
 after it puts swp1 back to the defaults.
 
+- The bridge times default to 802.1D's: hello 2 s, forward delay 15 s, max
+  age 20 s. They are checked together, as 802.1D-2004 17.14 requires:
+  `2 x (forward-delay - 1) >= max-age >= 2 x (hello + 1)`. A switch that is not
+  the root uses the root's times, as the standard says.
+- A port's `priority`, 16 to 240 in steps of 16 (default 128), breaks a tie
+  between two ports to the same bridge.
 - `edge` marks a port as having a host on it, not a bridge. It forwards at
   once instead of negotiating, and stops being an edge port the moment a BPDU
   arrives on it.
@@ -161,11 +167,7 @@ itself.
 
 - **One instance for every VLAN.** No MSTP, no per-VLAN trees: every VLAN
   blocks on the same ports.
-- **Bridge times are the 802.1D defaults**: hello 2 s, max age 20 s, forward
-  delay 15 s. They are not configurable. Point-to-point links between RSTP
-  bridges do not wait for them.
 - **No BPDU guard, root guard or loop guard.**
-- **Port priority is fixed at 128.**
 - **MLAG interfaces and the peer-link are left out of the tree** and forward
   ([mlag.md](mlag.md)). A pair that ran the tree as one bridge would catch a
   loop through them.

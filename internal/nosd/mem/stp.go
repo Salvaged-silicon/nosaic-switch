@@ -33,6 +33,9 @@ func (s *Switch) SetSTP(cfg switchapi.STPConfig) error {
 	if err := switchapi.ValidSTPPriority(cfg.Priority); err != nil {
 		return err
 	}
+	if err := switchapi.ValidSTPTimes(cfg); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.stp().cfg = cfg
@@ -44,6 +47,9 @@ func (s *Switch) SetSTPPort(name string, cfg switchapi.STPPortConfig) error {
 		return switchapi.Unsupported("spanning tree")
 	}
 	if err := switchapi.ValidSTPCost(cfg.Cost); err != nil {
+		return err
+	}
+	if err := switchapi.ValidSTPPortPriority(cfg.Priority); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -73,6 +79,7 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 		BridgeID: id,
 		RootID:   id,
 	}
+	out.HelloTime, out.ForwardDelay, out.MaxAge = switchapi.STPTimes(st.cfg)
 	for _, p := range s.switchable() {
 		if len(p.vlans) == 0 || p.lag != "" {
 			continue
@@ -82,9 +89,13 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 		if cost == 0 {
 			cost = switchapi.STPDefaultCost(10000)
 		}
+		prio := pc.Priority
+		if prio == 0 {
+			prio = 128
+		}
 		out.Ports = append(out.Ports, switchapi.STPPort{
 			Port: p.name, Role: "designated", State: "forwarding",
-			Edge: pc.Edge, Cost: cost,
+			Edge: pc.Edge, Cost: cost, Priority: prio,
 		})
 	}
 	return out, nil

@@ -29,6 +29,11 @@ int nosaic_lag_members(const char *name, const char **ports, int n,
 int nosaic_lag_del(const char *name, char *err, size_t errlen);
 void nosaic_lag_query(FILE *out);
 void nosaic_lag_capability(int *max_lags, int *max_members);
+/* LACP options: rate "fast"/"slow" ("" is fast), passive, port priority (0 for
+ * 32768); and the switch's system priority (0 for 32768). */
+int  nosaic_lag_options(const char *name, const char *rate, int passive, int port_prio,
+			char *err, size_t errlen);
+int  nosaic_lag_sys_prio(int prio, char *err, size_t errlen);
 
 /*
  * For vlan.c, which treats a LAG as a set of ports that join and leave VLANs

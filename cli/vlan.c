@@ -250,36 +250,53 @@ int nosaic_show_vlans(void)
 }
 
 /*
- * nosaic lag <poN> lacp|static <port,...>  |  nosaic lag <poN> none
+ * nosaic lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow]
+ *            [mode active|passive] [port-priority <n>]  |  nosaic lag <poN> none
  *
  * The LAG's whole configuration, like cmd/nosaic/lag.go: members the line
- * does not name leave.
+ * does not name leave, and options it leaves out go back to their defaults.
  */
 int nosaic_lag_cmd(int argc, char **argv)
 {
 	static const char usage[] =
-		"usage: nosaic lag <poN> lacp|static <port,...> [mlag <id>]\n"
+		"usage: nosaic lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow]\n"
+		"                  [mode active|passive] [port-priority <n>]\n"
 		"       nosaic lag <poN> none\n";
-	char req[1024], list[512], *tok, *save = NULL;
+	char req[1024], list[512], rate[8] = "", *tok, *save = NULL;
 	size_t n;
-	int first = 1, mlag = 0;
+	int first = 1, mlag = 0, passive = 0, pprio = 0, i;
 
 	if (argc == 4 && strcmp(argv[3], "none") == 0) {
 		snprintf(req, sizeof(req), "{\"op\":\"lag.del\",\"args\":"
 			 "{\"name\":\"%s\"}}", argv[2]);
 		return ask(req);
 	}
-	if (argc == 7 && strcmp(argv[5], "mlag") == 0) {
-		mlag = atoi(argv[6]);
-		if (mlag < 1) {
-			fprintf(stderr, "nosaic: mlag id \"%s\" is not a number from 1\n", argv[6]);
-			return 2;
-		}
-		argc = 5;
-	}
-	if (argc != 5 || (strcmp(argv[3], "lacp") != 0 && strcmp(argv[3], "static") != 0)) {
+	if (argc < 5 || (argc - 5) % 2 != 0 ||
+	    (strcmp(argv[3], "lacp") != 0 && strcmp(argv[3], "static") != 0)) {
 		fputs(usage, stderr);
 		return 2;
+	}
+	/* Keyword and value pairs after the ports, in any order. */
+	for (i = 5; i + 1 < argc; i += 2) {
+		if (strcmp(argv[i], "mlag") == 0) {
+			if ((mlag = atoi(argv[i + 1])) < 1) {
+				fprintf(stderr, "nosaic: mlag id \"%s\" is not a number from 1\n", argv[i + 1]);
+				return 2;
+			}
+		} else if (strcmp(argv[i], "rate") == 0) {
+			snprintf(rate, sizeof(rate), "%s", argv[i + 1]);
+		} else if (strcmp(argv[i], "mode") == 0) {
+			if (strcmp(argv[i + 1], "active") != 0 && strcmp(argv[i + 1], "passive") != 0) {
+				fprintf(stderr, "nosaic: lacp mode \"%s\": active or passive\n", argv[i + 1]);
+				return 2;
+			}
+			passive = strcmp(argv[i + 1], "passive") == 0;
+		} else if (strcmp(argv[i], "port-priority") == 0) {
+			pprio = atoi(argv[i + 1]);
+		} else {
+			fputs(usage, stderr);
+			return 2;
+		}
 	}
 	snprintf(req, sizeof(req), "{\"op\":\"lag.add\",\"args\":"
 		 "{\"name\":\"%s\"%s}}", argv[2],
@@ -299,9 +316,28 @@ int nosaic_lag_cmd(int argc, char **argv)
 		snprintf(req + n, sizeof(req) - n, "]}}");
 	if (ask(req) != 0)
 		return 1;
-	/* The whole configuration: no mlag keyword is MLAG id 0. */
+	/* The whole configuration: what a line leaves out is the default. */
+	snprintf(req, sizeof(req), "{\"op\":\"lag.options\",\"args\":{\"name\":\"%s\","
+		 "\"rate\":\"%s\",\"passive\":%s,\"port_priority\":%d}}", argv[2], rate,
+		 passive ? "true" : "false", pprio);
+	if (ask(req) != 0)
+		return 1;
 	snprintf(req, sizeof(req), "{\"op\":\"lag.mlag\",\"args\":"
 		 "{\"name\":\"%s\",\"mlag\":%d}}", argv[2], mlag);
+	return ask(req);
+}
+
+/* nosaic lacp system-priority <n> */
+int nosaic_lacp_cmd(int argc, char **argv)
+{
+	char req[128];
+
+	if (argc != 4 || strcmp(argv[2], "system-priority") != 0) {
+		fprintf(stderr, "usage: nosaic lacp system-priority <n>\n");
+		return 2;
+	}
+	snprintf(req, sizeof(req), "{\"op\":\"lacp.priority\",\"args\":{\"priority\":%d}}",
+		 atoi(argv[3]));
 	return ask(req);
 }
 
@@ -363,31 +399,48 @@ int nosaic_show_lags(void)
 }
 
 /*
- * nosaic stp on [priority <n>] | stp off | stp port <port> [edge] [cost <n>]
+ * nosaic stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>]
+ * nosaic stp off
+ * nosaic stp port <port> [edge] [cost <n>] [priority <n>]
  *
- * The end state, like cmd/nosaic/stp.go: "stp on" without a priority is the
- * default priority, and "stp port swp1" alone puts swp1 back to defaults.
+ * The end state, like cmd/nosaic/stp.go: what "stp on" leaves out is the
+ * default, and "stp port swp1" alone puts swp1 back to defaults.
  */
 int nosaic_stp_cmd(int argc, char **argv)
 {
 	static const char usage[] =
-		"usage: nosaic stp on [priority <n>]\n"
+		"usage: nosaic stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>]\n"
 		"       nosaic stp off\n"
-		"       nosaic stp port <port> [edge] [cost <n>]\n";
-	char req[256];
-	int i, edge = 0, cost = 0;
+		"       nosaic stp port <port> [edge] [cost <n>] [priority <n>]\n";
+	char req[320];
+	int i, edge = 0, cost = 0, pprio = 0;
 
 	if (argc >= 3 && (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0)) {
-		int on = strcmp(argv[2], "on") == 0, prio = 32768;
+		int on = strcmp(argv[2], "on") == 0, prio = 32768, hello = 0, fwd = 0, age = 0;
 
-		if (on && argc == 5 && strcmp(argv[3], "priority") == 0)
-			prio = atoi(argv[4]);
-		else if (argc != 3) {
+		if ((argc - 3) % 2 != 0 || (!on && argc != 3)) {
 			fputs(usage, stderr);
 			return 2;
 		}
-		snprintf(req, sizeof(req), "{\"op\":\"stp.set\",\"args\":"
-			 "{\"enabled\":%s,\"priority\":%d}}", on ? "true" : "false", prio);
+		for (i = 3; i + 1 < argc; i += 2) {
+			int v = atoi(argv[i + 1]);
+
+			if (strcmp(argv[i], "priority") == 0)
+				prio = v;
+			else if (strcmp(argv[i], "hello") == 0)
+				hello = v;
+			else if (strcmp(argv[i], "forward-delay") == 0)
+				fwd = v;
+			else if (strcmp(argv[i], "max-age") == 0)
+				age = v;
+			else {
+				fputs(usage, stderr);
+				return 2;
+			}
+		}
+		snprintf(req, sizeof(req), "{\"op\":\"stp.set\",\"args\":{\"enabled\":%s,"
+			 "\"priority\":%d,\"hello_time\":%d,\"forward_delay\":%d,\"max_age\":%d}}",
+			 on ? "true" : "false", prio, hello, fwd, age);
 		return ask(req);
 	}
 	if (argc < 4 || strcmp(argv[2], "port") != 0) {
@@ -399,14 +452,16 @@ int nosaic_stp_cmd(int argc, char **argv)
 			edge = 1;
 		else if (strcmp(argv[i], "cost") == 0 && i + 1 < argc)
 			cost = atoi(argv[++i]);
+		else if (strcmp(argv[i], "priority") == 0 && i + 1 < argc)
+			pprio = atoi(argv[++i]);
 		else {
 			fputs(usage, stderr);
 			return 2;
 		}
 	}
 	snprintf(req, sizeof(req), "{\"op\":\"stp.port\",\"args\":"
-		 "{\"name\":\"%s\",\"edge\":%s,\"cost\":%d}}", argv[3],
-		 edge ? "true" : "false", cost);
+		 "{\"name\":\"%s\",\"edge\":%s,\"cost\":%d,\"port_priority\":%d}}", argv[3],
+		 edge ? "true" : "false", cost, pprio);
 	return ask(req);
 }
 
@@ -442,6 +497,9 @@ int nosaic_show_stp(void)
 	else
 		printf("%-18s%-20scost %d via %s\n", "root", root,
 		       nosaic_jint(resp, "RootCost", 0), rport);
+	printf("%-18shello %d s, forward delay %d s, max age %d s\n", "times",
+	       nosaic_jint(resp, "HelloTime", 0), nosaic_jint(resp, "ForwardDelay", 0),
+	       nosaic_jint(resp, "MaxAge", 0));
 	printf("%-18s%d\n\n", "topology changes", nosaic_jint(resp, "TopologyChanges", 0));
 	m = strstr(resp, "\"Ports\":[");
 	if (m == NULL || m[9] == ']') {
@@ -473,15 +531,17 @@ int nosaic_show_stp(void)
 
 /*
  * nosaic mlag on peer-link <port> [peer-address <ip>] [priority <n>]
+ *                [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>]
  * nosaic mlag off
  */
 int nosaic_mlag_cmd(int argc, char **argv)
 {
 	static const char usage[] =
 		"usage: nosaic mlag on peer-link <port> [peer-address <ip>] [priority <n>]\n"
+		"                     [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>]\n"
 		"       nosaic mlag off\n";
 	char req[512], plink[64] = "", paddr[64] = "";
-	int i, prio = 32768;
+	int i, prio = 32768, hello = 0, dead = 0, settle = 0, port = 0;
 
 	if (argc == 3 && strcmp(argv[2], "off") == 0)
 		return ask("{\"op\":\"mlag.set\",\"args\":{\"enabled\":false,"
@@ -497,14 +557,23 @@ int nosaic_mlag_cmd(int argc, char **argv)
 			snprintf(paddr, sizeof(paddr), "%s", argv[i + 1]);
 		else if (strcmp(argv[i], "priority") == 0)
 			prio = atoi(argv[i + 1]);
+		else if (strcmp(argv[i], "hello") == 0)
+			hello = atoi(argv[i + 1]);
+		else if (strcmp(argv[i], "dead") == 0)
+			dead = atoi(argv[i + 1]);
+		else if (strcmp(argv[i], "settle") == 0)
+			settle = atoi(argv[i + 1]);
+		else if (strcmp(argv[i], "heartbeat-port") == 0)
+			port = atoi(argv[i + 1]);
 		else {
 			fputs(usage, stderr);
 			return 2;
 		}
 	}
 	snprintf(req, sizeof(req), "{\"op\":\"mlag.set\",\"args\":{\"enabled\":true,"
-		 "\"peer_link\":\"%s\",\"peer_address\":\"%s\",\"priority\":%d}}",
-		 plink, paddr, prio);
+		 "\"peer_link\":\"%s\",\"peer_address\":\"%s\",\"priority\":%d,"
+		 "\"hello_ms\":%d,\"dead_ms\":%d,\"settle_ms\":%d,\"heartbeat_port\":%d}}",
+		 plink, paddr, prio, hello, dead, settle, port);
 	return ask(req);
 }
 
@@ -542,7 +611,11 @@ int nosaic_show_mlag(void)
 	       nosaic_jbool(resp, "PeerAlive", 0) ? "heard" : "not heard");
 	printf("%-14s%s\n", "heartbeat", nosaic_jbool(resp, "Heartbeat", 0) ? "heard" : "not heard");
 	printf("%-14s%s\n", "lacp system", sys);
-	printf("%-14s%d\n\n", "synced macs", nosaic_jint(resp, "SyncedMACs", 0));
+	printf("%-14s%d\n", "synced macs", nosaic_jint(resp, "SyncedMACs", 0));
+	printf("%-14shello %d ms, dead %d ms, settle %d ms, heartbeat port %d, priority %d\n\n",
+	       "timers", nosaic_jint(resp, "HelloMs", 0), nosaic_jint(resp, "DeadMs", 0),
+	       nosaic_jint(resp, "SettleMs", 0), nosaic_jint(resp, "HeartbeatPort", 0),
+	       nosaic_jint(resp, "Priority", 0));
 	m = strstr(resp, "\"Interfaces\":[");
 	if (m == NULL || m[14] == ']') {
 		printf("no mlag interfaces; make one with: nosaic lag po7 lacp <port> mlag 7\n");

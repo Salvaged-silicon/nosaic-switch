@@ -240,6 +240,35 @@ func checkLAGs(sw Switch, caps Capabilities, p0, p1 string) []error {
 		bad("AddLAG accepted %q, which is not a po<N> name", "bogus")
 		_ = sw.DelLAG("bogus")
 	}
+
+	// LACP's options read back, defaults filled in, and nonsense is refused.
+	if caps.LACP {
+		if err := sw.SetLAGOptions("po1", LAGOptions{Rate: "medium"}); err == nil {
+			bad("SetLAGOptions accepted rate %q", "medium")
+		}
+		if err := sw.SetLACPSystemPriority(70000); err == nil {
+			bad("SetLACPSystemPriority accepted 70000")
+		}
+		_ = sw.AddLAG("po1", true)
+		if err := sw.SetLAGOptions("po1", LAGOptions{Rate: "slow", Passive: true, PortPriority: 100}); err != nil {
+			bad("SetLAGOptions(po1, slow passive 100): %v", err)
+		} else if err := sw.SetLACPSystemPriority(200); err != nil {
+			bad("SetLACPSystemPriority(200): %v", err)
+		} else if l, ok := members(); ok {
+			if l.Options != (LAGOptions{Rate: "slow", Passive: true, PortPriority: 100}) || l.SystemPriority != 200 {
+				bad("po1 reads back options %+v system priority %d, set slow passive 100 and 200",
+					l.Options, l.SystemPriority)
+			}
+		}
+		_ = sw.SetLAGOptions("po1", LAGOptions{})
+		_ = sw.SetLACPSystemPriority(0)
+		if l, ok := members(); ok && (l.Options.Rate != "fast" || l.Options.PortPriority != LACPDefaultPriority ||
+			l.SystemPriority != LACPDefaultPriority) {
+			bad("po1 with its options cleared reads back %+v system priority %d, not the defaults",
+				l.Options, l.SystemPriority)
+		}
+		_ = sw.AddLAG("po1", false)
+	}
 	if err := sw.SetLAGMembers("po1", []string{p0, p1}); err != nil {
 		return append(probs, fmt.Errorf("SetLAGMembers(po1, %s %s): %w", p0, p1, err))
 	}
@@ -514,14 +543,25 @@ func checkSTP(sw Switch, caps Capabilities, p0 string) []error {
 	if err := sw.SetSTP(STPConfig{Enabled: true, Priority: 1000}); err == nil {
 		bad("SetSTP accepted priority 1000, which is not a multiple of 4096")
 	}
+	if err := sw.SetSTP(STPConfig{Enabled: true, Priority: 4096, HelloTime: 10, MaxAge: 6}); err == nil {
+		bad("SetSTP accepted hello 10 with max-age 6, which 802.1D forbids")
+	}
+	if err := sw.SetSTPPort(p0, STPPortConfig{Priority: 100}); err == nil {
+		bad("SetSTPPort accepted port priority 100, which is not a multiple of 16")
+	}
+	if err := sw.SetSTP(STPConfig{Enabled: false, Priority: 4096, HelloTime: 1, ForwardDelay: 4, MaxAge: 6}); err != nil {
+		bad("SetSTP(hello 1, forward-delay 4, max-age 6): %v", err)
+	} else if st, err := sw.STP(); err == nil && (st.HelloTime != 1 || st.ForwardDelay != 4 || st.MaxAge != 6) {
+		bad("STP reads back times %d/%d/%d, set 1/4/6", st.HelloTime, st.ForwardDelay, st.MaxAge)
+	}
 	if err := sw.SetSTPPort("swp-nonexistent", STPPortConfig{}); err == nil {
 		bad("SetSTPPort on an unknown port succeeded")
 	}
 	if err := sw.SetSTPPort(p0, STPPortConfig{Cost: -1}); err == nil {
 		bad("SetSTPPort accepted cost -1")
 	}
-	if err := sw.SetSTPPort(p0, STPPortConfig{Cost: 1234}); err != nil {
-		bad("SetSTPPort(%s, cost 1234): %v", p0, err)
+	if err := sw.SetSTPPort(p0, STPPortConfig{Cost: 1234, Priority: 64}); err != nil {
+		bad("SetSTPPort(%s, cost 1234, priority 64): %v", p0, err)
 	}
 	if err := sw.SetSTP(STPConfig{Enabled: true, Priority: 4096}); err != nil {
 		return append(probs, fmt.Errorf("SetSTP(on, 4096): %w", err))
@@ -561,6 +601,9 @@ func checkSTP(sw Switch, caps Capabilities, p0 string) []error {
 			found = true
 			if p.Cost != 1234 {
 				bad("%s reports path cost %d, configured 1234", p0, p.Cost)
+			}
+			if p.Priority != 64 {
+				bad("%s reports port priority %d, configured 64", p0, p.Priority)
 			}
 			switch p.Role {
 			case "root", "designated", "alternate", "backup", "disabled":
@@ -619,13 +662,21 @@ func checkMLAG(sw Switch, caps Capabilities, p0, p1 string) []error {
 	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, PeerAddress: "bogus"}); err == nil {
 		bad("SetMLAG accepted peer address %q", "bogus")
 	}
-	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, PeerAddress: "192.0.2.2", Priority: 100}); err != nil {
+	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, HelloMs: 1000, DeadMs: 1500}); err == nil {
+		bad("SetMLAG accepted a dead interval shorter than two hellos")
+	}
+	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, PeerAddress: "192.0.2.2", Priority: 100,
+		HelloMs: 500, DeadMs: 2000, SettleMs: 3000, HeartbeatPort: 47200}); err != nil {
 		return append(probs, fmt.Errorf("SetMLAG(peer-link %s): %w", p0, err))
 	}
 	if st, err := sw.MLAG(); err != nil {
 		bad("MLAG: %v", err)
 	} else if !st.Enabled || st.PeerLink != p0 {
 		bad("MLAG reports enabled=%v peer-link %q after SetMLAG(on, %s)", st.Enabled, st.PeerLink, p0)
+	} else if st.HelloMs != 500 || st.DeadMs != 2000 || st.SettleMs != 3000 || st.HeartbeatPort != 47200 ||
+		st.Priority != 100 || st.PeerAddress != "192.0.2.2" {
+		bad("MLAG reads back hello %d dead %d settle %d port %d priority %d peer %q, set 500 2000 3000 47200 100 192.0.2.2",
+			st.HelloMs, st.DeadMs, st.SettleMs, st.HeartbeatPort, st.Priority, st.PeerAddress)
 	}
 
 	if err := sw.AddLAG("po2", false); err != nil {

@@ -20,7 +20,8 @@ import (
 // default priority, and "stp port swp1" with nothing after it puts swp1 back
 // to a non-edge port with the cost its speed gives it.
 func stpCmd(c *nosdclient.Client, args []string) error {
-	usage := fmt.Errorf("usage: nosaic stp on [priority <n>] | stp off | stp port <port> [edge] [cost <n>]")
+	usage := fmt.Errorf("usage: nosaic stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>] | " +
+		"stp off | stp port <port> [edge] [cost <n>] [priority <n>]")
 	if len(args) < 1 {
 		return usage
 	}
@@ -28,14 +29,26 @@ func stpCmd(c *nosdclient.Client, args []string) error {
 	case "on", "off":
 		cfg := switchapi.STPConfig{Enabled: args[0] == "on", Priority: switchapi.STPDefaultPriority}
 		rest := args[1:]
-		if len(rest) == 2 && rest[0] == "priority" && cfg.Enabled {
-			p, err := strconv.Atoi(rest[1])
-			if err != nil {
-				return fmt.Errorf("stp priority %q is not a number", rest[1])
-			}
-			cfg.Priority = p
-		} else if len(rest) != 0 {
+		if len(rest)%2 != 0 || (!cfg.Enabled && len(rest) != 0) {
 			return usage
+		}
+		for i := 0; i+1 < len(rest); i += 2 {
+			n, err := strconv.Atoi(rest[i+1])
+			if err != nil {
+				return fmt.Errorf("stp %s %q is not a number", rest[i], rest[i+1])
+			}
+			switch rest[i] {
+			case "priority":
+				cfg.Priority = n
+			case "hello":
+				cfg.HelloTime = n
+			case "forward-delay":
+				cfg.ForwardDelay = n
+			case "max-age":
+				cfg.MaxAge = n
+			default:
+				return usage
+			}
 		}
 		return c.SetSTP(cfg)
 	case "port":
@@ -53,6 +66,13 @@ func stpCmd(c *nosdclient.Client, args []string) error {
 					return fmt.Errorf("stp cost %q is not a number", args[i+1])
 				}
 				cfg.Cost = n
+				i++
+			case args[i] == "priority" && i+1 < len(args):
+				n, err := strconv.Atoi(args[i+1])
+				if err != nil {
+					return fmt.Errorf("stp port priority %q is not a number", args[i+1])
+				}
+				cfg.Priority = n
 				i++
 			default:
 				return usage
@@ -78,18 +98,19 @@ func showSTP(c *nosdclient.Client, w *tabwriter.Writer) error {
 	} else {
 		fmt.Fprintf(w, "root\t%s\tcost %d via %s\n", st.RootID, st.RootCost, st.RootPort)
 	}
+	fmt.Fprintf(w, "times\thello %d s, forward delay %d s, max age %d s\t\n", st.HelloTime, st.ForwardDelay, st.MaxAge)
 	fmt.Fprintf(w, "topology changes\t%d\t\n\n", st.TopologyChanges)
 	if len(st.Ports) == 0 {
 		fmt.Fprintln(w, "no switched ports; spanning tree runs on ports and LAGs in a VLAN")
 		return nil
 	}
-	fmt.Fprintln(w, "PORT\tROLE\tSTATE\tCOST\tEDGE")
+	fmt.Fprintln(w, "PORT\tROLE\tSTATE\tCOST\tPRIORITY\tEDGE")
 	for _, p := range st.Ports {
 		edge := "-"
 		if p.Edge {
 			edge = "edge"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", p.Port, p.Role, p.State, p.Cost, edge)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n", p.Port, p.Role, p.State, p.Cost, p.Priority, edge)
 	}
 	return nil
 }
