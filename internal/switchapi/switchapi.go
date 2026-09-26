@@ -57,7 +57,12 @@ import (
 // 1.3 added link aggregation: LAGs, AddLAG, SetLAGMembers and DelLAG, gated by
 // Capabilities.LAGs, with LACP gated by Capabilities.LACP. A LAG is an
 // interface named po<N>, accepted wherever a port name is.
-const Version = "1.3"
+//
+// 1.4 added spanning tree: SetSTP, SetSTPPort and STP, gated by
+// Capabilities.STP. One RSTP (IEEE 802.1w) instance covers every VLAN; it
+// runs on switched interfaces -- ports and LAGs that are members of a VLAN --
+// and never on a routed port, which has no L2 neighbour to loop through.
+const Version = "1.4"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -93,6 +98,10 @@ type Capabilities struct {
 	MaxLAGs       int
 	MaxLAGMembers int
 	LACP          bool
+
+	// STP is rapid spanning tree (IEEE 802.1w) over the switched
+	// interfaces, one instance for every VLAN.
+	STP bool
 
 	L2Learning bool
 	MaxFDB     int
@@ -212,6 +221,51 @@ type LAGMember struct {
 // every datapath, like SVIName.
 func LAGName(n int) string { return fmt.Sprintf("po%d", n) }
 
+// STPConfig is the bridge's spanning tree. Priority is the bridge priority,
+// 0 to 61440 in steps of 4096; lower wins the root election. The default is
+// STPDefaultPriority.
+type STPConfig struct {
+	Enabled  bool
+	Priority int
+}
+
+// STPDefaultPriority is IEEE 802.1D's default bridge priority.
+const STPDefaultPriority = 32768
+
+// STPPortConfig is one interface's spanning-tree settings. Edge declares it
+// an edge port -- a host, not a bridge -- which forwards at once instead of
+// negotiating; it stops being one the moment a BPDU arrives. Cost is the path
+// cost, 1 to 200000000, or 0 for the 802.1D-2004 default from the link speed.
+type STPPortConfig struct {
+	Edge bool
+	Cost int
+}
+
+// STPStatus is the spanning tree as this bridge sees it. IDs are written the
+// usual way, priority.mac: "8000.02a8eb93f650".
+type STPStatus struct {
+	Enabled         bool
+	Priority        int
+	BridgeID        string
+	RootID          string
+	RootCost        int
+	RootPort        string // "" when this bridge is the root
+	TopologyChanges int
+	Ports           []STPPort
+}
+
+// STPPort is one switched interface in the tree. Role is root, designated,
+// alternate, backup or disabled; State is discarding, learning or
+// forwarding. Edge is the operational value: an interface configured as an
+// edge that has heard a BPDU is not one.
+type STPPort struct {
+	Port  string
+	Role  string
+	State string
+	Edge  bool
+	Cost  int
+}
+
 // FDBEntry is one learned or static MAC.
 type FDBEntry struct {
 	MAC    string
@@ -274,6 +328,16 @@ type Switch interface {
 	SetLAGMembers(name string, ports []string) error
 	DelLAG(name string) error
 	LAGs() ([]LAG, error)
+
+	// Spanning tree.
+	//
+	// SetSTP turns RSTP on or off and sets the bridge priority. Off, every
+	// switched interface forwards, as before 1.4. SetSTPPort configures one
+	// interface, a port or a LAG, whether or not it is switched yet, and the
+	// setting applies whenever it is. STP reports the tree.
+	SetSTP(cfg STPConfig) error
+	SetSTPPort(name string, cfg STPPortConfig) error
+	STP() (STPStatus, error)
 
 	// Access lists. See acl.go. SetACL adds the rule or replaces the one with
 	// the same sequence number; DelACL removes it; ACLs lists every rule the

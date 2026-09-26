@@ -105,6 +105,9 @@ const (
 	OpSetLAGMembers = "lag.members"
 	OpDelLAG        = "lag.del"
 	OpLAGs          = "lags"
+	OpSetSTP        = "stp.set"
+	OpSetSTPPort    = "stp.port"
+	OpSTP           = "stp"
 	OpFDB           = "l2.fdb"
 	OpAddAddress    = "l3.addr.add"
 	OpDelAddress    = "l3.addr.del"
@@ -135,6 +138,20 @@ type LAGArgs struct {
 	Name  string   `json:"name"`
 	LACP  bool     `json:"lacp,omitempty"`
 	Ports []string `json:"ports,omitempty"`
+}
+
+// STPArgs sets the bridge. No omitempty: false and priority 0 are both
+// meaningful, and a datapath that parses by key must find them.
+type STPArgs struct {
+	Enabled  bool `json:"enabled"`
+	Priority int  `json:"priority"`
+}
+
+// STPPortArgs configures one interface. Cost 0 is the speed's default.
+type STPPortArgs struct {
+	Name string `json:"name"`
+	Edge bool   `json:"edge"`
+	Cost int    `json:"cost"`
 }
 
 type AddrArgs struct {

@@ -76,7 +76,7 @@ mkdir -p /run
 # itself, but only once it starts; clearing it here means a run that crashed
 # before that does not wedge the next one.
 rm -f "$SOCK"
-./out/nosd --socket "$SOCK" --driver virt --ports 8 >/tmp/nosd.log 2>&1 &
+./out/nosd --socket "$SOCK" --driver virt --ports 10 >/tmp/nosd.log 2>&1 &
 NOSD=$!
 trap 'kill $NOSD 2>/dev/null || true' EXIT
 
@@ -300,6 +300,64 @@ else
     echo "    lags: reported as unsupported here (no bonding), so nothing to drive"
     if ./out/nosaic lag po1 lacp swp7,swp8 2>/dev/null; then
         echo "a datapath without LAGs accepted one"; exit 1
+    fi
+fi
+
+echo
+echo "=== spanning tree: a real loop, and the tree that breaks it ==="
+if ./out/nosaic show caps | grep -Eq '^stp +true'; then
+    # swp9 and swp10 both go to one far-end bridge, and both are in VLAN 40:
+    # a loop. Spanning tree goes on first, on both sides, so it never storms.
+    # The far bridge gets the better priority and is the root, so this side
+    # must end with one root port and one alternate, discarding.
+    unshare -n sleep 600 & L=$!
+    trap 'kill $NOSD ${PEER:-} ${HOSTS:-} ${D:-} $L 2>/dev/null || true' EXIT
+    sleep 0.3
+    ip link set swp9-p netns "$L"
+    ip link set swp10-p netns "$L"
+    nsenter -t "$L" -n sh -c 'ip link set lo up
+        ip link add brL type bridge stp_state 1 priority 4096 \
+            hello_time 100 forward_delay 400 max_age 600
+        ip link set swp9-p master brL; ip link set swp10-p master brL
+        ip link set swp9-p up; ip link set swp10-p up
+        ip link set brL up; ip addr add 10.40.0.2/24 dev brL'
+
+    ./out/nosaic interface swp9 up
+    ./out/nosaic interface swp10 up
+    ./out/nosaic stp on
+    ./out/nosaic vlan add 40
+    ./out/nosaic switchport swp9 access 40
+    ./out/nosaic switchport swp10 access 40
+    ./out/nosaic svi add 40 >/dev/null
+    ip addr add 10.40.0.1/24 dev vlan40
+    role() { ./out/nosaic show stp | awk -v p="$1" '$1 == p { print $2 "/" $3 }'; }
+    settled() { [ "$(role swp9)" = "root/forwarding" ] && [ "$(role swp10)" = "alternate/discarding" ]; }
+    for _ in $(seq 1 30); do settled && break; sleep 1; done
+    ./out/nosaic show stp | sed 's/^/    /'
+    settled || { echo "the loop did not settle to one root port and one alternate"; exit 1; }
+    ./out/nosaic show stp | grep -q "^root .*via swp9" || { echo "show stp does not name the root port"; exit 1; }
+    lping() { nsenter -t "$L" -n ping -c 3 -i 0.2 -W 1 10.40.0.1 >/dev/null 2>&1; }
+    lping || { echo "nothing crosses the loop once the tree has broken it"; exit 1; }
+    echo "    loop broken: swp9 root and forwarding, swp10 alternate and discarding"
+
+    # The root port's cable goes dead: the alternate takes over.
+    nsenter -t "$L" -n ip link set swp9-p down
+    for _ in $(seq 1 30); do [ "$(role swp10)" = "root/forwarding" ] && break; sleep 1; done
+    [ "$(role swp10)" = "root/forwarding" ] || { echo "the alternate never took over"; ./out/nosaic show stp; exit 1; }
+    lping || { echo "no traffic over the alternate once it took over"; exit 1; }
+    echo "    root port lost: swp10 took over and carries the traffic"
+
+    ./out/nosaic svi del 40
+    ./out/nosaic switchport swp9 none
+    ./out/nosaic switchport swp10 none
+    ./out/nosaic vlan del 40
+    ./out/nosaic stp off
+    ./out/nosaic show stp | grep -q "spanning tree is off" || { echo "stp off did not take"; exit 1; }
+    echo "    spanning tree off again"
+else
+    echo "    stp: reported as unsupported here, so nothing to drive"
+    if ./out/nosaic stp on 2>/dev/null; then
+        echo "a datapath without spanning tree accepted stp on"; exit 1
     fi
 fi
 
