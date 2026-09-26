@@ -857,6 +857,89 @@ format — the clock configuration. It is the operator-supplied
 `Cotati-Clock-0010.si5338` that the prior investigation's scoreboard lists as
 **eliminated**, left behind on the flash. Not needed, and now not a mystery.
 
+## A live lane against a dark one, 2026-09-26
+
+Captured under EOS with four ports forwarding — Et1 to Et4, all 10GBASE-SR.
+Ports 1 and 3 are EPL 14 lanes 0 and 1; ports 2 and 4 are EPL 16 lanes 0 and
+1. Lanes 2 and 3 of each are dark, which gives live-versus-dark **inside one
+EPL**, where the two lanes share their configuration registers. **live**
+
+### The per-EPL gates, and the field width is settled
+
+```
+                 forwarding    ours, booted
+   EPL_CFG_A      7e1d7899      0c7d7899
+   EPL_CFG_B      00090033      00080000
+   +0x03          00041082      00041041
+```
+
+`EPL_CFG_B` low byte `0x33` is **two ports set at four bits each** —
+`Port0PcsSel=3` and `Port1PcsSel=3` — which is exactly the two live lanes on
+that EPL. That settles the field width this page had marked UNKNOWN, and it
+explains the earlier `0x00090003`: that reading was taken when only one port
+was up.
+
+So the selector is `EPL_CFG_B[4n+3:4n]` for lane `n`, and 3 is 10GBASE-R.
+
+### PORT_STATUS is the first word of a lane's slot
+
+`per-lane +0x00` reads **`0x000008c0`** on a live lane, which is the value
+`FM6000_PORT_STATUS_UP` in regs.h has carried since before anyone knew where
+the register was. Bit 11 is SerXmit. A dark lane reads `0x15`.
+
+### The fifteen words that separate a live lane from a dark one
+
+EPL 14, lane 0 (port 1, up) against lane 2 (port 5, empty cage):
+
+| off | live | dark | |
+|---|---|---|---|
+| `0x00` | `000008c0` | `00000015` | **PORT_STATUS** |
+| `0x04` | `00002a00` | `00001002` | |
+| `0x10` | `2000033c` | `2000031c` | |
+| `0x21` | `00402002` | `00001001` | |
+| `0x26` | `00000001` | `00000000` | |
+| `0x38` | `00000940` | `00000000` | the other value SPICO-RE records for a live port |
+| `0x39` | `002a0281` | `00280280` | |
+| `0x3a` | `c0000581` | `80000080` | |
+| `0x3b` | `00000c83` | `00000803` | |
+| `0x3c` | `000001fe` | `000001ee` | |
+| `0x3e` | `00100f0f` | `00000000` | the per-lane field flagged earlier as where to look |
+| `0x3f` | `00000060` | `00000780` | |
+| `0x40` | `00003fff` | `00003fdf` | |
+| `0x41` | `000004b0` | `00000000` | |
+| `0x42` | `00000342` | `00000000` | |
+
+Fifteen words. That is the target state for bringing a lane up, and it is the
+diff the prior investigation spent two days narrowing to six.
+
+### ⚠ Correction: the cage map was not triangulated, it was under-counted twice
+
+This page claimed the cage mapping was confirmed three ways. It was not, and
+the way it failed is worth keeping.
+
+**Four modules are present, not two.** Under EOS the cage registers read:
+
+```
+   cage 1..4   0x00000180   module present
+   cage 5..8   0x00000047   empty
+```
+
+and EOS has Et1 through Et4 connected. But the two NOSaic-side measurements
+each saw only **two**: the SFP EEPROM scan found `0x03` at accelerator 2 buses
+0 and 1 and nothing at 2 and 3, and the cage registers read `0x1E0` for cages
+1 and 2 against `0x1DF` for every other. Those two agreed with each other and
+with "Et1 and Et2 are up" — which was itself only true because I looked at the
+OSPF adjacency rather than the interface list.
+
+⚠ **Two measurements agreeing because they share a blind spot is not
+corroboration.** Both were taken on a chip whose cages NOSaic has never
+powered, and both under-reported by the same two.
+
+So the cage-to-bus mapping is **not established** beyond cages 1 and 2. It may
+well be right — the likely explanation is that an unpowered cage neither
+answers its EEPROM nor reports presence — but that is now a hypothesis with a
+test rather than a conclusion.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted
