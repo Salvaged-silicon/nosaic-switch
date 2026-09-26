@@ -109,6 +109,8 @@ const (
 	OpSetSTPPort    = "stp.port"
 	OpSTP           = "stp"
 	OpSetMLAG       = "mlag.set"
+	OpSetLAGOptions = "lag.options"
+	OpSetLACPPrio   = "lacp.priority"
 	OpSetLAGMLAG    = "lag.mlag"
 	OpMLAG          = "mlag"
 	OpSetVirtualMAC = "gateway.mac"
@@ -150,23 +152,44 @@ type LAGArgs struct {
 // STPArgs sets the bridge. No omitempty: false and priority 0 are both
 // meaningful, and a datapath that parses by key must find them.
 type STPArgs struct {
-	Enabled  bool `json:"enabled"`
-	Priority int  `json:"priority"`
+	Enabled      bool `json:"enabled"`
+	Priority     int  `json:"priority"`
+	HelloTime    int  `json:"hello_time"`
+	ForwardDelay int  `json:"forward_delay"`
+	MaxAge       int  `json:"max_age"`
 }
 
 // STPPortArgs configures one interface. Cost 0 is the speed's default.
 type STPPortArgs struct {
-	Name string `json:"name"`
-	Edge bool   `json:"edge"`
-	Cost int    `json:"cost"`
+	Name     string `json:"name"`
+	Edge     bool   `json:"edge"`
+	Cost     int    `json:"cost"`
+	Priority int    `json:"port_priority"`
 }
 
 // MLAGArgs sets the pair; no omitempty, for the same reason as STPArgs.
 type MLAGArgs struct {
-	Enabled     bool   `json:"enabled"`
-	PeerLink    string `json:"peer_link"`
-	PeerAddress string `json:"peer_address"`
-	Priority    int    `json:"priority"`
+	Enabled       bool   `json:"enabled"`
+	PeerLink      string `json:"peer_link"`
+	PeerAddress   string `json:"peer_address"`
+	Priority      int    `json:"priority"`
+	HelloMs       int    `json:"hello_ms"`
+	DeadMs        int    `json:"dead_ms"`
+	SettleMs      int    `json:"settle_ms"`
+	HeartbeatPort int    `json:"heartbeat_port"`
+}
+
+// LAGOptionsArgs tunes a LAG's LACP.
+type LAGOptionsArgs struct {
+	Name         string `json:"name"`
+	Rate         string `json:"rate"`
+	Passive      bool   `json:"passive"`
+	PortPriority int    `json:"port_priority"`
+}
+
+// PriorityArgs carries one priority.
+type PriorityArgs struct {
+	Priority int `json:"priority"`
 }
 
 // LAGMLAGArgs gives a LAG its MLAG id, or 0 to take it back.
