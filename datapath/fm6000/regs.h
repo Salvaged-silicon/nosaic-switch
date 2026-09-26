@@ -320,7 +320,60 @@
  * through the boot sequence but not yet configured. It is not what a chip that
  * has had only a reset pulse does, because that chip does not survive the read.
  */
-#define FM6000_EPL_CFG_B		0x0e3b02	/* [OURS] */
+/*
+ * EPL ADDRESSING, derived by sweeping the block. [OURS, measured]
+ *
+ * The block is completely regular once you see it. Every EPL owns eight slots
+ * of 0x80 words -- 0x400 words in all -- laid out as:
+ *
+ *     slot 0..3   the four lanes, per-lane registers
+ *     slot 4,5    empty
+ *     slot 6      the per-EPL registers, EPL_CFG_A and EPL_CFG_B among them
+ *     slot 7      empty
+ *
+ * The sweep found exactly 96 per-lane structures and 24 per-EPL ones, at
+ * instance indices 0-3,8-11,16-... and 6,14,22,...,190 respectively, which is
+ * that layout and nothing else.
+ *
+ * ⚠ THE INDEX IS THE FDL'S eplId, NOT THE DATASHEET'S EPL NUMBER. Those two
+ * disagree -- see the SBus section -- and it is this one the register block
+ * uses: EPL 14, which is what the FDL gives for front-panel port 1, computes
+ * to 0x0e3b00, and EPL_CFG_A and EPL_CFG_B were independently found at
+ * 0x0e3b01 and 0x0e3b02. The prior investigation's SERDES_IP at 0x0e3841 also
+ * falls inside EPL 14 lane 0's slot, which is a second agreement.
+ */
+#define FM6000_EPL_BASE			0x0e0400
+#define FM6000_EPL_STRIDE		0x000400	/* per EPL */
+#define FM6000_EPL_LANE_STRIDE		0x000080
+#define FM6000_EPL_CFG_SLOT		0x000300	/* slot 6 */
+
+/* Per-lane register block for lane 0..3 of EPL n, n counted as the FDL does. */
+#define FM6000_EPL_LANE(n, lane) \
+	(FM6000_EPL_BASE + ((n) - 1) * FM6000_EPL_STRIDE + \
+	 (lane) * FM6000_EPL_LANE_STRIDE)
+
+/* Per-EPL register block for EPL n. */
+#define FM6000_EPL_CFG(n) \
+	(FM6000_EPL_BASE + ((n) - 1) * FM6000_EPL_STRIDE + FM6000_EPL_CFG_SLOT)
+
+#define FM6000_EPL_CFG_A_OFF		1
+#define FM6000_EPL_CFG_B_OFF		2
+
+/*
+ * EPL_CFG_B carries a PCS type selector per port. 3 is 10GBASE-R and 0 is
+ * PCS_DISABLE, and a port left at 0 does not transmit -- the prior
+ * investigation on this chassis spent two days on a dark port that turned out
+ * to be exactly this, with every other register matching a working lane.
+ *
+ * ⚠ The field WIDTH is not established. A forwarding chip reads 0x00090003
+ * and one that has only been booted reads 0x00080000, which is consistent
+ * with the selector in the low nibble and something else in bit 16, but four
+ * ports share this register and nothing here has seen two of them set at once.
+ * [UNKNOWN]
+ */
+#define FM6000_EPL_CFG_B		0x0e3b02	/* EPL 14: the FIRST one */
+#define FM6000_EPL_PCS_10GBASE_R		3
+#define FM6000_EPL_PCS_DISABLE			0
 #define FM6000_EPL_CFG_B_10GBASE_R	0x00090003	/* configured, forwarding */
 #define FM6000_EPL_CFG_B_POST_BOOT	0x00080000	/* booted, not configured */
 

@@ -476,6 +476,65 @@ different directions is what makes this a map rather than a pattern.
 `+0x3e` is the only per-lane field that differs, which makes it the first place
 to look for lane state. **derived**
 
+### The addressing, and it is completely regular
+
+Every EPL owns **eight slots of `0x80` words — `0x400` words in all**:
+
+```
+   slot 0..3   the four lanes
+   slot 4,5    empty
+   slot 6      the per-EPL registers, EPL_CFG_A and EPL_CFG_B among them
+   slot 7      empty
+
+   per-lane:  0x0e0400 + (epl-1)*0x400 + lane*0x80
+   per-EPL:   0x0e0700 + (epl-1)*0x400
+```
+
+The sweep found per-lane structures at instance indices 0-3, 8-11, 16-19 … and
+per-EPL ones at 6, 14, 22 … 190. That is this layout and nothing else.
+
+⚠ **The index is the FDL's `eplId`, not the datasheet's EPL number.** Those two
+disagree, and it is the FDL's that the register block uses. EPL 14 — what the
+FDL gives for front-panel port 1 — computes to `0x0e3b00`, and `EPL_CFG_A` and
+`EPL_CFG_B` were independently found at `0x0e3b01` and `0x0e3b02`. The prior
+investigation's `SERDES_IP` at `0x0e3841` also falls inside EPL 14 lane 0's
+slot. Three agreements. **live**
+
+Verified against hardware for EPLs 1, 13, 14, 15, 16 and 24: all read
+`EPL_CFG_A 0x0C7D7899` and `EPL_CFG_B 0x00080000`, uniformly unconfigured.
+
+### ✅ And it explains the "fatal region" above `0x0e6400`
+
+EPL 24's block is at `0x0e6300`, so the last implemented word in the whole EPL
+space is around `0x0e6316` — which is exactly where the sweep's last readable
+data was. **Reading above `0x0e6400` is reading past the last EPL.** It is not
+a hazard with a reason, it is unimplemented address space, and that is a much
+more comfortable thing to have found than another mystery.
+
+### Setting the PCS type, measured
+
+Port 1 is EPL 14 lane 0. `EPL_CFG_B` reads `0x00080000` on a booted chip and
+`0x00090003` on a forwarding one, so the PCS selector is `0` = `PCS_DISABLE`.
+
+Writing the low nibble to 3 works and the chip stays up:
+
+```
+   before  CFG_B = 0x00080000
+   after   CFG_B = 0x00080003
+```
+
+⚠ **And nothing else in that EPL moved** — not one word of either the per-EPL
+slot or lane 0's slot. So the PCS selector alone is not what brings a port up;
+the second gate, `EPL_CFG_A.Active`, still has to be set, and its bit position
+is **not known** because `EPL_CFG_A` has never been read on a forwarding chip
+here. That is the next measurement, and it needs EOS.
+
+⚠ The selector also did **not clear** when `0x00080000` was written back over
+it. Either the field is write-1-to-set or clearing it needs the port down
+first. Not established. A reset pulse does clear it.
+
+
+
 ### The two gates that decide whether a port comes up
 
 From the prior investigation's two-day hunt for one dark port, and worth having
