@@ -49,17 +49,20 @@ static const char usage[] =
 "  show vlans              the VLANs, their members and their SVIs\n"
 "  show lags               the LAGs and which members are carrying traffic\n"
 "  show stp                the spanning tree: root, and each port's role and state\n"
+"  show mlag               the MLAG pair: role, peer, and each MLAG interface\n"
 "\n"
 "  vlan add|del <vid>      create or remove a VLAN\n"
 "  switchport <port> access <vid> | trunk <vid,...> [native <vid>] | none\n"
 "                          a port's whole VLAN membership; none routes again\n"
 "  svi add|del <vid>       the routed interface vlan<vid>\n"
-"  lag <poN> lacp|static <port,...> | none\n"
+"  lag <poN> lacp|static <port,...> [mlag <id>] | none\n"
 "                          a LAG's whole membership; none removes it\n"
 "  stp on [priority <n>] | off\n"
 "                          rapid spanning tree over the switched ports\n"
 "  stp port <port> [edge] [cost <n>]\n"
 "                          one port's or LAG's settings\n"
+"  mlag on peer-link <port> [peer-address <ip>] [priority <n>] | off\n"
+"                          one of an MLAG pair\n"
 "\n"
 "  acl add <seq> <rule>    add or replace an access-list rule; it is persisted\n"
 "                          as the setting acl_<seq> and applied at once\n"
@@ -414,7 +417,9 @@ int main(int argc, char **argv)
 			return nosaic_show_lags();
 		if (argc > 2 && strcmp(argv[2], "stp") == 0)
 			return nosaic_show_stp();
-		fprintf(stderr, "usage: nosaic show <ports|routes|vlans|lags|stp|acl|caps>\n");
+		if (argc > 2 && strcmp(argv[2], "mlag") == 0)
+			return nosaic_show_mlag();
+		fprintf(stderr, "usage: nosaic show <ports|routes|vlans|lags|stp|mlag|acl|caps>\n");
 		return 2;
 	}
 	if (strcmp(argv[1], "acl") == 0)
@@ -429,6 +434,8 @@ int main(int argc, char **argv)
 		return nosaic_lag_cmd(argc, argv);
 	if (strcmp(argv[1], "stp") == 0)
 		return nosaic_stp_cmd(argc, argv);
+	if (strcmp(argv[1], "mlag") == 0)
+		return nosaic_mlag_cmd(argc, argv);
 	if (strcmp(argv[1], "upgrade") == 0)
 		return nosaic_upgrade(argc, argv);
 	if (strcmp(argv[1], "platform") != 0) {

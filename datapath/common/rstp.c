@@ -60,6 +60,7 @@
 #include <bcm/vlan.h>
 
 #include "lag.h"
+#include "mlag.h"
 #include "rstp.h"
 #include "tapbridge.h"
 
@@ -742,7 +743,20 @@ static void run(long long now)
 		return;
 	for (k = 0; k < NKEY; k++) {
 		struct sport *sp = &ports[k];
-		int up = sp->used && key_link(k);
+		int up;
+
+		/* The peer-link and MLAG interfaces are not in the tree: they
+		 * forward, and their BPDUs are dropped (mlag.c). */
+		if (sp->used && nosaic_mlag_stp_excluded(k)) {
+			if (sp->enabled) {
+				sp->enabled = 0;
+				sp->info = INFO_DISABLED;
+				reselect = 1;
+			}
+			set_state(k, S_FORWARDING);
+			continue;
+		}
+		up = sp->used && key_link(k);
 
 		if (up != sp->enabled) {
 			sp->enabled = up;

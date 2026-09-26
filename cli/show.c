@@ -134,6 +134,7 @@ int nosaic_show_caps(void)
 		put(&t, r, 0, "lags"); put(&t, r++, 1, "no");
 	}
 	put(&t, r, 0, "stp"); put(&t, r++, 1, nosaic_jbool(resp, "STP", 0) ? "yes, rstp" : "no");
+	put(&t, r, 0, "mlag"); put(&t, r++, 1, nosaic_jbool(resp, "MLAG", 0) ? "yes" : "no");
 	emit(&t);
 	free(resp);
 	return 0;
