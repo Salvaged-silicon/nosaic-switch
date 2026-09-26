@@ -1,0 +1,30 @@
+Size the L2 traverse buffer to the table, not to the widest memory of any chip.
+
+_bcm_esw_l2_traverse_mem reads the L2 table a chunk at a time into a DMA
+buffer, and clears the whole buffer before every chunk. It sized that buffer
+as SOC_MAX_MEM_FIELD_WORDS words an entry: with every chip compiled in, 4250
+bits, or 532 bytes, for an entry of a few words. Each walk therefore cleared
+over five hundred bytes for every entry in the table.
+
+In NOSaic the DMA pool is /dev/mem mapped with O_SYNC, uncached, so that
+clearing ran at uncached-memory speed. One walk of a 7050SX2's table took over
+a second of CPU, 80 per cent of it in memset. MLAG's MAC sync walks it
+for every hello, and the pair's hellos arrived late enough to be given up on.
+
+The buffer is indexed by soc_mem_table_idx_to_pointer, whose stride is
+soc_mem_entry_words for this memory, so that is all it needs.
+
+Note for anyone editing this file: no line of this preamble may begin with a
+plus or minus, or patch reads it as diff content and rejects the whole file.
+
+--- a/sdk-6.5.24/src/bcm/esw/l2.c
++++ b/sdk-6.5.24/src/bcm/esw/l2.c
+@@ -4712,7 +4712,7 @@
+     chunksize = soc_property_get(unit, spn_L2DELETE_CHUNKS,
+                                  L2_MEM_CHUNKS_DEFAULT);
+ 
+-    buf_size = 4 * SOC_MAX_MEM_FIELD_WORDS * chunksize;
++    buf_size = 4 * soc_mem_entry_words(unit, mem) * chunksize;
+     l2_tbl_chnk = soc_cm_salloc(unit, buf_size, "l2 traverse");
+     if (NULL == l2_tbl_chnk) {
+         return BCM_E_MEMORY;

@@ -746,8 +746,16 @@ static void run(long long now)
 		struct sport *sp = &ports[k];
 		int up;
 
-		/* The peer-link and MLAG interfaces are not in the tree: they
-		 * forward, and their BPDUs are dropped (mlag.c). */
+		/*
+		 * The peer-link and MLAG interfaces are not in the tree: they
+		 * forward, and their BPDUs are dropped (mlag.c).
+		 *
+		 * ⚠ And no later pass may undo that. The one below that holds an
+		 * interface with no link discarding also caught these -- they are
+		 * never "enabled" -- and every run set them back: with spanning
+		 * tree on, an MLAG pair's peer-link and MLAG ports were blocked.
+		 * Found by the first test with both on at once, from network.conf.
+		 */
 		if (sp->used && nosaic_mlag_stp_excluded(k)) {
 			if (sp->enabled) {
 				sp->enabled = 0;
@@ -797,8 +805,8 @@ static void run(long long now)
 	for (k = 0; k < NKEY; k++)
 		if (ports[k].enabled && ports[k].role != R_ROOT && ports[k].role != R_DESIGNATED)
 			transition(k, now);
-		else if (!ports[k].enabled && ports[k].used)
-			set_state(k, S_DISCARDING);
+		else if (!ports[k].enabled && ports[k].used && !nosaic_mlag_stp_excluded(k))
+			set_state(k, S_DISCARDING);     /* an excluded one forwards (above) */
 	for (k = 0; k < NKEY; k++)
 		if (ports[k].enabled && (ports[k].role == R_ROOT || ports[k].role == R_DESIGNATED))
 			transition(k, now);
