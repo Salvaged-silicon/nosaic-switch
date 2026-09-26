@@ -50,6 +50,7 @@ build:
 
 install:
   - {src: nosaic/dropbear.conf, dst: /etc/dropbear/README, mode: "0644"}
+  - {src: nosaic/ssh-hostkey-save, dst: /usr/libexec/nosaic/ssh-hostkey-save, mode: "0755"}
 
 services:
   # -F   foreground: a supervisor reads a fork as the service having exited
@@ -65,3 +66,22 @@ services:
     exec: /usr/sbin/dropbear -F -E -R -p 22
     after: [network]
     restart: always
+
+  # ...and on a RAM boot, keep the key it just generated.
+  #
+  # A RAM-booted switch has a tmpfs overlay, so -R produces a new host key on
+  # every boot and every operator is shown the warning a man in the middle
+  # would produce. This stores the first one on the flash partition; the
+  # initramfs puts it back on every boot after that.
+  #
+  # It runs after dropbear rather than before because the key does not exist
+  # until dropbear makes it, and it restores nothing -- restoring has to
+  # happen before dropbear starts, which is early enough that only the
+  # initramfs can do it.
+  #
+  # Every failure inside it exits 0. The worst outcome is a key that changes
+  # again next boot, and that must not be allowed to fail a boot.
+  - name: ssh-hostkey-save
+    exec: /usr/libexec/nosaic/ssh-hostkey-save
+    after: [dropbear]
+    restart: never

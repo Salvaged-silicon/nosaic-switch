@@ -114,3 +114,47 @@ func TestTrialConfirmationDetachesFromTheBoot(t *testing.T) {
 		t.Error("the trial confirmation script no longer runs the confirm command")
 	}
 }
+
+// A RAM-booted switch must put its stored SSH host key back before dropbear
+// starts, and must record where it found the flash.
+//
+// dropbear's -R generates a host key the moment it starts, so restoring one
+// afterwards is a race that is sometimes lost and always silent. The only
+// place early enough is the init script, which is why this is asserted here
+// rather than left to the service that stores it.
+func TestRAMBootRestoresTheHostKey(t *testing.T) {
+	ram := initScript
+	if i := strings.Index(ram, "booting from RAM"); i >= 0 {
+		ram = ram[i:]
+	} else {
+		t.Fatal("the init script no longer has a RAM boot path to check")
+	}
+
+	for _, want := range []string{
+		// Put the key back where dropbear will look for it...
+		"/mnt/data/slot-ram/upper/etc/dropbear",
+		"dropbear_*_host_key",
+		// ...with permissions dropbear will accept.
+		"chmod 600",
+		// And leave a note saying which partition it came off, so the
+		// service that stores a newly generated key does not have to
+		// rediscover it -- or guess at one to mount read-write.
+		"/etc/nosaic/flash-device",
+	} {
+		if !strings.Contains(ram, want) {
+			t.Errorf("the RAM boot path no longer mentions %q, so a RAM-booted\n"+
+				"switch gets a new SSH host key on every reboot and shows its\n"+
+				"operators the warning a man in the middle would produce", want)
+		}
+	}
+}
+
+// The flash is searched for a nosaic directory, not specifically a config
+// one: a switch may have a stored host key and no site configuration, and
+// stopping at the narrower test would skip it.
+func TestRAMBootLooksForTheWholeNosaicDirectory(t *testing.T) {
+	if strings.Contains(initScript, `[ -d /mnt/flash/nosaic/config ]; then`) {
+		t.Error("the flash search stops unless nosaic/config exists, so a switch\n" +
+			"with a stored host key and no site configuration never finds it")
+	}
+}

@@ -94,9 +94,35 @@ if [ -f /nosaic-rootfs.sqsh ]; then
         [ -b "$_d" ] || continue
         mkdir -p /mnt/flash
         mount -t vfat -o ro "$_d" /mnt/flash 2>/dev/null || continue
-        if [ -d /mnt/flash/nosaic/config ]; then
-            cp -a /mnt/flash/nosaic/config/. /mnt/data/config/ 2>/dev/null \
+        if [ -d /mnt/flash/nosaic ]; then
+            [ -d /mnt/flash/nosaic/config ] \
+                && cp -a /mnt/flash/nosaic/config/. /mnt/data/config/ 2>/dev/null \
                 && echo "NOSAIC-INITRAMFS site configuration from $_d"
+            # The switch's SSH host key, if it has been given one.
+            #
+            # A RAM boot has no persistent overlay, so dropbear's -R generates
+            # a new host key on every boot and every operator sees the warning
+            # that a man in the middle would produce. Teaching people to click
+            # through that warning on a switch is the actual cost, and it is
+            # not paid once -- it is paid on every reboot of every RAM-booted
+            # box in the fleet.
+            #
+            # Restored here rather than by a service because dropbear must
+            # find the key already in place: -R generates one the moment it
+            # starts, and a service racing that is a service that sometimes
+            # loses.
+            if [ -d /mnt/flash/nosaic/ssh ]; then
+                mkdir -p /mnt/data/slot-ram/upper/etc/dropbear
+                cp /mnt/flash/nosaic/ssh/dropbear_*_host_key \
+                    /mnt/data/slot-ram/upper/etc/dropbear/ 2>/dev/null \
+                    && chmod 600 /mnt/data/slot-ram/upper/etc/dropbear/dropbear_*_host_key 2>/dev/null \
+                    && echo "NOSAIC-INITRAMFS host key from $_d"
+            fi
+            # Record which partition that was, so the booted system can write
+            # a generated key back to the same place without discovering it
+            # all over again -- and, more to the point, without guessing at a
+            # partition to mount read-write.
+            echo "$_d" > /mnt/data/slot-ram/upper/etc/nosaic/flash-device
             umount /mnt/flash 2>/dev/null || true
             break
         fi

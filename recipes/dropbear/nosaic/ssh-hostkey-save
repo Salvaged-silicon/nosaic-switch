@@ -1,0 +1,70 @@
+#!/bin/sh
+# Keep this switch's SSH host key across reboots of a RAM-booted image.
+#
+# dropbear's -R generates a host key when it starts and writes it into the
+# overlay. On a flash-installed image that overlay is persistent and the key
+# is the switch's for good. On a RAM boot -- which is every Aboot switch,
+# because the image is fetched into memory -- the overlay is a tmpfs, so the
+# key is new on every boot and every operator is shown the warning a man in
+# the middle would produce. A warning that always fires is a warning nobody
+# reads, which is the real damage.
+#
+# So: the first boot that generates a key writes it to the flash partition,
+# and the initramfs puts it back on every boot after that. Restoring is done
+# there rather than here because dropbear generates its key the moment it
+# starts, and a service racing that would sometimes lose.
+#
+# ⚠ EVERY FAILURE PATH EXITS 0. If this cannot find the flash, cannot mount
+# it, or cannot write, the switch still has a working host key -- the one
+# dropbear just generated -- and the only loss is that it changes again next
+# boot. Failing the boot over it would turn a cosmetic problem into an
+# unreachable switch.
+set -u
+
+say() { echo "ssh-hostkey: $*"; }
+give_up() { say "$*; the key dropbear generated will not survive a reboot"; exit 0; }
+
+# A persistent overlay keeps the key by itself; there is nothing to do and
+# nothing to mount.
+[ -f /etc/nosaic/ramboot ] || exit 0
+
+DEV=$(cat /etc/nosaic/flash-device 2>/dev/null) \
+    || give_up "no flash partition was recorded at boot"
+[ -n "$DEV" ] && [ -b "$DEV" ] \
+    || give_up "the recorded flash partition ${DEV:-(none)} is not there"
+
+# dropbear writes the key as it starts, and this runs straight afterwards, so
+# give it a moment rather than assuming either order.
+i=0
+while [ $i -lt 20 ]; do
+    set -- /etc/dropbear/dropbear_*_host_key
+    [ -f "$1" ] && break
+    sleep 1
+    i=$((i + 1))
+done
+set -- /etc/dropbear/dropbear_*_host_key
+[ -f "$1" ] || give_up "dropbear has not written a host key"
+
+MNT=/run/nosaic-hostkey
+mkdir -p "$MNT" 2>/dev/null
+mount -t vfat "$DEV" "$MNT" 2>/dev/null \
+    || give_up "cannot mount $DEV to store the host key"
+
+# Already stored: this is every boot after the first, and the key in place is
+# the stored one the initramfs restored. Nothing to write.
+if [ -d "$MNT/nosaic/ssh" ] && [ -n "$(ls "$MNT/nosaic/ssh" 2>/dev/null)" ]; then
+    umount "$MNT" 2>/dev/null
+    exit 0
+fi
+
+if mkdir -p "$MNT/nosaic/ssh" 2>/dev/null && cp /etc/dropbear/dropbear_*_host_key "$MNT/nosaic/ssh/" 2>/dev/null; then
+    # vfat has no permission bits; the copy on flash is as protected as the
+    # partition is, which is the same footing as the image beside it.
+    sync
+    say "host key stored on $DEV; this switch will keep it across reboots"
+else
+    umount "$MNT" 2>/dev/null
+    give_up "cannot write the host key to $DEV"
+fi
+umount "$MNT" 2>/dev/null || true
+exit 0
