@@ -288,6 +288,57 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 	return rv;
 }
 
+/*
+ * How many times to toggle the mailbox before giving up.
+ *
+ * The prior investigation reports the value settling within a few dozen
+ * toggles when it settles at all. A hundred is generous and still finishes in
+ * well under a second over the local bus -- which is the point of doing this
+ * in C rather than from a shell, where each toggle was several process spawns
+ * and a hundred of them did not finish in five minutes. [OURS]
+ */
+#define DFE_TOGGLES 100
+
+int fm_lane_dfe(struct fm6000 *d, const struct fm_port *p, uint32_t *out)
+{
+	uint8_t dev = (uint8_t)p->dev;
+	uint32_t v = 0;
+	unsigned i;
+	int rv;
+
+	if (out != NULL)
+		*out = 0;
+
+	/* Clear the low five bits of 0x17 first, as the vendor's routine does
+	 * before posting anything. */
+	if ((rv = fm_sbus_read(d, dev, 0x17, &v)) != FM_OK)
+		return rv;
+	if ((rv = fm_sbus_write(d, dev, 0x17, v & ~0x1fu)) != FM_OK)
+		return rv;
+
+	if ((rv = fm_sbus_write(d, dev, 0x2a, 0x0e)) != FM_OK)
+		return rv;
+	if ((rv = fm_sbus_write(d, dev, 0x2b, 0x02)) != FM_OK)
+		return rv;
+
+	for (i = 0; i < DFE_TOGGLES; i++) {
+		if ((rv = fm_sbus_write(d, dev, 0x2a, 0x16)) != FM_OK)
+			return rv;
+		if ((rv = fm_sbus_write(d, dev, 0x2a, 0x0e)) != FM_OK)
+			return rv;
+		if ((rv = fm_sbus_read(d, dev, 0x2b, &v)) != FM_OK)
+			return rv;
+		if (out != NULL)
+			*out = v;
+		/* 0x03 is what a working fibre lane holds; 0x04 is the value
+		 * the vendor's own poll waits for. Either is settled. */
+		if (v == 0x03 || v == 0x04)
+			return FM_OK;
+		nap_ms(1);
+	}
+	return FM_ETIMEOUT;
+}
+
 void fm_lane_report_print(const struct fm_lane_report *rep)
 {
 	int i;

@@ -1062,14 +1062,45 @@ is itself a clue: a threshold sweep that moves nothing at either end of its
 range suggests the receiver's analogue front end is not running, rather than
 that it is running and seeing too little.
 
-### What is left
+### Steps 17-18, the DFE: the mailbox answers, and it is the wrong suspect
 
-Steps 17-18, the DFE, are the only documented part of the sequence not
-attempted. `SPICO-RE.md` records that the tune state machine **responds to
-host driving with no firmware loaded**, and that `0x2b` can be brought to
-`0x03` -- the value a working fibre lane holds. That is the next thing to
-try, and it belongs in C: driving it from a shell over the network is
-hundreds of process spawns per iteration and does not finish.
+Implemented in C (`fm_lane_dfe`) and run. The mailbox **is alive and does
+respond to host driving with no SPICO firmware**, which confirms what
+`SPICO-RE.md` reports: `0x2b` moves under toggling rather than sitting dead.
+But it settles at `0x07` rather than the `0x03` a working fibre lane holds,
+and RxLinkUp stays clear. **live**
+
+⚠ **And it could not have been the cause.** DFE is decision-feedback
+equalisation: it refines a signal the receiver is already recovering. It does
+not create one. Chasing it was worth doing to close the last documented step,
+but "no signal detect" was never a thing an equaliser was going to fix, and
+noticing that earlier would have saved the detour.
+
+### So the RX front end is the suspect, and there is a named candidate
+
+The older version of the vendor sequence sets several things through **SPICO
+interrupts** -- writes to the SerDes' own register `0x03` with the answer
+polled from `0x04`. Among them, and conspicuous here:
+
+```
+   spico_int(dev, 0x2b, 1)     "rx termination"
+```
+
+Input termination is exactly the kind of analogue front-end setting whose
+absence gives a receiver that reports nothing at any threshold, which is what
+this board does. It is also exactly the kind of step that silently does
+nothing when no SPICO firmware is answering.
+
+The SBus scan does find device `0xFD` -- the datasheet's reserved SPICO id --
+answering with three non-zero registers, so the controller is present. Whether
+it is *running code* is a different question and has not been established.
+
+⚠ This is the first thing on this board that points at the SPICO firmware
+mattering for more than DFE tuning. It does not overturn the fibre-only
+claim -- the prior investigation got a 10GBASE-SR link with no Intel firmware
+and that stands -- but it means the route by which they did it is not yet
+reproduced here, and the next step is to find out what sets RX termination
+when SPICO is not answering.
 
 ## Confirmed on the bench, 2026-09-22
 

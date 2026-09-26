@@ -43,6 +43,7 @@ static void usage(void)
 "  --read WORD           read one word\n"
 "  --port-up N           run the SerDes lane enable for front-panel port N\n"
 "                        (1-8 only; the rest have no established placement)\n"
+"  --dfe N               run the RX equaliser adaptation for port N\n"
 "  --sbus                bring the SerDes bus up and read one lane per EPL\n"
 "  --fill WORD COUNT     write zeros into COUNT words from WORD. The bulk\n"
 "                        writer on its own, for finding where a bank really\n"
@@ -440,6 +441,24 @@ int main(int argc, char **argv)
 			rv = fm_lane_enable(&dev, p, &lrep);
 			fm_lane_report_print(&lrep);
 			rc = (lrep.port_status & (1u << 11)) ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--dfe") == 0 && i + 1 < argc) {
+		const struct fm_port *p = fm_port_lookup(atoi(argv[i + 1]));
+		uint32_t v = 0, before = 0, after = 0;
+
+		if (p == NULL) {
+			printf("port %s: no established SerDes placement\n", argv[i + 1]);
+			rc = 3;
+		} else {
+			(void)fm_lane_status(&dev, p, &before);
+			(void)fm_sbus_start(&dev);
+			rv = fm_lane_dfe(&dev, p, &v);
+			(void)fm_lane_status(&dev, p, &after);
+			printf("port %d dfe: %s, 0x2b = 0x%02x\n",
+			       p->port, rv == FM_OK ? "settled" : rvstr(rv), v);
+			printf("PORT_STATUS 0x%08x -> 0x%08x  RxLinkUp(6)=%d\n",
+			       before, after, (after >> 6) & 1);
+			rc = (after & (1u << 6)) ? 0 : 2;
 		}
 	} else if (strcmp(argv[i], "--sbus") == 0) {
 		rc = cmd_sbus(&dev);

@@ -572,7 +572,18 @@ has a reason, in code, parameterised by the board.
       config words, `EPL_CFG_A` at its forwarding value, the datapath enable.
       `reg 20` reads `0x14` unchanged throughout, which points at the RX front
       end not running rather than at a threshold being wrong.
-      Next: steps 17-18, the DFE, host-driven -- and in C, not shell.
+- [x] **the DFE is implemented and is not the cause.** `fm_lane_dfe` drives
+      the mailbox from the host with no SPICO firmware and it responds --
+      `0x2b` moves -- but settles at `0x07`, not `0x03`. And equalisation
+      refines a recovered signal rather than creating one, so it was never
+      going to fix "no signal detect".
+- [ ] ⚠ **RX termination, and whether SPICO has to be running.** The older
+      vendor sequence sets it through a SPICO interrupt --
+      `spico_int(dev, 0x2b, 1)`, "rx termination" -- and a missing input
+      termination gives exactly this: a receiver reporting nothing at any
+      threshold. SBus device `0xFD` answers, so the controller is present;
+      whether it is running code is not established. This is the first thing
+      here pointing at SPICO mattering beyond DFE.
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable

@@ -95,6 +95,26 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 
 void fm_lane_report_print(const struct fm_lane_report *rep);
 
+/*
+ * Run the RX equaliser adaptation for a lane, driven by the host.
+ *
+ * ⚠ THIS IS A MAILBOX, NOT A TUNING ENGINE. Registers 0x2a and 0x2b are both
+ * named `sbus_dfe_scratch_pad_cntl` in the vendor's own field map: the host
+ * posts a command in one and reads status from the other. Normally the SPICO
+ * micro-controller is what answers. With no SPICO loaded the prior
+ * investigation found the state machine still responds to host driving, and
+ * that 0x2b can be brought to 0x03 -- the value a working fibre lane holds.
+ *
+ * So this is not "re-triggering tuning": it is standing in for the firmware
+ * that would normally reply. It is the only documented part of the lane
+ * sequence not otherwise implemented, and it is the remaining candidate for
+ * why the receiver sees nothing.
+ *
+ * Returns FM_OK if 0x2b reached a settled value, FM_ETIMEOUT if it did not.
+ * `out` takes the final 0x2b if non-NULL.
+ */
+int fm_lane_dfe(struct fm6000 *d, const struct fm_port *p, uint32_t *out);
+
 /* PORT_STATUS for a lane: the first word of its EPL slot. 0x8c0 is up. */
 int fm_lane_status(struct fm6000 *d, const struct fm_port *p, uint32_t *out);
 
