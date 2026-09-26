@@ -74,13 +74,13 @@
 
 #define RX_PRIORITY    108            /* ahead of tapbridge; LACP 110, STP 105 */
 #define TICK_MS        200
-#define HELLO_MS       1000
-#define DEAD_MS        3500           /* three hellos missed, and a half */
-#define HB_PORT        47101
+/* mlag on ... hello, dead, heartbeat-port: a hello a second, the peer given
+ * up after three missed and a half. */
+static int hello_ms = 1000, dead_ms = 3500, hb_port = 47101;
 #define ETYPE          0x88b5         /* IEEE local experimental */
 #define MAX_SYNC       4096
 #define PER_FRAME      120
-#define SETTLE_MS      2500           /* see evaluate(): how long a half must stay put */
+static int settle_ms = 2500;          /* see evaluate(): how long a half must stay put */
 #define MAX_PORT       256
 
 static const unsigned char ctl_da[6] = { 0x01, 0x80, 0xc2, 0x00, 0x00, 0x0e };
@@ -419,7 +419,7 @@ static void hb_open(void)
 	fcntl(hb_fd, F_SETFL, O_NONBLOCK);
 	memset(&a, 0, sizeof(a));
 	a.sin_family = AF_INET;
-	a.sin_port = htons(HB_PORT);
+	a.sin_port = htons(hb_port);
 	if (bind(hb_fd, (struct sockaddr *)&a, sizeof(a)) != 0) {
 		fprintf(stderr, "mlag: heartbeat bind: %s\n", strerror(errno));
 		close(hb_fd);
@@ -440,7 +440,7 @@ static void hb_tick(long long now)
 		return;
 	memset(&a, 0, sizeof(a));
 	a.sin_family = AF_INET;
-	a.sin_port = htons(HB_PORT);
+	a.sin_port = htons(hb_port);
 	if (inet_pton(AF_INET, peer_addr, &a.sin_addr) == 1) {
 		memcpy(b, "NMHB", 4);
 		memcpy(b + 4, my_mac, 6);
@@ -591,8 +591,8 @@ static void evaluate(long long now)
 	int plk = peer_link_key(&plp), k, was_alive = peer_alive, old_role = role;
 
 	link_up = key_link(plk);
-	peer_alive = peer.heard && now - peer.last_link < DEAD_MS && link_up;
-	hb_alive = peer_addr[0] && now - peer.last_hb < DEAD_MS;
+	peer_alive = peer.heard && now - peer.last_link < dead_ms && link_up;
+	hb_alive = peer_addr[0] && now - peer.last_hb < dead_ms;
 
 	/* Spanning tree leaves the peer-link and the MLAG interfaces alone. */
 	for (k = 0; k < NOSAIC_MAX_TAPS + NOSAIC_MAX_LAGS + 1; k++)
@@ -650,7 +650,7 @@ static void evaluate(long long now)
 		 *     believing the other's was down.
 		 *
 		 * So the block comes off only when the peer has reported its half
-		 * down for SETTLE_MS AND this side's half has been up for as long:
+		 * down for settle_ms AND this side's half has been up for as long:
 		 * the single-homed case, which is the only one that needs it off.
 		 * Known unicast crosses the peer-link either way; only floods wait.
 		 */
@@ -672,8 +672,8 @@ static void evaluate(long long now)
 				if (!up && nosaic_lag_tid(k) >= 0)
 					bcm_l2_addr_delete_by_trunk(mlag_unit, nosaic_lag_tid(k), 0);
 			}
-			single = peer_down_since[id] && now - peer_down_since[id] >= SETTLE_MS &&
-				 local_up[id] && now - local_up_since[id] >= SETTLE_MS;
+			single = peer_down_since[id] && now - peer_down_since[id] >= settle_ms &&
+				 local_up[id] && now - local_up_since[id] >= settle_ms;
 			block_why = !peer_alive ? " (no peer)" : shut ? " (shut)" :
 				    single ? " (the peer's half is down: this side delivers for both)" :
 				    " (the peer's half is up, or has not settled)";
@@ -706,7 +706,7 @@ static void *mlag_thread(void *arg)
 				hb_tick(now);
 				if (plk >= 0)
 					send_frames(plk);
-				next_hello = now + HELLO_MS;
+				next_hello = now + hello_ms;
 			}
 			evaluate(now);
 		}
@@ -724,7 +724,7 @@ int nosaic_mlag_supported(void)
 }
 
 int nosaic_mlag_set(int on, const char *plink, const char *paddr, int prio,
-		    char *err, size_t n)
+		    int hello, int dead, int settle, int port, char *err, size_t n)
 {
 	bcm_pbmp_t pbm;
 	int k;
@@ -804,6 +804,29 @@ int nosaic_mlag_set(int on, const char *plink, const char *paddr, int prio,
 		pthread_mutex_unlock(&mlag_lock);
 		return -1;
 	}
+	/* As switchapi.ValidMLAGTimes: 0 is the default. */
+	hello = hello ? hello : 1000;
+	dead = dead ? dead : 3500;
+	settle = settle ? settle : 2500;
+	port = port ? port : 47101;
+	if (hello < 100 || hello > 10000 || dead < 2 * hello || dead > 60000 ||
+	    settle < 0 || settle > 60000 || port < 1 || port > 65535) {
+		if (err != NULL)
+			snprintf(err, n, "mlag hello %d ms, dead %d ms, settle %d ms, heartbeat-port %d: "
+				 "hello 100-10000, dead at least twice the hello and at most 60000, "
+				 "settle 0-60000, port 1-65535", hello, dead, settle, port);
+		peer_link[0] = '\0';
+		pthread_mutex_unlock(&mlag_lock);
+		return -1;
+	}
+	hello_ms = hello;
+	dead_ms = dead;
+	settle_ms = settle;
+	if (port != hb_port && hb_fd >= 0) {
+		close(hb_fd);                    /* reopened on the new port */
+		hb_fd = -1;
+	}
+	hb_port = port;
 	snprintf(peer_addr, sizeof(peer_addr), "%s", paddr ? paddr : "");
 	priority = prio;
 	if (!enabled) {
@@ -870,7 +893,10 @@ void nosaic_mlag_query(FILE *out)
 	int k, first = 1;
 
 	pthread_mutex_lock(&mlag_lock);
-	fprintf(out, "{\"ok\":true,\"result\":{\"Enabled\":%s,\"Role\":\"%s\",\"PeerLink\":\"%s\","
+	fprintf(out, "{\"ok\":true,\"result\":{\"HelloMs\":%d,\"DeadMs\":%d,\"SettleMs\":%d,"
+		"\"HeartbeatPort\":%d,\"Priority\":%d,\"PeerAddress\":\"%s\",",
+		hello_ms, dead_ms, settle_ms, hb_port, priority, peer_addr);
+	fprintf(out, "\"Enabled\":%s,\"Role\":\"%s\",\"PeerLink\":\"%s\","
 		"\"PeerLinkUp\":%s,\"PeerAlive\":%s,\"Heartbeat\":%s,\"Peer\":\"",
 		enabled ? "true" : "false", role_name[enabled ? role : ROLE_NONE], peer_link,
 		link_up ? "true" : "false", peer_alive ? "true" : "false",

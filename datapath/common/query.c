@@ -387,10 +387,13 @@ static int handle_lag(FILE *out, const char *req)
 		return 1;
 	} else if (strcmp(op, "stp.set") == 0) {
 		rv = nosaic_rstp_set(strstr(req, "\"enabled\":true") != NULL,
-				     req_int(req, "priority", 32768), err, sizeof(err));
+				     req_int(req, "priority", 32768), req_int(req, "hello_time", 0),
+				     req_int(req, "forward_delay", 0), req_int(req, "max_age", 0),
+				     err, sizeof(err));
 	} else if (strcmp(op, "stp.port") == 0) {
 		rv = nosaic_rstp_port(name, strstr(req, "\"edge\":true") != NULL,
-				      req_int(req, "cost", 0), err, sizeof(err));
+				      req_int(req, "cost", 0), req_int(req, "port_priority", 0),
+				      err, sizeof(err));
 	} else if (strcmp(op, "mlag") == 0) {
 		nosaic_mlag_query(out);
 		return 1;
@@ -400,7 +403,17 @@ static int handle_lag(FILE *out, const char *req)
 		req_str(req, "peer_link", plink, sizeof(plink));
 		req_str(req, "peer_address", paddr, sizeof(paddr));
 		rv = nosaic_mlag_set(strstr(req, "\"enabled\":true") != NULL, plink, paddr,
-				     req_int(req, "priority", 32768), err, sizeof(err));
+				     req_int(req, "priority", 32768), req_int(req, "hello_ms", 0),
+				     req_int(req, "dead_ms", 0), req_int(req, "settle_ms", 0),
+				     req_int(req, "heartbeat_port", 0), err, sizeof(err));
+	} else if (strcmp(op, "lag.options") == 0) {
+		char rate[16];
+
+		req_str(req, "rate", rate, sizeof(rate));
+		rv = nosaic_lag_options(name, rate, strstr(req, "\"passive\":true") != NULL,
+					req_int(req, "port_priority", 0), err, sizeof(err));
+	} else if (strcmp(op, "lacp.priority") == 0) {
+		rv = nosaic_lag_sys_prio(req_int(req, "priority", 0), err, sizeof(err));
 	} else if (strcmp(op, "lag.mlag") == 0) {
 		rv = nosaic_mlag_set_lag(name, req_int(req, "mlag", 0), err, sizeof(err));
 	} else if (strcmp(op, "gateways") == 0) {
@@ -715,7 +728,7 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.6\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.7\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"

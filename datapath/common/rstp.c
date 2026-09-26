@@ -70,9 +70,8 @@
 #define TICK_MS       100
 
 /* Bridge times, 802.1D-2004 defaults, in milliseconds. */
-#define HELLO_MS      2000
-#define MAX_AGE_MS    20000
-#define FWD_DELAY_MS  15000
+/* Bridge times, milliseconds: stp on ... hello, forward-delay, max-age. */
+static int hello_ms = 2000, max_age_ms = 20000, fwd_delay_ms = 15000;
 #define MIGRATE_MS    3000
 #define TX_HOLD       6             /* BPDUs per port per second */
 
@@ -110,7 +109,7 @@ struct sport {
 	int           used;          /* switched */
 	int           enabled;       /* used, and link */
 	/* configuration */
-	int           admin_edge, cfg_cost;
+	int           admin_edge, cfg_cost, cfg_prio;
 	/* operation */
 	int           oper_edge;
 	int           cost;
@@ -276,7 +275,9 @@ static int key_cost(int k)
  * tap index + 1 for a port, 0x100 + N for po<N>. */
 static unsigned key_id(int k)
 {
-	return 0x8000u | (unsigned)(is_lag(k) ? 0x100 + lag_of(k) : k + 1);
+	unsigned prio = ports[k].cfg_prio ? (unsigned)ports[k].cfg_prio : 128u;
+
+	return ((prio >> 4) << 12) | (unsigned)(is_lag(k) ? 0x100 + lag_of(k) : k + 1);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -397,7 +398,7 @@ static void send_bpdu(int k, long long now)
 	put16(f + 42, sp->id);
 	put16(f + 44, t_to(root_times.msg_age));
 	put16(f + 46, t_to(root_times.max_age));
-	put16(f + 48, t_to(HELLO_MS));
+	put16(f + 48, t_to(hello_ms));
 	put16(f + 50, t_to(root_times.fwd));
 	/* f[52] version 1 length 0, RST only */
 	put16(f + 12, (unsigned)(3 + len));              /* 802.3 length */
@@ -483,9 +484,9 @@ static void select_roles(void)
 	root_key = best_key;
 	if (best_key < 0) {
 		root_times.msg_age = 0;
-		root_times.max_age = MAX_AGE_MS;
-		root_times.hello = HELLO_MS;
-		root_times.fwd = FWD_DELAY_MS;
+		root_times.max_age = max_age_ms;
+		root_times.hello = hello_ms;
+		root_times.fwd = fwd_delay_ms;
 	} else {
 		root_times = ports[best_key].pt;
 		root_times.msg_age += 1000;
@@ -562,7 +563,7 @@ static void topology_change(int from, int rcvd, long long now)
 		if (rcvd && k == from)
 			continue;
 		if ((sp->role == R_ROOT || sp->role == R_DESIGNATED) && now >= sp->tc_until) {
-			sp->tc_until = now + HELLO_MS + 1000;
+			sp->tc_until = now + hello_ms + 1000;
 			sp->newinfo = 1;
 			started = 1;
 		}
@@ -614,7 +615,7 @@ static void receive(int k, long long now)
 		 * it as a backup, which discards. */
 		memcpy(sp->pv, sp->msg, PV_LEN);
 		sp->info = INFO_RECEIVED;
-		sp->rcvd_until = now + 3 * HELLO_MS;
+		sp->rcvd_until = now + 3 * hello_ms;
 		reselect = 1;
 		return;
 	}
@@ -647,7 +648,7 @@ static void receive(int k, long long now)
 			sp->newinfo = 1;                 /* tell it what it is missing */
 			goto flags;
 		}
-		sp->rcvd_until = now + 3 * (sp->mt.hello > 0 ? sp->mt.hello : HELLO_MS);
+		sp->rcvd_until = now + 3 * (sp->mt.hello > 0 ? sp->mt.hello : hello_ms);
 		sp->proposed = (sp->mflags & F_PROPOSAL) != 0;
 	} else if (sp->role == R_DESIGNATED && (sp->mflags & F_AGREEMENT) &&
 		   memcmp(sp->msg + PV_ROOT, root_pv + PV_ROOT, 8) == 0) {
@@ -808,7 +809,7 @@ static void run(long long now)
 			continue;
 		if (sp->role == R_DESIGNATED && (sp->newinfo || now >= sp->hello_next)) {
 			send_bpdu(k, now);
-			sp->hello_next = now + HELLO_MS;
+			sp->hello_next = now + hello_ms;
 		} else if (sp->role == R_ROOT && sp->newinfo && sp->send_rstp) {
 			send_bpdu(k, now);
 		} else if (sp->role == R_ROOT && sp->tc_ack) {
@@ -926,7 +927,7 @@ int nosaic_rstp_supported(void)
 	return rstp_unit >= 0 && user_stg >= 0;
 }
 
-int nosaic_rstp_set(int on, int prio, char *err, size_t n)
+int nosaic_rstp_set(int on, int prio, int hello, int fwd, int maxage, char *err, size_t n)
 {
 	int k;
 
@@ -937,7 +938,26 @@ int nosaic_rstp_set(int on, int prio, char *err, size_t n)
 			snprintf(err, n, "stp priority %d: must be 0 to 61440 in steps of 4096", prio);
 		return -1;
 	}
+	/* 802.1D-2004 17.14, as switchapi.ValidSTPTimes: 0 is the default. */
+	hello = hello ? hello : 2;
+	fwd = fwd ? fwd : 15;
+	maxage = maxage ? maxage : 20;
+	if (hello < 1 || hello > 10 || fwd < 4 || fwd > 30 || maxage < 6 || maxage > 40 ||
+	    maxage > 2 * (fwd - 1) || maxage < 2 * (hello + 1)) {
+		if (err != NULL)
+			snprintf(err, n, "stp times hello %d, forward-delay %d, max-age %d: each in "
+				 "range (1-10, 4-30, 6-40) and 2 x (forward-delay - 1) >= max-age >= "
+				 "2 x (hello + 1)", hello, fwd, maxage);
+		return -1;
+	}
 	pthread_mutex_lock(&rstp_lock);
+	if (hello * 1000 != hello_ms || fwd * 1000 != fwd_delay_ms || maxage * 1000 != max_age_ms) {
+		hello_ms = hello * 1000;
+		fwd_delay_ms = fwd * 1000;
+		max_age_ms = maxage * 1000;
+		reselect = 1;                    /* the root times, if we are it */
+		pthread_cond_signal(&rstp_wake);
+	}
 	if (prio != priority || on != enabled) {
 		priority = prio;
 		set_bridge_id();
@@ -969,12 +989,17 @@ int nosaic_rstp_set(int on, int prio, char *err, size_t n)
 	return 0;
 }
 
-int nosaic_rstp_port(const char *name, int edge, int cost, char *err, size_t n)
+int nosaic_rstp_port(const char *name, int edge, int cost, int prio, char *err, size_t n)
 {
 	int k;
 
 	if (!nosaic_rstp_supported())
 		return -2;
+	if (prio != 0 && (prio < 16 || prio > 240 || prio % 16 != 0)) {
+		if (err != NULL)
+			snprintf(err, n, "stp port priority %d: must be 16 to 240 in steps of 16", prio);
+		return -1;
+	}
 	if (cost < 0 || cost > 200000000) {
 		if (err != NULL)
 			snprintf(err, n, "stp cost %d: must be 1 to 200000000, or 0 for the speed's default", cost);
@@ -995,6 +1020,8 @@ int nosaic_rstp_port(const char *name, int edge, int cost, char *err, size_t n)
 	pthread_mutex_lock(&rstp_lock);
 	ports[k].admin_edge = edge;
 	ports[k].cfg_cost = cost;
+	ports[k].cfg_prio = prio;
+	ports[k].id = key_id(k);
 	if (!edge)
 		ports[k].oper_edge = 0;
 	else if (!ports[k].heard)
@@ -1018,8 +1045,10 @@ void nosaic_rstp_query(FILE *out)
 	pthread_mutex_lock(&rstp_lock);
 	if (bridge_id[2] == 0 && bridge_id[3] == 0)
 		set_bridge_id();
-	fprintf(out, "{\"ok\":true,\"result\":{\"Enabled\":%s,\"Priority\":%d,\"BridgeID\":",
-		enabled ? "true" : "false", priority);
+	fprintf(out, "{\"ok\":true,\"result\":{\"Enabled\":%s,\"Priority\":%d,"
+		"\"HelloTime\":%d,\"ForwardDelay\":%d,\"MaxAge\":%d,\"BridgeID\":",
+		enabled ? "true" : "false", priority, hello_ms / 1000, fwd_delay_ms / 1000,
+		max_age_ms / 1000);
 	put_id(out, bridge_id);
 	fprintf(out, ",\"RootID\":");
 	put_id(out, enabled && (root_pv[0] | root_pv[2]) ? root_pv + PV_ROOT : bridge_id);
@@ -1033,12 +1062,14 @@ void nosaic_rstp_query(FILE *out)
 		if (!sp->used)
 			continue;
 		fprintf(out, "%s{\"Port\":\"%s\",\"Role\":\"%s\",\"State\":\"%s\","
-			"\"Edge\":%s,\"Cost\":%d,\"RSTP\":%s,\"RxBPDU\":%lu,\"TxBPDU\":%lu}",
+			"\"Edge\":%s,\"Cost\":%d,\"Priority\":%d,\"RSTP\":%s,"
+			"\"RxBPDU\":%lu,\"TxBPDU\":%lu}",
 			first ? "" : ",", key_name(k),
 			on ? role_name[sp->role] : "designated",
 			on ? state_name[sp->state] : "forwarding",
 			on && sp->oper_edge ? "true" : "false",
 			sp->cfg_cost ? sp->cfg_cost : key_cost(k),
+			sp->cfg_prio ? sp->cfg_prio : 128,
 			sp->send_rstp ? "true" : "false", sp->rx, sp->tx);
 		first = 0;
 	}
