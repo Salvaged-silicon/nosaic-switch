@@ -666,6 +666,58 @@ and which has not been established. **This has to be settled before writing to
 a lane** — a lane-enable sent to the wrong SerDes is exactly the kind of error
 that presents as "the port stays dark" with every register looking right.
 
+## What is and is not on Arista's GitHub, 2026-09-26
+
+Surveyed before extracting anything further from the prior EdgeNOS work, on
+the principle that an upstream component beats a local extraction.
+
+### There is no FM6000 support, and that is now checked three times
+
+`aristanetworks/sonic` (GPL-2.0) is the home of the open SCD driver and
+initialisation library. It carries **no** `7150`, `raven`, `fm6000`, `cotati`
+or `santarosa` anywhere in its 755 files. Its platform support starts at
+clearlake/upperlake and goes forward. This board predates it.
+
+### What IS there and is worth having
+
+| | licence | use to us |
+|---|---|---|
+| `aristanetworks/sonic` `src/scd-*.c` | GPL-2.0 | the SCD driver: `scd-led.c`, `scd-gpio.c`, `scd-reset.c`, `scd-smbus.c`, `scd-spi.c`, `scd-uart.c`, `scd-mdio.c`, `scd-fan.c`. `scdsmbus` already derives from this one; the **LED** and **fan** drivers bear on two open gaps here |
+| `aristanetworks/sonic` `arista/core/prefdl.py` | GPL-2.0 | the **PREFDL format** |
+| `aristanetworks/swi-tools` | **Apache-2.0** | SWI and SWIX handling. We hand-build SWIs, so this is a permissively licensed implementation of something we already do |
+| `aristanetworks/switch-interface-maps` | BSD-3 | has `DCS-7150S-52-CL_EosIntfMapping.json` — ⚠ but it is **empty**: `eth0 -> Management1` and `"EthernetIntf": {}`. No lane data |
+
+### The PREFDL format, for when the device is found
+
+A TLV list, each field a type byte: `0x01` Deviation, `0x02` MfgTime, `0x03`
+SKU, `0x04` ASY, **`0x05` MAC**, `0x0a` HwApi, `0x0b` HwRev, `0x0c` SID, `0x0d`
+PCA (12), `0x0e` SerialNumber (11), `0x0f` KVN (3), `0x17` MfgTime2, `0x00`
+END; CRC32 (zlib) over the buffer; versions V2 and V3. **documented**
+
+### ⚠ The two extra `0x50` responders are the PSUs, not the board
+
+The earlier guess was wrong. Dumped, they are Emerson PSU FRU EEPROMs:
+**live**
+
+```
+   accel 0 bus 4   EMERSON  DS460S-3-002 / DS460S-3-401  serial K192NL00SF1CZ
+   accel 1 bus 0   EMERSON  DS460S-3-002 / DS460S-3-401  serial K192MB00XH1CZ
+```
+
+Two PSUs, both present, which agrees with the SCD's own presence bits. That is
+real inventory NOSaic can report — model and serial per supply — and it is
+**not** the board PREFDL. Where that lives is still unknown: not on the flash
+filesystem, and not at `0x50`–`0x57` on accelerators 0–2. `scd-spi.c` in
+Arista's driver is a hint that it may be on the SCD's SPI rather than its
+SMBus at all.
+
+### `Cotati.hold` on the flash, identified
+
+8.5 KB, and it is a **Silicon Labs Si5338 register map** in AN428 JumpStart
+format — the clock configuration. It is the operator-supplied
+`Cotati-Clock-0010.si5338` that the prior investigation's scoreboard lists as
+**eliminated**, left behind on the flash. Not needed, and now not a mystery.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

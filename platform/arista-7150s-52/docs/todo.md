@@ -399,6 +399,14 @@ Features that do not need the ASIC, measured and working 2026-09-25:
 - [ ] **fans** — the controller is not on `0x58`–`0x68` of accelerators 0 or 1.
       Until it is found no cooling loop runs, which is now enforced by
       `wantsThermalService()` rather than left to chance.
+- [x] **the PREFDL format is known** — TLV, `0x03` SKU, `0x05` MAC, `0x0d`
+      PCA, `0x0e` SerialNumber, CRC32, V2/V3. From Arista's own open driver.
+- [x] **PSU inventory is available** — both supplies' FRU EEPROMs found and
+      read: Emerson DS460S at accel 0 bus 4 and accel 1 bus 0, with serials.
+- [ ] ⚠ **the board PREFDL is still not located.** It is NOT the two extra
+      `0x50` responders (those are the PSUs), not on the flash filesystem, and
+      not at `0x51`–`0x57` on accelerators 0–2. Arista's `scd-spi.c` suggests
+      looking at the SCD's SPI rather than its SMBus.
 - [ ] **board identity / prefdl** — `platform status` still says the SEEPROM is
       not located. Two non-transceiver `0x50` responders were found at accel 0
       bus 4 and accel 1 bus 0; read them. This also removes the hand-written
