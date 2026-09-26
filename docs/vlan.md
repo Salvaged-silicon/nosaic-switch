@@ -108,6 +108,10 @@ to 10.0.10.0/24 leaves by whichever of them the destination is behind.
   The per-port VLANs are what the `tap_` lines in each board's `asic.conf`
   (`taps.conf` on the AS5610) declare. VLAN 1 is allowed.
 
+- **Two paths between the same VLANs loop** unless spanning tree is on:
+  `nosaic stp on` ([stp.md](stp.md)) before the second cable goes in the
+  VLAN, not after.
+
 A LAG, `po<N>`, is an interface like a port: `switchport po1 trunk 10,20`
 puts all its members in those VLANs as one, and `show vlans` lists it by its
 own name. [lag.md](lag.md).
