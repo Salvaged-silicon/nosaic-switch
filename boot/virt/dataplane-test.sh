@@ -143,14 +143,14 @@ if ./out/nosaic show caps | grep -Eq '^acl +yes'; then
     ./out/nosaic acl del 5
     ./out/nosaic acl del 10
     peerping 2 || { echo "with the rules removed the ping still fails"; exit 1; }
-    if ./out/nosaic acl add 11 deny in swp9 proto icmp 2>/dev/null; then
+    if ./out/nosaic acl add 11 deny in swp99 proto icmp 2>/dev/null; then
         echo "a rule on a port this switch does not have was accepted"; exit 1
     fi
     if ./out/nosaic acl add 12 deny dport 22 2>/dev/null; then
         echo "an L4 port match without tcp or udp was accepted"; exit 1
     fi
     echo "    removed: pings flow again; bad rules refused with their reasons:"
-    ./out/nosaic acl add 11 deny in swp9 proto icmp 2>&1 | sed 's/^/        /' || true
+    ./out/nosaic acl add 11 deny in swp99 proto icmp 2>&1 | sed 's/^/        /' || true
     ./out/nosaic acl add 12 deny dport 22 2>&1 | sed 's/^/        /' || true
     left=$(nft list ruleset 2>/dev/null | grep -c 'acl_' || true)
     [ "$left" = "0" ] || { echo "rules left in the kernel after deletion:"; nft list ruleset; exit 1; }
