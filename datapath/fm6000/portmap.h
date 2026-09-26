@@ -39,12 +39,30 @@ static const unsigned char fm6000_alta_of[FM6000_FRONT_PORTS + 1] = {
 };
 
 /*
- * The two internal ports, by physical number.
+ * The non-front-panel ports, by physical number.
  *
- * The agent log numbers these 53 and 54 in its own logical space; they are
- * not front-panel ports and have no cage.
+ * Four physical ports carry no cage: 0, 1, 2 and 3. The agent log numbers two
+ * of them 53 and 54 in its own logical space.
+ *
+ * ⚠ THE CHIP'S OWN TABLES DISAGREE ABOUT WHICH OF THESE IS "THE CPU PORT",
+ * and both readings come off this running switch, so neither can be waved
+ * away:
+ *
+ *   - the store-and-forward table gives its CPU pattern to physical **1**,
+ *     and gives 0 and 2 a plain all-ports mask
+ *   - the egress scheduler, the scheduler ring and the congestion watermarks
+ *     all single out physical **0** -- the ring's own notes call it the PCIe
+ *     DMA port and schedule it first, which is what punt to the host needs
+ *
+ * The most likely reconciliation is that they are different ports doing
+ * different jobs -- 0 is where frames reach the host, 1 is what the
+ * forwarding path calls the CPU -- but that is a hypothesis and nothing here
+ * has tested it. Until something does, each table gets the port its own
+ * measurement wanted, under a name that says which is which, and no code
+ * assumes the two are the same port.
  */
-#define FM6000_ALTA_CPU      1
+#define FM6000_ALTA_HOST     0	/* scheduler, ring and watermarks */
+#define FM6000_ALTA_CPU      1	/* store-and-forward */
 #define FM6000_ALTA_INTERNAL 3
 
 #endif /* NOSAIC_FM6000_PORTMAP_H */

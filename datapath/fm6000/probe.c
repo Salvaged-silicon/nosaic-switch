@@ -28,6 +28,8 @@
 #include "saf.h"
 #include "esched.h"
 #include "ssched.h"
+#include "cmwm.h"
+#include "cmrest.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -713,6 +715,27 @@ sweep_done:
 			printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
 		}
+	} else if (strcmp(argv[i], "--cmrest") == 0) {
+		unsigned n = 0;
+
+		rv = fm_cmrest_init(&dev, &n);
+		printf("CM maps, pause and partitions: %u words, %s\n", n,
+		       rv == FM_OK ? "accepted" : rvstr(rv));
+		printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+		rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
+	} else if (strcmp(argv[i], "--cmwm") == 0) {
+		struct fm_cmwm_report rep;
+
+		rv = fm_cmwm_init(&dev, &rep);
+		printf("congestion watermarks: %u words, %s\n", rep.written,
+		       rv == FM_OK ? "accepted" : rvstr(rv));
+		if (rv == FM_OK)
+			printf("  %u of %u tables verified%s%s\n",
+			       rep.verified, rep.tables,
+			       rep.first_bad != NULL ? "; first not to take: " : "",
+			       rep.first_bad != NULL ? rep.first_bad : "");
+		printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+		rc = (rv == FM_OK && rep.verified == rep.tables) ? 0 : 2;
 	} else if (strcmp(argv[i], "--ssched") == 0) {
 		unsigned flags = 0;
 		int circ = 0;

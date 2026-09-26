@@ -3236,3 +3236,59 @@ egress scheduler: 0 writes, refused as unsafe
 ```
 
 which is the correct behaviour for a block whose precondition is not met.
+
+### The same wall, silently: the transmit watermark tables
+
+The egress scheduler at least fails loudly, by taking the chip off the bus.
+The congestion-management watermarks fail the other way.
+
+`fm_cmwm_init()` writes 6,512 words across six tables in the CM block. All
+6,512 are accepted, nothing errors, and the chip stays up. Reading them back:
+
+| table | | |
+|---|---|---|
+| `RXMP_PRIVATE` `0x112800` | reads back what was written | ✅ |
+| `RXMP_HOG` `0x113000` | reads back what was written | ✅ |
+| `TXMP_PRIVATE` `0x113800` | **reads `0`** | ❌ |
+| `TXMP_HOG` `0x114000` | **reads `0`** | ❌ |
+| `RXMP_PAUSE_ON` `0x115000` | reads back what was written | ✅ |
+| `RXMP_PAUSE_OFF` `0x115800` | reads back what was written | ✅ |
+
+Poking `0xa5a5a5a5` into one word of each confirms it: `0x112800` holds it,
+`0x113800` and `0x114000` come back `0`. Same block, same access path, same
+instant — the receive-side tables store and the transmit-side tables discard.
+
+That is the scheduler wall again, on the egress side of the chip, and it is
+worse than the ESCHED symptom because nothing announces it. A count of words
+written proves nothing here, so `fm_cmwm_init()` does not report one on its
+own: it re-reads a known word from each table afterwards and reports how many
+verified, plus the first that did not.
+
+```
+congestion watermarks: 6512 words, accepted
+  4 of 6 tables verified; first not to take: TXMP_PRIVATE
+```
+
+The four that verify are worth having and are applied. The two that do not
+will need re-running once the ring circulates — which is now two blocks
+waiting on the same thing, and reason enough to treat that as the port's
+critical path rather than one block's problem.
+
+### Congestion management, the parts that do work
+
+`cmrest.c` is the rest of the CM block: the PAUSE configuration, the class
+and partition maps, and the shared-partition thresholds. 1,005 writes over
+701 addresses — the PAUSE table is written twice, whole-chip, every port
+parked before any port is started — and all ten spot readbacks match, across
+all six regions. Nothing here is scheduler-gated.
+
+Both CM files are regenerated from geometry and this board's port map rather
+than transcribed, and both were checked against the reference before going
+near the switch: `cmwm` matches all 6,512 (address, value) pairs, `cmrest`
+all 1,005 **in order**, which for `cmrest` matters because its PAUSE table is
+two-phase.
+
+The port grouping in every one of these tables is the same question — is this
+a front-panel port, is it the host port — so it is asked of `portmap.h` once
+rather than written out as ranges. A board with a different map gets the
+right answer without anybody editing a table.

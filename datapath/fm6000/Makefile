@@ -29,7 +29,7 @@ CFLAGS  += -I../common
 CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"fm6000\"
 LDLIBS  += -lpthread
 
-COMMON_OBJS = pci.o sbus.o serdes.o bist.o saf.o esched.o ssched.o
+COMMON_OBJS = pci.o sbus.o serdes.o bist.o saf.o esched.o ssched.o cmwm.o cmrest.o
 DAEMON_OBJS = main.o boot.o sock.o $(COMMON_OBJS)
 PROBE_OBJS  = probe.o boot.o $(COMMON_OBJS)
 
@@ -53,7 +53,9 @@ serdes.o: serdes.c serdes.h sbus.h pci.h regs.h
 bist.o: bist.c bist.h pci.h regs.h
 saf.o:  saf.c saf.h portmap.h pci.h regs.h
 esched.o: esched.c esched.h portmap.h pci.h regs.h
-probe.o: probe.c serdes.h bist.h saf.h esched.h pci.h regs.h boot.h
+cmwm.o: cmwm.c cmwm.h portmap.h pci.h regs.h
+cmrest.o: cmrest.c cmrest.h portmap.h pci.h regs.h
+probe.o: probe.c serdes.h bist.h saf.h esched.h ssched.h cmwm.h cmrest.h pci.h regs.h boot.h
 
 # Stripping is a separate target rather than -s at link time, so a debug build
 # is one target away rather than a makefile edit. Unlike the Broadcom datapaths
@@ -63,7 +65,18 @@ strip: nosd-fm6000 fm6000-probe
 	$(CROSS_COMPILE)strip nosd-fm6000 fm6000-probe
 	@echo "    nosd-fm6000 $$(stat -c%s nosd-fm6000) bytes, fm6000-probe $$(stat -c%s fm6000-probe) bytes"
 
-clean:
-	rm -f nosd-fm6000 fm6000-probe *.o ../common/*.o
+# Tests run on the build host, not the switch. Everything here that can be
+# checked without a chip should be, because the alternative is checking it on
+# a switch that goes off the bus when it disagrees with you.
+TESTS = esched-test
 
-.PHONY: all clean strip
+esched-test: esched_test.c esched.c esched.h portmap.h pci.h regs.h
+	$(CC) $(CFLAGS) -o $@ esched_test.c esched.c
+
+test: $(TESTS)
+	@for t in $(TESTS); do ./$$t || exit 1; done
+
+clean:
+	rm -f nosd-fm6000 fm6000-probe $(TESTS) *.o ../common/*.o
+
+.PHONY: all clean strip test

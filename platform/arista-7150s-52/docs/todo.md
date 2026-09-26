@@ -687,8 +687,11 @@ invented: it is the order the vendor sequence's own splice points imply.
 - [ ] **step 11, PCIe** — `fmPlatformSetupPCIe` is six registers we have
       addresses for (`0x01002`, `0x01400`, `0x01416`, `0x01418`, `0x0141d`,
       `0x01435`) and have never tried. Needed for packet DMA, not before.
-- [ ] **make the scheduler ring circulate** — the blocker for the egress
-      scheduler, and the reason the whole `0x2000`–`0x3fff` block is fatal to
+- [ ] **make the scheduler ring circulate** — now blocking two blocks, not
+      one: the egress scheduler (fatal to touch) and the transmit-side
+      congestion watermarks `TXMP_PRIVATE`/`TXMP_HOG`, which accept 2,560
+      words and keep none of them, silently. This is the port's critical
+      path. It is the reason the whole `0x2000`–`0x3fff` block is fatal to
       touch (`hardware.md`, "The egress scheduler"). `ssched.c` programs the
       ring and the chip stays up; the engine never advances it. Next thing to
       try is the scan-chain memory configuration: write `0x1c039` = `0x10`,

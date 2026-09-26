@@ -111,8 +111,16 @@ check: $(BUILDER_DEP) fmt-check vet test
 	@$(RUN) go run ./cmd/nosaic check
 
 ## test: run unit tests
-test: $(BUILDER_DEP)
+test: $(BUILDER_DEP) datapath-test
 	@$(RUN) go test ./...
+
+# The fm6000 datapath has host-side tests, and unlike every other datapath in
+# this tree it needs no vendor SDK to build -- so there is nothing stopping
+# them running everywhere the Go tests do. They check the things that are
+# cheap on a workstation and expensive on a switch that leaves the PCI bus
+# when it disagrees with you.
+datapath-test: $(BUILDER_DEP)
+	@$(RUN) make -C datapath/fm6000 test
 
 ## vet: static analysis
 vet: $(BUILDER_DEP)
@@ -252,6 +260,7 @@ clean-toolchains:
 .PHONY: help builder builder-if-missing check test vet fmt fmt-check nosaic \
         toolchains toolchain toolchain-seed toolchain-test toolchains-test \
         pkg packages kernel-boot image image-boot image-ab vm docs dataplane-test \
+        datapath-test \
         clean clean-toolchains
 
 ## datasheets: fetch the vendor datasheets into refs/ (not committed; see docs/datasheets.md)

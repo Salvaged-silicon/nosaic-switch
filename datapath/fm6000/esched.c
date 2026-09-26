@@ -41,7 +41,10 @@
 
 /* Strict priority on all twelve classes, all twelve enabled. */
 #define ESCHED_ALL_TC       0x00ffffffu
-/* The CPU port's two, which are the only values that are not ALL_TC. */
+/* The CPU port. Physical port 0, not the CPU number in portmap.h's logical
+ * space -- the egress scheduler indexes physical ports throughout. */
+#define ESCHED_CPU_PORT     0u
+/* Its two, which are the only values that are not ALL_TC. */
 #define ESCHED_CPU_CFG_1    0x00fff800u
 #define ESCHED_CPU_CFG_2    0x00fff000u
 /* The deficit round-robin word, with and without the IFG penalty. */
@@ -92,7 +95,7 @@ static int esched_wr(struct fm6000 *d, uint32_t word, uint32_t val,
 
 int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
 {
-	unsigned fp, n = 0;
+	unsigned port[FM6000_FRONT_PORTS], np = 0, i, n = 0;
 	uint32_t dead = 0;
 	int rv;
 
@@ -103,35 +106,60 @@ int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
 	if (culprit != NULL)
 		*culprit = 0;
 
-	/* The CPU port first, and it is the special case. */
-	if ((rv = WR(ESCHED_CFG_1(0), ESCHED_CPU_CFG_1)) != FM_OK)
-		return esched_fail(rv, n, dead, written, culprit);
-	if ((rv = WR(ESCHED_CFG_2(0), ESCHED_CPU_CFG_2)) != FM_OK)
-		return esched_fail(rv, n, dead, written, culprit);
+	/*
+	 * By physical port, ascending.
+	 *
+	 * The front-panel map is not monotonic -- panel port 1 is physical 40
+	 * and panel port 2 is physical 20 -- so iterating the panel would
+	 * write the same addresses in a different order, and this is a block
+	 * where that is not a free choice.
+	 */
+	for (i = 1; i <= FM6000_FRONT_PORTS; i++) {
+		unsigned p = fm6000_alta_of[i], j = np++;
 
-	for (fp = 1; fp <= FM6000_FRONT_PORTS; fp++) {
-		unsigned p = fm6000_alta_of[fp];
-
-		if ((rv = WR(ESCHED_CFG_1(p), ESCHED_ALL_TC)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-		if ((rv = WR(ESCHED_CFG_2(p), ESCHED_ALL_TC)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
+		while (j > 0 && port[j - 1] > p) {
+			port[j] = port[j - 1];
+			j--;
+		}
+		port[j] = p;
 	}
 
-	/* Then the round-robin word, twice each, CPU port included. */
-	if ((rv = WR(ESCHED_DRR(0), ESCHED_DRR_PENALTY)) != FM_OK)
+	/* Both configuration words across every front-panel port, in turn. */
+	for (i = 0; i < np; i++)
+		if ((rv = WR(ESCHED_CFG_1(port[i]), ESCHED_ALL_TC)) != FM_OK)
+			return esched_fail(rv, n, dead, written, culprit);
+	for (i = 0; i < np; i++)
+		if ((rv = WR(ESCHED_CFG_2(port[i]), ESCHED_ALL_TC)) != FM_OK)
+			return esched_fail(rv, n, dead, written, culprit);
+
+	/* Then the CPU port, which is the only one that is not ALL_TC. */
+	if ((rv = WR(ESCHED_CFG_1(ESCHED_CPU_PORT), ESCHED_CPU_CFG_1)) != FM_OK)
 		return esched_fail(rv, n, dead, written, culprit);
-	if ((rv = WR(ESCHED_DRR(0), ESCHED_DRR_SETTLED)) != FM_OK)
+	if ((rv = WR(ESCHED_CFG_2(ESCHED_CPU_PORT), ESCHED_CPU_CFG_2)) != FM_OK)
 		return esched_fail(rv, n, dead, written, culprit);
 
-	for (fp = 1; fp <= FM6000_FRONT_PORTS; fp++) {
-		unsigned p = fm6000_alta_of[fp];
+	/*
+	 * The round-robin word, every port twice: once with the inter-frame-gap
+	 * penalty and once with it cleared.
+	 *
+	 * ⚠ THE TWO PASSES ARE WHOLE-CHIP, NOT PER-PORT. Every port is given
+	 * the penalty before any port has it taken away. Writing each port's
+	 * pair back to back touches the same 53 addresses with the same two
+	 * values and is not the same thing: the intermediate state the
+	 * scheduler latches against is "all ports penalised", and it never
+	 * exists if the passes are interleaved.
+	 */
+	if ((rv = WR(ESCHED_DRR(ESCHED_CPU_PORT), ESCHED_DRR_PENALTY)) != FM_OK)
+		return esched_fail(rv, n, dead, written, culprit);
+	for (i = 0; i < np; i++)
+		if ((rv = WR(ESCHED_DRR(port[i]), ESCHED_DRR_PENALTY)) != FM_OK)
+			return esched_fail(rv, n, dead, written, culprit);
 
-		if ((rv = WR(ESCHED_DRR(p), ESCHED_DRR_PENALTY)) != FM_OK)
+	if ((rv = WR(ESCHED_DRR(ESCHED_CPU_PORT), ESCHED_DRR_SETTLED)) != FM_OK)
+		return esched_fail(rv, n, dead, written, culprit);
+	for (i = 0; i < np; i++)
+		if ((rv = WR(ESCHED_DRR(port[i]), ESCHED_DRR_SETTLED)) != FM_OK)
 			return esched_fail(rv, n, dead, written, culprit);
-		if ((rv = WR(ESCHED_DRR(p), ESCHED_DRR_SETTLED)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-	}
 
 	if (written != NULL)
 		*written = n;
