@@ -687,6 +687,20 @@ invented: it is the order the vendor sequence's own splice points imply.
 - [ ] **step 11, PCIe** — `fmPlatformSetupPCIe` is six registers we have
       addresses for (`0x01002`, `0x01400`, `0x01416`, `0x01418`, `0x0141d`,
       `0x01435`) and have never tried. Needed for packet DMA, not before.
+- [ ] **make the scheduler ring circulate** — the blocker for the egress
+      scheduler, and the reason the whole `0x2000`–`0x3fff` block is fatal to
+      touch (`hardware.md`, "The egress scheduler"). `ssched.c` programs the
+      ring and the chip stays up; the engine never advances it. Next thing to
+      try is the scan-chain memory configuration: write `0x1c039` = `0x10`,
+      then per block write `0x1c039` = `t1 & 0x1f` and `t2` to `0x1c03a` when
+      `t1 & 0x80` or `0x1c03b` otherwise, read `0x1c03d` (again if
+      `(s & 0x300) != 0x100`) and read `0x1c03c` to advance the chain, then
+      commit and settle 20 ms. ⚠ Touch *nothing* outside `0x1c039`–`0x1c03d`
+      during the loop — the shift holds the banked memories inaccessible, so a
+      liveness read mid-loop causes the off-bus it is there to detect. We do
+      not have the `(t1, t2)` values and cannot take them; working out what
+      they are, or whether they can be read from the part's own fuses, is the
+      task
 - [ ] **the 17 MGMT words our boot does not set** — SWEEPER `0x1c048`, the
       interrupt masks at `0x1c001`/`0x1c002`, `0x1c01e`, `0x1c049`/`4b`/`4c`/
       `50`. These are configuration rather than boot, so they belong here only

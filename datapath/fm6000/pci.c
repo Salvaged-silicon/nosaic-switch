@@ -244,6 +244,11 @@ int fm_is_bank(uint32_t word)
 
 const char *fm_block_name(uint32_t word)
 {
+	if (word >= FM6000_BLK_ESCHED &&
+	    word < FM6000_BLK_ESCHED + FM6000_BLK_ESCHED_SPAN)
+		return "ESCHED";
+	if (word >= FM6000_BLK_SSCHED && word < FM6000_BLK_SSCHED + 0x1000)
+		return "SSCHED";
 	if (word >= FM6000_BLK_MGMT && word < FM6000_BLK_MGMT + 0x1000)
 		return "MGMT";
 	if (word >= FM6000_BLK_CRM && word < FM6000_BLK_CRM + 0x1000)
@@ -306,19 +311,25 @@ int fm_mem_fill(struct fm6000 *d, uint32_t base, uint32_t words, uint32_t val)
 	return rv;
 }
 
-const char *fm_hazard(const struct fm6000 *d, uint32_t word)
+const char *fm_hazard(const struct fm6000 *d, uint32_t word, int writing)
 {
-	/* Measured fatal, and not conditional on anything: these were found by
-	 * bisecting a fill that killed the chip, and nothing has established a
-	 * state in which they are safe. */
+	/* Measured fatal to write, and reading has never been tried, so both
+	 * directions are refused -- but for different reasons, and the message
+	 * says which. */
 	if (word == FM6000_FATAL_WRITE_1 || word == FM6000_FATAL_WRITE_2)
-		return "writing this word is measured to take the chip off the "
-		       "bus (2026-09-25); reading it has not been tried";
+		return writing
+		       ? "writing this word is measured to take the chip off "
+			 "the bus (2026-09-25)"
+		       : "reading this word has never been tried and writing it "
+			 "is fatal; not the place to find out";
 
 	/* EPL is the one block whose hazard the documented boot sequence
 	 * actually clears, so it is checked against its own flag rather than
 	 * against the bank one. */
-	if (word >= FM6000_BLK_EPL && word < FM6000_BLK_EPL + FM6000_BLK_EPL_SPAN)
+	/* The EPL hazard is a READ hazard: the lane bring-up writes all over
+	 * this block before the boot flag is set, and must not be refused. */
+	if (!writing &&
+	    word >= FM6000_BLK_EPL && word < FM6000_BLK_EPL + FM6000_BLK_EPL_SPAN)
 		return d->boot_done ? NULL :
 		       "EPL block: READING it before the cold boot has run takes "
 		       "the chip off the bus (measured 2026-09-25 at 0x0e3b02). "
@@ -328,9 +339,24 @@ const char *fm_hazard(const struct fm6000 *d, uint32_t word)
 	if (fm_is_bank(word))
 		return "ECC bank memory, uninitialised: one access takes the "
 		       "chip off the PCIe bus";
-	if (word == FM6000_ESCHED_READ_HAZARD)
-		return "ESCHED 0x2000: READING this off-buses a cold chip";
+	/*
+	 * The egress scheduler, which is unreachable until the scheduler ring
+	 * circulates. Both directions, because both are fatal -- a read at
+	 * once, a write once the bridge's queue of writes that can never
+	 * retire is full.
+	 */
+	if (word >= FM6000_BLK_ESCHED &&
+	    word < FM6000_BLK_ESCHED + FM6000_BLK_ESCHED_SPAN)
+		return d->sched_ready ? NULL :
+		       "ESCHED: the scheduler ring is not circulating, so "
+		       "nothing in this block can complete an access. Touching "
+		       "it takes the chip off the bus. Run the ring init first";
 	return NULL;
+}
+
+void fm_sched_mark_ready(struct fm6000 *d)
+{
+	d->sched_ready = 1;
 }
 
 void fm_bank_mark_initialised(struct fm6000 *d)
@@ -345,7 +371,7 @@ void fm_set_write_check(struct fm6000 *d, int on)
 
 /* Shared preamble for both accessors: everything that can refuse before the
  * access happens, in the order that costs least. */
-static int guard(struct fm6000 *d, uint32_t word, size_t byte_off)
+static int guard(struct fm6000 *d, uint32_t word, size_t byte_off, int writing)
 {
 	if (d->regs == NULL)
 		return FM_ERR;
@@ -355,7 +381,7 @@ static int guard(struct fm6000 *d, uint32_t word, size_t byte_off)
 	}
 	if (byte_off + 4 > d->bar_bytes)
 		return FM_ERR;
-	if (fm_hazard(d, word) != NULL) {
+	if (fm_hazard(d, word, writing) != NULL) {
 		d->refused++;
 		return FM_EUNSAFE;
 	}
@@ -365,7 +391,7 @@ static int guard(struct fm6000 *d, uint32_t word, size_t byte_off)
 int fm_rd_byte(struct fm6000 *d, uint32_t off, uint32_t *out)
 {
 	uint32_t v;
-	int rv = guard(d, off / 4, off);
+	int rv = guard(d, off / 4, off, 0);
 
 	if (rv != FM_OK)
 		return rv;
@@ -391,7 +417,7 @@ int fm_rd_byte(struct fm6000 *d, uint32_t off, uint32_t *out)
 
 int fm_wr_byte(struct fm6000 *d, uint32_t off, uint32_t val)
 {
-	int rv = guard(d, off / 4, off);
+	int rv = guard(d, off / 4, off, 1);
 
 	if (rv != FM_OK)
 		return rv;

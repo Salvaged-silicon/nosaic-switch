@@ -139,7 +139,7 @@ static void answer(FILE *out, const char *req)
 			fprintf(out, "{\"ok\":false,\"error\":\"no chip attached\"}\n");
 			return;
 		}
-		if ((why = fm_hazard(sock_dev, word)) != NULL) {
+		if ((why = fm_hazard(sock_dev, word, 0)) != NULL) {
 			fprintf(out, "{\"ok\":false,\"error\":\"refused: %s\"}\n", why);
 			return;
 		}

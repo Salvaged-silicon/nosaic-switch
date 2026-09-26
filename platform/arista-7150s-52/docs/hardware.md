@@ -3166,3 +3166,73 @@ anyone wanted.
 `fm_bank_mark_initialised()` has been called, and only the code that genuinely
 initialises them is entitled to call it. The instinct when a chip misbehaves is
 to go and read more registers; on this part that is what kills it.
+
+## The egress scheduler, and what the `0x2000` read hazard actually was
+
+*2026-09-26.* For most of this port the notes carried a rule that read
+"ESCHED `0x2000`: reading this off-buses a cold chip". That rule was true,
+and it was wrong in all three of its particulars: it named one word of an
+8192-word block, it blamed reads when writes are just as fatal, and it called
+the chip cold when the chip had completed the documented boot.
+
+**What is actually true.** On a chip that has been through Table 4-1, with
+`BOOT_CTRL` at `0x313` and every other block in the low register space
+answering normally:
+
+| | |
+|---|---|
+| a single **read** of `0x2020`, `0x2080` or `0x3800` | chip off the bus immediately |
+| **writes** to any of them | about nineteen succeed; the twentieth wedges it |
+| the same writes spaced a third of a second apart | identical — the twentieth |
+| the same writes after the memory BIST | the **third** |
+| a block survey of `0x0000`–`0x1ffff`, one word per 4096 | `0x2000` and `0x3000` are the only fatal blocks; everything else, `0x1a000` included, answers |
+
+The write count is not a timing artefact — microseconds and hundreds of
+milliseconds give the same number — and it is not a global budget, because
+`--saf` writes 168 registers through the same path without trouble.
+
+**The mechanism.** A read has to complete and a posted write does not. If the
+block cannot complete an access at all, a read hangs the local bus at once,
+while writes queue in the SCD's bridge until the queue is full and the one
+that finds it full blocks forever. Nineteen is the queue. Running the BIST
+first spends most of it elsewhere, which is why the budget falls to three.
+
+**The cause.** The egress scheduler is clocked off the scheduler ring, and the
+ring is not circulating. This is not a new discovery so much as one we had
+already made and filed away: our own prior-art probe on this chassis was
+written specifically to test it, and its header says in as many words that
+`FOUND` means "pursue ESCHED bring-up" and `NOT FOUND` is "the real wall".
+
+**Where it stands.** `ssched.c` implements the ring init — tick, sweeper, the
+tokens, the 80-slot visit table, the slow-port masks and the two commit
+strobes — and it runs clean on hardware. The ring is programmed and the chip
+stays up. The engine does not advance it: a find-probe on every enrolled port,
+both directions, comes back `FOUND=0`, and `0x8062` reads back exactly the
+port number written into it. Ruled out along the way: the scheduler tick
+(`0xf010`) on its own, the five sweeper words, the twelve MGMT configuration
+words, the block clocks `0x1c03a/3b` (already `0xffffffff`, matching EOS), the
+SBus init, the memory BIST, and the management token's Sync bit — **our two
+earlier generations disagree about that bit and it turns out not to matter**,
+which is worth knowing only so that nobody spends another day on it.
+
+Still untried, and the leading candidate: the scan-chain memory configuration
+(`0x1c039`–`0x1c03d`). Our prior art found that bank writability is a scan
+*program* rather than a register value, and that direct writes off-bus without
+it. We cannot reuse its table — that project deliberately kept the scan-config
+values out of its own tree as third-party data loaded at runtime, so there is
+nothing there to inherit even setting licensing aside. The handshake itself is
+short and is described in `todo.md`.
+
+**What the code does about it now.** `fm_hazard()` refuses the whole
+`0x2000`–`0x3fff` block, in both directions, until `fm_sched_mark_ready()` —
+which only `ssched.c` calls, and only on a find-probe that actually came back
+found. `fm_esched_init()` is written, its 159 addresses cross-checked against
+the reference table, and it writes nothing at all today: it reports
+
+```
+egress scheduler: 0 writes, refused as unsafe
+  ESCHED: the scheduler ring is not circulating, so nothing in this block
+  can complete an access. Touching it takes the chip off the bus.
+```
+
+which is the correct behaviour for a block whose precondition is not met.

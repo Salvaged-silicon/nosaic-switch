@@ -26,6 +26,8 @@
 #include "serdes.h"
 #include "bist.h"
 #include "saf.h"
+#include "esched.h"
+#include "ssched.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -50,6 +52,7 @@ static void usage(void)
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
 "  --try-pair EPL SBUS   confirm or refute one EPL-to-SBus pairing\n"
 "  --saf                 write the store-and-forward matrix (168 writes)\n"
+"  --esched              configure the egress scheduler\n"
 "  --sweep-pairs         find every EPL's SBus address by trying them\n"
 "  --spico N             is the SPICO running? post an interrupt and see\n"
 "  --dfe N               run the RX equaliser adaptation for port N\n"
@@ -156,7 +159,7 @@ static int cmd_dump(struct fm6000 *d, uint32_t base, uint32_t count)
 	printf("%s, from word 0x%06x\n", fm_block_name(base), base);
 	for (i = 0; i < count; i++) {
 		uint32_t w = base + i, v = 0;
-		const char *why = fm_hazard(d, w);
+		const char *why = fm_hazard(d, w, 0);
 		int rv;
 
 		if (why != NULL) {
@@ -416,6 +419,30 @@ int main(int argc, char **argv)
 	} else if (strcmp(argv[i], "--dump") == 0 && i + 2 < argc) {
 		rc = cmd_dump(&dev, (uint32_t)strtoul(argv[i + 1], NULL, 0),
 			      (uint32_t)strtoul(argv[i + 2], NULL, 0));
+	} else if (strcmp(argv[i], "--poke") == 0 && i + 2 < argc) {
+		/*
+		 * One word, one value, and a liveness check either side.
+		 *
+		 * This exists because "the block killed the chip" and "this
+		 * one register killed the chip" are different findings, and
+		 * only the second is actionable. Writing a word in isolation
+		 * on a freshly booted chip is the only way to tell an unsafe
+		 * register from an unsafe sequence.
+		 */
+		uint32_t w = (uint32_t)strtoul(argv[i + 1], NULL, 0);
+		uint32_t v = (uint32_t)strtoul(argv[i + 2], NULL, 0);
+
+		if (fm_alive(&dev) != 1) {
+			printf("chip is not answering BEFORE the write; "
+			       "nothing this run says is worth anything\n");
+			rc = 1;
+		} else {
+			rv = fm_wr(&dev, w, v);
+			printf("poke 0x%06x <- 0x%08x: %s, chip %s\n", w, v,
+			       rv == FM_OK ? "written" : rvstr(rv),
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
+		}
 	} else if (strcmp(argv[i], "--fill") == 0 && i + 2 < argc) {
 		uint32_t base = (uint32_t)strtoul(argv[i + 1], NULL, 0);
 		uint32_t n = (uint32_t)strtoul(argv[i + 2], NULL, 0);
@@ -683,6 +710,40 @@ sweep_done:
 			printf("store-and-forward matrix: %u writes, %s\n", n,
 			       rv == FM_OK ? "ok" : rvstr(rv));
 			printf("  the vendor's boot spends 34668 accumulating the same end state\n");
+			printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--ssched") == 0) {
+		unsigned flags = 0;
+		int circ = 0;
+
+		if (i + 1 < argc && strcmp(argv[i + 1], "sync") == 0)
+			flags |= FM_SSCHED_SYNC_MGMT;
+		rv = fm_ssched_ring_init(&dev, flags, &circ);
+		printf("scheduler ring: %s\n", rv == FM_OK ? "initialised" : rvstr(rv));
+		printf("  circulation: %s\n", circ
+		       ? "FOUND -- the engine is walking the ring"
+		       : "not found -- the ring is programmed but not advancing");
+		printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+		rc = (rv == FM_OK && circ) ? 0 : 2;
+	} else if (strcmp(argv[i], "--esched") == 0) {
+		unsigned n = 0;
+		uint32_t culprit = 0;
+
+		if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			rc = 1;
+		} else {
+			rv = fm_esched_init(&dev, &n, &culprit);
+			printf("egress scheduler: %u writes, %s\n", n,
+			       rv == FM_OK ? "ok" : rvstr(rv));
+			if (rv == FM_EUNSAFE) {
+				const char *why = fm_hazard(&dev, culprit, 1);
+
+				printf("  %s\n", why != NULL ? why : "refused");
+			} else if (culprit != 0) {
+				printf("  died writing word 0x%06x\n", culprit);
+			}
 			printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
 		}

@@ -48,6 +48,45 @@
  * they are where traffic to a block was observed, not necessarily where the
  * block begins.
  */
+/*
+ * SSCHED -- the scheduler ring engine.
+ *
+ * Distinct from ESCHED (0x2000), which is the per-port egress scheduler
+ * configuration and is only reachable once this engine is circulating. See
+ * ssched.c for the measurements behind that.
+ */
+#define FM6000_BLK_SSCHED		0x008000
+#define FM6000_SSCHED_TX_NEXT_PORT(i)	(0x008000u + (i))
+#define FM6000_SSCHED_TX_INIT_TOKEN	0x008020
+#define FM6000_SSCHED_TX_INIT_COMPLETE	0x008021
+#define FM6000_SSCHED_TX_REPLACE_TOKEN	0x008022
+#define FM6000_SSCHED_RX_NEXT_PORT(i)	(0x008040u + (i))
+#define FM6000_SSCHED_RX_INIT_TOKEN	0x008060
+#define FM6000_SSCHED_RX_INIT_COMPLETE	0x008061
+#define FM6000_SSCHED_RX_REPLACE_TOKEN	0x008062
+#define FM6000_SSCHED_RX_SLOW_PORT(i)	(0x008070u + (i))
+
+/* 80 ring slots, one byte each; five 16-bit slow-port masks. */
+#define FM6000_SSCHED_NEXT_PORT_WORDS	20
+#define FM6000_SSCHED_SLOW_PORT_WORDS	5
+
+/* The Found bits the engine sets when a find-probe located the token. */
+#define FM6000_SSCHED_RX_FOUND		(1u << 21)
+#define FM6000_SSCHED_TX_FOUND		(1u << 30)
+/* A find is asynchronous: the engine has to reach the slot. */
+#define FM6000_SSCHED_FIND_US		50000
+
+/* The scheduler's tick -- the clock the whole engine, and ESCHED, runs on. */
+#define FM6000_SSCHED_TICK_CFG		0x00f010
+#define FM6000_SSCHED_TICK_PERIOD	0x2
+
+/* The sweeper shares the scheduler's clock domain. */
+#define FM6000_SWEEPER_CFG_0		0x01c048
+#define FM6000_SWEEPER_CFG_1		0x01c049
+#define FM6000_SWEEPER_CFG_2		0x01c04a
+#define FM6000_SWEEPER_CFG_3		0x01c04b
+#define FM6000_SWEEPER_CFG_4		0x01c04c
+
 #define FM6000_BLK_MGMT		0x01c000
 #define FM6000_BLK_CRM		0x01f000
 /* ⚠ The EPL block is 0x0e0000..0x0effff, a full 64K words. An earlier version
@@ -393,7 +432,21 @@
  * natural instinct on a chip that is misbehaving is to go and read more
  * registers, and this is the one that punishes that. [RE]
  */
-#define FM6000_ESCHED_READ_HAZARD	0x002000
+/*
+ * ESCHED -- the per-port egress scheduler configuration.
+ *
+ * ⚠ THE WHOLE BLOCK IS UNREACHABLE UNTIL THE SCHEDULER RING IS CIRCULATING,
+ * and the failure is not an error return, it is the chip leaving the bus.
+ * Measured 2026-09-26 on a chip that had completed the Table 4-1 boot and
+ * whose every other low block answered normally: one read of 0x2020, 0x2080
+ * or 0x3800 killed it outright, and writes killed it on about the twentieth.
+ * This was recorded for months as "reading 0x2000 off-buses a cold chip",
+ * which named one word of a 8192-word block and the wrong direction.
+ *
+ * ssched.c has the measurements and the mechanism.
+ */
+#define FM6000_BLK_ESCHED		0x002000
+#define FM6000_BLK_ESCHED_SPAN		0x002000
 
 /*
  * Packet DMA. ⚠ THIS ONE IS A BYTE OFFSET INTO BAR0, not a word address --

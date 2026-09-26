@@ -81,6 +81,10 @@ struct fm6000 {
 	 * does NOT unlock the ECC bank memories; those wait for banks_ready,
 	 * which is a later and separate thing. */
 	int                boot_done;
+	/* Set once the scheduler ring has been observed to circulate. Unlocks
+	 * the ESCHED block, which until then is not merely unconfigured but
+	 * actively fatal to touch -- see fm_sched_mark_ready(). */
+	int                sched_ready;
 	/* Whether every write is followed by a config-space check. See
 	 * fm_set_write_check(). Defaults on. */
 	int                check_writes;
@@ -254,6 +258,17 @@ void fm_bank_mark_initialised(struct fm6000 *d);
 void fm_boot_mark_done(struct fm6000 *d);
 
 /*
+ * Declare that the scheduler engine is running.
+ *
+ * Call this only on positive evidence that the ring is advancing -- the
+ * engine having found a token it was asked to find -- and never because the
+ * ring was merely programmed. The difference between those two is the
+ * difference between configuring the egress scheduler and power-cycling the
+ * switch.
+ */
+void fm_sched_mark_ready(struct fm6000 *d);
+
+/*
  * Write `val` into every word of a bank memory, so its ECC bits become valid.
  *
  * This is Table 4-1 step 12's "software writes memory manually", and it is the
@@ -288,7 +303,18 @@ int fm_is_bank(uint32_t word);
  * someone debugging, because reading more registers is the obvious thing to do
  * when something is wrong.
  */
-const char *fm_hazard(const struct fm6000 *d, uint32_t word);
+const char *fm_hazard(const struct fm6000 *d, uint32_t word, int writing);
+
+/*
+ * ⚠ DIRECTION MATTERS, AND CONFLATING IT COSTS REAL WRITES.
+ *
+ * Some of these addresses are dangerous to READ and perfectly normal to
+ * write: ESCHED 0x2000 off-buses a cold chip when read, and the vendor's own
+ * boot writes it. Others are the reverse: 0x240036 and 0x260014 are measured
+ * fatal to WRITE and have never been read. A guard that refuses both
+ * directions for everything is safe in the sense that a brick is safe, and it
+ * blocked the egress scheduler's first register until this was split.
+ */
 
 /* Human-readable name for a word address's block, for diagnostics. Returns a
  * static string; never NULL. */
