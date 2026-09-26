@@ -33,4 +33,21 @@ scaffold  mapperinit        421  mapper init
 scaffold  ffubstinit         99  FFU BST init
 scaffold  modports          268  MOD per-port
 #
-# 29 scaffold, 0 ported.
+# The 12 authored blocks. These are NOT relocated capture and do not belong
+# here -- they are our own code and their home is datapath/fm6000 proper.
+# They are listed so fetch.sh can assemble a complete 41-block sequence for
+# the link experiment, and so it is obvious which is which.
+authored  safinit           123  store-and-forward init
+authored  cmrest           1079  CM remainder
+authored  cmwm              154  CM watermarks
+authored  esched            278  egress scheduler
+authored  l3arslice1        917  L3AR slice 1
+authored  l3arslice4        722  L3AR slice 4
+authored  l3arslice3        898  L3AR slice 3
+authored  l3arslice2        898  L3AR slice 2
+authored  l3artables        537  L3AR tables
+authored  parserfields      263  parser field map
+authored  smalltables      1041  small tables
+authored  tbl3init         1886  table 3 init
+#
+# 29 scaffold, 12 authored, 0 ported.

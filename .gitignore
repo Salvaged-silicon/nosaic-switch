@@ -91,3 +91,6 @@ refs/
 # tree carrying 130,000 lines of somebody else's captured boot is not one,
 # however the directory is labelled. See that directory's README.
 /datapath/fm6000/scaffold/fm6000_*.c
+/datapath/fm6000/scaffold/fm6000_*.h
+/datapath/fm6000/scaffold/fm6000_[a-z]*[!.]
+

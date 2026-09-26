@@ -584,7 +584,41 @@ has a reason, in code, parameterised by the board.
 - [x] **the acceptance test is LANE_STATUS, not signal detect.** Bit 6 of
       reg 0x14 never sets, even on a port carrying traffic. The lane's
       `+0x38` is the real one: `0x940` locked, `0` dark.
-### ✅ Answered: 41 blocks, in this order, and both ports lock
+### ⚠ Correction: it is not 41 self-contained blocks
+
+I recorded this as "link is a list of 41 blocks". Running them says
+otherwise, and the files say so themselves.
+
+**They are splices, not programs.** `modinit`'s own header: *"TABLE ONLY,
+deliberately: emits the 3855 registers written exactly once and **leaves the
+306 multi-write control registers in the replay** with their sequences
+intact."* Each block was built to be substituted into the vendor sequence,
+with the parts it omits still coming from the capture. Several are like this.
+
+**And STANDALONE also applied a residual file.** The runner does
+`fm6000_fullreplay /mnt/flash/residual.txt` when one is present — *"a site
+may keep the small residual instead of the whole vendor replay"* — about
+1,800 writes. The measured "BOTH PORTS UP" was with the big replays absent,
+which is what the commit claims, and not with nothing but the 41.
+
+**Measured here, 2026-09-26:** built all 41 against the SCD local bus and ran
+them in order on a booted chip. Blocks 1-5 — `cminit` `safinit` `ffuinit`
+`l2linit` `parserinit` — run clean. **Block 6, `modinit`, takes the chip off
+the bus**, which is what a half-configured block looks like.
+
+⚠ The first run reported *"ran 41, nonzero 0, missing 0"* **over a dead
+chip**: every block exited zero because they map the BAR themselves and none
+of them checks. The runner now tests liveness after each block and stops. A
+sequence that reports success over a corpse is worse than one that fails.
+
+So the real shape is: 41 partial blocks **plus** a residual of captured
+writes, and the residual is load-bearing rather than leftover. That does not
+sink the scaffold plan — it means the scaffold has to include the residual
+too, and that the thing to be replaced is larger than 29 files.
+
+### The order, which is still right
+
+
 
 The prior work ran exactly this experiment — every generator directly by
 MMIO with both replay files absent — and measured:
