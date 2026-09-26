@@ -403,10 +403,21 @@ Features that do not need the ASIC, measured and working 2026-09-25:
       PCA, `0x0e` SerialNumber, CRC32, V2/V3. From Arista's own open driver.
 - [x] **PSU inventory is available** — both supplies' FRU EEPROMs found and
       read: Emerson DS460S at accel 0 bus 4 and accel 1 bus 0, with serials.
-- [ ] ⚠ **the board PREFDL is still not located.** It is NOT the two extra
-      `0x50` responders (those are the PSUs), not on the flash filesystem, and
-      not at `0x51`–`0x57` on accelerators 0–2. Arista's `scd-spi.c` suggests
-      looking at the SCD's SPI rather than its SMBus.
+- [ ] ⚠ **the board PREFDL is still not located, and it is a shipping defect
+      rather than a tidiness one.** `config/network.conf` states this
+      chassis's MAC, so the image is chassis-specific: flash it on a second
+      7150S-52 and two boxes claim one address.
+      Ruled out: the flash filesystem (searched by name and by byte-searching
+      every file for the MAC), the kernel cmdline, `/sys/firmware`, SCD SMBus
+      `0x50` on accelerators 0–11 and `0x51`–`0x57` on 0–2, and all five host
+      i2c buses — i2c-0 `0x50`/`0x51` are DDR3 SPD, i2c-2 `0x4c` is a temp
+      sensor, i2c-1 `0x23` is thorn.
+      Next: the SCD's **SPI** (Arista ships an `scd-spi.c`), or extract
+      `DosBoard` from the EOS SWI on our own flash and read where the vendor
+      gets it — neither needs an EOS boot.
+- [x] **the `eth0 -> Management1` map is not needed.** It is an EOS/SONiC
+      display-name convention; NOSaic names the interface `eth0` directly and
+      has no renaming layer. The management port is fully working.
 - [ ] **board identity / prefdl** — `platform status` still says the SEEPROM is
       not located. Two non-transceiver `0x50` responders were found at accel 0
       bus 4 and accel 1 bus 0; read them. This also removes the hand-written

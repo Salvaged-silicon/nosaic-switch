@@ -726,10 +726,29 @@ The earlier guess was wrong. Dumped, they are Emerson PSU FRU EEPROMs:
 
 Two PSUs, both present, which agrees with the SCD's own presence bits. That is
 real inventory NOSaic can report — model and serial per supply — and it is
-**not** the board PREFDL. Where that lives is still unknown: not on the flash
-filesystem, and not at `0x50`–`0x57` on accelerators 0–2. `scd-spi.c` in
-Arista's driver is a hint that it may be on the SCD's SPI rather than its
-SMBus at all.
+**not** the board PREFDL.
+
+### Where the PREFDL is not
+
+Worth writing down, because the negative space is most of the search. **live**
+
+| looked | found |
+|---|---|
+| flash filesystem, by name and by byte-searching every file for the MAC | nothing |
+| kernel cmdline, `/sys/firmware` | `console=ttyS0,9600n8 panic=5`; only `memmap` |
+| SCD SMBus `0x50` on accelerators 0–11 | 52 cages + the two PSUs |
+| SCD SMBus `0x51`–`0x57` on accelerators 0–2 | SFP DOM pages only |
+| host i2c-0 `0x50`/`0x51` | **DDR3 SPD** (`92 11 0b 02`, byte 2 = DDR3) |
+| host i2c-1 `0x50`–`0x57` | all `0xff`; the i2cdetect hits were probe artefacts |
+| host i2c-2 `0x4c` | a temperature sensor |
+
+The host buses did confirm one thing: **`0x23` on i2c-1 is `thorn`**, which
+makes i2c-1 the bus the earlier investigation called `/sb/1`.
+
+⚠ The remaining lead is the **SCD's SPI**, not any i2c bus — Arista's own
+driver has an `scd-spi.c`, and nothing else on this board is left to look at.
+The other route is to extract `DosBoard` from the EOS SWI, which sits on our
+own flash, and read where the vendor gets it from — that needs no EOS boot.
 
 ### `Cotati.hold` on the flash, identified
 
