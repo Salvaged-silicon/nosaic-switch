@@ -79,6 +79,7 @@
 #define HB_PORT        47101
 #define ETYPE          0x88b5         /* IEEE local experimental */
 #define MAX_SYNC       4096
+#define WALK_MS        1000           /* the L2 table walked for MAC sync at most this often */
 #define PER_FRAME      120
 #define SETTLE_MS      2500           /* see evaluate(): how long a half must stay put */
 #define MAX_PORT       256
@@ -213,11 +214,14 @@ static void lag_pbm(int lag, bcm_pbmp_t *pbm)
 /* ---------------------------------------------------------------------- */
 /* Control frames */
 
-static int collect(struct smac *out, int max);
+/* The MACs this switch learned on its MLAG interfaces, as of the last walk of
+ * the L2 table (mlag_thread). Static entries are left out: those are the
+ * peer's, installed here. */
+static struct smac mine[MAX_SYNC];
+static int nmine;
 
 static void send_frames(int plk)
 {
-	static struct smac mine[MAX_SYNC];
 	unsigned char f[1500];
 	int n, k, port = key_xmit_port(plk), chunk, chunks;
 	unsigned id;
@@ -225,10 +229,7 @@ static void send_frames(int plk)
 	if (port < 0)
 		return;
 
-	/* The MACs this switch learned on its MLAG interfaces. Static entries
-	 * are skipped: those are the peer's, installed here. */
-	n = collect(mine, MAX_SYNC);
-
+	n = nmine;
 	tx_gen++;
 	chunks = n == 0 ? 1 : (n + PER_FRAME - 1) / PER_FRAME;
 	for (chunk = 0; chunk < chunks; chunk++) {
@@ -688,7 +689,8 @@ static void evaluate(long long now)
 
 static void *mlag_thread(void *arg)
 {
-	long long next_hello = 0;
+	static struct smac walked[MAX_SYNC];
+	long long next_hello = 0, next_walk = 0;
 
 	(void)arg;
 	for (;;) {
@@ -696,6 +698,32 @@ static void *mlag_thread(void *arg)
 
 		usleep(TICK_MS * 1000);
 		now = now_ms();
+		/*
+		 * ⚠ THE L2 WALK IS OUTSIDE THE LOCK, AND NOT ONCE A HELLO.
+		 *
+		 * It used to be both: collected for every hello, holding
+		 * mlag_lock. A walk of a 7050SX2's table took over a second
+		 * (see recipes/openbcm/patches/0002), so the hellos went out late
+		 * enough for the TX to give the SX2 up every few seconds, and the
+		 * RX thread -- which takes mlag_lock for every control frame --
+		 * stalled with it, and every packet to the CPU behind that. The
+		 * SDK is patched now, but the walk is still the one thing here
+		 * whose cost grows with the table, so the peer's liveness no
+		 * longer waits on it: hellos carry the last walk's MACs.
+		 *
+		 * cb_collect reads mlag_of[] unlocked. An interface removed
+		 * mid-walk costs one walk of stale MACs, which the next replaces.
+		 */
+		if (enabled && now >= next_walk) {
+			int n = collect(walked, MAX_SYNC);
+
+			pthread_mutex_lock(&mlag_lock);
+			memcpy(mine, walked, sizeof(struct smac) * (size_t)n);
+			nmine = n;
+			pthread_mutex_unlock(&mlag_lock);
+			now = now_ms();
+			next_walk = now + WALK_MS;
+		}
 		pthread_mutex_lock(&mlag_lock);
 		if (enabled) {
 			bcm_pbmp_t plp;
