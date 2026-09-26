@@ -584,12 +584,49 @@ has a reason, in code, parameterised by the board.
 - [x] **the acceptance test is LANE_STATUS, not signal detect.** Bit 6 of
       reg 0x14 never sets, even on a port carrying traffic. The lane's
       `+0x38` is the real one: `0x940` locked, `0` dark.
-- [ ] ⚠ **how much of the chip must be up before the PCS will lock?** Our
-      SerDes matches a working one register for register, and LANE_STATUS is
-      still `0`. The prior work's fibre port locked with no Intel firmware
-      but was running all of EdgeNOS — parser, CM, MOD, scheduler. We have
-      Table 4-1, the lane enable and two EPL gates. Receiver lock is a PCS
-      function and the PCS does not run on an unconfigured fabric.
+### ✅ Answered: 41 blocks, in this order, and both ports lock
+
+The prior work ran exactly this experiment — every generator directly by
+MMIO with both replay files absent — and measured:
+
+```
+   STANDALONE: ran 41 generators directly (0 non-zero, 0 absent)
+   et1 = 0x00000cc0 / 0x00000940     et2 = 0x000008c0 / 0x00000940
+   BOTH PORTS UP
+```
+
+*"The LINK LAYER IS FULLY OURS — EPL, SerDes, PCS, both ports to clean lock
+with no vendor file anywhere — and FORWARDING IS NOT."*
+
+So link is a closed problem with a known answer, and the order is not
+invented: it is the order the vendor sequence's own splice points imply.
+
+```
+   cminit      safinit     ffuinit      l2linit
+   parserinit  modinit     eplseq       l2arseq
+   l2arpre     l2arinit    mapperpre    mgmt2pre
+   hashinit    cmwm        mapper       smalltables
+   cmrest      parserfields esched      modports
+   erl         sweeperinit cmminit      monitorinit
+   statsarinit eaclinit    laginit      glortinit
+   tbl3init    crmdrop     l3arinit     l3arslice1
+   l3arslice4  l3arslice3  l3arslice2   l3artables
+   sweepinit   mgmt2init   eplinit      mapperinit
+   ffubstinit
+```
+
+- [ ] **port the 41 blocks.** This is M4, and it is now a list rather than a
+      question. Each is a block of chip configuration; `serdes_enable` and
+      `lanelink` are already done here as `serdes.c`.
+- [ ] ⚠ **forwarding needs more than these.** The same experiment got link
+      and no transit: 5 kernel routes instead of 39, et1 rx 0, 0 frames
+      through. About 1,800 residual writes no generator covers. That is M5
+      and it is a different problem — the prior work's own next step was to
+      bisect the residual with transit as the oracle.
+- [ ] ⚠ **a runner must not iterate the whole tool directory.** The prior
+      work wedged the switch hard enough to need a power cycle by running
+      every `fm6000_*` with an argument the probes did not understand, so
+      they fell through to their default action: writing to the chip.
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable
