@@ -83,3 +83,11 @@ refs/
 
 # SerDes transmit equalisation: per-trace tuning from the board description.
 /platform/*/config/serdes.conf
+
+# The FM6000 scaffold: relocated vendor capture, fetched on demand by
+# datapath/fm6000/scaffold/fetch.sh and deleted block by block as real
+# generators replace it. Deliberately not in the repository -- an image that
+# can be redistributed is the whole reason this board is being ported, and a
+# tree carrying 130,000 lines of somebody else's captured boot is not one,
+# however the directory is labelled. See that directory's README.
+/datapath/fm6000/scaffold/fm6000_*.c

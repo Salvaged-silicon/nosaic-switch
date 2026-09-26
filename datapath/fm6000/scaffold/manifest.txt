@@ -1,0 +1,36 @@
+# The 29 blocks of relocated vendor capture the link layer still needs, and
+# what has replaced them.
+#
+# status  block          lines   what it is
+# ------  -------------  ------  ------------------------------------------
+scaffold  cminit            899  congestion management init
+scaffold  ffuinit          8751  FFU / AlgoMatch init
+scaffold  l2linit         24629  L2 lookup init
+scaffold  parserinit       1657  parser init
+scaffold  modinit          3915  MOD block init
+scaffold  eplseq          23135  EPL bring-up sequence
+scaffold  l2arseq         44368  L2AR bring-up sequence, 29110 writes
+scaffold  l2arpre         25482  L2AR pre-init
+scaffold  l2arinit         4666  L2AR init
+scaffold  mapperpre        5709  mapper pre-init
+scaffold  mgmt2pre         1599  MGMT2 pre-init
+scaffold  hashinit         2108  hash init
+scaffold  mapper            641  mapper
+scaffold  erl              2008  egress rate limiter
+scaffold  sweeperinit       117  sweeper init
+scaffold  cmminit           132  CM multicast init
+scaffold  monitorinit       686  monitor init
+scaffold  statsarinit      1007  stats AR init
+scaffold  eaclinit          416  egress ACL init
+scaffold  laginit           376  LAG init
+scaffold  glortinit         211  GLORT init
+scaffold  crmdrop           419  CRM drop init
+scaffold  l3arinit          704  L3AR init
+scaffold  sweepinit        1760  sweep init
+scaffold  mgmt2init         562  MGMT2 init
+scaffold  eplinit          1081  EPL init
+scaffold  mapperinit        421  mapper init
+scaffold  ffubstinit         99  FFU BST init
+scaffold  modports          268  MOD per-port
+#
+# 29 scaffold, 0 ported.
