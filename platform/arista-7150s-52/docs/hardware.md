@@ -658,13 +658,33 @@ makes it trustworthy rather than merely convenient:
 Three independent derivations of the port map now agree: the vendor agent log,
 the SCD cage registers, and the FDL.
 
-⚠ **Unreconciled: the FDL's `eplId` is not the datasheet's EPL number.** The
-FDL puts port 1 on `eplId 14 lane 0`; Table 9-4 makes EPL[14] SBus 41, while
-the prior investigation recorded port 1's SerDes as SBus `0x49` (73), which is
-Table 9-4's EPL[24]. One of the two numbering schemes is offset or permuted
-and which has not been established. **This has to be settled before writing to
-a lane** — a lane-enable sent to the wrong SerDes is exactly the kind of error
-that presents as "the port stays dark" with every register looking right.
+### ✅ Resolved: the FDL's `eplId` is not the datasheet's EPL number, and it does not need to be
+
+The FDL puts port 1 on `eplId 14 lane 0`, and Table 9-4 makes EPL[14] SBus 41
+— but the prior investigation's capture recorded port 1's SerDes as SBus
+`0x49` (73), which is Table 9-4's EPL[24]. So the two numbering schemes are
+permuted with respect to each other.
+
+**They do not have to be reconciled**, because the lane arithmetic closes the
+gap on its own. From the same capture: port 3's SerDes is `0x4a` (74), and the
+FDL puts port 3 on `eplId 14 lane 1` — the *same EPL as port 1, next lane*.
+`74 = 73 + 1` is exactly what "lane 1 of the EPL whose base is 73" means, so:
+
+```
+   FDL eplId 14  ->  SBus base 73      ports 1, 3, 5, 7   = lanes 0..3
+   FDL eplId 16  ->  SBus base 69      ports 2, 4, 6, 8   = lanes 0..3
+```
+
+Both bases are genuine 4-lane groups in Table 9-4 (73 is EPL[24], 69 is
+EPL[23]), so the two sources are consistent even though their labels differ.
+Three facts agree — the capture's device ids, the FDL's lane indices, and
+Table 9-4's grouping — and that is enough to address the lanes behind the
+first eight front-panel ports without knowing the permutation for the other
+44. **derived, from three agreeing sources**
+
+⚠ The permutation for EPLs other than 14 and 16 is **still unknown**, so this
+covers ports 1–8 and no further. That is enough: port 1 is the one with an
+optic and a live far end, and it is the port to bring up first.
 
 ## What is and is not on Arista's GitHub, 2026-09-26
 

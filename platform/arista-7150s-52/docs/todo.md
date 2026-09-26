@@ -494,11 +494,18 @@ has a reason, in code, parameterised by the board.
 - [x] **lane baseline taken** — all 96 SerDes read `0x0f`=`0x0a` (not locked)
       and `0x14`=`0x14` (no signal detect), uniformly. Nothing is enabled, so
       a lane cannot yet be identified by its signal.
-- [ ] ⚠ **reconcile the FDL `eplId` against the datasheet EPL number.** The
-      FDL says port 1 is `eplId 14 lane 0`; Table 9-4 makes EPL[14] SBus 41,
-      but the prior work recorded port 1's SerDes as SBus `0x49` (73), which
-      is EPL[24]. **Settle this before writing to any lane** — an enable sent
-      to the wrong SerDes looks exactly like a port that will not come up.
+- [x] **the EPL numbering question is resolved for ports 1-8, and does not
+      need reconciling.** The capture gives port 1 = SBus `0x49` (73) and port
+      3 = `0x4a` (74); the FDL puts both on `eplId 14`, lanes 0 and 1. `74 =
+      73 + 1` closes it. So FDL `eplId 14` → SBus base 73 (ports 1,3,5,7) and
+      `eplId 16` → base 69 (ports 2,4,6,8), both valid 4-lane groups in Table
+      9-4. ⚠ The permutation for the other EPLs is still unknown — this covers
+      ports 1-8 only, which is enough, because port 1 has the optic.
+- [x] **the interface map is a dead end** — `switch-interface-maps` was
+      squashed to a parentless initial commit in 2022 with the 7150S-52 file
+      already empty, no Wayback snapshot, and every fork postdates it. The 185
+      other repos carrying `DCS-7150S-52` are NetBox device-type libraries:
+      port counts and airflow, no lane data.
 - [ ] **the per-port table needs a home.** EOS's FDL gives RX/TX polarity
       inversion and TX drive/pre/post per port; they are board routing facts
       and cannot be computed. `nosd-fm6000` does not read `board.yml` today,
