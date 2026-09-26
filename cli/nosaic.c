@@ -48,6 +48,7 @@ static const char usage[] =
 "  show acl                the access-list rules and what each has matched\n"
 "  show vlans              the VLANs, their members and their SVIs\n"
 "  show lags               the LAGs and which members are carrying traffic\n"
+"  show stp                the spanning tree: root, and each port's role and state\n"
 "\n"
 "  vlan add|del <vid>      create or remove a VLAN\n"
 "  switchport <port> access <vid> | trunk <vid,...> [native <vid>] | none\n"
@@ -55,6 +56,10 @@ static const char usage[] =
 "  svi add|del <vid>       the routed interface vlan<vid>\n"
 "  lag <poN> lacp|static <port,...> | none\n"
 "                          a LAG's whole membership; none removes it\n"
+"  stp on [priority <n>] | off\n"
+"                          rapid spanning tree over the switched ports\n"
+"  stp port <port> [edge] [cost <n>]\n"
+"                          one port's or LAG's settings\n"
 "\n"
 "  acl add <seq> <rule>    add or replace an access-list rule; it is persisted\n"
 "                          as the setting acl_<seq> and applied at once\n"
@@ -407,7 +412,9 @@ int main(int argc, char **argv)
 			return nosaic_show_vlans();
 		if (argc > 2 && strcmp(argv[2], "lags") == 0)
 			return nosaic_show_lags();
-		fprintf(stderr, "usage: nosaic show <ports|routes|vlans|lags|acl|caps>\n");
+		if (argc > 2 && strcmp(argv[2], "stp") == 0)
+			return nosaic_show_stp();
+		fprintf(stderr, "usage: nosaic show <ports|routes|vlans|lags|stp|acl|caps>\n");
 		return 2;
 	}
 	if (strcmp(argv[1], "acl") == 0)
@@ -420,6 +427,8 @@ int main(int argc, char **argv)
 		return nosaic_switchport_cmd(argc, argv);
 	if (strcmp(argv[1], "lag") == 0)
 		return nosaic_lag_cmd(argc, argv);
+	if (strcmp(argv[1], "stp") == 0)
+		return nosaic_stp_cmd(argc, argv);
 	if (strcmp(argv[1], "upgrade") == 0)
 		return nosaic_upgrade(argc, argv);
 	if (strcmp(argv[1], "platform") != 0) {

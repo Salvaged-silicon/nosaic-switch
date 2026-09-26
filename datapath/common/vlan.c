@@ -46,6 +46,7 @@
 
 #include "l3sync.h"
 #include "lag.h"
+#include "rstp.h"
 #include "tapbridge.h"
 #include "vlan.h"
 
@@ -190,12 +191,17 @@ int nosaic_vlan_start(int unit)
 }
 
 /*
- * FORWARD in the VLAN's own spanning-tree group, for the given ports.
+ * The ports' state in the VLAN's own spanning-tree group.
  *
  * The state that decides whether a port forwards in a VLAN is the one in that
  * VLAN's group, not the port's default one -- tapbridge.c has the story of a
  * port that was FORWARD in the default group and BLOCKING where it counted.
- * NOSaic runs no spanning tree, so FORWARD is the only right answer.
+ *
+ * A service VLAN forwards, always: a routed port is never in the spanning
+ * tree. A user VLAN is in the spanning tree's group (rstp.c), and a port
+ * there has whatever state its interface has -- FORWARD while spanning tree
+ * is off, otherwise what the tree decided, which for a port that has only
+ * just joined is discarding.
  */
 static void stg_forward(int vid, bcm_pbmp_t pbm)
 {
@@ -205,7 +211,8 @@ static void stg_forward(int vid, bcm_pbmp_t pbm)
 	if (bcm_vlan_stg_get(vlan_unit, (bcm_vlan_t)vid, &stg) != BCM_E_NONE)
 		return;
 	BCM_PBMP_ITER(pbm, p)
-		bcm_stg_stp_set(vlan_unit, stg, p, BCM_STG_STP_FORWARD);
+		bcm_stg_stp_set(vlan_unit, stg, p, user_vid[vid] ?
+				nosaic_rstp_port_state(p) : BCM_STG_STP_FORWARD);
 }
 
 int nosaic_vlan_add(int vid, char *err, size_t n)
@@ -248,6 +255,7 @@ int nosaic_vlan_add(int vid, char *err, size_t n)
 	BCM_PBMP_CLEAR(members[vid]);
 	BCM_PBMP_CLEAR(untagged[vid]);
 	user_vid[vid] = 1;
+	nosaic_rstp_vlan(vid);          /* into the spanning tree's group */
 	pthread_mutex_unlock(&vlan_lock);
 	printf("vlan: %d created\n", vid);
 	fflush(stdout);
@@ -283,6 +291,7 @@ static int leave(const struct iface *f, int vid, char *err, size_t n)
 		pst[f->key].switched--;
 	if (pst[f->key].switched > 0)
 		return 0;
+	nosaic_rstp_iface(f->key, 0);   /* out of the spanning tree */
 
 	/*
 	 * The last one: routed again. Back into its service VLAN -- the port's
@@ -368,6 +377,10 @@ int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_
 	}
 
 	if (pst[f.key].switched == 0) {
+		/* Into the spanning tree first, so the port's state in the VLAN
+		 * below is the tree's -- discarding, if it is on -- and never a
+		 * moment of FORWARD into a loop. */
+		nosaic_rstp_iface(f.key, 1);
 		/*
 		 * Becoming switched. Out of its service VLAN, so its router
 		 * interface hears nothing; ingress filtering on, so a frame in a

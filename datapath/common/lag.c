@@ -964,6 +964,20 @@ void nosaic_lag_flood_mask(bcm_pbmp_t *pbm, unsigned hash)
 	}
 }
 
+int nosaic_lag_tid(int key)
+{
+	if (key < 1 || key > NOSAIC_MAX_LAGS || !lags[key].used)
+		return -1;
+	return (int)lags[key].tid;
+}
+
+int nosaic_lag_active(int key)
+{
+	if (key < 1 || key > NOSAIC_MAX_LAGS)
+		return 0;
+	return ndist[key];
+}
+
 int nosaic_lag_of_tid(int tid)
 {
 	if (tid < 0 || tid >= (int)(sizeof(tid_lag) / sizeof(tid_lag[0])))
