@@ -25,6 +25,7 @@
 #include "sbus.h"
 #include "serdes.h"
 #include "bist.h"
+#include "saf.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -48,6 +49,7 @@ static void usage(void)
 "                        march. 'config' stops after the controllers. WRITES,\n"
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
 "  --try-pair EPL SBUS   confirm or refute one EPL-to-SBus pairing\n"
+"  --saf                 write the store-and-forward matrix (168 writes)\n"
 "  --sweep-pairs         find every EPL's SBus address by trying them\n"
 "  --spico N             is the SPICO running? post an interrupt and see\n"
 "  --dfe N               run the RX equaliser adaptation for port N\n"
@@ -670,6 +672,20 @@ int main(int argc, char **argv)
 sweep_done:
 		printf("\n%u of 24 EPLs mapped\n", found);
 		rc = found == 24 ? 0 : 2;
+	} else if (strcmp(argv[i], "--saf") == 0) {
+		unsigned n = 0;
+
+		if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			rc = 1;
+		} else {
+			rv = fm_saf_init(&dev, &n);
+			printf("store-and-forward matrix: %u writes, %s\n", n,
+			       rv == FM_OK ? "ok" : rvstr(rv));
+			printf("  the vendor's boot spends 34668 accumulating the same end state\n");
+			printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
+		}
 	} else if (strcmp(argv[i], "--sbus") == 0) {
 		rc = cmd_sbus(&dev);
 	} else if (strcmp(argv[i], "--meminit") == 0) {

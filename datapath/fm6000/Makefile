@@ -29,7 +29,7 @@ CFLAGS  += -I../common
 CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"fm6000\"
 LDLIBS  += -lpthread
 
-COMMON_OBJS = pci.o sbus.o serdes.o bist.o
+COMMON_OBJS = pci.o sbus.o serdes.o bist.o saf.o
 DAEMON_OBJS = main.o boot.o sock.o $(COMMON_OBJS)
 PROBE_OBJS  = probe.o boot.o $(COMMON_OBJS)
 
@@ -51,7 +51,8 @@ sock.o: sock.c sock.h pci.h regs.h
 sbus.o: sbus.c sbus.h pci.h regs.h
 serdes.o: serdes.c serdes.h sbus.h pci.h regs.h
 bist.o: bist.c bist.h pci.h regs.h
-probe.o: probe.c serdes.h bist.h pci.h regs.h boot.h
+saf.o:  saf.c saf.h portmap.h pci.h regs.h
+probe.o: probe.c serdes.h bist.h saf.h pci.h regs.h boot.h
 
 # Stripping is a separate target rather than -s at link time, so a debug build
 # is one target away rather than a makefile edit. Unlike the Broadcom datapaths

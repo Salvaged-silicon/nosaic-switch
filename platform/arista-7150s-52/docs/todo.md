@@ -652,9 +652,9 @@ invented: it is the order the vendor sequence's own splice points imply.
 - [ ] ⚠ **port the 41 blocks — but 29 of them are relocated capture, not
       generated code.** Classified by their own headers:
 
-      **authored (12):** `safinit` `cmrest` `cmwm` `esched` `l3arslice1..4`
-      `l3artables` `parserfields` `smalltables` `tbl3init` — 123 to 1,886
-      lines each.
+      **authored (12), 1 ported:** ~~`safinit`~~ → `datapath/fm6000/saf.c`,
+      168 writes, verified on hardware. Remaining: `cmrest` `cmwm` `esched`
+      `l3arslice1..4` `l3artables` `parserfields` `smalltables` `tbl3init`.
 
       **relocated capture (29):** everything else, and it is where the volume
       is — `l2arseq` 44,368 lines, `l2arpre` 25,482, `l2linit` 24,629,
