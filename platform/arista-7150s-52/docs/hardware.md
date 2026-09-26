@@ -967,6 +967,43 @@ step EOS performed and NOSaic does not. Until it does, a module in a cage
 this board has not powered is invisible to it: no EEPROM, no presence bit.
 That is not a mapping problem, it is a missing initialisation.
 
+## The EPL gates are not enough to light a lane, 2026-09-26
+
+Tested directly, with all four cages populated and their far ends
+transmitting. **live**
+
+Port 1 is EPL 14 lane 0. Booted the chip, then wrote the two per-EPL
+registers to the exact values a forwarding chip holds:
+
+```
+   booted     CFG_A 0x0C7D7899   CFG_B 0x00080000   PORT_STATUS 0x15
+   written    CFG_A 0x7E1D7899   CFG_B 0x00090033   chip alive
+   after 5s   PORT_STATUS 0x15, +0x38 0x00000000    unchanged
+```
+
+Both writes took and read back. The chip stayed up. **And the lane did not
+come up** — PORT_STATUS stayed at the dark value and never moved toward
+`0x8c0`, with the far end transmitting into it the whole time.
+
+So the EPL gates are **necessary but not sufficient**, and this rules out the
+cheapest possible path to a link. The SerDes itself has to be configured
+first, over the SBus, and only then do these registers mean anything.
+
+⚠ This is a **stronger** negative than the prior investigation's, and the
+difference is worth stating. There, setting `PcsSel` on a dark port turned
+`SerXmit` 0→1 — but that was one dark port on a chip EOS had already
+initialised, so its SerDes had been through the vendor's bring-up. Ours has
+had no SerDes configuration at all. Setting the same gate on a chip where
+nothing has touched the lane does nothing, which is consistent with their
+finding rather than contradicting it, and it locates the missing work
+precisely: the lane-enable algorithm, not the EPL registers.
+
+⚠ Note also that writing a captured register value is **not** how this ships.
+`EPL_CFG_A` differs from ours in six bits nobody has decoded, and writing the
+forwarding value wholesale was an experiment to find out whether the gates
+alone suffice. They do not, so the question is moot — but if they had, the
+fields would still need decoding before any of it became driver code.
+
 ## Confirmed on the bench, 2026-09-22
 
 Unit A was powered from cold (`apc1` outlet 6, named `7150S-unitA`) and booted

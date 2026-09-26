@@ -561,6 +561,10 @@ has a reason, in code, parameterised by the board.
       configured-and-empty, `0x180` configured-with-a-module. A module in a
       cage this board has not powered is invisible — no EEPROM, no presence
       bit — so transceiver discovery silently under-reports on a cold box.
+- [x] **the EPL gates alone do not light a lane** — measured. Writing
+      `CFG_A 0x7E1D7899` and `CFG_B 0x00090033` on EPL 14 with a live far end
+      leaves PORT_STATUS at the dark `0x15`. The SerDes lane-enable is
+      required first; this rules out the cheap path.
 - [ ] **bring a port up.** The two gates are known: `EPL_CFG_B.PortNPcsSel` = 3
       for 10GBASE-R (ours reads `PCS_DISABLE` today) and `EPL_CFG_A.Active_N`.
       Both are per-EPL registers with per-port fields. Needs the lane-enable
