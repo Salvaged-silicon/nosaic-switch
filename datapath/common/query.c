@@ -45,6 +45,7 @@
 #include "acl.h"
 #include "query.h"
 #include "vlan.h"
+#include "lag.h"
 
 static int query_unit;
 
@@ -305,11 +306,93 @@ static int handle_vlan(FILE *out, const char *req)
 	return 1;
 }
 
+/*
+ * SetPortAdmin: the port enabled or disabled in the chip, so a port taken
+ * down drops its link and the far end sees it go -- what pulling the cable
+ * does, and the way to test a LAG's failover without anyone in the lab.
+ */
+static int port_admin(const char *name, int up, char *err, size_t n)
+{
+	int i, rv;
+
+	for (i = 0; i < nosaic_tap_count(); i++) {
+		const char *tn = NULL;
+		int port = -1;
+
+		if (nosaic_tap_info(i, &tn, &port, NULL, NULL, NULL) != 0 || tn == NULL ||
+		    strcmp(tn, name) != 0)
+			continue;
+		rv = bcm_port_enable_set(query_unit, port, up);
+		if (rv != BCM_E_NONE) {
+			snprintf(err, n, "%s: bcm_port_enable_set: %s", name, bcm_errmsg(rv));
+			return -1;
+		}
+		printf("port: %s administratively %s\n", name, up ? "up" : "down");
+		fflush(stdout);
+		return 0;
+	}
+	snprintf(err, n, "no such port %s", name);
+	return -1;
+}
+
+/*
+ * LAGs, switchapi 1.3. The member list is the one array any request carries,
+ * "ports":["swp1","swp2"]; absent is empty.
+ */
+static int handle_lag(FILE *out, const char *req)
+{
+	char op[32], name[64], err[160], buf[16][32];
+	const char *ports[16];
+	int rv, n = 0;
+
+	req_str(req, "op", op, sizeof(op));
+	req_str(req, "name", name, sizeof(name));
+	err[0] = '\0';
+	if (strcmp(op, "lags") == 0) {
+		nosaic_lag_query(out);
+		return 1;
+	} else if (strcmp(op, "lag.add") == 0) {
+		rv = nosaic_lag_add(name, strstr(req, "\"lacp\":true") != NULL,
+				    err, sizeof(err));
+	} else if (strcmp(op, "lag.members") == 0) {
+		const char *p = strstr(req, "\"ports\":[");
+
+		if (p != NULL) {
+			for (p += 9; *p != '\0' && *p != ']'; p++) {
+				size_t k = 0;
+
+				if (*p != '"')
+					continue;
+				if (n == 16) {
+					reply(out, -1, "a LAG takes at most 16 members");
+					return 1;
+				}
+				for (p++; *p != '\0' && *p != '"' && k + 1 < sizeof(buf[n]); p++)
+					buf[n][k++] = *p;
+				buf[n][k] = '\0';
+				ports[n] = buf[n];
+				n++;
+				if (*p == '\0')
+					break;
+			}
+		}
+		rv = nosaic_lag_members(name, ports, n, err, sizeof(err));
+	} else if (strcmp(op, "lag.del") == 0) {
+		rv = nosaic_lag_del(name, err, sizeof(err));
+	} else if (strcmp(op, "port.admin") == 0) {
+		rv = port_admin(name, strstr(req, "\"up\":true") != NULL, err, sizeof(err));
+	} else {
+		return 0;
+	}
+	reply(out, rv, err);
+	return 1;
+}
+
 static void handle(FILE *out, const char *req)
 {
 	int i;
 
-	if (handle_vlan(out, req))
+	if (handle_vlan(out, req) || handle_lag(out, req))
 		return;
 
 	/*
@@ -559,7 +642,7 @@ static void handle(FILE *out, const char *req)
 	if (strstr(req, "\"capabilities\"") != NULL) {
 		bcm_l3_info_t info;
 		struct nosaic_acl_caps acl;
-		int maxv4 = 0, maxecmp = 0;
+		int maxv4 = 0, maxecmp = 0, maxlags = 0, maxlagm = 0;
 
 		bcm_l3_info_t_init(&info);
 		if (bcm_l3_info(query_unit, &info) == BCM_E_NONE) {
@@ -567,6 +650,7 @@ static void handle(FILE *out, const char *req)
 			maxecmp = info.l3info_max_ecmp;
 		}
 		nosaic_acl_capability(&acl);
+		nosaic_lag_capability(&maxlags, &maxlagm);
 
 		/*
 		 * ⚠ ECMP WAS NEVER REPORTED, AND IT HAD BEEN WORKING ALL ALONG.
@@ -591,16 +675,20 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.2\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.3\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
 			"\"ACL\":%s,\"ACLEntries\":%d,"
-			"\"ACL6\":%s,\"ACL6Entries\":%d}}\n",
+			"\"ACL6\":%s,\"ACL6Entries\":%d,"
+			"\"LAGs\":%s,\"MaxLAGs\":%d,\"MaxLAGMembers\":%d,"
+			"\"LACP\":%s}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
 			maxecmp > 1 ? "true" : "false", maxecmp,
 			acl.v4 ? "true" : "false", acl.v4_total,
-			acl.v6 ? "true" : "false", acl.v6_total);
+			acl.v6 ? "true" : "false", acl.v6_total,
+			maxlags > 0 ? "true" : "false", maxlags, maxlagm,
+			maxlags > 0 ? "true" : "false");
 		return;
 	}
 
@@ -780,6 +868,7 @@ int nosaic_query_start(int unit, const char *path)
 	/* The VLAN table answers here, so it starts with the thing that serves
 	 * it: every datapath calls this, and none has to be told separately. */
 	nosaic_vlan_start(unit);
+	nosaic_lag_start(unit);
 
 	struct sockaddr_un a;
 	pthread_t th;

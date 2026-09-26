@@ -76,7 +76,7 @@ mkdir -p /run
 # itself, but only once it starts; clearing it here means a run that crashed
 # before that does not wedge the next one.
 rm -f "$SOCK"
-./out/nosd --socket "$SOCK" --driver virt --ports 6 >/tmp/nosd.log 2>&1 &
+./out/nosd --socket "$SOCK" --driver virt --ports 8 >/tmp/nosd.log 2>&1 &
 NOSD=$!
 trap 'kill $NOSD 2>/dev/null || true' EXIT
 
@@ -240,6 +240,66 @@ else
     echo "    vlans: reported as unsupported here (no bridge tool), so nothing to drive"
     if ./out/nosaic vlan add 10 2>/dev/null; then
         echo "a datapath without vlans accepted one"; exit 1
+    fi
+fi
+
+echo
+echo "=== link aggregation, negotiated by LACP with a real far end ==="
+if ./out/nosaic show caps | grep -Eq '^lags +yes'; then
+    # The far end is a namespace with a bond of its own over swp7's and
+    # swp8's cables, so LACP is between two independent implementations, not
+    # a loop of ours.
+    unshare -n sleep 600 & D=$!
+    trap 'kill $NOSD ${PEER:-} ${HOSTS:-} $D 2>/dev/null || true' EXIT
+    sleep 0.3
+    ip link set swp7-p netns "$D"
+    ip link set swp8-p netns "$D"
+    nsenter -t "$D" -n sh -c 'ip link set lo up
+        ip link add bond0 type bond mode 802.3ad lacp_rate fast miimon 100
+        ip link set swp7-p master bond0; ip link set swp8-p master bond0
+        ip link set bond0 up; ip addr add 10.20.0.2/24 dev bond0'
+
+    ./out/nosaic lag po1 lacp swp7,swp8
+    ip addr add 10.20.0.1/24 dev po1
+    both() { ./out/nosaic show lags | awk '$1 == "po1" { print $3 }'; }
+    for _ in $(seq 1 30); do [ "$(both)" = "swp7,swp8" ] && break; sleep 1; done
+    ./out/nosaic show lags | sed 's/^/    /'
+    [ "$(both)" = "swp7,swp8" ] || { echo "LACP never made both members active"; exit 1; }
+    dping() { nsenter -t "$D" -n ping -c 3 -i 0.2 -W 1 "$1" >/dev/null 2>&1; }
+    dping 10.20.0.1 || { echo "nothing crosses the LAG"; exit 1; }
+    echo "    po1: both members negotiated, traffic crosses"
+
+    # A member lost: the LAG carries on, on the one that is left.
+    nsenter -t "$D" -n ip link set swp7-p down
+    for _ in $(seq 1 15); do [ "$(both)" = "swp8" ] && break; sleep 1; done
+    [ "$(both)" = "swp8" ] || { echo "a member with no far end stayed active"; ./out/nosaic show lags; exit 1; }
+    dping 10.20.0.1 || { echo "the LAG stopped carrying traffic with one member left"; exit 1; }
+    echo "    one member down: marked inactive, traffic continues on the other"
+    nsenter -t "$D" -n ip link set swp7-p up
+
+    # And a LAG is a switchport like any other.
+    ip addr del 10.20.0.1/24 dev po1
+    ./out/nosaic vlan add 30
+    ./out/nosaic switchport po1 access 30
+    ./out/nosaic svi add 30 >/dev/null
+    ip addr add 10.20.0.1/24 dev vlan30
+    sleep 1
+    dping 10.20.0.1 || { echo "po1 as an access port does not reach vlan30"; exit 1; }
+    ./out/nosaic show vlans | sed 's/^/    /'
+    echo "    po1 as an access port in vlan 30, routed by vlan30"
+
+    ./out/nosaic svi del 30
+    ./out/nosaic switchport po1 none
+    ./out/nosaic vlan del 30
+    ./out/nosaic lag po1 none
+    if ip -o link show swp7 | grep -q "master"; then
+        echo "swp7 is still a LAG member after lag po1 none"; exit 1
+    fi
+    echo "    removed: the members are ordinary ports again"
+else
+    echo "    lags: reported as unsupported here (no bonding), so nothing to drive"
+    if ./out/nosaic lag po1 lacp swp7,swp8 2>/dev/null; then
+        echo "a datapath without LAGs accepted one"; exit 1
     fi
 fi
 

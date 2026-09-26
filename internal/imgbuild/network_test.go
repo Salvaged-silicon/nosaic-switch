@@ -212,7 +212,8 @@ exit 0
 	if err := os.WriteFile(script, []byte(applyNetwork), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(conf, []byte(`vlan 10 name servers
+	if err := os.WriteFile(conf, []byte(`lag po1 lacp swp7,swp8
+vlan 10 name servers
 vlan 20
 switchport swp1 access 10
 switchport swp2 trunk 10,20 native 1
@@ -234,6 +235,7 @@ iface vlan10 10.0.10.1/24
 	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
 	got := string(calls)
 	for _, want := range []string{
+		"lag po1 lacp swp7,swp8\n",
 		"vlan add 10\n", "vlan add 20\n",
 		"switchport swp1 access 10\n",
 		"switchport swp2 trunk 10,20 native 1\n",
@@ -242,6 +244,9 @@ iface vlan10 10.0.10.1/24
 		if !strings.Contains(got, want) {
 			t.Errorf("the CLI was never asked %q; it was asked:\n%s", strings.TrimSpace(want), got)
 		}
+	}
+	if strings.Index(got, "lag po1") > strings.Index(got, "vlan add 10") {
+		t.Errorf("a LAG must exist before any VLAN line can name it:\n%s", got)
 	}
 	if strings.Index(got, "vlan add 10") > strings.Index(got, "switchport swp1") ||
 		strings.Index(got, "switchport swp1") > strings.Index(got, "svi add 10") {

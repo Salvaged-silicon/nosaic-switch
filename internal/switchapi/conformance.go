@@ -66,6 +66,9 @@ func Check(sw Switch) []error {
 	}
 
 	probs = append(probs, checkVLANs(sw, caps, p0)...)
+	if len(ports) >= 2 {
+		probs = append(probs, checkLAGs(sw, caps, p0, ports[1].Name)...)
+	}
 	probs = append(probs, checkL3(sw, caps, p0)...)
 
 	probs = append(probs, checkACLs(sw, caps, p0)...)
@@ -194,6 +197,104 @@ func checkSVIs(sw Switch, caps Capabilities) []error {
 	if err := sw.AddSVI(4000); err == nil {
 		bad("AddSVI on a vlan that does not exist succeeded")
 		_ = sw.DelSVI(4000)
+	}
+	return probs
+}
+
+func checkLAGs(sw Switch, caps Capabilities, p0, p1 string) []error {
+	err := sw.AddLAG("po1", false)
+	if probs := wantSupport(caps.LAGs, err, "AddLAG", "Capabilities.LAGs"); len(probs) > 0 || !caps.LAGs {
+		return probs
+	}
+	var probs []error
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	defer sw.DelLAG("po1")
+
+	members := func() (LAG, bool) {
+		ls, err := sw.LAGs()
+		if err != nil {
+			bad("LAGs: %v", err)
+			return LAG{}, false
+		}
+		for _, l := range ls {
+			if l.Name == "po1" {
+				return l, true
+			}
+		}
+		return LAG{}, false
+	}
+	has := func(l LAG, port string) bool {
+		for _, m := range l.Members {
+			if m.Port == port {
+				return true
+			}
+		}
+		return false
+	}
+
+	if err := sw.AddLAG("bogus", false); err == nil {
+		bad("AddLAG accepted %q, which is not a po<N> name", "bogus")
+		_ = sw.DelLAG("bogus")
+	}
+	if err := sw.SetLAGMembers("po1", []string{p0, p1}); err != nil {
+		return append(probs, fmt.Errorf("SetLAGMembers(po1, %s %s): %w", p0, p1, err))
+	}
+	if l, ok := members(); !ok || !has(l, p0) || !has(l, p1) {
+		bad("po1 was given %s and %s and LAGs does not list both", p0, p1)
+	}
+	// A member is the LAG's, not its own.
+	if caps.VLANs {
+		if err := sw.AddVLAN(300); err == nil {
+			if err := sw.SetPortVLAN(p0, 300, false); err == nil {
+				bad("%s is a member of po1 and still took a VLAN of its own", p0)
+				_ = sw.DelPortVLAN(p0, 300)
+			}
+			// The LAG itself is a switchport like any other.
+			if err := sw.SetPortVLAN("po1", 300, false); err != nil {
+				bad("SetPortVLAN(po1): a LAG must take a VLAN like a port: %v", err)
+			} else if vl, err := sw.VLANs(); err == nil {
+				found := false
+				for _, v := range vl {
+					for _, m := range v.Members {
+						found = found || (v.VID == 300 && m.Port == "po1")
+					}
+				}
+				if !found {
+					bad("po1 was put in vlan 300 and VLANs does not list it")
+				}
+				_ = sw.DelPortVLAN("po1", 300)
+			}
+			_ = sw.DelVLAN(300)
+		}
+	}
+	// ... and a routed port like any other.
+	if caps.L3 {
+		addr := netip.MustParsePrefix("10.99.1.1/24")
+		if err := sw.AddAddress("po1", addr); err != nil {
+			bad("AddAddress(po1): a LAG must take an address like a port: %v", err)
+		} else {
+			_ = sw.DelAddress("po1", addr)
+		}
+	}
+	// End state: naming only p1 takes p0 out.
+	if err := sw.SetLAGMembers("po1", []string{p1}); err != nil {
+		bad("SetLAGMembers(po1, %s): %v", p1, err)
+	} else if l, ok := members(); !ok || has(l, p0) || !has(l, p1) {
+		bad("po1 was restated as just %s and LAGs does not show exactly that", p1)
+	}
+	if caps.LACP {
+		if err := sw.AddLAG("po1", true); err != nil {
+			bad("AddLAG(po1, lacp): %v", err)
+		} else if l, _ := members(); !l.LACP {
+			bad("po1 was made LACP and LAGs does not say so")
+		} else if !has(l, p1) {
+			bad("changing po1's mode lost its members")
+		}
+	}
+	if err := sw.DelLAG("po1"); err != nil {
+		bad("DelLAG: %v", err)
+	} else if _, ok := members(); ok {
+		bad("po1 was deleted and LAGs still lists it")
 	}
 	return probs
 }

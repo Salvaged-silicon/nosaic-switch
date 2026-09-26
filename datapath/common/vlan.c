@@ -45,6 +45,7 @@
 #include <bcm/vlan.h>
 
 #include "l3sync.h"
+#include "lag.h"
 #include "tapbridge.h"
 #include "vlan.h"
 
@@ -65,12 +66,29 @@ static volatile unsigned char svi_vid[MAX_VID];   /* and has an SVI */
 static bcm_pbmp_t members[MAX_VID];
 static bcm_pbmp_t untagged[MAX_VID];
 
-/* Per front-panel port, indexed like the taps. */
+/*
+ * Per interface: the front-panel ports, indexed like the taps, then the LAGs
+ * at NOSAIC_MAX_TAPS + their number. A LAG is a set of ports that join and
+ * leave VLANs together; its own memberships are kept in lagvl, because a LAG
+ * can be in a VLAN with no members yet, and a member added later has to find
+ * out which VLANs it is joining.
+ */
+#define NIFACE (NOSAIC_MAX_TAPS + NOSAIC_MAX_LAGS + 1)
 static struct {
 	int      switched;      /* member of how many user VLANs */
 	uint32   member_flags;  /* bcm_port_vlan_member_get, before we changed it */
 	int      saved;
-} pst[NOSAIC_MAX_TAPS];
+} pst[NIFACE];
+static unsigned char lagvl[NOSAIC_MAX_LAGS + 1][MAX_VID]; /* 1 untagged, 2 tagged */
+
+/* A port, or a LAG: what joins a VLAN. */
+struct iface {
+	int         key;        /* index into pst */
+	int         lag;        /* LAG number, 0 for a port */
+	bcm_pbmp_t  pbm;        /* its ports: one, or the LAG's members */
+	int         svc;        /* its service VLAN, where it lives while routed */
+	const char *name;
+};
 
 static void say(char *err, size_t n, const char *fmt, int a, const char *s, int rv)
 {
@@ -78,11 +96,12 @@ static void say(char *err, size_t n, const char *fmt, int a, const char *s, int 
 		snprintf(err, n, fmt, a, s != NULL ? s : "", rv < 0 ? bcm_errmsg(rv) : "");
 }
 
-/* A front-panel port by the name the contract uses, and its service VLAN. */
-static int port_by_name(const char *name, int *tap, int *port, int *svc)
+/* A port or a LAG by the name the contract uses. */
+static int iface_by_name(const char *name, struct iface *f)
 {
 	int i;
 
+	memset(f, 0, sizeof(*f));
 	for (i = 0; i < nosaic_tap_count(); i++) {
 		const char *n = NULL;
 		unsigned char mac[6];
@@ -91,11 +110,17 @@ static int port_by_name(const char *name, int *tap, int *port, int *svc)
 		if (nosaic_tap_info(i, &n, &p, &v, &mtu, mac) != 0 || n == NULL)
 			continue;
 		if (strcmp(n, name) == 0) {
-			*tap = i;
-			*port = p;
-			*svc = v;
+			f->key = i;
+			BCM_PBMP_PORT_ADD(f->pbm, p);
+			f->svc = v;
+			f->name = n;
 			return 0;
 		}
+	}
+	if (nosaic_lag_iface(name, &f->lag, &f->pbm, &f->svc) == 0) {
+		f->key = NOSAIC_MAX_TAPS + f->lag;
+		f->name = nosaic_lag_name(f->lag);
+		return 0;
 	}
 	return -1;
 }
@@ -113,10 +138,36 @@ static int tap_by_port(int port)
 	return -1;
 }
 
-/* A VID the datapath already uses for a routed port. */
+/* Is this interface in the VLAN, and untagged there? */
+static int in_vlan(const struct iface *f, int vid)
+{
+	bcm_port_t p;
+
+	if (f->lag)
+		return lagvl[f->lag][vid] != 0;
+	BCM_PBMP_ITER(f->pbm, p)
+		return BCM_PBMP_MEMBER(members[vid], p);
+	return 0;
+}
+
+static int untagged_in(const struct iface *f, int vid)
+{
+	bcm_port_t p;
+
+	if (f->lag)
+		return lagvl[f->lag][vid] == 1;
+	BCM_PBMP_ITER(f->pbm, p)
+		return BCM_PBMP_MEMBER(untagged[vid], p);
+	return 0;
+}
+
+/* A VID the datapath already uses for a routed port or a routed LAG. */
 static int reserved_vid(int vid)
 {
 	int i;
+
+	if (vid > NOSAIC_LAG_SVC_BASE && vid <= NOSAIC_LAG_SVC_BASE + NOSAIC_MAX_LAGS)
+		return 1;
 
 	for (i = 0; i < nosaic_tap_count(); i++) {
 		int v = 0;
@@ -169,7 +220,7 @@ int nosaic_vlan_add(int vid, char *err, size_t n)
 	}
 	if (reserved_vid(vid)) {
 		say(err, n, "vlan %d is reserved: this datapath uses it for a "
-		    "routed port%s%s", vid, NULL, 0);
+		    "routed port or LAG%s%s", vid, NULL, 0);
 		return -1;
 	}
 	pthread_mutex_lock(&vlan_lock);
@@ -203,59 +254,85 @@ int nosaic_vlan_add(int vid, char *err, size_t n)
 	return 0;
 }
 
-/* Take a port out of one VLAN, and back to routed if that was its last. */
-static int leave(int tap, int port, int svc, int vid, char *err, size_t n)
+/* Per port: switch on, the way a switched port or a LAG member needs it. */
+static void port_switching(bcm_port_t port)
 {
-	bcm_pbmp_t pbm;
+	bcm_port_vlan_member_set(vlan_unit, port,
+				 BCM_PORT_VLAN_MEMBER_INGRESS |
+				 BCM_PORT_VLAN_MEMBER_EGRESS);
+	bcm_port_learn_set(vlan_unit, port, BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_FWD);
+	bcm_l2_addr_delete_by_port(vlan_unit, -1, port, 0);
+}
+
+/* Take an interface out of one VLAN, and back to routed if that was its last. */
+static int leave(const struct iface *f, int vid, char *err, size_t n)
+{
+	bcm_port_t port;
 	int rv;
 
-	BCM_PBMP_CLEAR(pbm);
-	BCM_PBMP_PORT_ADD(pbm, port);
-	rv = bcm_vlan_port_remove(vlan_unit, (bcm_vlan_t)vid, pbm);
+	rv = bcm_vlan_port_remove(vlan_unit, (bcm_vlan_t)vid, f->pbm);
 	if (rv != BCM_E_NONE && rv != BCM_E_NOT_FOUND) {
 		say(err, n, "vlan %d: bcm_vlan_port_remove: %s%s", vid, NULL, rv);
 		return -1;
 	}
-	BCM_PBMP_PORT_REMOVE(members[vid], port);
-	BCM_PBMP_PORT_REMOVE(untagged[vid], port);
-	if (pst[tap].switched > 0)
-		pst[tap].switched--;
-	if (pst[tap].switched > 0)
+	BCM_PBMP_REMOVE(members[vid], f->pbm);
+	BCM_PBMP_REMOVE(untagged[vid], f->pbm);
+	if (f->lag)
+		lagvl[f->lag][vid] = 0;
+	if (pst[f->key].switched > 0)
+		pst[f->key].switched--;
+	if (pst[f->key].switched > 0)
 		return 0;
 
 	/*
-	 * The last one: routed again. Back into its service VLAN as the only
-	 * member, that VLAN as its PVID, its learned MACs forgotten (they were
-	 * learned in VLANs it is no longer in, and a stale entry would send a
-	 * neighbour's traffic to a port that no longer switches), and ingress
-	 * filtering as it was.
+	 * The last one: routed again. Back into its service VLAN -- the port's
+	 * own, or the LAG's -- as the untagged member, that VLAN as its PVID,
+	 * its learned MACs forgotten (they were learned in VLANs it is no longer
+	 * in, and a stale entry would send a neighbour's traffic to a port that
+	 * no longer switches), and a port's ingress filtering as it was. A LAG's
+	 * members keep the filtering lag.c gave them.
 	 */
-	if (svc > 0) {
-		rv = bcm_vlan_port_add(vlan_unit, (bcm_vlan_t)svc, pbm, pbm);
+	if (f->svc > 0) {
+		rv = bcm_vlan_port_add(vlan_unit, (bcm_vlan_t)f->svc, f->pbm, f->pbm);
 		if (rv != BCM_E_NONE)
-			fprintf(stderr, "vlan: port %d back into service vlan %d: %s\n",
-				port, svc, bcm_errmsg(rv));
-		bcm_port_untagged_vlan_set(vlan_unit, port, (bcm_vlan_t)svc);
-		stg_forward(svc, pbm);
+			fprintf(stderr, "vlan: %s back into service vlan %d: %s\n",
+				f->name, f->svc, bcm_errmsg(rv));
+		BCM_PBMP_ITER(f->pbm, port)
+			bcm_port_untagged_vlan_set(vlan_unit, port, (bcm_vlan_t)f->svc);
+		stg_forward(f->svc, f->pbm);
 	}
-	bcm_l2_addr_delete_by_port(vlan_unit, -1, port, 0);
-	if (pst[tap].saved)
-		bcm_port_vlan_member_set(vlan_unit, port, pst[tap].member_flags);
-	printf("vlan: port %d is routed again (service vlan %d)\n", port, svc);
+	BCM_PBMP_ITER(f->pbm, port) {
+		bcm_l2_addr_delete_by_port(vlan_unit, -1, port, 0);
+		if (!f->lag && pst[f->key].saved)
+			bcm_port_vlan_member_set(vlan_unit, port, pst[f->key].member_flags);
+		if (f->lag)     /* a routed LAG's members learn nothing (lag.c) */
+			bcm_port_learn_set(vlan_unit, port, BCM_PORT_LEARN_FWD);
+	}
+	printf("vlan: %s is routed again (service vlan %d)\n", f->name, f->svc);
 	fflush(stdout);
 	return 0;
 }
 
 int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_t n)
 {
-	bcm_pbmp_t pbm, ubm;
-	int tap, port, svc, rv, v, was;
+	struct iface f;
+	bcm_pbmp_t ubm;
+	bcm_port_t port;
+	int rv, v, was, lag;
 
 	if (vlan_unit < 0)
 		return -2;
-	if (port_by_name(name, &tap, &port, &svc) != 0) {
+	if (iface_by_name(name, &f) != 0) {
 		if (err != NULL)
 			snprintf(err, n, "no such port %s", name);
+		return -1;
+	}
+	BCM_PBMP_ITER(f.pbm, port)
+		break;
+	if (!f.lag && (lag = nosaic_lag_of_port(port)) != 0) {
+		if (err != NULL)
+			snprintf(err, n, "%s is a member of %s; put %s in the VLAN instead",
+				 name, nosaic_lag_name(lag), nosaic_lag_name(lag));
 		return -1;
 	}
 	pthread_mutex_lock(&vlan_lock);
@@ -264,16 +341,13 @@ int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_
 		say(err, n, "vlan %d does not exist%s%s", vid, NULL, 0);
 		return -1;
 	}
-	BCM_PBMP_CLEAR(pbm);
-	BCM_PBMP_PORT_ADD(pbm, port);
-	was = BCM_PBMP_MEMBER(members[vid], port);
+	was = in_vlan(&f, vid);
 
-	/* One native VLAN per port: an untagged membership replaces the last. */
+	/* One native VLAN per interface: an untagged membership replaces the last. */
 	if (!tagged) {
 		for (v = 1; v < MAX_VID - 1; v++) {
-			if (v != vid && user_vid[v] &&
-			    BCM_PBMP_MEMBER(untagged[v], port)) {
-				if (leave(tap, port, svc, v, err, n) != 0) {
+			if (v != vid && user_vid[v] && in_vlan(&f, v) && untagged_in(&f, v)) {
+				if (leave(&f, v, err, n) != 0) {
 					pthread_mutex_unlock(&vlan_lock);
 					return -1;
 				}
@@ -282,19 +356,18 @@ int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_
 	}
 	/* Changing a membership's tagging: the SDK adds to the untagged set
 	 * and never clears it, so go out and come back in. */
-	if (was && (BCM_PBMP_MEMBER(untagged[vid], port) != 0) == (tagged != 0)) {
-		if (leave(tap, port, svc, vid, err, n) != 0) {
-			pthread_mutex_unlock(&vlan_lock);
-			return -1;
-		}
-		was = 0;
-	}
-	if (was) {
+	if (was && untagged_in(&f, vid) == !tagged) {
 		pthread_mutex_unlock(&vlan_lock);
 		return 0;                       /* already exactly this */
 	}
+	if (was) {
+		if (leave(&f, vid, err, n) != 0) {
+			pthread_mutex_unlock(&vlan_lock);
+			return -1;
+		}
+	}
 
-	if (pst[tap].switched == 0) {
+	if (pst[f.key].switched == 0) {
 		/*
 		 * Becoming switched. Out of its service VLAN, so its router
 		 * interface hears nothing; ingress filtering on, so a frame in a
@@ -304,44 +377,48 @@ int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_
 		 * frames would reach the routed tap; and learning on, because
 		 * switching is what it is for now.
 		 */
-		uint32 flags = 0;
+		if (!f.lag) {
+			uint32 flags = 0;
 
-		if (bcm_port_vlan_member_get(vlan_unit, port, &flags) == BCM_E_NONE) {
-			pst[tap].member_flags = flags;
-			pst[tap].saved = 1;
+			BCM_PBMP_ITER(f.pbm, port) {
+				if (bcm_port_vlan_member_get(vlan_unit, port, &flags) == BCM_E_NONE) {
+					pst[f.key].member_flags = flags;
+					pst[f.key].saved = 1;
+				}
+			}
 		}
-		if (svc > 0)
-			bcm_vlan_port_remove(vlan_unit, (bcm_vlan_t)svc, pbm);
-		bcm_port_vlan_member_set(vlan_unit, port,
-					 BCM_PORT_VLAN_MEMBER_INGRESS |
-					 BCM_PORT_VLAN_MEMBER_EGRESS);
-		bcm_port_learn_set(vlan_unit, port,
-				   BCM_PORT_LEARN_ARL | BCM_PORT_LEARN_FWD);
-		bcm_l2_addr_delete_by_port(vlan_unit, -1, port, 0);
+		if (f.svc > 0)
+			bcm_vlan_port_remove(vlan_unit, (bcm_vlan_t)f.svc, f.pbm);
+		BCM_PBMP_ITER(f.pbm, port)
+			port_switching(port);
 	}
 
 	BCM_PBMP_CLEAR(ubm);
 	if (!tagged)
-		BCM_PBMP_PORT_ADD(ubm, port);
-	rv = bcm_vlan_port_add(vlan_unit, (bcm_vlan_t)vid, pbm, ubm);
+		BCM_PBMP_ASSIGN(ubm, f.pbm);
+	rv = bcm_vlan_port_add(vlan_unit, (bcm_vlan_t)vid, f.pbm, ubm);
 	if (rv != BCM_E_NONE) {
 		pthread_mutex_unlock(&vlan_lock);
 		say(err, n, "vlan %d: bcm_vlan_port_add: %s%s", vid, NULL, rv);
 		return -1;
 	}
 	if (!tagged) {
-		rv = bcm_port_untagged_vlan_set(vlan_unit, port, (bcm_vlan_t)vid);
-		if (rv != BCM_E_NONE)
-			fprintf(stderr, "vlan: port %d pvid %d: %s\n",
-				port, vid, bcm_errmsg(rv));
+		BCM_PBMP_ITER(f.pbm, port) {
+			rv = bcm_port_untagged_vlan_set(vlan_unit, port, (bcm_vlan_t)vid);
+			if (rv != BCM_E_NONE)
+				fprintf(stderr, "vlan: port %d pvid %d: %s\n",
+					port, vid, bcm_errmsg(rv));
+		}
 	}
-	stg_forward(vid, pbm);
-	BCM_PBMP_PORT_ADD(members[vid], port);
+	stg_forward(vid, f.pbm);
+	BCM_PBMP_OR(members[vid], f.pbm);
 	if (!tagged)
-		BCM_PBMP_PORT_ADD(untagged[vid], port);
-	pst[tap].switched++;
+		BCM_PBMP_OR(untagged[vid], f.pbm);
+	if (f.lag)
+		lagvl[f.lag][vid] = tagged ? 2 : 1;
+	pst[f.key].switched++;
 	pthread_mutex_unlock(&vlan_lock);
-	printf("vlan: %s (port %d) in vlan %d, %s\n", name, port, vid,
+	printf("vlan: %s in vlan %d, %s\n", name, vid,
 	       tagged ? "tagged" : "untagged (native)");
 	fflush(stdout);
 	return 0;
@@ -349,19 +426,19 @@ int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_
 
 int nosaic_vlan_port_del(const char *name, int vid, char *err, size_t n)
 {
-	int tap, port, svc, rv = 0;
+	struct iface f;
+	int rv = 0;
 
 	if (vlan_unit < 0)
 		return -2;
-	if (port_by_name(name, &tap, &port, &svc) != 0) {
+	if (iface_by_name(name, &f) != 0) {
 		if (err != NULL)
 			snprintf(err, n, "no such port %s", name);
 		return -1;
 	}
 	pthread_mutex_lock(&vlan_lock);
-	if (vid >= 1 && vid < MAX_VID && user_vid[vid] &&
-	    BCM_PBMP_MEMBER(members[vid], port))
-		rv = leave(tap, port, svc, vid, err, n);
+	if (vid >= 1 && vid < MAX_VID && user_vid[vid] && in_vlan(&f, vid))
+		rv = leave(&f, vid, err, n);
 	pthread_mutex_unlock(&vlan_lock);
 	return rv;
 }
@@ -370,7 +447,7 @@ int nosaic_vlan_del(int vid, char *err, size_t n)
 {
 	bcm_port_t port;
 	bcm_pbmp_t m;
-	int rv;
+	int rv, k;
 
 	if (vlan_unit < 0)
 		return -2;
@@ -386,14 +463,28 @@ int nosaic_vlan_del(int vid, char *err, size_t n)
 				 "vlan%d first", vid, vid);
 		return -1;
 	}
+	/* The LAGs first, then the ports that are left: a LAG member's bit in
+	 * members[] belongs to its LAG, not to itself. */
+	for (k = 1; k <= NOSAIC_MAX_LAGS; k++) {
+		struct iface f;
+
+		if (!lagvl[k][vid] || iface_by_name(nosaic_lag_name(k), &f) != 0)
+			continue;
+		if (leave(&f, vid, err, n) != 0) {
+			pthread_mutex_unlock(&vlan_lock);
+			return -1;
+		}
+	}
 	BCM_PBMP_ASSIGN(m, members[vid]);
 	BCM_PBMP_ITER(m, port) {
-		int tap = tap_by_port(port), svc = 0;
+		struct iface f;
+		const char *name = NULL;
+		int tap = tap_by_port(port);
 
-		if (tap < 0)
+		if (tap < 0 || nosaic_tap_info(tap, &name, NULL, NULL, NULL, NULL) != 0 ||
+		    iface_by_name(name, &f) != 0)
 			continue;
-		nosaic_tap_info(tap, NULL, NULL, &svc, NULL, NULL);
-		if (leave(tap, port, svc, vid, err, n) != 0) {
+		if (leave(&f, vid, err, n) != 0) {
 			pthread_mutex_unlock(&vlan_lock);
 			return -1;
 		}
@@ -409,6 +500,85 @@ int nosaic_vlan_del(int vid, char *err, size_t n)
 	printf("vlan: %d removed\n", vid);
 	fflush(stdout);
 	return 0;
+}
+
+/*
+ * A LAG member arriving or leaving while the LAG is switched: it takes on, or
+ * gives up, every VLAN the LAG is in. Called by lag.c, which handles the
+ * routed case itself. Returns whether the LAG is switched.
+ */
+int nosaic_vlan_lag_join(int key, int port)
+{
+	bcm_pbmp_t pbm, none;
+	int vid, sw;
+
+	pthread_mutex_lock(&vlan_lock);
+	sw = pst[NOSAIC_MAX_TAPS + key].switched > 0;
+	if (sw) {
+		BCM_PBMP_CLEAR(pbm);
+		BCM_PBMP_PORT_ADD(pbm, port);
+		BCM_PBMP_CLEAR(none);
+		port_switching(port);
+		for (vid = 1; vid < MAX_VID - 1; vid++) {
+			if (!lagvl[key][vid])
+				continue;
+			bcm_vlan_port_add(vlan_unit, (bcm_vlan_t)vid, pbm,
+					  lagvl[key][vid] == 1 ? pbm : none);
+			if (lagvl[key][vid] == 1) {
+				bcm_port_untagged_vlan_set(vlan_unit, port, (bcm_vlan_t)vid);
+				BCM_PBMP_PORT_ADD(untagged[vid], port);
+			}
+			stg_forward(vid, pbm);
+			BCM_PBMP_PORT_ADD(members[vid], port);
+		}
+	}
+	pthread_mutex_unlock(&vlan_lock);
+	return sw;
+}
+
+int nosaic_vlan_lag_leave(int key, int port)
+{
+	bcm_pbmp_t pbm;
+	int vid, sw;
+
+	pthread_mutex_lock(&vlan_lock);
+	sw = pst[NOSAIC_MAX_TAPS + key].switched > 0;
+	if (sw) {
+		BCM_PBMP_CLEAR(pbm);
+		BCM_PBMP_PORT_ADD(pbm, port);
+		for (vid = 1; vid < MAX_VID - 1; vid++) {
+			if (!lagvl[key][vid])
+				continue;
+			bcm_vlan_port_remove(vlan_unit, (bcm_vlan_t)vid, pbm);
+			BCM_PBMP_PORT_REMOVE(members[vid], port);
+			BCM_PBMP_PORT_REMOVE(untagged[vid], port);
+		}
+		bcm_l2_addr_delete_by_port(vlan_unit, -1, port, 0);
+	}
+	pthread_mutex_unlock(&vlan_lock);
+	return sw;
+}
+
+/* A LAG going away: out of every VLAN it is in. */
+void nosaic_vlan_lag_forget(int key)
+{
+	struct iface f;
+	int vid;
+
+	pthread_mutex_lock(&vlan_lock);
+	if (iface_by_name(nosaic_lag_name(key), &f) == 0)
+		for (vid = 1; vid < MAX_VID - 1; vid++)
+			if (lagvl[key][vid])
+				leave(&f, vid, NULL, 0);
+	memset(lagvl[key], 0, sizeof(lagvl[key]));
+	pst[NOSAIC_MAX_TAPS + key].switched = 0;
+	pthread_mutex_unlock(&vlan_lock);
+}
+
+int nosaic_vlan_lag_switched(int key)
+{
+	return key > 0 && key <= NOSAIC_MAX_LAGS &&
+	       pst[NOSAIC_MAX_TAPS + key].switched > 0;
 }
 
 int nosaic_svi_add(int vid, char *err, size_t n)
@@ -501,11 +671,20 @@ void nosaic_vlan_query(FILE *out)
 			int port = -1;
 
 			if (nosaic_tap_info(i, &name, &port, NULL, NULL, NULL) != 0 ||
-			    name == NULL || !BCM_PBMP_MEMBER(members[vid], port))
-				continue;
+			    name == NULL || !BCM_PBMP_MEMBER(members[vid], port) ||
+			    nosaic_lag_of_port(port) != 0)
+				continue;       /* a LAG member is listed as its LAG */
 			fprintf(out, "%s{\"Port\":\"%s\",\"Tagged\":%s}",
 				firstm ? "" : ",", name,
 				BCM_PBMP_MEMBER(untagged[vid], port) ? "false" : "true");
+			firstm = 0;
+		}
+		for (i = 1; i <= NOSAIC_MAX_LAGS; i++) {
+			if (!lagvl[i][vid])
+				continue;
+			fprintf(out, "%s{\"Port\":\"%s\",\"Tagged\":%s}",
+				firstm ? "" : ",", nosaic_lag_name(i),
+				lagvl[i][vid] == 2 ? "true" : "false");
 			firstm = 0;
 		}
 		fprintf(out, "]}");
@@ -519,8 +698,13 @@ int nosaic_l2_port(int unit, const bcm_l2_addr_t *l2)
 	bcm_gport_t gp;
 	bcm_port_t local;
 
-	if (l2->flags & BCM_L2_TRUNK_MEMBER)
-		return -1;
+	if (l2->flags & BCM_L2_TRUNK_MEMBER) {
+		/* Behind a LAG: the trunk itself, as a gport. An egress object
+		 * takes it as its port and the chip hashes across the members;
+		 * a transmit from the CPU picks one (nosaic_lag_pick). */
+		BCM_GPORT_TRUNK_SET(gp, l2->tgid);
+		return gp;
+	}
 	BCM_GPORT_MODPORT_SET(gp, l2->modid, l2->port);
 	if (bcm_port_local_get(unit, gp, &local) != BCM_E_NONE)
 		return -1;

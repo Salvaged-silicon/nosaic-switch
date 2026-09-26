@@ -77,6 +77,13 @@ int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
 int  nosaic_tap_svi_add(int vid, const char *name, unsigned char mac[6]);
 void nosaic_tap_svi_del(int vid);
 
+/* A routed LAG's tap, po<N>, on its service VLAN; deleted with
+ * nosaic_tap_svi_del(vid). Its transmit goes to one distributing member. */
+int  nosaic_tap_lag_add(int vid, const char *name, unsigned char mac[6], int lag);
+
+/* Send a frame the datapath originates (an LACPDU) out of one port. */
+int  nosaic_tap_xmit(int port, int vid, const unsigned char *frame, int len);
+
 /* Print what the chip did with each bridged port: frames in and out, and the
  * discards and errors that separate "never sent" from "sent and rejected". */
 void nosaic_tap_stats(void);

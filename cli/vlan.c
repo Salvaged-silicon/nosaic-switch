@@ -1,6 +1,6 @@
 /*
- * nosaic vlan | svi | switchport | show vlans -- the C CLI's half of
- * switchapi 1.2, for the board the Go CLI cannot run on.
+ * nosaic vlan | svi | switchport | lag | show vlans | show lags -- the C
+ * CLI's half of switchapi 1.2 and 1.3, for the board the Go CLI cannot run on.
  *
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -245,6 +245,106 @@ int nosaic_show_vlans(void)
 	}
 	if (!any)
 		printf("no vlans; add one with: nosaic vlan add <vid>\n");
+	free(resp);
+	return 0;
+}
+
+/*
+ * nosaic lag <poN> lacp|static <port,...>  |  nosaic lag <poN> none
+ *
+ * The LAG's whole configuration, like cmd/nosaic/lag.go: members the line
+ * does not name leave.
+ */
+int nosaic_lag_cmd(int argc, char **argv)
+{
+	static const char usage[] =
+		"usage: nosaic lag <poN> lacp|static <port,...>\n"
+		"       nosaic lag <poN> none\n";
+	char req[1024], list[512], *tok, *save = NULL;
+	size_t n;
+	int first = 1;
+
+	if (argc == 4 && strcmp(argv[3], "none") == 0) {
+		snprintf(req, sizeof(req), "{\"op\":\"lag.del\",\"args\":"
+			 "{\"name\":\"%s\"}}", argv[2]);
+		return ask(req);
+	}
+	if (argc != 5 || (strcmp(argv[3], "lacp") != 0 && strcmp(argv[3], "static") != 0)) {
+		fputs(usage, stderr);
+		return 2;
+	}
+	snprintf(req, sizeof(req), "{\"op\":\"lag.add\",\"args\":"
+		 "{\"name\":\"%s\"%s}}", argv[2],
+		 strcmp(argv[3], "lacp") == 0 ? ",\"lacp\":true" : "");
+	if (ask(req) != 0)
+		return 1;
+	n = (size_t)snprintf(req, sizeof(req), "{\"op\":\"lag.members\",\"args\":"
+			     "{\"name\":\"%s\",\"ports\":[", argv[2]);
+	snprintf(list, sizeof(list), "%s", argv[4]);
+	for (tok = strtok_r(list, ",", &save); tok != NULL && n < sizeof(req);
+	     tok = strtok_r(NULL, ",", &save)) {
+		n += (size_t)snprintf(req + n, sizeof(req) - n, "%s\"%s\"",
+				      first ? "" : ",", tok);
+		first = 0;
+	}
+	if (n < sizeof(req))
+		snprintf(req + n, sizeof(req) - n, "]}}");
+	return ask(req);
+}
+
+int nosaic_show_lags(void)
+{
+	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"lags\"}");
+	const char *g;
+	int any = 0;
+
+	if (resp == NULL) {
+		nosaic_query_explain(NOSAIC_QUERY_SOCKET);
+		return 1;
+	}
+	if (strstr(resp, "\"ok\":true") == NULL) {
+		char err[256];
+
+		nosaic_jstr(resp, "error", err, sizeof(err));
+		fprintf(stderr, "nosaic: %s\n", err[0] ? err : resp);
+		free(resp);
+		return 1;
+	}
+	/* {"Name":"po1","LACP":true,...,"Members":[{"Port":"swp1","Active":true,...}]} */
+	for (g = resp; (g = strstr(g, "{\"Name\":\"")) != NULL; g++) {
+		const char *next = strstr(g + 1, "{\"Name\":\"");
+		const char *m = g;
+		char name[16], act[512] = "", inact[512] = "";
+		size_t n = 0;
+		const char *q = g + 9;
+
+		while (*q != '"' && *q != '\0' && n + 1 < sizeof(name))
+			name[n++] = *q++;
+		name[n] = '\0';
+		if (!any)
+			printf("%-6s%-8s%-24s%s\n", "LAG", "MODE", "ACTIVE", "INACTIVE");
+		any = 1;
+		while ((m = strstr(m, "{\"Port\":\"")) != NULL && (next == NULL || m < next)) {
+			char port[64];
+			char *dst;
+
+			q = m + 9;
+			n = 0;
+			while (*q != '"' && *q != '\0' && n + 1 < sizeof(port))
+				port[n++] = *q++;
+			port[n] = '\0';
+			dst = strncmp(q, "\",\"Active\":true", 15) == 0 ? act : inact;
+			if (dst[0] != '\0')
+				strncat(dst, ",", 511 - strlen(dst));
+			strncat(dst, port, 511 - strlen(dst));
+			m++;
+		}
+		printf("%-6s%-8s%-24s%s\n", name,
+		       strncmp(g + 9 + strlen(name), "\",\"LACP\":true", 13) == 0 ?
+		       "lacp" : "static", act[0] ? act : "-", inact[0] ? inact : "-");
+	}
+	if (!any)
+		printf("no lags; add one with: nosaic lag po1 lacp <port,...>\n");
 	free(resp);
 	return 0;
 }

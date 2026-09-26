@@ -9,6 +9,10 @@
 int nosaic_l3_add_intf(int unit, const char *ifname, int port, int vlan,
 		       const bcm_mac_t mac, int mtu);
 
+/* A routed LAG's interface: next hops leave by trunk tid. */
+int nosaic_l3_add_lag_intf(int unit, const char *ifname, int tid, int vlan,
+			   const bcm_mac_t mac, int mtu);
+
 /* An SVI's interface: port is -1, and next hops find their port in the L2
  * table. Deleting one keeps its slot for the VLAN to have back. */
 void nosaic_l3_del_intf(const char *ifname);

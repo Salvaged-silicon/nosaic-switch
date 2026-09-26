@@ -172,7 +172,7 @@ func (s *Switch) DelVLAN(vid int) error {
 	if err != nil {
 		return err
 	}
-	for _, name := range s.names {
+	for _, name := range s.switchable(m) {
 		if _, ok := m[name][vid]; ok {
 			if err := s.leave(name, vid, m); err != nil {
 				return err
@@ -191,6 +191,9 @@ func (s *Switch) SetPortVLAN(name string, vid int, tagged bool) error {
 	}
 	if err := s.known(name); err != nil {
 		return err
+	}
+	if m := lagMemberOf(name); m != "" {
+		return fmt.Errorf("%s is a member of %s; put %s in the VLAN instead", name, m, m)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -278,7 +281,7 @@ func (s *Switch) VLANs() ([]switchapi.VLAN, error) {
 	var out []switchapi.VLAN
 	for vid := range m[bridgeName] {
 		v := switchapi.VLAN{VID: vid, SVI: exists(switchapi.SVIName(vid))}
-		for _, name := range s.names {
+		for _, name := range s.switchable(m) {
 			if f, ok := m[name][vid]; ok {
 				v.Members = append(v.Members, switchapi.VLANMember{Port: name, Tagged: f.Tagged})
 			}
@@ -339,4 +342,18 @@ func (s *Switch) knownL3(name string) error {
 		}
 	}
 	return fmt.Errorf("no such port or vlan interface %q", name)
+}
+
+// switchable is everything that can be in a VLAN: the ports, then any LAG the
+// bridge holds a membership for.
+func (s *Switch) switchable(m map[string]map[int]vlanFlags) []string {
+	out := append([]string(nil), s.names...)
+	var lags []string
+	for name := range m {
+		if validLAGName(name) == nil {
+			lags = append(lags, name)
+		}
+	}
+	sort.Strings(lags)
+	return append(out, lags...)
 }

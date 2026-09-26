@@ -17,6 +17,7 @@ as `admin` and use `doas nosaic ...`; `sudo` is a shim onto it.
 | `show ports` | admin and oper state, speed, MTU, per port | ✅ | ✅ |
 | `show routes` | the chip's forwarding table | ✅ | ✅ |
 | `show vlans` | VLANs, their SVI, untagged and tagged members | ✅ | ✅ |
+| `show lags` | LAGs, their mode, and which members carry traffic | ✅ | ✅ |
 | `show acl` | access-list rules and their hit counts | ✅ | ✅ |
 | `show caps` | what this datapath can do, and the contract version | ✅ | ✅ |
 | `show dma` | the SDK's DMA pool, by allocation name | ✅ | ✅ |
@@ -27,10 +28,13 @@ as `admin` and use `doas nosaic ...`; `sudo` is a shim onto it.
 | `verify contract` | the switchapi conformance suite against this datapath | ✅ | — |
 | `verify ports` / `verify routes` | Linux against the chip, side by side | — | ✅ |
 
-`interface` and `route` go through the contract calls `port.admin` and
-`l3.route.*`, which the Broadcom datapaths do not serve yet. On those boards,
-addresses and routes are applied by `apply-network.sh` from `network.conf`
-([vrf.md](vrf.md) and [vlan.md](vlan.md) for its grammar).
+`interface <port> up|down` goes through the contract call `port.admin`, which
+the Broadcom datapaths serve since switchapi 1.3. It enables or disables the
+port in the chip, so the far end loses link, as it would if the cable were
+pulled. `interface <port> mtu` and `route` go through calls those datapaths
+do not serve yet. On those boards, addresses and routes are applied by
+`apply-network.sh` from `network.conf` ([vrf.md](vrf.md) and
+[vlan.md](vlan.md) for its grammar).
 
 ### Access lists
 
@@ -52,6 +56,14 @@ Both CLIs. Persisted as the setting `acl_<seq>`. [acl.md](acl.md).
 
 Both CLIs. `switchport` states the port's whole membership. The same
 statements go in `network.conf`. [vlan.md](vlan.md).
+
+### LAGs
+
+    lag <poN> lacp|static <port>[,<port>...]
+    lag <poN> none
+
+Both CLIs. `lag` states the LAG's whole membership. A LAG's name goes
+wherever a port's does, `switchport` included. [lag.md](lag.md).
 
 ## Settings
 

@@ -175,6 +175,26 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return ok(vl)
 
+	case proto.OpAddLAG, proto.OpSetLAGMembers, proto.OpDelLAG:
+		var l proto.LAGArgs
+		if err := json.Unmarshal(req.Args, &l); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		switch req.Op {
+		case proto.OpAddLAG:
+			return done(s.sw.AddLAG(l.Name, l.LACP))
+		case proto.OpSetLAGMembers:
+			return done(s.sw.SetLAGMembers(l.Name, l.Ports))
+		}
+		return done(s.sw.DelLAG(l.Name))
+
+	case proto.OpLAGs:
+		lags, err := s.sw.LAGs()
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(lags)
+
 	case proto.OpAddSVI, proto.OpDelSVI:
 		if err := json.Unmarshal(req.Args, &v); err != nil {
 			return proto.ErrorResponse(err)

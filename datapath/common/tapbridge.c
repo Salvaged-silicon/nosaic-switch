@@ -117,6 +117,7 @@
 #include "props.h"
 #include "tapbridge.h"
 #include "vlan.h"
+#include "lag.h"
 
 #define TAP_MTU        9216
 #define MIN_FRAME      60
@@ -142,6 +143,7 @@ struct tap {
 	int silent;
 	unsigned long tx_nolink;  /* dropped: the port has no link to send on */
 	unsigned long tx_switched; /* dropped: the port is switched, not routed */
+	int           lag;        /* a LAG's tap: its number; 0 for anything else */
 };
 
 static struct tap taps[MAX_TAPS];
@@ -524,7 +526,7 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
 	 * tap they would go out of a port that now belongs to a VLAN -- onto
 	 * a segment that has an SVI to speak for it.
 	 */
-	if (nosaic_vlan_port_switched(t->port)) {
+	if (nosaic_vlan_port_switched(t->port) || nosaic_lag_port_claimed(t->port)) {
 		t->tx_switched++;
 		return -1;
 	}
@@ -573,9 +575,21 @@ static int tap_tx(struct tap *t, const unsigned char *buf, int len)
  * would do with it. Transmit from the CPU names its ports explicitly, so
  * this is the lookup the pipeline would otherwise have done.
  */
+/* A frame's destination and source MAC, folded: which LAG member it takes. */
+static unsigned frame_hash(const unsigned char *buf)
+{
+	unsigned h = 0;
+	int i;
+
+	for (i = 0; i < 12; i++)
+		h = h * 31 + buf[i];
+	return h;
+}
+
 static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len)
 {
 	bcm_pbmp_t m, u, pbm, upbm;
+	int p = -1;
 
 	if (len < 12 || nosaic_vlan_members(t->vlan, &m, &u) != 0)
 		return -1;
@@ -583,16 +597,22 @@ static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len)
 	if (!(buf[0] & 1)) {
 		bcm_l2_addr_t l2;
 
-		int p;
-
 		if (bcm_l2_addr_get(tap_unit, (uint8 *)buf, (bcm_vlan_t)t->vlan,
 				    &l2) == BCM_E_NONE &&
-		    (p = nosaic_l2_port(tap_unit, &l2)) >= 0 &&
-		    BCM_PBMP_MEMBER(m, p)) {
+		    (p = nosaic_l2_port(tap_unit, &l2)) >= 0) {
+			/* Learned on a LAG: one of its distributing members. */
+			if (BCM_GPORT_IS_TRUNK(p))
+				p = nosaic_lag_pick(nosaic_lag_of_tid(BCM_GPORT_TRUNK_GET(p)),
+						    frame_hash(buf));
+		}
+		if (p >= 0 && BCM_PBMP_MEMBER(m, p)) {
 			BCM_PBMP_CLEAR(pbm);
 			BCM_PBMP_PORT_ADD(pbm, p);
 		}
 	}
+	/* A LAG in the VLAN gets one copy, not one per member: its partner
+	 * would take every copy as a separate frame. */
+	nosaic_lag_flood_mask(&pbm, frame_hash(buf));
 	if (BCM_PBMP_IS_NULL(pbm)) {
 		t->tx_nolink++;                     /* a VLAN with no members */
 		return -1;
@@ -600,6 +620,50 @@ static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len)
 	BCM_PBMP_ASSIGN(upbm, pbm);
 	BCM_PBMP_AND(upbm, u);
 	return tap_send(t, buf, len, pbm, upbm);
+}
+
+/*
+ * Linux -> wire, from a routed LAG's tap: to ONE distributing member.
+ *
+ * Sending to every member would hand the partner the same frame once per
+ * link, which is exactly what a LAG exists to prevent. The member comes from a
+ * hash of the addresses so a conversation stays on one link, the way the
+ * chip's own trunk hash keeps it for forwarded traffic.
+ */
+static int tap_tx_lag(struct tap *t, const unsigned char *buf, int len)
+{
+	bcm_pbmp_t pbm;
+	int p;
+
+	if (len < 12)
+		return -1;
+	if (nosaic_vlan_lag_switched(t->lag)) {
+		t->tx_switched++;               /* switched: an SVI speaks for it */
+		return -1;
+	}
+	p = nosaic_lag_pick(t->lag, frame_hash(buf));
+	if (p < 0) {
+		t->tx_nolink++;                 /* no member is distributing */
+		return -1;
+	}
+	BCM_PBMP_CLEAR(pbm);
+	BCM_PBMP_PORT_ADD(pbm, p);
+	return tap_send(t, buf, len, pbm, pbm);
+}
+
+/*
+ * A frame the datapath itself originates, to one port: LACPDUs. Tagged with
+ * vid for the transmit path's sake and sent untagged, like everything else.
+ */
+int nosaic_tap_xmit(int port, int vid, const unsigned char *frame, int len)
+{
+	static struct tap ctl;          /* counters only; one caller, the LAG thread */
+	bcm_pbmp_t pbm;
+
+	ctl.vlan = vid;
+	BCM_PBMP_CLEAR(pbm);
+	BCM_PBMP_PORT_ADD(pbm, port);
+	return tap_send(&ctl, frame, len, pbm, pbm);
 }
 
 /* Create one tap device, up, with its own MAC. */
@@ -1353,6 +1417,22 @@ int nosaic_tap_svi_add(int vid, const char *name, unsigned char mac[6])
 	return 0;
 }
 
+/* A routed LAG's tap: an SVI-like tap on its service VLAN, marked so its
+ * transmit goes to one member. */
+int nosaic_tap_lag_add(int vid, const char *name, unsigned char mac[6], int lag)
+{
+	int i, rv = nosaic_tap_svi_add(vid, name, mac);
+
+	if (rv != 0)
+		return rv;
+	pthread_rwlock_wrlock(&svi_lock);
+	for (i = 0; i < nsvi; i++)
+		if (svis[i].fd >= 0 && svis[i].vlan == vid)
+			svis[i].lag = lag;
+	pthread_rwlock_unlock(&svi_lock);
+	return 0;
+}
+
 void nosaic_tap_svi_del(int vid)
 {
 	int i;
@@ -1366,6 +1446,7 @@ void nosaic_tap_svi_del(int vid)
 			close(svis[i].fd);
 			svis[i].fd = -1;
 			svis[i].vlan = 0;
+			svis[i].lag = 0;
 		}
 	}
 	pthread_rwlock_unlock(&svi_lock);
@@ -1426,7 +1507,9 @@ void nosaic_tap_pump(void (*tick)(void), int tick_ms)
 			    svis[i].fd != svifd[i])
 				continue;
 			len = read(svis[i].fd, buf, sizeof(buf));
-			if (len > 0)
+			if (len > 0 && svis[i].lag)
+				tap_tx_lag(&svis[i], buf, (int)len);
+			else if (len > 0)
 				tap_tx_svi(&svis[i], buf, (int)len);
 		}
 		pthread_rwlock_unlock(&svi_lock);
