@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strconv"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/switchapi"
 )
@@ -44,7 +45,10 @@ type ipLinkDetail struct {
 		InfoKind      string `json:"info_kind"`
 		InfoSlaveKind string `json:"info_slave_kind"`
 		InfoData      struct {
-			Mode string `json:"mode"`
+			Mode       string `json:"mode"`
+			LACPRate   string `json:"ad_lacp_rate"`
+			LACPActive string `json:"ad_lacp_active"`
+			SysPrio    int    `json:"ad_actor_sys_prio"`
 		} `json:"info_data"`
 		InfoSlaveData struct {
 			State     string `json:"state"`
@@ -111,7 +115,9 @@ func (s *Switch) AddLAG(name string, lacp bool) error {
 		args := []string{"link", "add", name, "type", "bond", "mode", bondMode(lacp),
 			"miimon", "100", "xmit_hash_policy", "layer3+4"}
 		if lacp {
-			args = append(args, "lacp_rate", "fast")
+			// The kernel's own default system priority is 65535; the
+			// contract's is 802.1AX's 32768.
+			args = append(args, "lacp_rate", "fast", "ad_actor_sys_prio", strconv.Itoa(s.sysPrio()))
 		}
 		if _, err := ipCmd(args...); err != nil {
 			return err
@@ -276,6 +282,17 @@ func (s *Switch) LAGs() ([]switchapi.LAG, error) {
 			continue
 		}
 		g := switchapi.LAG{Name: d.IfName, LACP: d.LinkInfo.InfoData.Mode == "802.3ad"}
+		g.Options = switchapi.LAGOptions{Rate: "fast", PortPriority: s.lagPortPrio(d.IfName)}
+		g.SystemPriority = switchapi.LACPDefaultPriority
+		if g.LACP {
+			id := d.LinkInfo.InfoData
+			g.Options.Rate, g.Options.Passive = id.LACPRate, id.LACPActive == "off"
+			// The system priority is set on the bond, but the kernel reports
+			// it only to CAP_NET_ADMIN in the initial user namespace, which
+			// a test in a namespace of its own is not: what was set is what
+			// is reported.
+			g.SystemPriority = s.sysPrio()
+		}
 		for _, m := range l {
 			if m.Master != d.IfName {
 				continue
@@ -308,4 +325,98 @@ func lagMemberOf(port string) string {
 		}
 	}
 	return ""
+}
+
+// lagPortPrio is a LAG's configured port priority. The kernel bond has no
+// per-port LACP priority to set, so it is kept here and reported, and has no
+// effect on this board.
+func (s *Switch) lagPortPrio(name string) int {
+	if p, ok := s.lagPrio[name]; ok && p != 0 {
+		return p
+	}
+	return switchapi.LACPDefaultPriority
+}
+
+func (s *Switch) SetLAGOptions(name string, o switchapi.LAGOptions) error {
+	if !s.lags {
+		return switchapi.Unsupported("link aggregation")
+	}
+	if err := switchapi.ValidLAGOptions(o); err != nil {
+		return err
+	}
+	if !isLAG(name) {
+		return fmt.Errorf("%s does not exist", name)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lagPrio == nil {
+		s.lagPrio = map[string]int{}
+	}
+	s.lagPrio[name] = o.PortPriority
+	l, err := linkDetails()
+	if err != nil {
+		return err
+	}
+	for _, d := range l {
+		if d.IfName != name || d.LinkInfo.InfoData.Mode != "802.3ad" {
+			continue
+		}
+		rate, active := "fast", "on"
+		if o.Rate == "slow" {
+			rate = "slow"
+		}
+		if o.Passive {
+			active = "off"
+		}
+		return bondSet(name, "lacp_rate", rate, "lacp_active", active)
+	}
+	return nil
+}
+
+func (s *Switch) SetLACPSystemPriority(p int) error {
+	if !s.lags {
+		return switchapi.Unsupported("lacp")
+	}
+	if err := switchapi.ValidLACPPriority(p); err != nil {
+		return err
+	}
+	if p == 0 {
+		p = switchapi.LACPDefaultPriority
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lacpPrio = p
+	l, err := linkDetails()
+	if err != nil {
+		return err
+	}
+	for _, d := range l {
+		if d.LinkInfo.InfoKind == "bond" && d.LinkInfo.InfoData.Mode == "802.3ad" {
+			if err := bondSet(d.IfName, "ad_actor_sys_prio", strconv.Itoa(p)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Switch) sysPrio() int {
+	if s.lacpPrio == 0 {
+		return switchapi.LACPDefaultPriority
+	}
+	return s.lacpPrio
+}
+
+// bondSet changes a bond's LACP options, which the kernel takes only while
+// the bond is down: "Device or resource busy" otherwise. Its members stay.
+func bondSet(name string, opts ...string) error {
+	if _, err := ipCmd("link", "set", name, "down"); err != nil {
+		return err
+	}
+	args := append([]string{"link", "set", name, "type", "bond"}, opts...)
+	_, err := ipCmd(args...)
+	if _, uerr := ipCmd("link", "set", name, "up"); err == nil {
+		err = uerr
+	}
+	return err
 }

@@ -49,6 +49,10 @@ type Switch struct {
 	// it joins the bridge. The only virt state not read back from the kernel:
 	// a port's cost lives on it only while it is a bridge port.
 	stpPorts stpPortCfg
+	// lagPrio and lacpPrio are LACP settings: the kernel bond keeps the
+	// system priority itself, but a new bond has to be given it.
+	lagPrio  map[string]int
+	lacpPrio int
 }
 
 // New builds a virtual switch. Nothing is created until Start.

@@ -324,11 +324,13 @@ func (c *Client) DelLAG(name string) error {
 }
 
 func (c *Client) SetSTP(cfg switchapi.STPConfig) error {
-	return c.call(proto.OpSetSTP, proto.STPArgs{Enabled: cfg.Enabled, Priority: cfg.Priority}, nil)
+	return c.call(proto.OpSetSTP, proto.STPArgs{Enabled: cfg.Enabled, Priority: cfg.Priority,
+		HelloTime: cfg.HelloTime, ForwardDelay: cfg.ForwardDelay, MaxAge: cfg.MaxAge}, nil)
 }
 
 func (c *Client) SetSTPPort(name string, cfg switchapi.STPPortConfig) error {
-	return c.call(proto.OpSetSTPPort, proto.STPPortArgs{Name: name, Edge: cfg.Edge, Cost: cfg.Cost}, nil)
+	return c.call(proto.OpSetSTPPort, proto.STPPortArgs{Name: name, Edge: cfg.Edge, Cost: cfg.Cost,
+		Priority: cfg.Priority}, nil)
 }
 
 func (c *Client) STP() (switchapi.STPStatus, error) {
@@ -338,7 +340,17 @@ func (c *Client) STP() (switchapi.STPStatus, error) {
 
 func (c *Client) SetMLAG(cfg switchapi.MLAGConfig) error {
 	return c.call(proto.OpSetMLAG, proto.MLAGArgs{Enabled: cfg.Enabled, PeerLink: cfg.PeerLink,
-		PeerAddress: cfg.PeerAddress, Priority: cfg.Priority}, nil)
+		PeerAddress: cfg.PeerAddress, Priority: cfg.Priority, HelloMs: cfg.HelloMs,
+		DeadMs: cfg.DeadMs, SettleMs: cfg.SettleMs, HeartbeatPort: cfg.HeartbeatPort}, nil)
+}
+
+func (c *Client) SetLAGOptions(name string, o switchapi.LAGOptions) error {
+	return c.call(proto.OpSetLAGOptions, proto.LAGOptionsArgs{Name: name, Rate: o.Rate,
+		Passive: o.Passive, PortPriority: o.PortPriority}, nil)
+}
+
+func (c *Client) SetLACPSystemPriority(p int) error {
+	return c.call(proto.OpSetLACPPrio, proto.PriorityArgs{Priority: p}, nil)
 }
 
 func (c *Client) SetLAGMLAG(name string, id int) error {

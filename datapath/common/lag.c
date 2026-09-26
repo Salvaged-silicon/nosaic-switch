@@ -115,6 +115,9 @@ struct member {
 struct lag {
 	int           used;
 	int           lacp;
+	int           slow;          /* rate slow: partner times us out after 90 s */
+	int           passive;       /* answers LACP, never starts it */
+	int           port_prio;     /* 0: 32768 */
 	bcm_trunk_t   tid;
 	int           svc;
 	char          name[8];
@@ -129,6 +132,7 @@ static pthread_mutex_t lag_lock = PTHREAD_MUTEX_INITIALIZER;
 static int lag_unit = -1;
 static bcm_pbmp_t cpu_pbm;
 static unsigned char sys_mac[6];
+static int sys_prio = 32768;                          /* lacp system-priority */
 static int lag_psc = BCM_TRUNK_PSC_SRCDSTIP;          /* see enhanced_hash() */
 
 /* Published for the packet paths; see LOCKING. */
@@ -284,10 +288,10 @@ static void actor_of(int k, const struct member *m, struct peer *a)
 	unsigned key, off;
 
 	memset(a, 0, sizeof(*a));
-	a->sys_pri = 32768;
+	a->sys_pri = (unsigned short)sys_prio;
 	memcpy(a->sys, sys_mac, 6);
 	a->key = (unsigned short)k;
-	a->port_pri = 32768;
+	a->port_pri = (unsigned short)(lags[k].port_prio ? lags[k].port_prio : 32768);
 	a->port = (unsigned short)(m->port + 1);
 	a->state = m->actor;
 	/* An MLAG interface is half of one LAG across two switches: the pair's
@@ -357,7 +361,8 @@ static int lacp_eval(int k, long long now)
 	}
 	for (i = 0; i < g->n; i++) {
 		struct member *m = &g->m[i];
-		unsigned char st = ST_ACTIVITY | ST_TIMEOUT | ST_AGGREGATION;
+		unsigned char st = ST_AGGREGATION |
+			(g->passive ? 0 : ST_ACTIVITY) | (g->slow ? 0 : ST_TIMEOUT);
 		int sel, dist;
 
 		sel = m->link && m->partner_valid &&
@@ -443,6 +448,21 @@ static void *lag_thread(void *arg)
 						     SLOW_PERIOD_MS : FAST_PERIOD_MS;
 
 					if (!m->link)
+						continue;
+					/*
+					 * Passive: speak only to a partner that is active --
+					 * or, once, to one that still believes WE are, to
+					 * correct it. Two passive ends then never start LACP,
+					 * and a LAG turned passive at both ends goes quiet and
+					 * times out. Letting every state change through instead
+					 * had two fresh passive ends greet each other and
+					 * negotiate; holding them all back left a LAG turned
+					 * passive running on its partner's memory.
+					 */
+					if (g->passive &&
+					    !(m->partner_valid && (m->partner.state & ST_ACTIVITY)) &&
+					    !(m->ntt && m->partner_valid &&
+					      (m->partner_view.state & ST_ACTIVITY)))
 						continue;
 					if (m->ntt || now >= m->next_tx) {
 						send_pdu(k, m);
@@ -859,8 +879,12 @@ void nosaic_lag_query(FILE *out)
 		if (!g->used)
 			continue;
 		fprintf(out, "%s{\"Name\":\"%s\",\"LACP\":%s,\"MLAG\":%d,\"Trunk\":%d,"
+			"\"Options\":{\"Rate\":\"%s\",\"Passive\":%s,\"PortPriority\":%d},"
+			"\"SystemPriority\":%d,"
 			"\"SVI\":%s,\"Members\":[", first ? "" : ",", g->name,
 			g->lacp ? "true" : "false", nosaic_mlag_id(k), (int)g->tid,
+			g->slow ? "slow" : "fast", g->passive ? "true" : "false",
+			g->port_prio ? g->port_prio : 32768, sys_prio,
 			nosaic_vlan_lag_switched(k) ? "false" : "true");
 		first = 0;
 		for (i = 0; i < g->n; i++) {
@@ -889,6 +913,61 @@ void nosaic_lag_query(FILE *out)
 	}
 	fprintf(out, "]}\n");
 	pthread_mutex_unlock(&lag_lock);
+}
+
+/*
+ * A LAG's LACP options, and the switch's system priority. Changing either
+ * changes what this side says in its LACPDUs, so every member tells its
+ * partner at once.
+ */
+int nosaic_lag_options(const char *name, const char *rate, int passive, int port_prio,
+		       char *err, size_t n)
+{
+	int k = lag_key(name), i;
+
+	if (lag_unit < 0)
+		return -2;
+	if (k == 0 || !lags[k].used) {
+		say(err, n, "%s does not exist%s", name, "");
+		return -1;
+	}
+	if (rate && rate[0] && strcmp(rate, "fast") != 0 && strcmp(rate, "slow") != 0) {
+		say(err, n, "lacp rate \"%s\": fast or slow%s", rate, "");
+		return -1;
+	}
+	if (port_prio < 0 || port_prio > 65535) {
+		if (err != NULL)
+			snprintf(err, n, "lacp port-priority %d: must be 1 to 65535", port_prio);
+		return -1;
+	}
+	pthread_mutex_lock(&lag_lock);
+	lags[k].slow = rate && strcmp(rate, "slow") == 0;
+	lags[k].passive = passive;
+	lags[k].port_prio = port_prio;
+	for (i = 0; i < lags[k].n; i++)
+		lags[k].m[i].ntt = 1;
+	pthread_mutex_unlock(&lag_lock);
+	return 0;
+}
+
+int nosaic_lag_sys_prio(int p, char *err, size_t n)
+{
+	int k, i;
+
+	if (lag_unit < 0)
+		return -2;
+	if (p < 0 || p > 65535) {
+		if (err != NULL)
+			snprintf(err, n, "lacp system-priority %d: must be 1 to 65535", p);
+		return -1;
+	}
+	pthread_mutex_lock(&lag_lock);
+	sys_prio = p ? p : 32768;
+	for (k = 1; k <= NOSAIC_MAX_LAGS; k++)
+		for (i = 0; i < lags[k].n; i++)
+			lags[k].m[i].ntt = 1;
+	pthread_mutex_unlock(&lag_lock);
+	return 0;
 }
 
 void nosaic_lag_capability(int *max_lags, int *max_members)

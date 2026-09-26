@@ -34,9 +34,10 @@ dataplane-test` negotiates LACP with a far-end bond on every build.
 
 The same on the Go CLI and the C CLI:
 
-    nosaic lag po1 lacp et52,et53
+    nosaic lag po1 lacp et52,et53 [rate fast|slow] [mode active|passive] [port-priority <n>]
     nosaic lag po1 static et52,et53
     nosaic lag po1 none
+    nosaic lacp system-priority <n>
 
     nosaic show lags
     nosaic show caps                 lags: yes, 64, up to 16 members each, lacp
@@ -45,7 +46,28 @@ The same on the Go CLI and the C CLI:
 - members the line does not name leave;
 - changing `static` to `lacp` keeps the members;
 - running the line twice is the same as running it once;
-- `none` removes the LAG and frees its members.
+- `none` removes the LAG and frees its members;
+- an option the line leaves out goes back to its default.
+
+LACP's settings:
+
+| setting | values | default | what it does |
+|---|---|---|---|
+| `rate` | `fast`, `slow` | `fast` | how often the partner is asked to send: every second and given up after 3 s, or every 30 s and 90 s |
+| `mode` | `active`, `passive` | `active` | a passive end answers an active partner but never starts LACP |
+| `port-priority` | 1–65535 | 32768 | which links a partner prefers when it cannot use them all |
+| `lacp system-priority` | 1–65535 | 32768 | the switch's, for every LAG |
+
+In network.conf, `lacp system-priority <n>` is applied before any LAG, and
+`lag` lines take the same options.
+
+Measured between the 7050SX2 and the AS5610 over po5:
+- **Active against passive:** a passive, slow end formed a LAG with an active
+  one. The active end saw partner state `0x3c`: the active and short-timeout
+  bits clear.
+- **Passive against passive, fresh:** two new LAGs never sent a single LACPDU.
+- **A running LAG turned passive at both ends:** exactly one LACPDU went out,
+  to tell the partner, and both ends timed out.
 
 `show lags`:
 
@@ -239,9 +261,6 @@ of the MAC addresses:
 - **MLAG** is a LAG whose members are on two switches: [mlag.md](mlag.md).
 - **A member's MTU is not managed.** Set `po<N>`'s MTU to match what the
   neighbour's LAG has. OSPF refuses an adjacency across a mismatch.
-- **LACP is always active with a fast timeout.** There is no passive mode, no
-  slow rate and no port or system priority. The partner's own rate is
-  honoured for how often LACPDUs are sent.
 - **Marker PDUs are absorbed, not answered.**
 - **The helix4 datapath** (AS4610) compiles lag.c but has not been built or
   run with it.

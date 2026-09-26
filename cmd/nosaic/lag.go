@@ -23,7 +23,8 @@ import (
 // not name leave, and running it twice is the same as once. "none" removes the
 // LAG and frees its members.
 func lagCmd(c *nosdclient.Client, args []string) error {
-	usage := fmt.Errorf("usage: nosaic lag <poN> lacp|static <port,...> [mlag <id>] | lag <poN> none")
+	usage := fmt.Errorf("usage: nosaic lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow] " +
+		"[mode active|passive] [port-priority <n>] | lag <poN> none")
 	if len(args) < 2 {
 		return usage
 	}
@@ -35,17 +36,38 @@ func lagCmd(c *nosdclient.Client, args []string) error {
 		}
 		return c.DelLAG(name)
 	case "lacp", "static":
+		// Everything after the ports is keyword and value, in any order;
+		// what a line leaves out is the default, as always.
 		mlag := 0
-		if len(args) == 5 && args[3] == "mlag" {
-			n, err := strconv.Atoi(args[4])
-			if err != nil || n < 1 {
-				return fmt.Errorf("mlag id %q is not a number from 1", args[4])
-			}
-			mlag = n
-			args = args[:3]
-		}
-		if len(args) != 3 {
+		var opts switchapi.LAGOptions
+		if len(args) < 3 || len(args)%2 != 1 {
 			return usage
+		}
+		for i := 3; i+1 < len(args); i += 2 {
+			k, v := args[i], args[i+1]
+			switch k {
+			case "mlag":
+				n, err := strconv.Atoi(v)
+				if err != nil || n < 1 {
+					return fmt.Errorf("mlag id %q is not a number from 1", v)
+				}
+				mlag = n
+			case "rate":
+				opts.Rate = v
+			case "mode":
+				if v != "active" && v != "passive" {
+					return fmt.Errorf("lacp mode %q: active or passive", v)
+				}
+				opts.Passive = v == "passive"
+			case "port-priority":
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					return fmt.Errorf("port-priority %q is not a number", v)
+				}
+				opts.PortPriority = n
+			default:
+				return usage
+			}
 		}
 		var ports []string
 		for _, p := range strings.Split(args[2], ",") {
@@ -57,6 +79,10 @@ func lagCmd(c *nosdclient.Client, args []string) error {
 			return err
 		}
 		if err := c.SetLAGMembers(name, ports); err != nil {
+			return err
+		}
+		if err := c.SetLAGOptions(name, opts); err != nil &&
+			(opts != (switchapi.LAGOptions{}) || !errors.Is(err, switchapi.ErrUnsupported)) {
 			return err
 		}
 		// The whole configuration: no mlag keyword is MLAG id 0. A datapath
@@ -79,7 +105,7 @@ func showLAGs(c *nosdclient.Client, w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "no lags; add one with: nosaic lag po1 lacp <port,...>")
 		return nil
 	}
-	fmt.Fprintln(w, "LAG\tMODE\tACTIVE\tINACTIVE\tMLAG")
+	fmt.Fprintln(w, "LAG\tMODE\tACTIVE\tINACTIVE\tMLAG\tLACP")
 	for _, l := range lags {
 		mode := "static"
 		if l.LACP {
@@ -97,7 +123,30 @@ func showLAGs(c *nosdclient.Client, w *tabwriter.Writer) error {
 		if l.MLAG != 0 {
 			ml = strconv.Itoa(l.MLAG)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", l.Name, mode, dashIfEmpty(act), dashIfEmpty(inact), ml)
+		lacp := "-"
+		if l.LACP {
+			how := "active"
+			if l.Options.Passive {
+				how = "passive"
+			}
+			lacp = fmt.Sprintf("%s %s, port priority %d, system priority %d",
+				l.Options.Rate, how, l.Options.PortPriority, l.SystemPriority)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", l.Name, mode, dashIfEmpty(act), dashIfEmpty(inact), ml, lacp)
 	}
 	return nil
+}
+
+// lacpCmd sets the switch's LACP system priority:
+//
+//	nosaic lacp system-priority <n>
+func lacpCmd(c *nosdclient.Client, args []string) error {
+	if len(args) != 2 || args[0] != "system-priority" {
+		return fmt.Errorf("usage: nosaic lacp system-priority <n>")
+	}
+	n, err := strconv.Atoi(args[1])
+	if err != nil {
+		return fmt.Errorf("system-priority %q is not a number", args[1])
+	}
+	return c.SetLACPSystemPriority(n)
 }

@@ -23,6 +23,7 @@ system.
 ## Commands
 
     nosaic mlag on peer-link <port|poN> [peer-address <ip>] [priority <n>]
+                   [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>]
     nosaic mlag off
     nosaic lag <poN> lacp|static <port,...> mlag <id>
     nosaic show mlag
@@ -38,6 +39,18 @@ system.
   The default is 32768.
 - **An MLAG interface** is a LAG with an MLAG id from 1 to 1000. Give the two
   halves the same id.
+- **The timers:**
+  - `hello`: 1000 ms between control frames, 100 to 10000.
+  - `dead`: 3500 ms without one before the peer is given up, at least twice the
+    hello.
+  - `settle`: 2500 ms, how long both halves must stay put before a flood block
+    comes off (see below).
+  - `heartbeat-port`: 47101, the UDP port of the heartbeat.
+
+  Set them the same on both switches.
+- ⚠ **`lacp system-priority` must match on both peers too.** An MLAG interface
+  presents the pair's LACP system, and the system priority is half of it. If
+  the two differ, the device sees two partners and bundles only one side.
 
 One side of the lab pair, the 7050SX2:
 

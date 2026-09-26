@@ -16,7 +16,8 @@ import (
 //
 // An MLAG interface is a LAG given an id: nosaic lag po7 lacp swp49 mlag 7.
 func mlagCmd(c *nosdclient.Client, args []string) error {
-	usage := fmt.Errorf("usage: nosaic mlag on peer-link <port> [peer-address <ip>] [priority <n>] | mlag off")
+	usage := fmt.Errorf("usage: nosaic mlag on peer-link <port> [peer-address <ip>] [priority <n>] " +
+		"[hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>] | mlag off")
 	if len(args) == 1 && args[0] == "off" {
 		return c.SetMLAG(switchapi.MLAGConfig{})
 	}
@@ -30,12 +31,23 @@ func mlagCmd(c *nosdclient.Client, args []string) error {
 			cfg.PeerLink = args[i+1]
 		case "peer-address":
 			cfg.PeerAddress = args[i+1]
-		case "priority":
+		case "priority", "hello", "dead", "settle", "heartbeat-port":
 			n, err := strconv.Atoi(args[i+1])
 			if err != nil {
-				return fmt.Errorf("mlag priority %q is not a number", args[i+1])
+				return fmt.Errorf("mlag %s %q is not a number", args[i], args[i+1])
 			}
-			cfg.Priority = n
+			switch args[i] {
+			case "priority":
+				cfg.Priority = n
+			case "hello":
+				cfg.HelloMs = n
+			case "dead":
+				cfg.DeadMs = n
+			case "settle":
+				cfg.SettleMs = n
+			case "heartbeat-port":
+				cfg.HeartbeatPort = n
+			}
 		default:
 			return usage
 		}
@@ -70,7 +82,9 @@ func showMLAG(c *nosdclient.Client, w *tabwriter.Writer) error {
 	fmt.Fprintf(w, "peer-link\t%s, link %s, peer %s\n", st.PeerLink, yn(st.PeerLinkUp), map[bool]string{true: "heard", false: "not heard"}[st.PeerAlive])
 	fmt.Fprintf(w, "heartbeat\t%s\n", map[bool]string{true: "heard", false: "not heard"}[st.Heartbeat])
 	fmt.Fprintf(w, "lacp system\t%s\n", st.SystemID)
-	fmt.Fprintf(w, "synced macs\t%d\n\n", st.SyncedMACs)
+	fmt.Fprintf(w, "synced macs\t%d\n", st.SyncedMACs)
+	fmt.Fprintf(w, "timers\thello %d ms, dead %d ms, settle %d ms, heartbeat port %d, priority %d\n\n",
+		st.HelloMs, st.DeadMs, st.SettleMs, st.HeartbeatPort, st.Priority)
 	if len(st.Interfaces) == 0 {
 		fmt.Fprintln(w, "no mlag interfaces; make one with: nosaic lag po7 lacp <port> mlag 7")
 		return nil

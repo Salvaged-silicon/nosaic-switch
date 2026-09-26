@@ -223,6 +223,7 @@ stp port swp1 edge
 mlag on peer-link po1 peer-address 192.0.2.2
 gateway vlan10 10.0.10.254/24
 gateway mac 00:00:5e:00:01:07
+lacp system-priority 100
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -244,6 +245,7 @@ gateway mac 00:00:5e:00:01:07
 		"stp on priority 4096\n", "stp port swp1 edge\n",
 		"mlag on peer-link po1 peer-address 192.0.2.2\n",
 		"gateway mac 00:00:5e:00:01:07\n", "gateway add vlan10 10.0.10.254/24\n",
+		"lacp system-priority 100\n",
 		"vlan add 10\n", "vlan add 20\n",
 		"switchport swp1 access 10\n",
 		"switchport swp2 trunk 10,20 native 1\n",
@@ -258,6 +260,9 @@ gateway mac 00:00:5e:00:01:07
 	}
 	if i := strings.Index(got, "mlag on"); i < strings.Index(got, "lag po1") || i > strings.Index(got, "stp on") {
 		t.Errorf("mlag must come after the LAGs (its peer-link may be one) and before spanning tree:\n%s", got)
+	}
+	if strings.Index(got, "lacp system-priority") > strings.Index(got, "lag po1") {
+		t.Errorf("the LACP system priority must be set before any LAG negotiates:\n%s", got)
 	}
 	if i := strings.Index(got, "gateway add"); i < strings.Index(got, "svi add 10") || i < strings.Index(got, "gateway mac") {
 		t.Errorf("a gateway must come after its SVI and after the virtual MAC:\n%s", got)

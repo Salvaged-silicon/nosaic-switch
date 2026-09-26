@@ -24,6 +24,9 @@ func (s *Switch) SetMLAG(cfg switchapi.MLAGConfig) error {
 	if err := switchapi.ValidMLAG(cfg); err != nil {
 		return err
 	}
+	if err := switchapi.ValidMLAGTimes(cfg); err != nil {
+		return err
+	}
 	p, err := s.lookup(cfg.PeerLink)
 	if err != nil {
 		return err
@@ -76,6 +79,10 @@ func (s *Switch) MLAG() (switchapi.MLAGStatus, error) {
 		Role:     "none",
 		PeerLink: s.mlag.PeerLink,
 		SystemID: "020000000001",
+	}
+	if s.mlag.Enabled {
+		out.PeerAddress, out.Priority = s.mlag.PeerAddress, s.mlag.Priority
+		out.HelloMs, out.DeadMs, out.SettleMs, out.HeartbeatPort = switchapi.MLAGTimes(s.mlag)
 	}
 	if p, ok := s.byName[s.mlag.PeerLink]; ok {
 		out.PeerLinkUp = p.adminUp

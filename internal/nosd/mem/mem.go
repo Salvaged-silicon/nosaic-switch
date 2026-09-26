@@ -84,6 +84,7 @@ type Switch struct {
 	acls    map[int]switchapi.ACLRule
 	stpst   *stpState
 	mlag    switchapi.MLAGConfig
+	lacpPri int
 	vmac    string
 	gws     map[switchapi.VirtualGateway]bool
 }
@@ -477,6 +478,7 @@ func (s *Switch) DelACL(seq int) error {
 type lag struct {
 	lacp    bool
 	mlag    int
+	opts    switchapi.LAGOptions
 	members []string
 	port    *port // the LAG as an interface: VLANs, addresses, status
 }
@@ -585,7 +587,8 @@ func (s *Switch) LAGs() ([]switchapi.LAG, error) {
 	defer s.mu.Unlock()
 	var out []switchapi.LAG
 	for name, l := range s.lags {
-		g := switchapi.LAG{Name: name, LACP: l.lacp, MLAG: l.mlag}
+		g := switchapi.LAG{Name: name, LACP: l.lacp, MLAG: l.mlag,
+			Options: lagOptions(l.opts), SystemPriority: lacpPriority(s.lacpPri)}
 		for _, m := range l.members {
 			// No links in memory: a member is active when its port is up.
 			g.Members = append(g.Members, switchapi.LAGMember{Port: m, Active: s.byName[m].adminUp})

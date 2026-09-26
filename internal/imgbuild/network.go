@@ -171,7 +171,9 @@ fi
 #
 #     lag po1 lacp swp49,swp50
 #     mlag on peer-link po1 peer-address 10.10.34.3
-#     lag po7 lacp swp49 mlag 7
+#     lacp system-priority 100
+#     lag po7 lacp swp49 mlag 7 rate slow
+#     stp on priority 4096 hello 2 forward-delay 15 max-age 20
 #     stp on priority 4096
 #     stp port swp1 edge
 #     vlan 10
@@ -195,7 +197,13 @@ fi
 # $1 = "quiet" while waiting for the datapath, whose ports do not exist yet.
 apply_vlans() {
 command -v nosaic >/dev/null 2>&1 || return 0
-grep -Eq '^(vlan|switchport|lag|stp|mlag|gateway)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+grep -Eq '^(vlan|switchport|lag|lacp|stp|mlag|gateway)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+# The LACP system priority first: every LAG negotiates with it from the start.
+while read -r kind rest; do
+    [ "$kind" = "lacp" ] && [ -n "$rest" ] || continue
+    # shellcheck disable=SC2086 -- rest is the lacp arguments, word-split on purpose
+    out=$(nosaic lacp $rest 2>&1) || say "lacp $rest FAILED: $out" "$1"
+done < "$CONF"
 # LAGs first, in a pass of their own: a switchport or iface line may name one,
 # and it has to exist before it can be put in a VLAN or given an address.
 while read -r kind a mode ports; do

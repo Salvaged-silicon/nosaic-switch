@@ -56,13 +56,16 @@ static const char usage[] =
 "  switchport <port> access <vid> | trunk <vid,...> [native <vid>] | none\n"
 "                          a port's whole VLAN membership; none routes again\n"
 "  svi add|del <vid>       the routed interface vlan<vid>\n"
-"  lag <poN> lacp|static <port,...> [mlag <id>] | none\n"
+"  lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow]\n"
+"      [mode active|passive] [port-priority <n>] | none\n"
+"  lacp system-priority <n> the switch's LACP system priority\n"
 "                          a LAG's whole membership; none removes it\n"
-"  stp on [priority <n>] | off\n"
+"  stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>] | off\n"
 "                          rapid spanning tree over the switched ports\n"
-"  stp port <port> [edge] [cost <n>]\n"
+"  stp port <port> [edge] [cost <n>] [priority <n>]\n"
 "                          one port's or LAG's settings\n"
-"  mlag on peer-link <port> [peer-address <ip>] [priority <n>] | off\n"
+"  mlag on peer-link <port> [peer-address <ip>] [priority <n>] [hello <ms>]\n"
+"      [dead <ms>] [settle <ms>] [heartbeat-port <n>] | off\n"
 "                          one of an MLAG pair\n"
 "  gateway add|del <svi> <address/len> | gateway mac <mac>\n"
 "                          a virtual gateway both of a pair answer for\n"
@@ -437,6 +440,8 @@ int main(int argc, char **argv)
 		return nosaic_switchport_cmd(argc, argv);
 	if (strcmp(argv[1], "lag") == 0)
 		return nosaic_lag_cmd(argc, argv);
+	if (strcmp(argv[1], "lacp") == 0)
+		return nosaic_lacp_cmd(argc, argv);
 	if (strcmp(argv[1], "stp") == 0)
 		return nosaic_stp_cmd(argc, argv);
 	if (strcmp(argv[1], "mlag") == 0)

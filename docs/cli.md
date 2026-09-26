@@ -62,17 +62,18 @@ statements go in `network.conf`. [vlan.md](vlan.md).
 
 ### LAGs
 
-    lag <poN> lacp|static <port>[,<port>...]
+    lag <poN> lacp|static <port>[,<port>...] [rate fast|slow] [mode active|passive] [port-priority <n>]
     lag <poN> none
+    lacp system-priority <n>
 
 Both CLIs. `lag` states the LAG's whole membership. A LAG's name goes
 wherever a port's does, `switchport` included. [lag.md](lag.md).
 
 ### Spanning tree
 
-    stp on [priority <n>]
+    stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>]
     stp off
-    stp port <port> [edge] [cost <n>]
+    stp port <port> [edge] [cost <n>] [priority <n>]
 
 Both CLIs. Rapid spanning tree over the switched ports and LAGs; off until
 turned on. [stp.md](stp.md).
@@ -80,6 +81,7 @@ turned on. [stp.md](stp.md).
 ### MLAG
 
     mlag on peer-link <port> [peer-address <ip>] [priority <n>]
+            [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>]
     mlag off
     lag <poN> lacp|static <port,...> mlag <id>
 
