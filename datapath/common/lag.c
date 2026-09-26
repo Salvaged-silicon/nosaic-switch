@@ -60,6 +60,7 @@
 #include <bcm/rx.h>
 #include <bcm/stat.h>
 #include <bcm/stg.h>
+#include <bcm/switch.h>
 #include <bcm/trunk.h>
 #include <bcm/vlan.h>
 
@@ -127,6 +128,7 @@ static pthread_mutex_t lag_lock = PTHREAD_MUTEX_INITIALIZER;
 static int lag_unit = -1;
 static bcm_pbmp_t cpu_pbm;
 static unsigned char sys_mac[6];
+static int lag_psc = BCM_TRUNK_PSC_SRCDSTIP;          /* see enhanced_hash() */
 
 /* Published for the packet paths; see LOCKING. */
 static volatile int claimed[MAX_PORT];                /* port -> LAG, 0 none */
@@ -222,7 +224,7 @@ static void publish(int k)
 	ndist[k] = n;
 
 	bcm_trunk_info_t_init(&info);
-	info.psc = BCM_TRUNK_PSC_SRCDSTIP;
+	info.psc = lag_psc;
 	/*
 	 * ⚠ -1, NOT 0. These name the member that floods, multicasts and
 	 * multicast-routes for the trunk, and zero is a member index: a zeroed
@@ -971,6 +973,73 @@ int nosaic_lag_of_tid(int tid)
 
 /* ---------------------------------------------------------------------- */
 
+/*
+ * The trunk hash: RTAG7, the chips' "enhanced" hash, a CRC over the
+ * addresses, the protocol and the L4 ports.
+ *
+ * ⚠ THE LEGACY HASH SPREADS BY THE LOW BITS OF THE ADDRESSES, AND LAB
+ * ADDRESSES SHARE THEM. BCM_TRUNK_PSC_SRCDSTIP XORs the two IPs and takes the
+ * bottom bits, so with two members it is the parity of source XOR
+ * destination. Measured on a Nexus 3172TQ: 20 flows, five sources that
+ * were all odd to four destinations that were all even, every packet out of
+ * the same member. Point-to-point /29s and /31s make that the normal case,
+ * not the unlucky one. A CRC uses every bit.
+ *
+ * Both field banks get the same fields so that whichever one the chip selects
+ * for a trunk, the answer is the same.
+ */
+static int enhanced_hash(int unit)
+{
+	const int ip4 = BCM_HASH_FIELD_IP4SRC_LO | BCM_HASH_FIELD_IP4SRC_HI |
+			BCM_HASH_FIELD_IP4DST_LO | BCM_HASH_FIELD_IP4DST_HI |
+			BCM_HASH_FIELD_PROTOCOL;
+	const int ip6 = BCM_HASH_FIELD_IP6SRC_LO | BCM_HASH_FIELD_IP6SRC_HI |
+			BCM_HASH_FIELD_IP6DST_LO | BCM_HASH_FIELD_IP6DST_HI |
+			BCM_HASH_FIELD_NXT_HDR;
+	const int l4 = BCM_HASH_FIELD_SRCL4 | BCM_HASH_FIELD_DSTL4;
+	const int l2 = BCM_HASH_FIELD_MACDA_LO | BCM_HASH_FIELD_MACDA_MI |
+		       BCM_HASH_FIELD_MACDA_HI | BCM_HASH_FIELD_MACSA_LO |
+		       BCM_HASH_FIELD_MACSA_MI | BCM_HASH_FIELD_MACSA_HI |
+		       BCM_HASH_FIELD_ETHER_TYPE | BCM_HASH_FIELD_VLAN;
+	const struct { bcm_switch_control_t c; int v; int must; } set[] = {
+		{ bcmSwitchHashIP4Field0,              ip4,      1 },
+		{ bcmSwitchHashIP4Field1,              ip4,      1 },
+		{ bcmSwitchHashIP4TcpUdpField0,        ip4 | l4, 0 },
+		{ bcmSwitchHashIP4TcpUdpField1,        ip4 | l4, 0 },
+		{ bcmSwitchHashIP4TcpUdpPortsEqualField0, ip4 | l4, 0 },
+		{ bcmSwitchHashIP4TcpUdpPortsEqualField1, ip4 | l4, 0 },
+		{ bcmSwitchHashIP6Field0,              ip6,      0 },
+		{ bcmSwitchHashIP6Field1,              ip6,      0 },
+		{ bcmSwitchHashIP6TcpUdpField0,        ip6 | l4, 0 },
+		{ bcmSwitchHashIP6TcpUdpField1,        ip6 | l4, 0 },
+		{ bcmSwitchHashIP6TcpUdpPortsEqualField0, ip6 | l4, 0 },
+		{ bcmSwitchHashIP6TcpUdpPortsEqualField1, ip6 | l4, 0 },
+		{ bcmSwitchHashL2Field0,               l2,       1 },
+		{ bcmSwitchHashL2Field1,               l2,       1 },
+		{ bcmSwitchHashField0Config,  BCM_HASH_FIELD_CONFIG_CRC32LO, 1 },
+		{ bcmSwitchHashField1Config,  BCM_HASH_FIELD_CONFIG_CRC32HI, 1 },
+		{ bcmSwitchHashSeed0,                  0x5a5a5a5a, 0 },
+		{ bcmSwitchHashSeed1,                  0xa5a5a5a5, 0 },
+	};
+	int i, rv, hc = 0;
+
+	for (i = 0; i < (int)(sizeof(set) / sizeof(set[0])); i++) {
+		rv = bcm_switch_control_set(unit, set[i].c, set[i].v);
+		if (rv != BCM_E_NONE && set[i].must) {
+			fprintf(stderr, "lag: enhanced hash control %d: %s; trunks "
+				"hash by the legacy source/destination IP instead\n",
+				(int)set[i].c, bcm_errmsg(rv));
+			return -1;
+		}
+	}
+	/* Flooded and multicast frames too; read-modify-write, because the
+	 * same control carries l3sync's ECMP inputs. */
+	if (bcm_switch_control_get(unit, bcmSwitchHashControl, &hc) == BCM_E_NONE)
+		bcm_switch_control_set(unit, bcmSwitchHashControl,
+				       hc | BCM_HASH_CONTROL_TRUNK_NUC_ENHANCE);
+	return 0;
+}
+
 int nosaic_lag_start(int unit)
 {
 	bcm_port_config_t cfg;
@@ -984,6 +1053,12 @@ int nosaic_lag_start(int unit)
 	 * port's, which is derived from the switch's own (switch-mac.sh). */
 	if (nosaic_tap_count() > 0)
 		nosaic_tap_info(0, NULL, NULL, NULL, NULL, sys_mac);
+	if (enhanced_hash(unit) == 0)
+		lag_psc = BCM_TRUNK_PSC_PORTFLOW;
+	printf("lag: trunks hash by %s\n", lag_psc == BCM_TRUNK_PSC_PORTFLOW ?
+	       "RTAG7 (CRC over MACs, IPs, protocol and L4 ports)" :
+	       "source and destination IP");
+	fflush(stdout);
 	/*
 	 * LACPDUs go to 01:80:c2:00:00:02, which the SDK's own L2 cache
 	 * defaults already send to the CPU (01:80:c2:00:00:0x).

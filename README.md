@@ -161,7 +161,7 @@ switches now, in the chip, and the contract that says how is
   as a VLAN trunk. The chip hashes traffic across the members, and the
   datapath keeps the trunk to the members that have link and, for LACP, the
   partner's agreement. It was proven between NOSaic switches on Trident2+,
-  Trident2 and Trident+, with failover under traffic in well under a second.
+  Trident2 and Trident+, with failover under traffic in a second or less.
 - **A management VRF** ([docs/vrf.md](docs/vrf.md)). eth0 lives in its own
   routing table, so what the front panel learns can never capture the switch's
   own management traffic. That once cut an image pull to 21 KB/s and had to be

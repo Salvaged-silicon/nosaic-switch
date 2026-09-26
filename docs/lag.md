@@ -12,7 +12,7 @@ Proven on 2026-09-25, between NOSaic switches, with traffic:
 | [Arista 7050SX2-72Q](../platform/arista-7050sx2-72q/README.md) | Trident2+ | td2p | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [Arista 7050TX-64](../platform/arista-7050tx-64/README.md) | Trident2 | td2 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | [Edgecore AS5610-52X](../platform/edgecore-as5610-52x/README.md) | Trident+ | tdp | — | ✅ | ✅ | — | ✅ |
-| [Cisco Nexus 3172TQ](../platform/cisco-n3172tq/README.md) | Trident2 | td2 | — | — | — | — | — |
+| [Cisco Nexus 3172TQ](../platform/cisco-n3172tq/README.md) | Trident2 | td2 | — | ✅ | ✅ | — | ✅ |
 
 The test bed:
 - **SX2 and TX:** two 40G links between them, et52/et53 ↔ et49/et50, run as
@@ -21,8 +21,9 @@ The test bed:
   member, swp51, negotiated with LACP against the SX2's et54. That was still
   the test that mattered on that board: swp51 is on the chip's second module
   id, where the receive path reports it as port 19.
-- **Nexus 3172TQ:** runs the same td2 datapath as the TX and reports the
-  capability, but nothing has been driven through it yet.
+- **Nexus 3172TQ:** tested on 2026-09-26 with an LACP LAG of its two 10G
+  copper links to the TX, eth1_31/eth1_32 ↔ et31/et32. That is the case the
+  40G tests could not cover: a LAG over the TX's external-PHY copper ports.
 
 A dash means "not tested on that board", not "does not work".
 
@@ -107,9 +108,11 @@ links, unless the item says otherwise.
   - The same held with po1 switched: routed into VLAN 300 on the trunk, and
     back.
   - The same held on the AS5610's own trunk.
-- **The hash spreads.** Six flows, by source address, to one destination: 300 frames
-  left by et52 and 506 by et53. The TX counted the same numbers arriving on
-  et49 and et50.
+- **The hash spreads, once it is RTAG7.** With the legacy hash, 20 flows
+  through the Nexus all left by one member (see below). With RTAG7, the flows
+  that crossed po3 split five and five: 92 frames out of eth1_31 and 100 out
+  of eth1_32. The earlier SX2 split, 300 frames on et52 and 506 on et53, was
+  the legacy hash splitting on the parity of the source addresses.
 - **Failover under traffic.** Six flows at 50 ms intervals, with one member
   taken down and brought back:
   - routed LAG: 1 to 6 of 400 pings lost per flow, an outage of at most about
@@ -118,6 +121,10 @@ links, unless the item says otherwise.
     MACs relearned;
   - both ends stopped distributing on the member and took it back when its
     link returned.
+- **The Nexus** negotiated LACP with the TX, carried OSPF over po3, and
+  forwarded transit traffic into it in the chip. Shutting eth1_32 under four
+  flows cost the two hashed to it 20 of 300 pings, about 1 s, and the other two
+  nothing.
 - **The AS5610** negotiated LACP on swp51, carried OSPF over po2, routed
   transit traffic into its trunk in the chip, and dropped and recovered the
   member when the far end's port went down and up.
@@ -149,6 +156,27 @@ It does not leave this to the chip:
 
 So lag.c keeps two watches: its own 200 ms tick, and a linkscan callback that
 restates the table after a flap too short for the tick to see.
+
+⚠ **On the 7050TX-64's copper ports, a dead far end can still read as link
+up.** When the Nexus shut eth1_32, the TX never logged et32 going down: its
+external PHY kept reporting link. LACP pulled the member anyway, once the
+partner's LACPDUs stopped arriving (three seconds). A **static** LAG on those
+ports has no such backstop and keeps hashing traffic into the dead link. Use
+LACP on copper.
+
+**The trunk hash is RTAG7:** `BCM_TRUNK_PSC_PORTFLOW`, a CRC32 over the MAC
+addresses, the IP addresses, the protocol and the L4 ports, set up the same
+way in both of the chip's hash banks.
+- ⚠ The legacy `BCM_TRUNK_PSC_SRCDSTIP` XORs the two addresses and keeps the
+  low bits, so with two members it is the parity of source XOR destination.
+- Measured on the Nexus: five sources, all odd, to four destinations, all
+  even, and every packet left by the same member.
+- Point-to-point /29s and /31s make that the normal case, not the unlucky one.
+- A datapath whose chip refuses the RTAG7 controls says so at start-up and
+  falls back to the legacy hash.
+
+ECMP is unaffected: it keeps its own inputs, and the enhanced-ECMP bit is not
+set.
 
 **LACP runs in the datapath:**
 - a receive callback ahead of the tap bridge takes slow-protocol frames
