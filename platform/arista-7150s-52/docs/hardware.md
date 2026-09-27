@@ -3163,6 +3163,80 @@ anyone wanted.
 
 ### The guard is not politeness
 
+## What is actually on the board's SMBus, 2026-09-27
+
+The note in `board.yml` used to say a scan of `0x58`..`0x68` on accelerators 0
+and 1 found no fan controller. That scan was too narrow and, more
+importantly, too trusting: **this bus times out often enough that a part
+which is definitely there fails individual reads**, repeatably — dumping 44
+registers from one device returns a mix of values and timeouts every time. A
+single-shot probe reports present parts as missing.
+
+`nosaic platform smbus scan` now sweeps `0x08`..`0x77` on every bus of both
+accelerators, and it needs two rules to say anything true:
+
+- **an all-ones read is silence, not a device.** The master reports success
+  whether or not anything acknowledged, and an unpulled line reads `0xff`.
+  Without this the scan reports 1120 "devices" on this board.
+- **retry before calling an address silent.** Three tries. Without this the
+  scan's own flakiness is indistinguishable from absence — the same trap that
+  produced the original "no fan controller" conclusion.
+
+Sixteen parts answer: **live**
+
+| where | address | what |
+|---|---|---|
+| accel 0 bus 0 | `0x4c` | LM90-compatible, mfr `0x01` dev `0x11` — **declared** |
+| accel 0 bus 0 | `0x50` | reg0 `0x0d`, unidentified |
+| accel 0 bus 1 | `0x0c` | SMBus Alert Response — returns `0x9c` = `0x4e << 1` |
+| accel 0 bus 1 | `0x48` | reg0 `~0x11`, no ID registers; LM75-shaped, unproven |
+| accel 0 bus 1 | `0x4e` | sparse register map, and the part asserting SMBALERT# |
+| accel 0 bus 2 | `0x40` | reg0 `0x00`, unidentified |
+| accel 0 bus 2 | `0x4c` | **a second LM90**, mfr `0x01` dev `0x11` — **declared** |
+| accel 0 bus 3 | `0x30` | reg0 `0x23`, unidentified |
+| accel 0 bus 4 | `0x50`+`0x58` | a PSU: FRU EEPROM and its controller |
+| accel 0 bus 5 | `0x0c`, `0x4e` | the alert pair again |
+| accel 0 bus 6 | `0x73` | reg0 `0x00`, unidentified |
+| accel 1 bus 0 | `0x50`+`0x58` | the second PSU |
+| accel 1 bus 1 | `0x70` | reg0 `0x09`, unidentified |
+
+Two things fall out of that beyond the fan search.
+
+**A second thermal sensor, and it sees the hot part.** The part at accel 0
+bus 2 answers the same manufacturer and device IDs as the declared one, and
+both its diodes read sensibly — local 30–31 °C, remote 33–34 °C. Its remote
+diode is the hottest thing measured on this board and the only one that reads
+hotter than its own local diode, which is what a sensor on a switch die looks
+like and is the opposite of the first part's remote. It is declared as
+`board2`/`remote2`, named for where it is rather than for what it might be
+watching. The cooling loop tracks the hottest sensor, and this board was
+running one that could not see the hottest place on it:
+
+```
+temp board    29.0 °C      temp board2   31.0 °C
+temp remote   26.0 °C      temp remote2  33.0 °C
+```
+
+**The `0x50`+`0x58` pairs are the power supplies**, not the prefdl SEEPROMs an
+earlier note guessed at — the real prefdl is on host i2c-1 at `0x52` and has
+been read for months.
+
+### The fan controller is still not found
+
+The pair at `0x4e` was the best candidate and does not fit. Read against the
+crow CPLD map its "fans present" register is `0x00` and its tachometers read
+zero while a fan ID register is set, which is not a fan controller with fans
+on it. Its stable registers are `0x00`–`0x02`, `0x19`, `0x20`, `0x21`, `0x25`,
+`0x26`, `0x2a`.
+
+⚠ **Do not go looking by writing.** Two earlier attempts to find a fan CPLD's
+PWM register by sweeping it powered a switch off. Everything above is reads
+only, and the scan has no write path.
+
+So no controller is declared, no cooling loop starts, and this board reports
+temperature and regulates nothing. That is now a bounded gap with an
+inventory behind it rather than a shrug.
+
 ## Cage presence: the decode, and how it was settled, 2026-09-26
 
 The driver used to match the cage word as a whole against three values

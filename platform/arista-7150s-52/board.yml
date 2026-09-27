@@ -153,12 +153,47 @@ platform_hal:
   # The board's SMBus, recovered by scanning it 2026-09-25 with NOSaic's own
   # scdsmbus -- accelerators 0..9 exist, 10 and up answer "no response".
   #
-  # ⚠ ONE SENSOR, AND NO FANS YET. A scan of 0x58..0x68 on accelerators 0 and 1
-  # found no fan controller, so none is declared and no cooling loop starts.
-  # The fans are somewhere -- the chassis has them -- and until they are found
-  # this board reports temperature through `nosaic platform status` and
-  # regulates nothing. Declaring a controller we have not read would be worse
-  # than declaring none.
+  # ⚠ STILL NO FAN CONTROLLER, and the search is now a real one.
+  #
+  # The earlier note here recorded a scan of 0x58..0x68 on accelerators 0 and
+  # 1. That scan was too narrow in range and too trusting in method: this bus
+  # times out often enough that a device answers one read and not the next, so
+  # a single-shot probe reports present parts as missing.
+  #
+  # `nosaic platform smbus scan` now sweeps 0x08..0x77 on every bus of both
+  # accelerators, retries three times before calling an address silent, and
+  # treats an all-ones read as silence rather than as a device -- without that
+  # last rule it reports 1120 "devices", every one of them an unpulled line.
+  # It finds sixteen parts, none of which answers as a fan controller:
+  #
+  #   accel 0 bus 0  0x4c  LM90-compatible, mfr 0x01 dev 0x11   -- declared
+  #   accel 0 bus 0  0x50  reg0 0x0d, unidentified
+  #   accel 0 bus 1  0x0c  SMBus Alert Response, returns 0x9c = 0x4e << 1
+  #   accel 0 bus 1  0x48  reg0 ~0x11, no ID registers; LM75-shaped, unproven
+  #   accel 0 bus 1  0x4e  sparse map, asserting SMBALERT#
+  #   accel 0 bus 2  0x40  reg0 0x00, unidentified
+  #   accel 0 bus 2  0x4c  LM90-compatible, mfr 0x01 dev 0x11   -- declared
+  #   accel 0 bus 3  0x30  reg0 0x23, unidentified
+  #   accel 0 bus 4  0x50 + 0x58   PSU: FRU EEPROM and its controller
+  #   accel 0 bus 5  0x0c  Alert Response again, also 0x4e
+  #   accel 0 bus 5  0x4e  same sparse map as bus 1
+  #   accel 0 bus 6  0x73  reg0 0x00, unidentified
+  #   accel 1 bus 0  0x50 + 0x58   the second PSU
+  #   accel 1 bus 1  0x70  reg0 0x09, unidentified
+  #
+  # The pair at 0x4e was the best candidate and does not fit: read against the
+  # crow CPLD map its "fans present" register is 0x00 and its tachometers read
+  # zero, while a fan ID register is set -- which is not a fan controller with
+  # fans on it. Its stable registers are 0x00..0x02, 0x19, 0x20, 0x21, 0x25,
+  # 0x26, 0x2a, and it is the part pulling SMBALERT# on two buses.
+  #
+  # ⚠ DO NOT GO LOOKING BY WRITING. Two earlier attempts to find a fan CPLD's
+  # PWM register by sweeping it powered a switch off. Everything above is
+  # reads only.
+  #
+  # So no controller is declared and no cooling loop starts: this board
+  # reports temperature and regulates nothing. Declaring a controller we have
+  # not read would be worse than declaring none.
   smbus:
     sensors:
       # Local and remote diodes of one LM90-compatible part at accel 0 bus 0.
@@ -173,6 +208,23 @@ platform_hal:
       # die, so it is named for what it is rather than for a guess.
       - {name: board,  part: lm90,        accel: 0, bus: 0, addr: 0x4c}
       - {name: remote, part: lm90-remote, accel: 0, bus: 0, addr: 0x4c}
+
+      # A SECOND part of the same kind, at accel 0 bus 2, found 2026-09-27.
+      # It answers the same manufacturer 0x01 and device 0x11, and both its
+      # diodes read sensibly: local 30-31 °C, remote 34 °C.
+      #
+      # Its remote diode is the hottest thing measured on this board, and it
+      # is the only one that reads hotter than its own local diode -- which is
+      # what a sensor wired to a switch die looks like, and is the opposite of
+      # the first part's remote. That makes it the best candidate for the
+      # FM6000, and a candidate is not a measurement, so it is named for where
+      # it is rather than for what it might be watching.
+      #
+      # Worth having regardless of what it is on: the cooling loop tracks the
+      # hottest sensor, and this board was running one that could not see the
+      # hottest place on it.
+      - {name: board2,  part: lm90,        accel: 0, bus: 2, addr: 0x4c}
+      - {name: remote2, part: lm90-remote, accel: 0, bus: 2, addr: 0x4c}
 
   # The 52 front-panel SFP+ cages.
   #

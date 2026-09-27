@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -35,6 +36,8 @@ const platformUsage = `usage: nosaic platform <command>
                        fail to full cooling, and are left at full on exit
   beacon [on|off]      the blue locator, for finding this box in a rack
   linkmap              which ports the chip will actually egress to
+  smbus scan [accel] [bus]
+                       which addresses answer on the board controller's bus
   i2c <bus> <addr> <reg> [count]
                        read raw i2c registers
   i2c write <bus> <addr> <reg> <value>
@@ -814,6 +817,119 @@ func dumpModule(hal platformhal.HAL, cage int) error {
 	return nil
 }
 
+// smbusScan reports which addresses answer on the board controller's SMBus.
+//
+// A driver is written against a part the board is known to have. This is for
+// the step before that, when the question is what is on the bus at all --
+// which is exactly where this board is for its fans: the chassis has them,
+// nothing has been found that controls them, and a scan of one address range
+// on two accelerators came back empty. A scan that covers the whole range and
+// prints what it finds is a better answer than a narrower one that finds
+// nothing.
+//
+// ⚠ READS ONLY, and it reads register 0. Probing by writing is how an
+// unmapped device on a live switch gets reconfigured by a diagnostic, and
+// every part on this bus is a sensor, a power controller or a signal
+// conditioner on a box that may be forwarding.
+//
+// A scan is evidence about this board in this state, not a datasheet. An
+// address that does not answer may be a part held in reset by something that
+// has not run yet -- which is the same trap the transceiver cages set, where
+// an unpowered cage reports exactly as an empty one.
+type smbusReader interface {
+	SMBusReadReg(accel, bus, addr, reg int) (byte, error)
+}
+
+func smbusScan(r smbusReader, args []string) error {
+	return smbusScanTo(os.Stdout, r, args)
+}
+
+func smbusScanTo(out io.Writer, r smbusReader, args []string) error {
+	accels := []int{0, 1}
+	buses := []int{0, 1, 2, 3, 4, 5, 6, 7}
+	atoi := func(s string) (int, error) {
+		v, err := strconv.ParseInt(strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X"), 0, 32)
+		if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+			v, err = strconv.ParseInt(s[2:], 16, 32)
+		}
+		return int(v), err
+	}
+	if len(args) > 0 {
+		a, err := atoi(args[0])
+		if err != nil {
+			return fmt.Errorf("accelerator %q: %w", args[0], err)
+		}
+		accels = []int{a}
+	}
+	if len(args) > 1 {
+		b, err := atoi(args[1])
+		if err != nil {
+			return fmt.Errorf("bus %q: %w", args[1], err)
+		}
+		buses = []int{b}
+	}
+
+	// ⚠ A SUCCESSFUL READ IS NOT A DEVICE.
+	//
+	// This master reports success whether or not anything acknowledged, and
+	// an unpulled line reads back as all ones. Scanning two accelerators
+	// here returns 1120 "answers", every one of them 0xff, which is a bus
+	// with nothing on it rather than 1120 parts. The transceiver cages say
+	// the same thing in the same way: an absent module reads identifier
+	// 0xff.
+	//
+	// So all-ones is treated as silence. A part whose register 0 genuinely
+	// reads 0xff would be missed, and that is the right trade: a scan that
+	// reports every address on the board is not a scan.
+	// ⚠ AND A REFUSAL IS NOT AN ABSENCE EITHER.
+	//
+	// This bus times out often enough that a device answers one read and not
+	// the next -- dumping 48 registers from a part that is definitely there
+	// returns a mix of values and timeouts, repeatably. A single-shot scan
+	// therefore reports some present devices as missing, and "no fan
+	// controller on this board" was concluded from exactly that kind of
+	// scan.
+	//
+	// So every address is asked more than once, and only an address that
+	// never answers is called silent.
+	const tries = 3
+	probe := func(a, b, addr int) (byte, bool) {
+		for i := 0; i < tries; i++ {
+			if v, err := r.SMBusReadReg(a, b, addr, 0); err == nil {
+				return v, true
+			}
+		}
+		return 0, false
+	}
+
+	found, floated, refused := 0, 0, 0
+	for _, a := range accels {
+		for _, b := range buses {
+			for addr := 0x08; addr <= 0x77; addr++ {
+				v, ok := probe(a, b, addr)
+				switch {
+				case !ok:
+					refused++
+				case v == 0xff:
+					floated++
+				default:
+					fmt.Fprintf(out, "accel %d bus %d  %#02x  reg0 = %#02x\n", a, b, addr, v)
+					found++
+				}
+			}
+		}
+	}
+	fmt.Fprintf(out, "\n%d device(s); %d addresses read all-ones, %d never answered in %d tries.\n",
+		found, floated, refused, tries)
+	if found == 0 {
+		fmt.Fprintln(out, "Nothing answered with anything but all-ones. That is a statement\n"+
+			"about this board in this state, not about the board: a part held in\n"+
+			"reset by a step that has not run answers exactly like a part that is\n"+
+			"not fitted.")
+	}
+	return nil
+}
+
 // smbusCmd reads one register off the board controller's SMBus.
 //
 // Reads only. There is no write here on purpose: the devices on this bus are
@@ -827,8 +943,12 @@ func smbusCmd(hal platformhal.HAL, args []string) error {
 	if !ok {
 		return fmt.Errorf("%w: this board has no SMBus to read", platformhal.ErrUnsupported)
 	}
+	if len(args) > 0 && args[0] == "scan" {
+		return smbusScan(r, args[1:])
+	}
 	if len(args) < 4 || args[0] != "read" {
 		return fmt.Errorf("usage: nosaic platform smbus read <accel> <bus> <addr> <reg> [count]\n" +
+			"         nosaic platform smbus scan [accel] [bus]\n" +
 			"  addr and reg are hex; count defaults to 1\n" +
 			"  e.g. smbus read 1 7 0x58 0x00 8")
 	}
