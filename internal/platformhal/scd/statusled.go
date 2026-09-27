@@ -43,6 +43,26 @@ var ErrNoLampMap = errors.New(
 		"platform/arista-7050sx2-72q/tools/mkstatusleds.sh and install it as " +
 		lampConfPath)
 
+// ErrNoLampPart is returned when the board has not identified the part the
+// lamps are on, which makes the advice in ErrNoLampMap wrong rather than
+// merely unhelpful.
+//
+// The chassis lamps are registers on the same CPLD that runs the fans. The
+// generator finds them by reading that CPLD's description off a running
+// vendor OS, and it assumes the part answers at 0x60 on accelerator 0 bus 0
+// because that is where the boards it was written for put it.
+//
+// The 7150S-52 has no such part. An exhaustive read-only scan of both
+// accelerators -- 0x08..0x77, retried, all-ones treated as silence -- finds
+// sixteen devices and nothing that answers as a fan CPLD. Telling an
+// operator to run a generator that cannot work on the switch in front of
+// them is worse than telling them nothing: they will go and try it.
+var ErrNoLampPart = errors.New(
+	"this board's chassis lamps are on the same part as its fan controller, " +
+		"and that part has not been identified here, so there is nothing to " +
+		"generate a lamp map from yet. `nosaic platform smbus scan` lists " +
+		"what does answer")
+
 // Lamp is one chassis status light.
 type Lamp struct {
 	Name string
@@ -170,7 +190,14 @@ func (s *SCD) loadLamps() (*lampMap, error) {
 	}
 	f, err := os.Open(path)
 	if err != nil {
+		// Which answer is honest depends on whether the part the lamps live
+		// on is even known to be here. Pointing at the generator is right
+		// when the map is merely missing and wrong when the hardware it
+		// reads has never been found.
 		m.loadErr = ErrNoLampMap
+		if s.smbusMap == nil || s.smbusMap.Fans == nil {
+			m.loadErr = ErrNoLampPart
+		}
 		return m, m.loadErr
 	}
 	defer f.Close()

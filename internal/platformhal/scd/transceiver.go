@@ -200,14 +200,6 @@ func (s *SCD) Transceivers() ([]Cage, error) {
 	return cages, nil
 }
 
-// Known reports whether the cage word could be decoded.
-//
-// Every word now decodes, so this is always true; it is kept because callers
-// distinguish "this board cannot report cages at all" from "this cage is
-// empty", and collapsing those two would be a regression the day a board
-// appears whose words mean something else.
-func (c Cage) Known() bool { return c.State != PresenceUnknown }
-
 // TXEnabled reports whether a cage's transmitter is turned on.
 func (c Cage) TXEnabled() bool { return c.Raw&xcvrTXDisable == 0 }
 
