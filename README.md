@@ -78,7 +78,7 @@ Tridents 2 and 2+, and never to the AS5610's Trident+, which predates it.
 | MLAG | ✅ | ✅ | 🔧 | ✗ refused |
 | Virtual gateway, IPv4 | ✅ | ✅ | 🔧 | ✗ refused |
 | Virtual gateway, IPv6 | ✅ | ✅ | 🔧 | ✗ refused |
-| Access lists, IPv4 and IPv6 | ✅ | ✗ not yet | ✅ | host nftables |
+| Access lists, IPv4 and IPv6 | ✅ | ✅ | ✅ | host nftables |
 | Management VRF | ✅ | ✅ | ✅ | not used |
 
 ✅ proven on the hardware with traffic · 🔧 built and in the daemon, not yet
@@ -113,7 +113,7 @@ it is worth building: TRILL, for one, is a dead end.
 |---|---|---|---|
 | ECMP | 1024 paths | 1024 paths | 1024 paths |
 | LAGs | 64, up to 16 members | 64, up to 16 members | 64, up to 16 members |
-| ACL rules, IPv4 / IPv6 | 10240 / 4096 | not yet | 1280 / 768 |
+| ACL rules, IPv4 / IPv6 | 10240 / 4096 | 2560 / 1024 | 1280 / 768 |
 
 When a feature lands, its row here changes in the same pull request.
 
