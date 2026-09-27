@@ -67,11 +67,23 @@ committed, as on every other board.
       land on **root**, not the login account: dropbear refuses any account
       whose password field is blank before it looks at a key, and `admin` has
       none. So `ssh root@`, not `ssh admin@`.
-- [ ] **the SSH host key does not persist across reboots.** The rootfs is a
-      read-only squashfs, so dropbear regenerates into tmpfs every boot and
-      every connection trips `REMOTE HOST IDENTIFICATION HAS CHANGED`. Harmless
-      in a lab and wrong in a product — it trains operators to ignore the one
-      warning that matters. The key belongs on the data partition.
+- [x] **the SSH host key persists across reboots** — shipped and verified on
+      hardware 2026-09-27. The rootfs is a read-only squashfs and this board
+      always RAM-boots, so dropbear regenerated into tmpfs every boot and
+      every connection tripped `REMOTE HOST IDENTIFICATION HAS CHANGED` —
+      harmless in a lab and wrong in a product, because it trains operators
+      to ignore the one warning that matters.
+      There is no data partition to put it on (`/dev/sda2` has no
+      filesystem), so it lives on the flash the bootloader already uses. The
+      initramfs restores it before `switch_root` — it has to be there, since
+      dropbear's `-R` generates a key the moment it starts and anything
+      restoring afterwards is racing it — and a oneshot after dropbear stores
+      the first generated key, to the device the initramfs recorded in
+      `/etc/nosaic/flash-device`.
+      Verified by two PDU power cycles: after the first the live key's md5
+      matched the copy stored on flash, and after the second `ssh
+      -o StrictHostKeyChecking=yes` connected against the unchanged
+      `known_hosts` entry.
 - [ ] ~~`config/authorized_keys` for network login~~ — gitignored and per-operator,
       so created on the machine that builds, not committed
 - [x] **`boot_mib` / `slot_mib` / `data_mib` set from a measured image** —

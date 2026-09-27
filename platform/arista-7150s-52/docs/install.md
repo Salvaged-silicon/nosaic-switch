@@ -1,7 +1,43 @@
 # Arista DCS-7150S-52 — what is left
 
-Everything. This is a `planned` board: no NOSaic image has been built for it and
-no NOSaic code has touched the chip.
+**Not everything, not any more.** This page opened with "no NOSaic image has
+been built for it and no NOSaic code has touched the chip", which stopped
+being true some time ago: NOSaic is installed on this chassis' flash, boots
+from it, and runs its platform layer — optics, sensors, PSUs, identity — with
+no vendor OS involved. What it does not do is forward.
+
+## ⚠ Two SWIs are built, and only one of them boots this switch
+
+`make image BOARD=arista-7150s-52` produces an **installable** SWI of about
+15 MiB, which expects a slot partition to hold the rootfs. This chassis has
+no such partition — `/dev/sda2` exists and has no filesystem — so that is not
+the artifact to install. `make netboot BOARD=arista-7150s-52` produces the
+**RAM-boot** SWI of about 58 MiB, which carries the rootfs inside itself, and
+that is what sits on the flash and what boots.
+
+Installing is a copy and a `boot-config` line, and the order is the safety:
+
+```sh
+make netboot BOARD=arista-7150s-52
+# a fallback FIRST -- recovery is one Aboot line, but only if it exists
+ssh root@<switch> 'mount -t vfat /dev/sda1 /mnt/f && cp /mnt/f/NOSaic.swi /mnt/f/NOSaic-known-good.swi'
+# stage under a temp name, check the md5, and only then move it into place,
+# so a truncated transfer can never become the boot image
+ssh root@<switch> 'cat > /mnt/f/NOSaic-new.swi' < out/images/arista-7150s-52/netboot/*-ramboot.swi
+ssh root@<switch> 'md5sum /mnt/f/NOSaic-new.swi'      # compare against the local one
+ssh root@<switch> 'mv /mnt/f/NOSaic-new.swi /mnt/f/NOSaic.swi && sync && umount /mnt/f'
+```
+
+⚠ Before any of that, check the image contains the files that are gitignored
+per board: `unsquashfs -ll out/images/<board>/rootfs.sqsh` and look for
+`root/.ssh/authorized_keys`. An image built in a fresh worktree has none of
+them, and the result is a switch that refuses your key.
+
+This box does not reboot reliably from software, so the PDU is the way.
+Confirm the outlet by the name the PDU prints against it **and** by watching
+the target's management address go down and come back — the check the lab's
+power notes exist to enforce, after three rounds of diagnosis were once built
+on a PDU command that switched a different outlet.
 
 Ordered by what blocks what. Each step is a thing that can be demonstrated, and
 a step is not done because the code for it exists.
