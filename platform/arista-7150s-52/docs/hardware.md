@@ -3189,7 +3189,7 @@ Sixteen parts answer: **live**
 | accel 0 bus 0 | `0x4c` | LM90-compatible, mfr `0x01` dev `0x11` — **declared** |
 | accel 0 bus 0 | `0x50` | reg0 `0x0d`, unidentified |
 | accel 0 bus 1 | `0x0c` | SMBus Alert Response — returns `0x9c` = `0x4e << 1` |
-| accel 0 bus 1 | `0x48` | reg0 `~0x11`, no ID registers; LM75-shaped, unproven |
+| accel 0 bus 1 | `0x48` | in the LM75 range and **not a sensor** — see below |
 | accel 0 bus 1 | `0x4e` | sparse register map, and the part asserting SMBALERT# |
 | accel 0 bus 2 | `0x40` | reg0 `0x00`, unidentified |
 | accel 0 bus 2 | `0x4c` | **a second LM90**, mfr `0x01` dev `0x11` — **declared** |
@@ -3216,6 +3216,15 @@ running one that could not see the hottest place on it:
 temp board    29.0 °C      temp board2   31.0 °C
 temp remote   26.0 °C      temp remote2  33.0 °C
 ```
+
+**The part at `0x48` looks like a third sensor and is not one.** It is in the
+LM75 address range and its register 0 reads `0x11`, a believable 17 °C. But
+an LM75's four registers wrap every four addresses and this part's do not —
+`0x00`–`0x0f` read `11 40 7f 80 09 09 09 01 01 01 01 01 01 01 01 01` — its
+hysteresis and overtemperature registers would be +127 °C and −128 °C, and
+register 0 does not move while the two real sensors drift. It is left
+undeclared. A stuck sensor is worse than a missing one: it does not fail, it
+under-reports for ever, and the cooling loop believes it.
 
 **The `0x50`+`0x58` pairs are the power supplies**, not the prefdl SEEPROMs an
 earlier note guessed at — the real prefdl is on host i2c-1 at `0x52` and has
