@@ -58,6 +58,63 @@ listing what is left, separated into what stops it working and what does not. Th
 in the board's own directory, and [docs/switches.md](docs/switches.md) indexes them from
 what each directory actually contains.
 
+## What each switch can do
+
+Two different questions, answered separately: what NOSaic does on a chip today,
+and what the chip itself could do. The second is what decides whether a
+feature can ever come to a switch. VXLAN, for example, can come to the
+Tridents 2 and 2+, and never to the AS5610's Trident+, which predates it.
+
+**What NOSaic does today**, by datapath. Every switch reports its own with
+`nosaic show caps`.
+
+| Feature | Trident2+<br>7050SX2 | Trident2<br>7050TX, Nexus 3172 | Trident+<br>AS5610 | virtual board |
+|---|---|---|---|---|
+| Routing, OSPF, ECMP in silicon | ✅ | ✅ | ✅ | ✅ kernel |
+| VLANs, trunks, SVIs | ✅ | ✅ | ✅ | ✅ bridge |
+| LAG, static and LACP | ✅ | ✅ | ✅ | ✅ bonds |
+| Rapid spanning tree | ✅ | ✅ | ✅ | ✅ bridge |
+| MLAG | ✅ | ✅ | 🔧 | ✗ refused |
+| Virtual gateway | ✅ | ✅ | 🔧 | ✗ refused |
+| Access lists, IPv4 and IPv6 | ✅ | ✗ not yet | ✅ | host nftables |
+| Management VRF | ✅ | ✅ | ✅ | not used |
+
+✅ proven on the hardware with traffic · 🔧 built and in the daemon, not yet
+run on that chip · ✗ not implemented.
+
+The Edgecore AS4610 (Helix4) has a datapath that compiles but has not run. The
+Arista 7150S (Intel FM6000) is being brought up on its own branch. Neither
+does any of this yet.
+
+**What the silicon can do**, for what NOSaic has not built yet. This comes
+from Broadcom's own feature tables in OpenBCM 6.5.24 (`src/soc/common/feature.c`),
+resolved for the exact chip in each switch by reading each table and the
+older ones it inherits from. The Tridents have variants with features fused
+off, so a family name is not enough. "Yes" means the silicon has it, not that
+it is worth building: TRILL, for one, is a dead end.
+
+| Silicon feature | Trident2+<br>BCM56860 | Trident2<br>BCM56854/55 | Trident+<br>BCM56846 | Helix4<br>BCM56340 |
+|---|---|---|---|---|
+| VXLAN | yes | yes | **no** | **no** |
+| VXLAN routing in one pass (RIOT) | yes | **no**, needs two passes | no | no |
+| MPLS | yes | yes | yes | yes |
+| L2GRE (NVGRE) | yes | yes | no | yes |
+| TRILL | yes | yes | yes | yes |
+| FCoE | yes | yes | no | no |
+| Resilient ECMP hashing | yes | yes | no | no |
+| BFD offload | yes | yes | no | yes |
+| PTP | yes | yes | no | yes |
+
+**Capacities** the chips report, from `show caps`:
+
+| | Trident2+ | Trident2 | Trident+ |
+|---|---|---|---|
+| ECMP | 1024 paths | 1024 paths | 1024 paths |
+| LAGs | 64, up to 16 members | 64, up to 16 members | 64, up to 16 members |
+| ACL rules, IPv4 / IPv6 | 10240 / 4096 | not yet | 1280 / 768 |
+
+When a feature lands, its row here changes in the same pull request.
+
 ## Where it has got to
 
 The first real board is the **[Arista DCS-7050SX2-72Q-R](platform/arista-7050sx2-72q/)** —
@@ -145,7 +202,7 @@ Everything else outstanding is in each board's own list:
 
 For most of its life NOSaic ran every front-panel port as a routed port. It
 switches now, in the chip, and the contract that says how is
-**switchapi 1.6**:
+**switchapi 1.8**:
 
 - **VLANs and SVIs** ([docs/vlan.md](docs/vlan.md)). A port is routed until it
   joins a VLAN; `switchport` makes it an access port or a trunk with a native
