@@ -3242,9 +3242,35 @@ on it. Its stable registers are `0x00`–`0x02`, `0x19`, `0x20`, `0x21`, `0x25`,
 PWM register by sweeping it powered a switch off. Everything above is reads
 only, and the scan has no write path.
 
-So no controller is declared, no cooling loop starts, and this board reports
+Nor is it on an accelerator nobody looked at. The cages occupy accelerators
+2–8; **accelerator 9 exists and holds none of them**, which made it the
+obvious place left — and it is empty: 0 devices, 560 addresses reading
+all-ones, 336 never answering.
+
+And it is not in the board controller either. `nosaic platform scd diff`
+reads a register range three times a second apart and reports what moved,
+because **a tachometer counts and a configuration register does not** — which
+finds the registers that measure something without knowing their names and
+without writing anything. Over the whole 64 KB BAR exactly four words move,
+`0x3810`–`0x381c`, and they are four aliases of one free-running counter:
+all four read the same value and it advances by about 3.6 × 10⁸ per second,
+so a counter clocked near 362 MHz. Four fans would be four different small
+numbers. There are no tachometers in this controller.
+
+So the search is now bounded on three sides — both board accelerators, the
+spare accelerator, and the controller's own registers — and the remaining
+possibilities are that the part is held in reset by a step NOSaic does not
+perform, or that this chassis regulates its fans in hardware and offers the
+OS nothing to drive. Neither is resolvable from here without the vendor OS or
+documentation.
+
+No controller is declared, no cooling loop starts, and this board reports
 temperature and regulates nothing. That is now a bounded gap with an
 inventory behind it rather than a shrug.
+
+⚠ Everything above is reads only, and `scd diff` has no write path by
+design. Two earlier attempts to find a fan PWM register by sweeping a CPLD
+powered a switch off.
 
 ## Cage presence: the decode, and how it was settled, 2026-09-26
 

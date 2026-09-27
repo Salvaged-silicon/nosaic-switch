@@ -36,6 +36,8 @@ const platformUsage = `usage: nosaic platform <command>
                        fail to full cooling, and are left at full on exit
   beacon [on|off]      the blue locator, for finding this box in a rack
   linkmap              which ports the chip will actually egress to
+  scd diff <start> <end>
+                       which controller registers are moving (read-only)
   smbus scan [accel] [bus]
                        which addresses answer on the board controller's bus
   i2c <bus> <addr> <reg> [count]
@@ -91,6 +93,12 @@ func platformCmd(args []string) error {
 		return linkmapCmd(b, args[1:])
 	case "schan":
 		return schanCmd(b, rest[1:])
+	case "scd":
+		// Read-only. See scddiff.go for why watching beats probing here.
+		if len(rest) > 1 && rest[1] == "diff" {
+			return scdDiff(hal, rest[2:])
+		}
+		return fmt.Errorf("usage: nosaic platform scd diff <start> <end>")
 	case "i2c":
 		// Read-only, and deliberately not part of any board's driver: it
 		// is the instrument the cage-expander map is derived WITH, not a
