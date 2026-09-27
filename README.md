@@ -74,6 +74,7 @@ Tridents 2 and 2+, and never to the AS5610's Trident+, which predates it.
 | VLANs, trunks, SVIs | ✅ | ✅ | ✅ | ✅ bridge |
 | LAG, static and LACP | ✅ | ✅ | ✅ | ✅ bonds |
 | Rapid spanning tree | ✅ | ✅ | ✅ | ✅ bridge |
+| BPDU guard, root guard | ✅ | 🔧 | ✅ | ✅ bridge |
 | MLAG | ✅ | ✅ | 🔧 | ✗ refused |
 | Virtual gateway | ✅ | ✅ | 🔧 | ✗ refused |
 | Access lists, IPv4 and IPv6 | ✅ | ✗ not yet | ✅ | host nftables |
