@@ -3257,6 +3257,11 @@ all four read the same value and it advances by about 3.6 × 10⁸ per second,
 so a counter clocked near 362 MHz. Four fans would be four different small
 numbers. There are no tachometers in this controller.
 
+None of this is stale state left by the vendor OS either. After the mains
+were pulled on 2026-09-27 the picture is identical: still no `0x60` on any
+bus of either accelerator, and `0x4e` is still pulling SMBALERT# on buses 1
+and 5. The alert is a standing hardware condition, not something left over.
+
 So the search is now bounded on three sides — both board accelerators, the
 spare accelerator, and the controller's own registers — and the remaining
 possibilities are that the part is held in reset by a step NOSaic does not
@@ -3408,6 +3413,15 @@ the identical sequence, port 2's out-of-order token included. Removing the
 five sweeper words — the one place we write more than the golden sequence
 does — changes nothing either. So the ring's contents are eliminated as the
 cause, and the remaining difference is state established somewhere else.
+
+**And it is not leftover vendor state either.** Every measurement above was
+taken on a board the vendor OS had configured at some point, which leaves
+open that it had also left something behind that the ring needs. The mains
+were pulled on 2026-09-27; the chip came back genuinely cold — `BOOT_CTRL`
+`0x320`, `PIN_STRAP` `0x208`, nothing having run — and after the documented
+boot the ring still programs cleanly and still does not advance. That
+control is worth as much as any of the positive attempts: it removes the
+most comfortable remaining explanation.
 
 ⚠ Do not use physical port 0 as a find-probe target. The probe writes the
 port number and reads the register back, and for port 0 a ring that never
