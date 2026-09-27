@@ -24,6 +24,7 @@ system.
 
     nosaic mlag on peer-link <port|poN> [peer-address <ip>] [priority <n>]
                    [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>]
+                   [reload-delay <s>]
     nosaic mlag off
     nosaic lag <poN> lacp|static <port,...> mlag <id>
     nosaic show mlag
@@ -48,6 +49,18 @@ system.
   - `heartbeat-port`: 47101, the UDP port of the heartbeat.
 
   Set them the same on both switches.
+- **`reload-delay`**, 0 to 3600 s, off by default. It holds every MLAG
+  interface on this switch out of service for that long after MLAG starts,
+  which in practice means after a reboot. The half selects its links but does
+  not claim LACP sync, so the device keeps them on standby and carries on
+  through the peer. That gives this switch's routing time to converge before
+  it attracts traffic: a switch that routes for a [gateway](gateway.md) with
+  half a routing table drops what reaches it. `show mlag` counts it down:
+
+      7   po7  down   up    held: reload delay, 17 s left
+
+  Applying the same configuration again does not restart it. Arista's
+  equivalent defaults to 300 s; a pair that routes should set one.
 - ⚠ **`lacp system-priority` must match on both peers too.** An MLAG interface
   presents the pair's LACP system, and the system priority is half of it. If
   the two differ, the device sees two partners and bundles only one side.
@@ -146,6 +159,48 @@ silent too, the peer is gone, and this switch carries on alone.
 
 **Spanning tree** leaves MLAG interfaces and the peer-link alone: they forward.
 
+### A half coming back, without a duplicate
+
+When one half has been down, the peer delivers floods to the device on its
+own, from the peer-link. If the half came back and let floods out at once,
+the device would receive each flood twice, once from each switch, until the
+peer heard and blocked its own. The link-loss test caught one such duplicate
+each run.
+
+So a half that comes back **keeps floods off itself until the peer confirms**.
+The hello carries, for each MLAG interface, whether this half is carrying,
+and whether this switch has seen the peer's half and blocked its own floods
+to the device. Until that confirmation arrives, this half blocks floods from
+every port, not just the peer-link; unicast flows both ways at once.
+`show mlag` says so while it lasts:
+
+    7   po7  up     up    active, floods held until the peer confirms
+
+The first version held the whole half, through LACP, until the confirmation.
+That traded the duplicate for a second in which a flood from this side
+reached the device neither way, while LACP caught up. Holding only the floods
+leaves one hello's round trip, for floods only.
+
+In the same test, a half going down left the peer's synced MACs pointing at a
+trunk with no members until the peer's next hello. They are moved to the
+peer-link the moment a half goes down now.
+
+Measured on the SX2 and TX with the Nexus dual-homed, the SX2's half shut
+and restored under 20 pings a second, twice each:
+
+| | lost, AS5610 (orphan) to Nexus | duplicates |
+|---|---|---|
+| before | 4 and 0 of 400 at hello 500 ms; 23 and 25 at 1000 ms | 1 each run |
+| holding the half | 23 and 25 of 400 | none |
+| holding only its floods | 7 and 9 of 400 | none |
+
+The TX's own pings to the Nexus were 400 of 400 throughout. What remains is
+about 0.2 s when the link drops, until linkscan notices, and 0.1 s when it
+returns.
+
+Hellos are version 2 now. A version 1 peer is still understood, and is taken
+as always confirming, which is how it behaved.
+
 ### Four bugs the hardware found
 
 - ⚠ **`BCM_PORT_FLOOD_BLOCK_ALL` is not "all kinds of flooding".** It is the
@@ -184,10 +239,6 @@ silent too, the peer is gone, and this switch carries on alone.
 
 ## Not yet
 
-- **A short window remains** when the second half of an MLAG interface comes
-  up: up to one 200 ms tick, until the peer hears of it. It did not bite
-  in the tests. A reload delay, holding a new half back until the peer has
-  confirmed it, would close it.
 - **A shared gateway** is a separate piece: [gateway.md](gateway.md).
 - **MAC sync is one-way per MAC.** A synced MAC is static on the receiving
   peer until the next sync that no longer lists it, so a host that moves from

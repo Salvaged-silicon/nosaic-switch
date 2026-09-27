@@ -225,7 +225,8 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return done(s.sw.SetMLAG(switchapi.MLAGConfig{Enabled: a.Enabled, PeerLink: a.PeerLink,
 			PeerAddress: a.PeerAddress, Priority: a.Priority, HelloMs: a.HelloMs,
-			DeadMs: a.DeadMs, SettleMs: a.SettleMs, HeartbeatPort: a.HeartbeatPort}))
+			DeadMs: a.DeadMs, SettleMs: a.SettleMs, HeartbeatPort: a.HeartbeatPort,
+			ReloadDelay: a.ReloadDelay}))
 
 	case proto.OpSetLAGOptions:
 		var a proto.LAGOptionsArgs

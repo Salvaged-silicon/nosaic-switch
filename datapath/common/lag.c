@@ -139,6 +139,7 @@ static int lag_psc = BCM_TRUNK_PSC_SRCDSTIP;          /* see enhanced_hash() */
 static volatile int claimed[MAX_PORT];                /* port -> LAG, 0 none */
 static volatile int dports[NOSAIC_MAX_LAGS + 1][NOSAIC_MAX_LAGM];
 static volatile int ndist[NOSAIC_MAX_LAGS + 1];
+static volatile int nready[NOSAIC_MAX_LAGS + 1];      /* members that could carry */
 static volatile int tid_lag[1024];                    /* trunk id -> LAG */
 static volatile int relink[NOSAIC_MAX_LAGS + 1];      /* a member's link moved */
 
@@ -345,7 +346,10 @@ static int lacp_eval(int k, long long now)
 {
 	struct lag *g = &lags[k];
 	const struct peer *agg = NULL;
-	int i, changed = 0;
+	int i, changed = 0, ready = 0;
+	/* An MLAG half held by mlag.c selects its links but does not claim sync,
+	 * so the device keeps them on standby until it is let go. */
+	int held = nosaic_mlag_held(k);
 
 	for (i = 0; i < g->n; i++) {
 		struct member *m = &g->m[i];
@@ -374,7 +378,9 @@ static int lacp_eval(int k, long long now)
 			sel = 0;                     /* a different partner */
 		if (!m->partner_valid)
 			st |= ST_DEFAULTED | (m->link ? ST_EXPIRED : 0);
-		if (sel) {
+		if (sel)
+			ready++;
+		if (sel && !held) {
 			st |= ST_SYNC;
 			if (m->partner.state & ST_SYNC)
 				st |= ST_COLLECTING;
@@ -394,6 +400,7 @@ static int lacp_eval(int k, long long now)
 			fflush(stdout);
 		}
 	}
+	nready[k] = ready;
 	return changed;
 }
 
@@ -427,8 +434,10 @@ static void *lag_thread(void *arg)
 					       tap_name(m->tap), up ? "up" : "down");
 					fflush(stdout);
 				}
-				if (!g->lacp && m->dist != m->link) {
-					m->dist = m->link;
+				/* A static MLAG half held by mlag.c has link and
+				 * does not carry. */
+				if (!g->lacp && m->dist != (m->link && !nosaic_mlag_held(k))) {
+					m->dist = m->link && !nosaic_mlag_held(k);
 					changed = 1;
 				}
 			}
@@ -1067,6 +1076,21 @@ int nosaic_lag_active(int key)
 	if (key < 1 || key > NOSAIC_MAX_LAGS)
 		return 0;
 	return ndist[key];
+}
+
+int nosaic_lag_ready(int key)
+{
+	const struct lag *g;
+	int i, n = 0;
+
+	if (key < 1 || key > NOSAIC_MAX_LAGS)
+		return 0;
+	g = &lags[key];
+	if (g->lacp)
+		return nready[key];
+	for (i = 0; i < g->n; i++)          /* static: link is all it takes */
+		n += g->m[i].link;
+	return n;
 }
 
 int nosaic_lag_of_tid(int tid)

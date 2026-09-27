@@ -17,7 +17,7 @@ int  nosaic_mlag_start(int unit);
 /* The contract calls. 0, -1 with a reason in err, or -2 for unsupported. */
 int  nosaic_mlag_set(int enabled, const char *peer_link, const char *peer_addr,
 		     int priority, int hello_ms, int dead_ms, int settle_ms, int hb_port,
-		     char *err, size_t errlen);
+		     int reload_delay, char *err, size_t errlen);
 int  nosaic_mlag_set_lag(const char *name, int id, char *err, size_t errlen);
 void nosaic_mlag_query(FILE *out);
 int  nosaic_mlag_supported(void);
@@ -29,6 +29,7 @@ int  nosaic_mlag_supported(void);
  */
 int  nosaic_mlag_id(int lag);
 int  nosaic_mlag_lacp(int lag, unsigned char sys[6], unsigned *key, unsigned *port_offset);
+int  nosaic_mlag_held(int lag);
 void nosaic_mlag_lag_gone(int lag);
 
 /* For rstp.c: an interface -- tap index, or NOSAIC_MAX_TAPS + LAG -- that

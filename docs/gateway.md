@@ -97,6 +97,10 @@ shorten it.
 
 - **IPv6.** It needs neighbour advertisements from the virtual MAC too.
 - **One virtual MAC per switch**, not one per gateway.
-- **Recovery is slower than failure.** When a peer's link to the dual-homed
-  device comes back, about a second of traffic through the gateway is lost
-  while that half settles.
+- **A peer that has just rebooted attracts traffic before its routes are
+  back.** Its half of the MLAG interface comes up as soon as LACP agrees,
+  and whatever the device hashes to it is routed with whatever it has
+  learned so far. Set MLAG's `reload-delay` ([mlag.md](mlag.md)) on a pair
+  that routes: it keeps the half out of service until the routing has had
+  time to converge. When only a link comes back, the loss is now about 0.1 s;
+  it was about a second.

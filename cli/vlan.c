@@ -562,6 +562,7 @@ int nosaic_show_stp(void)
 /*
  * nosaic mlag on peer-link <port> [peer-address <ip>] [priority <n>]
  *                [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>]
+ *                [reload-delay <s>]
  * nosaic mlag off
  */
 int nosaic_mlag_cmd(int argc, char **argv)
@@ -569,9 +570,10 @@ int nosaic_mlag_cmd(int argc, char **argv)
 	static const char usage[] =
 		"usage: nosaic mlag on peer-link <port> [peer-address <ip>] [priority <n>]\n"
 		"                     [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>]\n"
+		"                     [reload-delay <s>]\n"
 		"       nosaic mlag off\n";
 	char req[512], plink[64] = "", paddr[64] = "";
-	int i, prio = 32768, hello = 0, dead = 0, settle = 0, port = 0;
+	int i, prio = 32768, hello = 0, dead = 0, settle = 0, port = 0, reload = 0;
 
 	if (argc == 3 && strcmp(argv[2], "off") == 0)
 		return ask("{\"op\":\"mlag.set\",\"args\":{\"enabled\":false,"
@@ -595,6 +597,8 @@ int nosaic_mlag_cmd(int argc, char **argv)
 			settle = atoi(argv[i + 1]);
 		else if (strcmp(argv[i], "heartbeat-port") == 0)
 			port = atoi(argv[i + 1]);
+		else if (strcmp(argv[i], "reload-delay") == 0)
+			reload = atoi(argv[i + 1]);
 		else {
 			fputs(usage, stderr);
 			return 2;
@@ -602,8 +606,9 @@ int nosaic_mlag_cmd(int argc, char **argv)
 	}
 	snprintf(req, sizeof(req), "{\"op\":\"mlag.set\",\"args\":{\"enabled\":true,"
 		 "\"peer_link\":\"%s\",\"peer_address\":\"%s\",\"priority\":%d,"
-		 "\"hello_ms\":%d,\"dead_ms\":%d,\"settle_ms\":%d,\"heartbeat_port\":%d}}",
-		 plink, paddr, prio, hello, dead, settle, port);
+		 "\"hello_ms\":%d,\"dead_ms\":%d,\"settle_ms\":%d,\"heartbeat_port\":%d,"
+		 "\"reload_delay\":%d}}",
+		 plink, paddr, prio, hello, dead, settle, port, reload);
 	return ask(req);
 }
 
@@ -642,10 +647,14 @@ int nosaic_show_mlag(void)
 	printf("%-14s%s\n", "heartbeat", nosaic_jbool(resp, "Heartbeat", 0) ? "heard" : "not heard");
 	printf("%-14s%s\n", "lacp system", sys);
 	printf("%-14s%d\n", "synced macs", nosaic_jint(resp, "SyncedMACs", 0));
-	printf("%-14shello %d ms, dead %d ms, settle %d ms, heartbeat port %d, priority %d\n\n",
+	printf("%-14shello %d ms, dead %d ms, settle %d ms, heartbeat port %d, priority %d\n",
 	       "timers", nosaic_jint(resp, "HelloMs", 0), nosaic_jint(resp, "DeadMs", 0),
 	       nosaic_jint(resp, "SettleMs", 0), nosaic_jint(resp, "HeartbeatPort", 0),
 	       nosaic_jint(resp, "Priority", 0));
+	if (nosaic_jint(resp, "ReloadDelay", 0) > 0)
+		printf("%-14s%d s\n\n", "reload delay", nosaic_jint(resp, "ReloadDelay", 0));
+	else
+		printf("%-14soff\n\n", "reload delay");
 	m = strstr(resp, "\"Interfaces\":[");
 	if (m == NULL || m[14] == ']') {
 		printf("no mlag interfaces; make one with: nosaic lag po7 lacp <port> mlag 7\n");
@@ -654,7 +663,7 @@ int nosaic_show_mlag(void)
 	}
 	printf("%-6s%-8s%-8s%-8s%s\n", "ID", "LAG", "LOCAL", "PEER", "STATE");
 	while ((m = strstr(m, "{\"LAG\":\"")) != NULL) {
-		char lag[16], st[16], rec[256];
+		char lag[16], st[64], held[16] = "", rec[320];
 		const char *e = strchr(m, '}');
 		size_t n = e ? (size_t)(e - m + 1) : strlen(m);
 
@@ -664,6 +673,16 @@ int nosaic_show_mlag(void)
 		rec[n] = '\0';
 		nosaic_jstr(rec, "LAG", lag, sizeof(lag));
 		nosaic_jstr(rec, "State", st, sizeof(st));
+		nosaic_jstr(rec, "Held", held, sizeof(held));
+		if (strcmp(held, "reload") == 0)
+			snprintf(st, sizeof(st), "held: reload delay, %d s left",
+				 nosaic_jint(rec, "HeldSeconds", 0));
+		else if (strcmp(held, "peer") == 0) {
+			char s0[24];
+
+			snprintf(s0, sizeof(s0), "%s", st);
+			snprintf(st, sizeof(st), "%s, floods held until the peer confirms", s0);
+		}
 		printf("%-6d%-8s%-8s%-8s%s\n", nosaic_jint(rec, "ID", 0), lag,
 		       nosaic_jbool(rec, "Local", 0) ? "up" : "down",
 		       nosaic_jbool(rec, "Peer", 0) ? "up" : "down", st);

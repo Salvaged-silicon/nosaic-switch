@@ -86,7 +86,14 @@ import (
 // 1.9 added the spanning-tree guards: BPDUGuard and RootGuard in
 // STPPortConfig, read back in STPPort with Guard naming the one currently
 // holding the port. Both default off, which is 1.8's behaviour.
-const Version = "1.9"
+//
+// 1.10 added MLAG's reload delay, MLAGConfig.ReloadDelay, and says when an
+// MLAG interface is held back: MLAGInterface.Held. A half that comes up
+// keeps floods off itself until the peer confirms it has stopped delivering
+// them, so no flood reaches the device from both switches; the reload delay
+// holds every half out of service for that long after MLAG starts. It
+// defaults to 0, off.
+const Version = "1.10"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -371,6 +378,11 @@ type MLAGConfig struct {
 	DeadMs        int
 	SettleMs      int
 	HeartbeatPort int
+	// ReloadDelay holds every MLAG interface on this switch out of service
+	// for this many seconds after MLAG starts -- after a reboot, until its
+	// routing has caught up -- so the device keeps using the peer. 0 is
+	// off; at most 3600.
+	ReloadDelay int
 }
 
 // MLAGDefaultPriority is the MLAG priority when none is configured.
@@ -397,19 +409,25 @@ type MLAGStatus struct {
 	DeadMs        int
 	SettleMs      int
 	HeartbeatPort int
+	ReloadDelay   int
 }
 
 // MLAGInterface is one MLAG id on this switch. Local and Peer are whether
 // each side has members distributing. State is active (both sides), local
 // (this side only), peer (the peer's side only), down, or disabled -- a
 // secondary that has shut its side because the peer-link is gone and the
-// peer is not.
+// peer is not. Held says what is holding this side back: "reload" -- the
+// reload delay, HeldSeconds left, the whole half out of service -- or "peer":
+// it carries, but floods are kept off it until the peer confirms it has
+// stopped delivering them itself. "" when nothing is.
 type MLAGInterface struct {
-	LAG   string
-	ID    int
-	Local bool
-	Peer  bool
-	State string
+	LAG         string
+	ID          int
+	Local       bool
+	Peer        bool
+	State       string
+	Held        string
+	HeldSeconds int
 }
 
 // VirtualGateway is one shared gateway address on an SVI. MAC is the virtual

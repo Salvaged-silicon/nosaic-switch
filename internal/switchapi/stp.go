@@ -176,6 +176,8 @@ func ValidMLAGTimes(c MLAGConfig) error {
 		return fmt.Errorf("mlag settle %d ms: must be 0 to 60000", s)
 	case p < 1 || p > 65535:
 		return fmt.Errorf("mlag heartbeat-port %d: must be 1 to 65535", p)
+	case c.ReloadDelay < 0 || c.ReloadDelay > 3600:
+		return fmt.Errorf("mlag reload-delay %d s: must be 0 to 3600", c.ReloadDelay)
 	}
 	return nil
 }

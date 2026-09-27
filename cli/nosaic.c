@@ -65,7 +65,7 @@ static const char usage[] =
 "  stp port <port> [edge] [cost <n>] [priority <n>] [bpdu-guard] [root-guard]\n"
 "                          one port's or LAG's settings\n"
 "  mlag on peer-link <port> [peer-address <ip>] [priority <n>] [hello <ms>]\n"
-"      [dead <ms>] [settle <ms>] [heartbeat-port <n>] | off\n"
+"      [dead <ms>] [settle <ms>] [heartbeat-port <n>] [reload-delay <s>] | off\n"
 "                          one of an MLAG pair\n"
 "  gateway add|del <svi> <address/len> | gateway mac <mac>\n"
 "                          a virtual gateway both of a pair answer for\n"

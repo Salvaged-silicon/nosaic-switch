@@ -61,5 +61,8 @@ int nosaic_lag_of_tid(int tid);
 int nosaic_lag_tid(int key);
 /* How many of a LAG's members are distributing. */
 int nosaic_lag_active(int key);
+/* How many could: selected by LACP (or, static, with link), whether or not
+ * something is holding them back. */
+int nosaic_lag_ready(int key);
 
 #endif

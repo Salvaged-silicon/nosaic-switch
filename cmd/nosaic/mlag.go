@@ -11,13 +11,13 @@ import (
 
 // mlagCmd states the MLAG configuration, the way a configuration line does:
 //
-//	nosaic mlag on peer-link <port|poN> [peer-address <ip>] [priority <n>]
+//	nosaic mlag on peer-link <port|poN> [peer-address <ip>] [priority <n>] [reload-delay <s>]
 //	nosaic mlag off
 //
 // An MLAG interface is a LAG given an id: nosaic lag po7 lacp swp49 mlag 7.
 func mlagCmd(c *nosdclient.Client, args []string) error {
 	usage := fmt.Errorf("usage: nosaic mlag on peer-link <port> [peer-address <ip>] [priority <n>] " +
-		"[hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>] | mlag off")
+		"[hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>] [reload-delay <s>] | mlag off")
 	if len(args) == 1 && args[0] == "off" {
 		return c.SetMLAG(switchapi.MLAGConfig{})
 	}
@@ -31,7 +31,7 @@ func mlagCmd(c *nosdclient.Client, args []string) error {
 			cfg.PeerLink = args[i+1]
 		case "peer-address":
 			cfg.PeerAddress = args[i+1]
-		case "priority", "hello", "dead", "settle", "heartbeat-port":
+		case "priority", "hello", "dead", "settle", "heartbeat-port", "reload-delay":
 			n, err := strconv.Atoi(args[i+1])
 			if err != nil {
 				return fmt.Errorf("mlag %s %q is not a number", args[i], args[i+1])
@@ -47,6 +47,8 @@ func mlagCmd(c *nosdclient.Client, args []string) error {
 				cfg.SettleMs = n
 			case "heartbeat-port":
 				cfg.HeartbeatPort = n
+			case "reload-delay":
+				cfg.ReloadDelay = n
 			}
 		default:
 			return usage
@@ -83,15 +85,27 @@ func showMLAG(c *nosdclient.Client, w *tabwriter.Writer) error {
 	fmt.Fprintf(w, "heartbeat\t%s\n", map[bool]string{true: "heard", false: "not heard"}[st.Heartbeat])
 	fmt.Fprintf(w, "lacp system\t%s\n", st.SystemID)
 	fmt.Fprintf(w, "synced macs\t%d\n", st.SyncedMACs)
-	fmt.Fprintf(w, "timers\thello %d ms, dead %d ms, settle %d ms, heartbeat port %d, priority %d\n\n",
+	fmt.Fprintf(w, "timers\thello %d ms, dead %d ms, settle %d ms, heartbeat port %d, priority %d\n",
 		st.HelloMs, st.DeadMs, st.SettleMs, st.HeartbeatPort, st.Priority)
+	reload := "off"
+	if st.ReloadDelay > 0 {
+		reload = fmt.Sprintf("%d s", st.ReloadDelay)
+	}
+	fmt.Fprintf(w, "reload delay\t%s\n\n", reload)
 	if len(st.Interfaces) == 0 {
 		fmt.Fprintln(w, "no mlag interfaces; make one with: nosaic lag po7 lacp <port> mlag 7")
 		return nil
 	}
 	fmt.Fprintln(w, "ID\tLAG\tLOCAL\tPEER\tSTATE")
 	for _, i := range st.Interfaces {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", i.ID, i.LAG, yn(i.Local), yn(i.Peer), i.State)
+		state := i.State
+		switch i.Held {
+		case "reload":
+			state = fmt.Sprintf("held: reload delay, %d s left", i.HeldSeconds)
+		case "peer":
+			state = i.State + ", floods held until the peer confirms"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", i.ID, i.LAG, yn(i.Local), yn(i.Peer), state)
 	}
 	return nil
 }

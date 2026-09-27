@@ -170,7 +170,7 @@ fi
 # VLANs, switch ports and routed VLAN interfaces, before the addresses.
 #
 #     lag po1 lacp swp49,swp50
-#     mlag on peer-link po1 peer-address 10.10.34.3
+#     mlag on peer-link po1 peer-address 10.10.34.3 reload-delay 120
 #     lacp system-priority 100
 #     lag po7 lacp swp49 mlag 7 rate slow
 #     stp on priority 4096 hello 2 forward-delay 15 max-age 20
