@@ -57,6 +57,13 @@ void nosaic_tap_link_filter(int (*fn)(int port));
 
 int nosaic_tap_start(int unit, const struct tap_spec *specs, int n);
 
+/*
+ * Before any port is enabled: every front-panel port out of VLAN 1, and L2
+ * aging on. Each datapath's nosaic_sdk_ports() calls it first. See the
+ * comment in tapbridge.c for what each prevents.
+ */
+void nosaic_tap_prepare(int unit);
+
 /* How many taps exist, and what each one is.
  *
  * The chip has to be programmed to match the interface: same MAC, same VLAN,
