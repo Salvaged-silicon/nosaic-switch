@@ -330,7 +330,7 @@ func (c *Client) SetSTP(cfg switchapi.STPConfig) error {
 
 func (c *Client) SetSTPPort(name string, cfg switchapi.STPPortConfig) error {
 	return c.call(proto.OpSetSTPPort, proto.STPPortArgs{Name: name, Edge: cfg.Edge, Cost: cfg.Cost,
-		Priority: cfg.Priority}, nil)
+		Priority: cfg.Priority, BPDUGuard: cfg.BPDUGuard, RootGuard: cfg.RootGuard}, nil)
 }
 
 func (c *Client) STP() (switchapi.STPStatus, error) {

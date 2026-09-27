@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/switchapi"
 )
@@ -49,6 +50,9 @@ type Switch struct {
 	// it joins the bridge. The only virt state not read back from the kernel:
 	// a port's cost lives on it only while it is a bridge port.
 	stpPorts stpPortCfg
+	// listening is when each bridge port was first seen in listening, for
+	// telling root guard's hold from a port coming up (STP).
+	listening map[string]time.Time
 	// lagPrio and lacpPrio are LACP settings: the kernel bond keeps the
 	// system priority itself, but a new bond has to be given it.
 	lagPrio  map[string]int

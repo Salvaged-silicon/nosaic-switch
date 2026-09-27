@@ -110,6 +110,9 @@ struct sport {
 	int           enabled;       /* used, and link */
 	/* configuration */
 	int           admin_edge, cfg_cost, cfg_prio;
+	int           bpdu_guard, root_guard;
+	/* guards: tripped by a BPDU until the link cycles; a better root heard */
+	int           bpdu_tripped, root_blocked;
 	/* operation */
 	int           oper_edge;
 	int           cost;
@@ -472,6 +475,8 @@ static void select_roles(void)
 			continue;
 		if (memcmp(sp->pv + PV_BRIDGE, bridge_id, 8) == 0)
 			continue;               /* our own BPDU, on another port */
+		if (sp->root_guard)
+			continue;               /* never the way to the root (restrictedRole) */
 		memcpy(cand, sp->pv, PV_LEN);
 		put32(cand + PV_RPC, get32(sp->pv + PV_RPC) + (uint32_t)sp->cost);
 		c = memcmp(cand, best, PV_LEN);
@@ -497,6 +502,7 @@ static void select_roles(void)
 		unsigned char dv[PV_LEN];
 		int role;
 
+		sp->root_blocked = 0;
 		if (!sp->enabled) {
 			role = R_DISABLED;
 		} else if (k == best_key) {
@@ -506,6 +512,17 @@ static void select_roles(void)
 			if (sp->info == INFO_RECEIVED && memcmp(sp->pv, dv, PV_LEN) < 0) {
 				role = memcmp(sp->pv + PV_BRIDGE, bridge_id, 8) == 0 ?
 				       R_BACKUP : R_ALTERNATE;
+				/*
+				 * Root guard holds it: better information than
+				 * this port would send, heard where no better
+				 * information may come from -- 802.1Q's
+				 * restrictedRole, Cisco's root-inconsistent. It
+				 * discards as an alternate until that
+				 * information ages out. This holds whether or not
+				 * the bridge reaches the same root some other
+				 * way: the guard is about this port.
+				 */
+				sp->root_blocked = sp->root_guard;
 			} else {
 				role = R_DESIGNATED;
 				if (sp->info != INFO_MINE || memcmp(sp->pv, dv, PV_LEN) != 0) {
@@ -582,6 +599,27 @@ static void receive(int k, long long now)
 	int c;
 
 	sp->pending = 0;
+	/*
+	 * BPDU guard: a port that must not have a bridge on it has heard one.
+	 * It is taken out of the tree -- run() holds it discarding as disabled
+	 * -- until its link goes down and back up, which is someone unplugging
+	 * whatever sent this, or until it is configured again.
+	 */
+	if (sp->bpdu_guard) {
+		sp->bpdu_tripped = 1;
+		reselect = 1;
+		if (sp->mtype == 0x80)          /* a TCN names no bridge */
+			printf("stp: %s: BPDU guard: a TCN; blocked until its link cycles\n",
+			       key_name(k));
+		else
+			printf("stp: %s: BPDU guard: a BPDU from %02x%02x.%02x%02x%02x%02x%02x%02x; "
+			       "blocked until its link cycles\n", key_name(k),
+			       sp->msg[PV_BRIDGE], sp->msg[PV_BRIDGE + 1], sp->msg[PV_BRIDGE + 2],
+			       sp->msg[PV_BRIDGE + 3], sp->msg[PV_BRIDGE + 4], sp->msg[PV_BRIDGE + 5],
+			       sp->msg[PV_BRIDGE + 6], sp->msg[PV_BRIDGE + 7]);
+		fflush(stdout);
+		return;
+	}
 	sp->heard = 1;
 	if (sp->oper_edge) {
 		/* An edge -- configured or found -- that hears a bridge is not
@@ -766,6 +804,9 @@ static void run(long long now)
 			continue;
 		}
 		up = sp->used && key_link(k);
+		if (!up)
+			sp->bpdu_tripped = 0;    /* the link cycled: BPDU guard lets go */
+		up = up && !sp->bpdu_tripped;
 
 		if (up != sp->enabled) {
 			sp->enabled = up;
@@ -997,7 +1038,8 @@ int nosaic_rstp_set(int on, int prio, int hello, int fwd, int maxage, char *err,
 	return 0;
 }
 
-int nosaic_rstp_port(const char *name, int edge, int cost, int prio, char *err, size_t n)
+int nosaic_rstp_port(const char *name, int edge, int cost, int prio, int bpdu_guard,
+		     int root_guard, char *err, size_t n)
 {
 	int k;
 
@@ -1029,6 +1071,9 @@ int nosaic_rstp_port(const char *name, int edge, int cost, int prio, char *err, 
 	ports[k].admin_edge = edge;
 	ports[k].cfg_cost = cost;
 	ports[k].cfg_prio = prio;
+	ports[k].bpdu_guard = bpdu_guard;
+	ports[k].root_guard = root_guard;
+	ports[k].bpdu_tripped = 0;       /* configured again: a tripped guard lets go */
 	ports[k].id = key_id(k);
 	if (!edge)
 		ports[k].oper_edge = 0;
@@ -1076,14 +1121,18 @@ void nosaic_rstp_query(FILE *out)
 			continue;
 		fprintf(out, "%s{\"Port\":\"%s\",\"Role\":\"%s\",\"State\":\"%s\","
 			"\"Edge\":%s,\"Cost\":%d,\"Priority\":%d,\"RSTP\":%s,"
-			"\"RxBPDU\":%lu,\"TxBPDU\":%lu}",
+			"\"RxBPDU\":%lu,\"TxBPDU\":%lu,\"BPDUGuard\":%s,\"RootGuard\":%s,"
+			"\"Guard\":\"%s\"}",
 			first ? "" : ",", key_name(k),
 			on ? role_name[sp->role] : "designated",
 			on ? state_name[sp->state] : "forwarding",
 			on && sp->oper_edge ? "true" : "false",
 			sp->cfg_cost ? sp->cfg_cost : key_cost(k),
 			sp->cfg_prio ? sp->cfg_prio : 128,
-			sp->send_rstp ? "true" : "false", sp->rx, sp->tx);
+			sp->send_rstp ? "true" : "false", sp->rx, sp->tx,
+			sp->bpdu_guard ? "true" : "false", sp->root_guard ? "true" : "false",
+			!on ? "" : sp->bpdu_tripped ? "bpdu-guard" :
+			sp->enabled && sp->root_blocked ? "root-guard" : "");
 		first = 0;
 	}
 	fprintf(out, "]}}\n");

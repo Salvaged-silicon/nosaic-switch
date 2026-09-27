@@ -161,10 +161,12 @@ type STPArgs struct {
 
 // STPPortArgs configures one interface. Cost 0 is the speed's default.
 type STPPortArgs struct {
-	Name     string `json:"name"`
-	Edge     bool   `json:"edge"`
-	Cost     int    `json:"cost"`
-	Priority int    `json:"port_priority"`
+	Name      string `json:"name"`
+	Edge      bool   `json:"edge"`
+	Cost      int    `json:"cost"`
+	Priority  int    `json:"port_priority"`
+	BPDUGuard bool   `json:"bpdu_guard"`
+	RootGuard bool   `json:"root_guard"`
 }
 
 // MLAGArgs sets the pair; no omitempty, for the same reason as STPArgs.

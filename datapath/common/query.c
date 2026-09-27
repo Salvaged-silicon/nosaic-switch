@@ -393,7 +393,8 @@ static int handle_lag(FILE *out, const char *req)
 	} else if (strcmp(op, "stp.port") == 0) {
 		rv = nosaic_rstp_port(name, strstr(req, "\"edge\":true") != NULL,
 				      req_int(req, "cost", 0), req_int(req, "port_priority", 0),
-				      err, sizeof(err));
+				      strstr(req, "\"bpdu_guard\":true") != NULL,
+				      strstr(req, "\"root_guard\":true") != NULL, err, sizeof(err));
 	} else if (strcmp(op, "mlag") == 0) {
 		nosaic_mlag_query(out);
 		return 1;
@@ -728,7 +729,7 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.8\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.9\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"

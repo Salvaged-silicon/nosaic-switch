@@ -98,6 +98,7 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 		out.Ports = append(out.Ports, switchapi.STPPort{
 			Port: p.name, Role: "designated", State: "forwarding",
 			Edge: pc.Edge, Cost: cost, Priority: prio,
+			BPDUGuard: pc.BPDUGuard, RootGuard: pc.RootGuard, // alone, nothing trips them
 		})
 	}
 	return out, nil

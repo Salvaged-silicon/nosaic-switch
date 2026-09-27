@@ -401,7 +401,7 @@ int nosaic_show_lags(void)
 /*
  * nosaic stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>]
  * nosaic stp off
- * nosaic stp port <port> [edge] [cost <n>] [priority <n>]
+ * nosaic stp port <port> [edge] [cost <n>] [priority <n>] [bpdu-guard] [root-guard]
  *
  * The end state, like cmd/nosaic/stp.go: what "stp on" leaves out is the
  * default, and "stp port swp1" alone puts swp1 back to defaults.
@@ -411,9 +411,9 @@ int nosaic_stp_cmd(int argc, char **argv)
 	static const char usage[] =
 		"usage: nosaic stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>]\n"
 		"       nosaic stp off\n"
-		"       nosaic stp port <port> [edge] [cost <n>] [priority <n>]\n";
-	char req[320];
-	int i, edge = 0, cost = 0, pprio = 0;
+		"       nosaic stp port <port> [edge] [cost <n>] [priority <n>] [bpdu-guard] [root-guard]\n";
+	char req[384];
+	int i, edge = 0, cost = 0, pprio = 0, bguard = 0, rguard = 0;
 
 	if (argc >= 3 && (strcmp(argv[2], "on") == 0 || strcmp(argv[2], "off") == 0)) {
 		int on = strcmp(argv[2], "on") == 0, prio = 32768, hello = 0, fwd = 0, age = 0;
@@ -450,6 +450,10 @@ int nosaic_stp_cmd(int argc, char **argv)
 	for (i = 4; i < argc; i++) {
 		if (strcmp(argv[i], "edge") == 0)
 			edge = 1;
+		else if (strcmp(argv[i], "bpdu-guard") == 0)
+			bguard = 1;
+		else if (strcmp(argv[i], "root-guard") == 0)
+			rguard = 1;
 		else if (strcmp(argv[i], "cost") == 0 && i + 1 < argc)
 			cost = atoi(argv[++i]);
 		else if (strcmp(argv[i], "priority") == 0 && i + 1 < argc)
@@ -460,8 +464,10 @@ int nosaic_stp_cmd(int argc, char **argv)
 		}
 	}
 	snprintf(req, sizeof(req), "{\"op\":\"stp.port\",\"args\":"
-		 "{\"name\":\"%s\",\"edge\":%s,\"cost\":%d,\"port_priority\":%d}}", argv[3],
-		 edge ? "true" : "false", cost, pprio);
+		 "{\"name\":\"%s\",\"edge\":%s,\"cost\":%d,\"port_priority\":%d,"
+		 "\"bpdu_guard\":%s,\"root_guard\":%s}}", argv[3],
+		 edge ? "true" : "false", cost, pprio, bguard ? "true" : "false",
+		 rguard ? "true" : "false");
 	return ask(req);
 }
 
@@ -519,10 +525,11 @@ int nosaic_show_stp(void)
 		free(resp);
 		return 0;
 	}
-	printf("%-8s%-12s%-12s%-10s%s\n", "PORT", "ROLE", "STATE", "COST", "EDGE");
+	printf("%-8s%-12s%-12s%-10s%-6s%s\n", "PORT", "ROLE", "STATE", "COST", "EDGE", "GUARD");
 	/* {"Port":"swp1","Role":"root","State":"forwarding","Edge":false,"Cost":2000,...} */
 	while ((m = strstr(m, "{\"Port\":\"")) != NULL) {
-		char port[64], role[16], state[16], rec[512];
+		char port[64], role[16], state[16], guard[16] = "", g[64], rec[512];
+		int bg, rg;
 		const char *e = strchr(m, '}');
 		size_t n = e ? (size_t)(e - m + 1) : strlen(m);
 
@@ -533,8 +540,19 @@ int nosaic_show_stp(void)
 		nosaic_jstr(rec, "Port", port, sizeof(port));
 		nosaic_jstr(rec, "Role", role, sizeof(role));
 		nosaic_jstr(rec, "State", state, sizeof(state));
-		printf("%-8s%-12s%-12s%-10d%s\n", port, role, state,
-		       nosaic_jint(rec, "Cost", 0), nosaic_jbool(rec, "Edge", 0) ? "edge" : "-");
+		/* The guards configured, the one holding the port in capitals,
+		 * like cmd/nosaic/stp.go. */
+		nosaic_jstr(rec, "Guard", guard, sizeof(guard));
+		bg = nosaic_jbool(rec, "BPDUGuard", 0);
+		rg = nosaic_jbool(rec, "RootGuard", 0);
+		snprintf(g, sizeof(g), "%s%s%s",
+			 strcmp(guard, "bpdu-guard") == 0 ? "BPDU-GUARD (blocking)" : bg ? "bpdu-guard" : "",
+			 (bg || strcmp(guard, "bpdu-guard") == 0) && (rg || strcmp(guard, "root-guard") == 0) ?
+			 ", " : "",
+			 strcmp(guard, "root-guard") == 0 ? "ROOT-GUARD (blocking)" : rg ? "root-guard" : "");
+		printf("%-8s%-12s%-12s%-10d%-6s%s\n", port, role, state,
+		       nosaic_jint(rec, "Cost", 0), nosaic_jbool(rec, "Edge", 0) ? "edge" : "-",
+		       g[0] ? g : "-");
 		m++;
 	}
 	free(resp);

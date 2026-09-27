@@ -175,7 +175,8 @@ fi
 #     lag po7 lacp swp49 mlag 7 rate slow
 #     stp on priority 4096 hello 2 forward-delay 15 max-age 20
 #     stp on priority 4096
-#     stp port swp1 edge
+#     stp port swp1 edge bpdu-guard
+#     stp port swp49 root-guard
 #     vlan 10
 #     switchport swp1 access 10
 #     switchport swp49 trunk 10,20 native 1

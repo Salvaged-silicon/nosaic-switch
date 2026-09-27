@@ -73,7 +73,7 @@ wherever a port's does, `switchport` included. [lag.md](lag.md).
 
     stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>]
     stp off
-    stp port <port> [edge] [cost <n>] [priority <n>]
+    stp port <port> [edge] [cost <n>] [priority <n>] [bpdu-guard] [root-guard]
 
 Both CLIs. Rapid spanning tree over the switched ports and LAGs; off until
 turned on. [stp.md](stp.md).

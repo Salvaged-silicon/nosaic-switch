@@ -39,7 +39,7 @@ The same on the Go CLI and the C CLI:
 
     nosaic stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>]
     nosaic stp off
-    nosaic stp port <port> [edge] [cost <n>] [priority <n>]
+    nosaic stp port <port> [edge] [cost <n>] [priority <n>] [bpdu-guard] [root-guard]
     nosaic show stp
 
 `stp on` without a priority is the default, 32768. Lower wins the root
@@ -167,11 +167,53 @@ itself.
   alternate end was discarding, but an edge port raises no topology changes
   and forwards at once after any change.
 
+## Guards
+
+Two per-port protections, both off unless set. switchapi 1.9.
+
+    stp port swp1 edge bpdu-guard      a host port that must never see a switch
+    stp port swp49 root-guard          a port the root must never be behind
+
+- **BPDU guard.** The first BPDU heard on the port takes it out of the tree,
+  discarding, and the log names the bridge that sent it. It stays blocked
+  until its link goes down and back up, or until the port is configured again
+  (`stp port swp1 ...`). A link that comes back with the guard still set and
+  the switch still there trips it again at the next BPDU.
+- **Root guard** (802.1Q's restrictedRole, Cisco's root-inconsistent). The
+  port is never made the root port. While it hears better information than
+  it would send itself, it discards as an alternate. It lets go by itself
+  once that information stops and ages out, three hellos later. It holds
+  even if the switch reaches the same root some other way: the guard is about
+  the port.
+
+`show stp` has a GUARD column. It lists the guards set on each port, and
+names the one holding a port in capitals:
+
+    PORT  ROLE       STATE       COST  PRIORITY  EDGE  GUARD
+    et3   alternate  discarding  2000  128       -     ROOT-GUARD (blocking)
+    et4   root       forwarding  2000  128       -     -
+
+Proven on 2026-09-27 between the 7050SX2 and the AS5610, over their two
+links in one VLAN:
+- **Root guard:** on the SX2's et3, with the AS5610 given priority 0. et3,
+  which would have won the tie to the new root, was held; et4 became the root
+  port, and traffic carried on. With the AS5610's priority restored, et3
+  went back to designated and forwarding by itself.
+- **BPDU guard:** on the AS5610's swp1, its root port. The first BPDU from the
+  SX2 blocked it. The root port moved to swp2, and 200 of 200 pings got
+  through. Link down released it, and link up tripped it again. Configured
+  again without the guard, it went back to root and forwarding.
+
+The virtual board uses the Linux bridge's own `guard` and `root_block`. The
+kernel throws a refused better BPDU away without recording it. So on that
+board, root guard's hold is inferred from the port being kept in listening
+for longer than a forward delay.
+
 ## Not yet
 
 - **One instance for every VLAN.** No MSTP, no per-VLAN trees: every VLAN
   blocks on the same ports.
-- **No BPDU guard, root guard or loop guard.**
+- **No loop guard**, and no automatic recovery timer for BPDU guard.
 - **MLAG interfaces and the peer-link are left out of the tree** and forward
   ([mlag.md](mlag.md)). A pair that ran the tree as one bridge would catch a
   loop through them.

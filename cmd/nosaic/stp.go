@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	nosdclient "github.com/salvaged-silicon/nosaic-switch/internal/nosd/client"
@@ -14,14 +15,14 @@ import (
 //
 //	nosaic stp on [priority <n>]
 //	nosaic stp off
-//	nosaic stp port <port> [edge] [cost <n>]
+//	nosaic stp port <port> [edge] [cost <n>] [priority <n>] [bpdu-guard] [root-guard]
 //
 // Each is the end state, not a change: "stp on" without a priority is the
 // default priority, and "stp port swp1" with nothing after it puts swp1 back
 // to a non-edge port with the cost its speed gives it.
 func stpCmd(c *nosdclient.Client, args []string) error {
 	usage := fmt.Errorf("usage: nosaic stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>] | " +
-		"stp off | stp port <port> [edge] [cost <n>] [priority <n>]")
+		"stp off | stp port <port> [edge] [cost <n>] [priority <n>] [bpdu-guard] [root-guard]")
 	if len(args) < 1 {
 		return usage
 	}
@@ -60,6 +61,10 @@ func stpCmd(c *nosdclient.Client, args []string) error {
 			switch {
 			case args[i] == "edge":
 				cfg.Edge = true
+			case args[i] == "bpdu-guard":
+				cfg.BPDUGuard = true
+			case args[i] == "root-guard":
+				cfg.RootGuard = true
 			case args[i] == "cost" && i+1 < len(args):
 				n, err := strconv.Atoi(args[i+1])
 				if err != nil {
@@ -110,13 +115,35 @@ func showSTP(c *nosdclient.Client, w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "no switched ports; spanning tree runs on ports and LAGs in a VLAN")
 		return nil
 	}
-	fmt.Fprintln(w, "PORT\tROLE\tSTATE\tCOST\tPRIORITY\tEDGE")
+	fmt.Fprintln(w, "PORT\tROLE\tSTATE\tCOST\tPRIORITY\tEDGE\tGUARD")
 	for _, p := range st.Ports {
 		edge := "-"
 		if p.Edge {
 			edge = "edge"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\n", p.Port, p.Role, p.State, p.Cost, p.Priority, edge)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%d\t%s\t%s\n", p.Port, p.Role, p.State, p.Cost, p.Priority,
+			edge, guardText(p))
 	}
 	return nil
+}
+
+// guardText is the GUARD column: the guards configured, and the one holding
+// the port now in capitals, so a blocked port stands out in a long list.
+func guardText(p switchapi.STPPort) string {
+	var g []string
+	for _, x := range []struct {
+		on   bool
+		name string
+	}{{p.BPDUGuard, "bpdu-guard"}, {p.RootGuard, "root-guard"}} {
+		switch {
+		case p.Guard == x.name:
+			g = append(g, strings.ToUpper(x.name)+" (blocking)")
+		case x.on:
+			g = append(g, x.name)
+		}
+	}
+	if len(g) == 0 {
+		return "-"
+	}
+	return strings.Join(g, ", ")
 }
