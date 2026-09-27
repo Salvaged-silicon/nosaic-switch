@@ -269,6 +269,21 @@ void fm_boot_mark_done(struct fm6000 *d);
 void fm_sched_mark_ready(struct fm6000 *d);
 
 /*
+ * Read a word the guard refuses, on purpose.
+ *
+ * ⚠ THIS TAKES THE CHIP OFF THE BUS WHEN THE GUARD IS RIGHT, WHICH IS MOST
+ * OF THE TIME. It exists because bring-up has a question the guard cannot
+ * answer: "is this block reachable yet?" is exactly the read the guard is
+ * there to prevent, so testing whether a fix worked means being able to take
+ * the hazard deliberately.
+ *
+ * Legitimate only from the probe, only with a reset pulse to hand, and never
+ * from the daemon. The daemon has no reason to ask -- if a block is not
+ * reachable it has nothing to do there.
+ */
+int fm_rd_hazardous(struct fm6000 *d, uint32_t word, uint32_t *out);
+
+/*
  * Write `val` into every word of a bank memory, so its ECC bits become valid.
  *
  * This is Table 4-1 step 12's "software writes memory manually", and it is the

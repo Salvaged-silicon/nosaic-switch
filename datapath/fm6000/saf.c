@@ -86,5 +86,38 @@ int fm_saf_init(struct fm6000 *d, unsigned *written)
 				(*written)++;
 		}
 	}
+
+	/*
+	 * Read one of them back.
+	 *
+	 * ⚠ A WRITE THAT RETURNS OK IS NOT A WRITE THAT LANDED. Two tables in
+	 * the congestion-management block on this chip accept 2,560 words and
+	 * keep none of them, silently, while the tables beside them store
+	 * theirs -- so "168 writes, ok" says nothing on its own about whether
+	 * the store-and-forward matrix is configured.
+	 *
+	 * ⚠ THE WITNESS HAS TO BE A DISTINCTIVE VALUE. The obvious choice, the
+	 * CPU port's entry, is 0xffffffff -- which is also what an untouched
+	 * register reads, so a block that discarded every write would pass. A
+	 * plain front-panel port's first word is 0x0010000f and nothing else
+	 * produces that by accident.
+	 */
+	{
+		unsigned witness = 0;
+		uint32_t got = 0;
+
+		for (fp = 1; fp <= FM6000_FRONT_PORTS; fp++)
+			if (!is_edge(fm6000_alta_of[fp])) {
+				witness = fm6000_alta_of[fp];
+				break;
+			}
+		if (witness != 0) {
+			rv = fm_rd(d, SAF_ENTRY(witness), &got);
+			if (rv != FM_OK)
+				return rv;
+			if (got != pat_port[0])
+				return FM_EUNSAFE;
+		}
+	}
 	return FM_OK;
 }

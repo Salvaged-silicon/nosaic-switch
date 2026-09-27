@@ -3385,6 +3385,21 @@ cause, and the remaining difference is state established somewhere else.
 port number and reads the register back, and for port 0 a ring that never
 ran and a ring that answered are both `0`.
 
+One thing that *was* tried, and did not work: **the scan-chain commit on its
+own.** The routine is a per-block load loop followed by a commit and a 20 ms
+settle. We cannot have the load data, but if the chip powered up with a valid
+default memory configuration the commit alone might have been enough. It is
+not — `0x1c039` = `0x10`, `0x1c03a` = `0x80000040`, block clocks restored,
+and a deliberate read of `0x2020` kills the chip exactly as it does after a
+plain boot. Measured against a control run in the same session. So the load
+data matters, and that is the part we do not have.
+
+(That comparison needed `fm6000-probe --read-unsafe`, which takes a hazard
+the guard refuses. There is no way to learn whether a block has become
+reachable except by reading it, and on this chip that read is what kills a
+chip where it has not — so the tool asks anyway, says it is doing so, and
+reports whether the chip survived, which is the result either way.)
+
 Still untried, and the leading candidate: the scan-chain memory configuration
 (`0x1c039`–`0x1c03d`). Our prior art found that bank writability is a scan
 *program* rather than a register value, and that direct writes off-bus without
@@ -3406,6 +3421,25 @@ egress scheduler: 0 writes, refused as unsafe
 ```
 
 which is the correct behaviour for a block whose precondition is not met.
+
+### Which blocks actually keep what we write
+
+Every ported block now proves its own writes landed, because on this chip a
+write that returns ok is not a write that stuck:
+
+| block | writes | verified |
+|---|---|---|
+| store-and-forward | 168 | ✅ a front-panel entry reads back `0x0010000f` |
+| congestion watermarks | 6512 | ⚠ **4 of 6 tables**; both TX tables keep nothing |
+| CM maps, pause, partitions | 1005 | ✅ all six regions spot-checked |
+| parser seed clear | 194 | ✅ poked `0xdeadbeef` first, cleared after |
+| egress scheduler | 0 | refused — the block is unreachable |
+
+⚠ The witness value has to be distinctive. The obvious choice for
+store-and-forward was the CPU port's entry, which is `0xffffffff` — and so is
+an untouched register, so a block that discarded every write would have
+passed. A plain front-panel port's first word is `0x0010000f`, which nothing
+produces by accident.
 
 ### The same wall, silently: the transmit watermark tables
 

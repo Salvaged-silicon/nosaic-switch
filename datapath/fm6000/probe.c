@@ -422,6 +422,32 @@ int main(int argc, char **argv)
 	} else if (strcmp(argv[i], "--dump") == 0 && i + 2 < argc) {
 		rc = cmd_dump(&dev, (uint32_t)strtoul(argv[i + 1], NULL, 0),
 			      (uint32_t)strtoul(argv[i + 2], NULL, 0));
+	} else if (strcmp(argv[i], "--read-unsafe") == 0 && i + 1 < argc) {
+		/*
+		 * The read the guard exists to stop.
+		 *
+		 * There is no way to find out whether a block has become reachable
+		 * except by reading it, and on this chip that is the access which
+		 * kills a chip where it has not. So this asks anyway, says so, and
+		 * reports whether the chip survived -- which is the actual result
+		 * either way.
+		 */
+		uint32_t w = (uint32_t)strtoul(argv[i + 1], NULL, 0), v = 0;
+		const char *why = fm_hazard(&dev, w, 0);
+
+		if (fm_alive(&dev) != 1) {
+			printf("chip is not answering BEFORE the read; nothing this "
+			       "run says is worth anything\n");
+			rc = 1;
+		} else {
+			printf("taking the hazard on 0x%06x deliberately%s%s\n", w,
+			       why != NULL ? ": " : " (the guard does not refuse it)",
+			       why != NULL ? why : "");
+			rv = fm_rd_hazardous(&dev, w, &v);
+			printf("  0x%06x = %08x (%s), chip %s\n", w, v, rvstr(rv),
+			       fm_alive(&dev) == 1 ? "STILL ANSWERING" : "off the bus");
+			rc = fm_alive(&dev) == 1 ? 0 : 2;
+		}
 	} else if (strcmp(argv[i], "--poke") == 0 && i + 2 < argc) {
 		/*
 		 * One word, one value, and a liveness check either side.

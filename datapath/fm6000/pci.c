@@ -359,6 +359,24 @@ void fm_sched_mark_ready(struct fm6000 *d)
 	d->sched_ready = 1;
 }
 
+int fm_rd_hazardous(struct fm6000 *d, uint32_t word, uint32_t *out)
+{
+	size_t off = (size_t)word * 4;
+
+	if (d->regs == NULL)
+		return FM_ERR;
+	if (d->offbus) {
+		d->refused++;
+		return FM_EOFFBUS;
+	}
+	if (off + 4 > d->bar_bytes)
+		return FM_ERR;
+
+	*out = nosaic_mmio_rd32((const void *)((const char *)d->regs + off));
+	d->reads++;
+	return FM_OK;
+}
+
 void fm_bank_mark_initialised(struct fm6000 *d)
 {
 	d->banks_ready = 1;
