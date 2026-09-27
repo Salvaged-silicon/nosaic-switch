@@ -560,8 +560,8 @@ func checkSTP(sw Switch, caps Capabilities, p0 string) []error {
 	if err := sw.SetSTPPort(p0, STPPortConfig{Cost: -1}); err == nil {
 		bad("SetSTPPort accepted cost -1")
 	}
-	if err := sw.SetSTPPort(p0, STPPortConfig{Cost: 1234, Priority: 64}); err != nil {
-		bad("SetSTPPort(%s, cost 1234, priority 64): %v", p0, err)
+	if err := sw.SetSTPPort(p0, STPPortConfig{Cost: 1234, Priority: 64, BPDUGuard: true, RootGuard: true}); err != nil {
+		bad("SetSTPPort(%s, cost 1234, priority 64, both guards): %v", p0, err)
 	}
 	if err := sw.SetSTP(STPConfig{Enabled: true, Priority: 4096}); err != nil {
 		return append(probs, fmt.Errorf("SetSTP(on, 4096): %w", err))
@@ -604,6 +604,13 @@ func checkSTP(sw Switch, caps Capabilities, p0 string) []error {
 			}
 			if p.Priority != 64 {
 				bad("%s reports port priority %d, configured 64", p0, p.Priority)
+			}
+			if !p.BPDUGuard || !p.RootGuard {
+				bad("%s reports bpdu-guard %v, root-guard %v, configured both", p0, p.BPDUGuard, p.RootGuard)
+			}
+			// Nothing here sends BPDUs, so neither guard has anything to act on.
+			if p.Guard != "" {
+				bad("%s is held by %s with no neighbour to trip it", p0, p.Guard)
 			}
 			switch p.Role {
 			case "root", "designated", "alternate", "backup", "disabled":

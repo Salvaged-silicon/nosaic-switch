@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/salvaged-silicon/nosaic-switch/internal/switchapi"
 )
@@ -32,9 +33,10 @@ const (
 type stpPortCfg map[string]switchapi.STPPortConfig
 
 type ipBridgeDetail struct {
-	IfName   string `json:"ifname"`
-	Master   string `json:"master"`
-	LinkInfo struct {
+	IfName    string `json:"ifname"`
+	Master    string `json:"master"`
+	OperState string `json:"operstate"`
+	LinkInfo  struct {
 		InfoKind      string `json:"info_kind"`
 		InfoSlaveKind string `json:"info_slave_kind"`
 		InfoData      struct {
@@ -55,6 +57,9 @@ type ipBridgeDetail struct {
 			Priority         int    `json:"priority"`
 			No               string `json:"no"`
 			DesignatedBridge string `json:"designated_bridge"`
+			DesignatedRoot   string `json:"designated_root"`
+			Guard            bool   `json:"guard"`
+			RootBlock        bool   `json:"root_block"`
 		} `json:"info_slave_data"`
 	} `json:"linkinfo"`
 }
@@ -171,9 +176,26 @@ func (s *Switch) applySTPPort(name string) error {
 		if prio == 0 {
 			prio = 128
 		}
-		_, err := ipCmd("link", "set", "dev", name, "type", "bridge_slave",
-			"cost", strconv.Itoa(cost), "priority", strconv.Itoa(prio/4))
-		return err
+		// The kernel's own guards are the same two: "guard" disables the
+		// port on a BPDU until its link cycles, "root_block" never lets it
+		// become the root port.
+		if _, err := ipCmd("link", "set", "dev", name, "type", "bridge_slave",
+			"cost", strconv.Itoa(cost), "priority", strconv.Itoa(prio/4),
+			"guard", onOff(s.stpPorts[name].BPDUGuard), "root_block", onOff(s.stpPorts[name].RootGuard)); err != nil {
+			return err
+		}
+		// Configured again, a port BPDU guard has disabled lets go, as it
+		// does on the chip. The kernel re-enables one only when its carrier
+		// comes back, so give it that.
+		sd := d.LinkInfo.InfoSlaveData
+		if sd.Guard && sd.State == "disabled" && d.OperState != "DOWN" {
+			if _, err := ipCmd("link", "set", "dev", name, "down"); err != nil {
+				return err
+			}
+			_, err := ipCmd("link", "set", "dev", name, "up")
+			return err
+		}
+		return nil
 	}
 	return nil
 }
@@ -220,7 +242,8 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 		}
 		sd := d.LinkInfo.InfoSlaveData
 		no, _ := strconv.ParseInt(strings.TrimPrefix(sd.No, "0x"), 16, 32)
-		p := switchapi.STPPort{Port: d.IfName, Cost: sd.Cost, Priority: sd.Priority * 4}
+		p := switchapi.STPPort{Port: d.IfName, Cost: sd.Cost, Priority: sd.Priority * 4,
+			BPDUGuard: sd.Guard, RootGuard: sd.RootBlock}
 		switch sd.State {
 		case "forwarding":
 			p.State = "forwarding"
@@ -242,8 +265,37 @@ func (s *Switch) STP() (switchapi.STPStatus, error) {
 		default:
 			p.Role = "designated"
 		}
+		// Which guard holds it. BPDU guard leaves the port disabled with its
+		// link up.
+		//
+		// Root guard is the kernel's br_root_port_block, and it is only
+		// inferred: the kernel throws the better BPDU away rather than
+		// recording it, so the port's designated root stays this bridge's
+		// own and nothing names the root it refused. What it does is put
+		// the port back to listening each time that root is heard, so the
+		// port never forwards. A root-guarded port in listening is taken as
+		// held -- which is also briefly true of one coming up, for one
+		// forward delay; so it counts as held only once it has stayed
+		// listening longer than that. The chip datapaths know, and say so
+		// exactly.
+		if s.listening == nil {
+			s.listening = map[string]time.Time{}
+		}
+		if sd.State != "listening" {
+			delete(s.listening, d.IfName)
+		} else if _, ok := s.listening[d.IfName]; !ok {
+			s.listening[d.IfName] = time.Now()
+		}
+		switch {
+		case sd.Guard && sd.State == "disabled" && d.OperState != "DOWN":
+			p.Guard = "bpdu-guard"
+		case sd.RootBlock && sd.State == "listening" &&
+			time.Since(s.listening[d.IfName]) > time.Duration(bd.ForwardDelay+100)*10*time.Millisecond:
+			p.Guard = "root-guard"
+			p.Role, p.State = "alternate", "discarding"
+		}
 		if !out.Enabled {
-			p.Role, p.State = "designated", "forwarding"
+			p.Role, p.State, p.Guard = "designated", "forwarding", ""
 		}
 		out.Ports = append(out.Ports, p)
 	}
@@ -270,4 +322,11 @@ func (s *Switch) DelVirtualGateway(string, netip.Prefix) error {
 }
 func (s *Switch) VirtualGateways() ([]switchapi.VirtualGateway, error) {
 	return nil, switchapi.Unsupported("virtual gateway")
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }

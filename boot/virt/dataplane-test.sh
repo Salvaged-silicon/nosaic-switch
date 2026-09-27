@@ -347,6 +347,31 @@ if ./out/nosaic show caps | grep -Eq '^stp +true'; then
     lping || { echo "no traffic over the alternate once it took over"; exit 1; }
     echo "    root port lost: swp10 took over and carries the traffic"
 
+    # Root guard: swp10 is the way to a better root, which the guard forbids.
+    # It must stop being the root port and discard, and say why; with the
+    # guard gone it takes the root port back.
+    guard() { ./out/nosaic show stp | awk -v p="$1" '$1 == p { $1 = $2 = $3 = $4 = $5 = $6 = ""; print }'; }
+    ./out/nosaic stp port swp10 root-guard
+    for _ in $(seq 1 30); do [ "$(role swp10)" = "alternate/discarding" ] && break; sleep 1; done
+    [ "$(role swp10)" = "alternate/discarding" ] || { echo "root guard let swp10 stay the root port"; ./out/nosaic show stp; ip -d link show swp10; exit 1; }
+    guard swp10 | grep -q "ROOT-GUARD (blocking)" || { echo "show stp does not say root guard holds swp10"; ./out/nosaic show stp; exit 1; }
+    ./out/nosaic stp port swp10
+    for _ in $(seq 1 30); do [ "$(role swp10)" = "root/forwarding" ] && break; sleep 1; done
+    [ "$(role swp10)" = "root/forwarding" ] || { echo "swp10 stayed blocked with root guard off"; ./out/nosaic show stp; exit 1; }
+    echo "    root guard: swp10 refused the better root, and took it back with the guard off"
+
+    # BPDU guard: the next BPDU on swp10 takes it out of the tree. Configured
+    # again, it comes back.
+    ./out/nosaic stp port swp10 bpdu-guard
+    for _ in $(seq 1 30); do guard swp10 | grep -q "BPDU-GUARD (blocking)" && break; sleep 1; done
+    guard swp10 | grep -q "BPDU-GUARD (blocking)" || { echo "BPDU guard did not trip on a BPDU"; ./out/nosaic show stp; exit 1; }
+    [ "$(role swp10)" = "disabled/discarding" ] || { echo "BPDU guard tripped but swp10 is $(role swp10)"; exit 1; }
+    ./out/nosaic stp port swp10
+    for _ in $(seq 1 30); do [ "$(role swp10)" = "root/forwarding" ] && break; sleep 1; done
+    [ "$(role swp10)" = "root/forwarding" ] || { echo "swp10 stayed blocked after BPDU guard was cleared"; ./out/nosaic show stp; exit 1; }
+    lping || { echo "no traffic over swp10 after BPDU guard let go"; exit 1; }
+    echo "    BPDU guard: a BPDU blocked swp10, and configuring it again released it"
+
     ./out/nosaic svi del 40
     ./out/nosaic switchport swp9 none
     ./out/nosaic switchport swp10 none

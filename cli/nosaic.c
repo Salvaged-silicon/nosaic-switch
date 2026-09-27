@@ -62,7 +62,7 @@ static const char usage[] =
 "                          a LAG's whole membership; none removes it\n"
 "  stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>] | off\n"
 "                          rapid spanning tree over the switched ports\n"
-"  stp port <port> [edge] [cost <n>] [priority <n>]\n"
+"  stp port <port> [edge] [cost <n>] [priority <n>] [bpdu-guard] [root-guard]\n"
 "                          one port's or LAG's settings\n"
 "  mlag on peer-link <port> [peer-address <ip>] [priority <n>] [hello <ms>]\n"
 "      [dead <ms>] [settle <ms>] [heartbeat-port <n>] | off\n"

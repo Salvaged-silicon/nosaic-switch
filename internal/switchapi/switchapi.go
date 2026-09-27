@@ -82,7 +82,11 @@ import (
 // RootForwardDelay and RootMaxAge, the root's, as its BPDUs carry them. A
 // bridge that is not the root uses those, not its own configured ones, so the
 // configured times alone cannot say what a running tree is doing.
-const Version = "1.8"
+//
+// 1.9 added the spanning-tree guards: BPDUGuard and RootGuard in
+// STPPortConfig, read back in STPPort with Guard naming the one currently
+// holding the port. Both default off, which is 1.8's behaviour.
+const Version = "1.9"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -298,6 +302,15 @@ type STPPortConfig struct {
 	// Priority is the port priority, 16 to 240 in steps of 16; 0 is the
 	// default, 128. Lower wins a tie between two ports to the same bridge.
 	Priority int
+	// BPDUGuard is for a port that must never have a bridge on it: the
+	// first BPDU heard there blocks it, and it stays blocked until its
+	// link goes down and comes back or its configuration is set again.
+	BPDUGuard bool
+	// RootGuard keeps the root on this side of the port (802.1Q's
+	// restrictedRole): it is never made the root port, and while it hears
+	// a better root than this side's it discards, until that information
+	// ages out.
+	RootGuard bool
 }
 
 // STPStatus is the spanning tree as this bridge sees it. IDs are written the
@@ -326,12 +339,17 @@ type STPStatus struct {
 // forwarding. Edge is the operational value: an interface configured as an
 // edge that has heard a BPDU is not one.
 type STPPort struct {
-	Port     string
-	Role     string
-	State    string
-	Edge     bool
-	Cost     int
-	Priority int
+	Port      string
+	Role      string
+	State     string
+	Edge      bool
+	Cost      int
+	Priority  int
+	BPDUGuard bool
+	RootGuard bool
+	// Guard is the guard holding this port discarding now: "bpdu-guard",
+	// "root-guard", or "" for none.
+	Guard string
 }
 
 // MLAGConfig makes this switch one of an MLAG pair. PeerLink is the port or

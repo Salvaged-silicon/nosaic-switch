@@ -209,7 +209,7 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 			return proto.ErrorResponse(err)
 		}
 		return done(s.sw.SetSTPPort(a.Name, switchapi.STPPortConfig{Edge: a.Edge, Cost: a.Cost,
-			Priority: a.Priority}))
+			Priority: a.Priority, BPDUGuard: a.BPDUGuard, RootGuard: a.RootGuard}))
 
 	case proto.OpSTP:
 		st, err := s.sw.STP()
