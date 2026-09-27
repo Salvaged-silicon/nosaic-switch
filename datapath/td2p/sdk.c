@@ -32,6 +32,7 @@
 #include "mmio.h"
 #include "props.h"
 #include "sdk.h"
+#include "tapbridge.h"
 
 /* The SDK's own headers. Included last: they define types with names general
  * enough to collide with anything declared after them. */
@@ -851,6 +852,8 @@ int nosaic_sdk_ports(int unit)
 		if (missing)
 			printf("%d mapped port(s) were not created by the chip\n", missing);
 	}
+
+	nosaic_tap_prepare(unit);        /* before a single port is enabled */
 
 	rv = bcm_linkscan_enable_set(unit, 250000);
 	if (rv < 0) {

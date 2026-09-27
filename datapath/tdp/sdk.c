@@ -757,6 +757,8 @@ int nosaic_tdp_sdk_ports_up(int unit, int forward)
 	 * receiving silence. Receive is unaffected, which makes it look like a
 	 * cable fault in one direction.
 	 */
+	nosaic_tap_prepare(unit);        /* before a single port is enabled */
+
 	rv = bcm_linkscan_mode_set_pbm(unit, cfg.port, BCM_LINKSCAN_MODE_SW);
 	if (rv < 0)
 		printf("  link scan enrolment failed: %s\n", soc_errmsg(rv));
