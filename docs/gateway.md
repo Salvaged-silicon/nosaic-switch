@@ -31,7 +31,10 @@ On both switches of the pair, identically:
 - **The virtual MAC** is `00:00:5e:00:01:01` unless set: the IANA VRRP MAC for
   router 1. It must be the same on both switches of a pair. A second pair in
   the same VLANs needs a different one.
-- **IPv4 only**, for now.
+- **IPv4 and IPv6** (switchapi 1.11, `Capabilities.VirtualGateway6`). An
+  IPv6 gateway is a global or unique-local address, never link-local:
+  `nosaic gateway add vlan400 2001:db8:40::fe/64`. One virtual MAC serves
+  both.
 
 `show gateways`:
 
@@ -42,6 +45,7 @@ In network.conf:
 
     gateway mac 00:00:5e:00:01:01
     gateway vlan400 10.99.40.254/24
+    gateway vlan400 fd00:40::fe/64
 
 These lines are applied after the SVIs exist, the MAC before the addresses.
 
@@ -93,9 +97,39 @@ shorten it.
   the 7050SX2's SVI MAC this way. `arp_announce` is set to 2 on every SVI with
   a gateway, so the kernel's requests carry the SVI's own address instead.
 
+## IPv6
+
+The same three pieces, with neighbour discovery for ARP:
+
+- **Neighbour discovery.** tapbridge answers a solicitation for a gateway
+  address itself, with an advertisement from the virtual MAC flagged router
+  and override, and passes nothing to the kernel. A solicitation from `::`
+  (a host's own duplicate address detection) is answered to all nodes. When
+  a gateway is added, an unsolicited advertisement goes to all nodes, as the
+  gratuitous ARP does for IPv4.
+- **The kernel.** The address goes on the SVI as a /128, with duplicate
+  address detection off, because the other switch of the pair answers for
+  it, and the kernel would call that a duplicate and refuse the address. It
+  is also **deprecated** (preferred lifetime 0), so the kernel never picks it
+  as the source of its own traffic.
+- ⚠ **Deprecated is not enough.** Answering a ping to the gateway address,
+  the kernel replies from it. If it has to find the host first, Linux takes
+  the solicitation's source from the packet that triggered it, deprecated or
+  not, and the solicitation carries the SVI's own MAC. The Nexus resolved the
+  gateway to the SX2's SVI MAC this way. IPv4's `arp_announce` has no IPv6
+  twin, so tapbridge rewrites a solicitation or advertisement the kernel
+  sends from a gateway address to leave from the SVI's own link-local
+  address, with its checksum made good.
+
+Measured on 2026-09-27 on the same pair, with `fd00:40::fe/64` on vlan400:
+- The Nexus resolved the gateway to `00:00:5e:00:01:01` and kept it.
+- 20 of 20 pings through the gateway to each peer, and 20 of 20 in transit
+  through the chip to the AS5610's IPv6 loopback.
+- With the TX's datapath killed under 20 pings a second through the gateway
+  to that loopback: 1200 of 1200, no duplicates.
+
 ## Not yet
 
-- **IPv6.** It needs neighbour advertisements from the virtual MAC too.
 - **One virtual MAC per switch**, not one per gateway.
 - **A peer that has just rebooted attracts traffic before its routes are
   back.** Its half of the MLAG interface comes up as soon as LACP agrees,

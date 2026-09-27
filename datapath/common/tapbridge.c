@@ -337,16 +337,40 @@ static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len);
  */
 static int gateway_rx(struct tap *t, bcm_pkt_t *pkt)
 {
-	unsigned char *d = pkt->pkt_data[0].data, vmac[6], r[42];
+	unsigned char *d = pkt->pkt_data[0].data, vmac[6], r[86];
 	int len = (int)pkt->pkt_data[0].len;
 	uint32_t tip;
 
-	if (len < 16 + 28 || d[12] != 0x81 || d[13] != 0x00)
+	if (len < 18 || d[12] != 0x81 || d[13] != 0x00)
 		return 0;
 	nosaic_gw_mac(vmac);
 	if (memcmp(d, vmac, 6) == 0)
 		memcpy(d, t->mac, 6);
-	if (d[16] != 0x08 || d[17] != 0x06 || d[24] != 0 || d[25] != 1)
+
+	/*
+	 * IPv6: a neighbour solicitation for a gateway address, answered here
+	 * with an advertisement from the virtual MAC, as ARP is below. The
+	 * header is IPv6 at 18, ICMPv6 straight after it (no extension headers
+	 * in ND), type 135, hop limit 255 as ND requires, the target at 8.
+	 */
+	if (d[16] == 0x86 && d[17] == 0xdd && len >= 18 + 40 + 24 &&
+	    d[18 + 6] == 58 && d[18 + 7] == 255 && d[18 + 40] == 135) {
+		static const unsigned char unspec[16];
+		static const unsigned char all_nodes[16] = { 0xff, 0x02, [15] = 0x01 };
+		static const unsigned char all_nodes_mac[6] = { 0x33, 0x33, 0, 0, 0, 0x01 };
+		const unsigned char *src = d + 18 + 8, *target = d + 18 + 40 + 8;
+		int dad = memcmp(src, unspec, 16) == 0;
+
+		if (!nosaic_gw_is6(t->vlan, target))
+			return 0;
+		/* Duplicate address detection asks from ::, and is answered to
+		 * all nodes, unsolicited; anything else, to the asker. */
+		tap_tx_svi(t, r, nosaic_gw_na(r, target, dad ? all_nodes : src,
+					      dad ? all_nodes_mac : d + 6, !dad));
+		return 1;
+	}
+
+	if (len < 16 + 28 || d[16] != 0x08 || d[17] != 0x06 || d[24] != 0 || d[25] != 1)
 		return 0;                               /* not an ARP request */
 	memcpy(&tip, d + 16 + 26, 4);                   /* target protocol address */
 	if (!nosaic_gw_is(t->vlan, tip))
@@ -632,6 +656,55 @@ static unsigned frame_hash(const unsigned char *buf)
 	for (i = 0; i < 12; i++)
 		h = h * 31 + buf[i];
 	return h;
+}
+
+/*
+ * ⚠ THE KERNEL SOLICITS FROM THE GATEWAY ADDRESS, AND THAT CANNOT BE TURNED OFF.
+ *
+ * Answering a ping to an IPv6 gateway address, the kernel replies from it,
+ * and a neighbour solicitation it sends to find the host first takes that
+ * source too: ndisc_solicit uses the triggering packet's source whenever it
+ * is an address of the interface, deprecated or not. The solicitation
+ * carries the SVI's own MAC, so the host learns "the gateway is at the SVI's
+ * MAC" over the virtual one. A Nexus did. IPv4 has arp_announce for this;
+ * IPv6 has no equivalent.
+ *
+ * So a solicitation or advertisement the kernel sends from a gateway address
+ * leaves from the SVI's own link-local address instead, with its checksum
+ * made good. The kernel still hears the answer: that is sent to the
+ * link-local, at the SVI's MAC.
+ */
+static void nd_from_own(struct tap *t, unsigned char *buf, int len)
+{
+	unsigned char *ip = buf + 14, *icmp = buf + 54;
+	int plen, i;
+	uint32_t sum = 0;
+
+	if (len < 14 + 40 + 24 || buf[12] != 0x86 || buf[13] != 0xdd || ip[6] != 58 ||
+	    (icmp[0] != 135 && icmp[0] != 136) || !nosaic_gw_is6(t->vlan, ip + 8))
+		return;
+	plen = ip[4] << 8 | ip[5];
+	if (plen < 24 || 14 + 40 + plen > len)
+		return;
+	/* fe80::/64 with the interface id the kernel derives from the MAC. */
+	memset(ip + 8, 0, 16);
+	ip[8] = 0xfe; ip[9] = 0x80;
+	ip[16] = t->mac[0] ^ 0x02; ip[17] = t->mac[1]; ip[18] = t->mac[2];
+	ip[19] = 0xff; ip[20] = 0xfe;
+	ip[21] = t->mac[3]; ip[22] = t->mac[4]; ip[23] = t->mac[5];
+	icmp[2] = icmp[3] = 0;
+	for (i = 0; i < 32; i += 2)
+		sum += (uint32_t)(ip[8 + i] << 8 | ip[8 + i + 1]);
+	sum += (uint32_t)plen + 58;
+	for (i = 0; i + 1 < plen; i += 2)
+		sum += (uint32_t)(icmp[i] << 8 | icmp[i + 1]);
+	if (plen & 1)
+		sum += (uint32_t)(icmp[plen - 1] << 8);
+	while (sum >> 16)
+		sum = (sum & 0xffff) + (sum >> 16);
+	sum = ~sum & 0xffff;
+	icmp[2] = (unsigned char)(sum >> 8);
+	icmp[3] = (unsigned char)sum;
 }
 
 static int tap_tx_svi(struct tap *t, const unsigned char *buf, int len)
@@ -1582,8 +1655,11 @@ void nosaic_tap_pump(void (*tick)(void), int tick_ms)
 			len = read(svis[i].fd, buf, sizeof(buf));
 			if (len > 0 && svis[i].lag)
 				tap_tx_lag(&svis[i], buf, (int)len);
-			else if (len > 0)
+			else if (len > 0) {
+				if (nosaic_gw_on(svis[i].vlan))
+					nd_from_own(&svis[i], buf, (int)len);
 				tap_tx_svi(&svis[i], buf, (int)len);
+			}
 		}
 		pthread_rwlock_unlock(&svi_lock);
 	}

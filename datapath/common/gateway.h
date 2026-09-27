@@ -29,6 +29,11 @@ void nosaic_gw_svi_gone(int vid);
  */
 int  nosaic_gw_on(int vid);
 int  nosaic_gw_is(int vid, uint32_t ip_be);
+int  nosaic_gw_is6(int vid, const unsigned char a[16]);
+/* A neighbour advertisement for a gateway address, from the virtual MAC, into
+ * out (86 bytes); returns its length. For tapbridge's answer to a solicitation. */
+int  nosaic_gw_na(unsigned char *out, const unsigned char target[16],
+		  const unsigned char dst_ip[16], const unsigned char dst_mac[6], int solicited);
 void nosaic_gw_mac(unsigned char mac[6]);
 
 #endif

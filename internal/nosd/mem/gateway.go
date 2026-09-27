@@ -38,6 +38,9 @@ func (s *Switch) AddVirtualGateway(svi string, addr netip.Prefix) error {
 	if err := switchapi.ValidVirtualGateway(addr); err != nil {
 		return err
 	}
+	if addr.Addr().Is6() && !s.cfg.Caps.VirtualGateway6 {
+		return switchapi.Unsupported("ipv6 virtual gateway")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	found := false

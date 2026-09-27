@@ -783,8 +783,27 @@ func checkGateway(sw Switch, caps Capabilities) []error {
 		return append(probs, fmt.Errorf("AddSVI(302): %w", err))
 	}
 	defer sw.DelSVI(302)
-	if err := sw.AddVirtualGateway("vlan302", netip.MustParsePrefix("2001:db8::1/64")); err == nil {
-		bad("AddVirtualGateway accepted an IPv6 address")
+	gw6 := netip.MustParsePrefix("2001:db8:302::1/64")
+	if err := sw.AddVirtualGateway("vlan302", gw6); !caps.VirtualGateway6 && err == nil {
+		bad("AddVirtualGateway accepted an IPv6 address without Capabilities.VirtualGateway6")
+	} else if caps.VirtualGateway6 && err != nil {
+		bad("AddVirtualGateway(vlan302, %s): %v", gw6, err)
+	} else if caps.VirtualGateway6 {
+		listed := false
+		if gs, err := sw.VirtualGateways(); err == nil {
+			for _, g := range gs {
+				listed = listed || (g.SVI == "vlan302" && g.Address == gw6)
+			}
+		}
+		if !listed {
+			bad("vlan302 %s was added but VirtualGateways does not list it", gw6)
+		}
+		if err := sw.DelVirtualGateway("vlan302", gw6); err != nil {
+			bad("DelVirtualGateway(vlan302, %s): %v", gw6, err)
+		}
+	}
+	if err := sw.AddVirtualGateway("vlan302", netip.MustParsePrefix("fe80::1/64")); err == nil {
+		bad("AddVirtualGateway accepted a link-local address")
 	}
 	if err := sw.AddVirtualGateway("vlan302", gw); err != nil {
 		return append(probs, fmt.Errorf("AddVirtualGateway(vlan302, %s): %w", gw, err))

@@ -251,6 +251,7 @@ done < "$CONF"
 #
 #     gateway mac 00:00:5e:00:01:01
 #     gateway vlan10 10.0.10.254/24
+#     gateway vlan10 2001:db8:10::fe/64
 while read -r kind a b; do
     [ "$kind" = "gateway" ] && [ "$a" = "mac" ] && [ -n "$b" ] || continue
     out=$(nosaic gateway mac "$b" 2>&1) || say "gateway mac $b FAILED: $out" "$1"
