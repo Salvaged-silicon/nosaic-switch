@@ -1099,6 +1099,53 @@ static int tap_vlan_setup(int unit, struct tap *t, int vid)
 	return 0;
 }
 
+/*
+ * ⚠ BEFORE THE PORTS ARE ENABLED, NOT PORT BY PORT AFTERWARDS.
+ *
+ * The chip starts with every port in VLAN 1. tap_vlan_setup takes each port
+ * out as its tap is made -- but that is after nosaic_sdk_ports() has enabled
+ * the ports and waited seconds for them to negotiate, and for all that time
+ * the chip is one bridge across every port it has. A neighbour with two links
+ * to this switch has its own broadcasts handed back to it on the other link,
+ * and learns its own MAC on the wrong port.
+ *
+ * That happened: a 7050SX2 datapath restarted, and the 7050TX-64 on its two
+ * 40G links took 384,000 of its own frames back, learned both its own MACs
+ * on the links to the SX2, and dropped every frame addressed to it from then
+ * on. OSPF there sat in ExStart, hellos crossing and nothing else.
+ *
+ * So every port leaves VLAN 1 here, at once, before one is enabled. What
+ * arrives before a port has its own VLAN goes to the CPU, which has not
+ * started listening, and nowhere else.
+ *
+ * ⚠ AND L2 AGING ON. The SDK leaves it off unless told -- Broadcom's own
+ * shell turns it on from its startup script, which nothing here runs -- and
+ * with it off every learned MAC is permanent. The frames above were long gone
+ * 45 minutes later; the entries they left were not. 300 s is 802.1D's
+ * default. Entries this datapath installs (MLAG's synced MACs) are static
+ * and do not age.
+ */
+void nosaic_tap_prepare(int unit)
+{
+	bcm_port_config_t cfg;
+	int rv;
+
+	if (bcm_port_config_get(unit, &cfg) == BCM_E_NONE) {
+		rv = bcm_vlan_port_remove(unit, 1, cfg.port);
+		if (rv != BCM_E_NONE)
+			fprintf(stderr, "tap: the ports stay in VLAN 1 until their taps are made "
+				"(bcm_vlan_port_remove: %d); two links to one neighbour will "
+				"loop until then\n", rv);
+	}
+	rv = bcm_l2_age_timer_set(unit, 300);
+	if (rv != BCM_E_NONE)
+		fprintf(stderr, "tap: bcm_l2_age_timer_set(300): %d; learned MACs will "
+			"never age\n", rv);
+	else
+		printf("tap: every port out of VLAN 1 before enabling; L2 aging 300 s\n");
+	fflush(stdout);
+}
+
 int nosaic_tap_start(int unit, const struct tap_spec *specs, int n)
 {
 	int i, rv;
