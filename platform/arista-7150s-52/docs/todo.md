@@ -710,8 +710,15 @@ invented: it is the order the vendor sequence's own splice points imply.
 - [ ] **step 11, PCIe** — `fmPlatformSetupPCIe` is six registers we have
       addresses for (`0x01002`, `0x01400`, `0x01416`, `0x01418`, `0x0141d`,
       `0x01435`) and have never tried. Needed for packet DMA, not before.
-- [ ] **make the scheduler ring circulate** — now blocking two blocks, not
-      one: the egress scheduler (fatal to touch) and the transmit-side
+- [ ] **make the scheduler ring circulate** — ⚠ **and it is not a register
+      value.** Loading a forwarding chip's entire low-space and MGMT state
+      onto ours (13,071 words, from the two golden dumps in the
+      reverse-engineering tree) does not make the ring advance. So this needs
+      something procedural — a sequence, a shift or a timing — not a setting
+      we have failed to find, and the scan-chain memory configuration is the
+      one procedural step we know of and cannot reproduce. See hardware.md,
+      "Circulation is not reachable by setting registers at all". Now
+      blocking two blocks, not one: the egress scheduler (fatal to touch) and the transmit-side
       congestion watermarks `TXMP_PRIVATE`/`TXMP_HOG`, which accept 2,560
       words and keep none of them, silently. This is the port's critical
       path. It is the reason the whole `0x2000`–`0x3fff` block is fatal to

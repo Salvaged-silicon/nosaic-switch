@@ -3427,6 +3427,48 @@ most comfortable remaining explanation.
 port number and reads the register back, and for port 0 a ring that never
 ran and a ring that answered are both `0`.
 
+### Circulation is not reachable by setting registers at all
+
+*2026-09-27.* The obvious remaining theory was that some register we do not
+write holds the scheduler down, and that finding it was a matter of looking
+harder. It is not, and the experiment that settles it is worth more than the
+list of individual things ruled out above.
+
+Two dumps of a **forwarding** chip exist in the reverse-engineering tree:
+`eos-golden-regs-0x0-0x10000.txt` (16,042 words) and
+`eos-golden-regs-0x1C000-0x1E000.txt` (190). Between them they are the whole
+low register space and the whole of MGMT, as a switch that is passing traffic
+holds them. A forwarding chip has thousands of words set in `0x1000`,
+`0x4000`, `0x5000` and `0xb000` that NOSaic never writes.
+
+So they were loaded onto our chip after the documented boot — 12,882 words of
+low space (the `0x2000`–`0x3fff` egress scheduler excluded, since it is fatal
+to touch), then 189 of MGMT, then both together. `BOOT_CTRL` was held back
+because writing it re-issues a boot command. Nothing was refused by the
+guard, the chip stayed up throughout, and:
+
+```
+loaded 12882 words, 0 refused by the guard, chip answering
+  circulation: not found -- the ring is programmed but not advancing
+```
+
+**Giving our chip a forwarding chip's entire register state does not make the
+ring advance.** Circulation is therefore not a register value we have failed
+to find. It needs something procedural — a sequence, a shift, or a timing —
+and the one procedural step we know about and cannot reproduce is the
+scan-chain memory configuration, whose load data is third-party and absent.
+
+That matches what the prior work concluded about the banked memories from the
+other direction: *bank writability is a scan program, not a register value.*
+The scheduler looks like the same kind of thing.
+
+⚠ The tool used for this, `fm6000-probe --load`, is scaffolding and is
+labelled as such in the source: it exists to answer "which block is the
+missing precondition?" by putting a known-good chip's state into ours and
+seeing what starts working. It is a replay primitive, nothing in `nosd` may
+call anything like it, and the answer it gives is a pointer to a block to go
+and understand rather than a configuration to ship.
+
 One thing that *was* tried, and did not work: **the scan-chain commit on its
 own.** The routine is a per-block load loop followed by a commit and a 20 ms
 settle. We cannot have the load data, but if the chip powered up with a valid
@@ -3435,6 +3477,15 @@ not — `0x1c039` = `0x10`, `0x1c03a` = `0x80000040`, block clocks restored,
 and a deliberate read of `0x2020` kills the chip exactly as it does after a
 plain boot. Measured against a control run in the same session. So the load
 data matters, and that is the part we do not have.
+
+The scheduler **freelists** are also not it. The prior work left a note that
+if the ring turned out to have no queue backing, the freelist init registers
+`0x80F0`/`F4`/`F8`/`FC` plus their DONE strobes were the thing to add. They
+read zero on our chip — but they are **write-only**, so that reading says
+nothing, and the first version of this paragraph wrongly concluded from it
+that boot command 3 had not run. What settles it is the capture: the working
+switch **never writes those registers at all**. It relies on boot command 3,
+which we also run. Writing INIT=0 and DONE=1 to all four changes nothing.
 
 (That comparison needed `fm6000-probe --read-unsafe`, which takes a hazard
 the guard refuses. There is no way to learn whether a block has become

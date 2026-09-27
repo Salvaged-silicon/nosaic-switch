@@ -422,6 +422,56 @@ int main(int argc, char **argv)
 	} else if (strcmp(argv[i], "--dump") == 0 && i + 2 < argc) {
 		rc = cmd_dump(&dev, (uint32_t)strtoul(argv[i + 1], NULL, 0),
 			      (uint32_t)strtoul(argv[i + 2], NULL, 0));
+	} else if (strcmp(argv[i], "--load") == 0 && i + 1 < argc) {
+		/*
+		 * Write a list of "word value" pairs from a file.
+		 *
+		 * ⚠ SCAFFOLDING, AND IT MUST NOT BECOME ANYTHING ELSE. This is for
+		 * answering "which block is the missing precondition?" by putting a
+		 * known-good chip's state into ours one block at a time and seeing
+		 * what starts working. The answer it gives is a pointer to the
+		 * block to go and understand -- it is not a configuration, and
+		 * nothing in nosd may ever call anything like it.
+		 *
+		 * The guard still applies, so a block that is fatal to touch is
+		 * refused here as everywhere else.
+		 */
+		FILE *f = fopen(argv[i + 1], "r");
+		unsigned long n = 0, refused = 0;
+		uint32_t w, v;
+
+		if (f == NULL) {
+			printf("cannot open %s\n", argv[i + 1]);
+			rc = 1;
+		} else {
+			rc = 0;
+			while (fscanf(f, "%x %x", &w, &v) == 2) {
+				rv = fm_wr(&dev, w, v);
+				if (rv == FM_EUNSAFE) {
+					refused++;
+					continue;
+				}
+				if (rv != FM_OK) {
+					printf("stopped at word 0x%06x after %lu writes: %s\n",
+					       w, n, rvstr(rv));
+					rc = 2;
+					break;
+				}
+				n++;
+				if ((n & 0x3ff) == 0 && !fm_alive(&dev)) {
+					printf("chip went off the bus after %lu writes, "
+					       "last word 0x%06x\n", n, w);
+					rc = 2;
+					break;
+				}
+			}
+			fclose(f);
+			printf("loaded %lu words, %lu refused by the guard, chip %s\n",
+			       n, refused,
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			if (fm_alive(&dev) != 1)
+				rc = 2;
+		}
 	} else if (strcmp(argv[i], "--read-unsafe") == 0 && i + 1 < argc) {
 		/*
 		 * The read the guard exists to stop.
