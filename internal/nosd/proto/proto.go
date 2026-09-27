@@ -179,6 +179,7 @@ type MLAGArgs struct {
 	DeadMs        int    `json:"dead_ms"`
 	SettleMs      int    `json:"settle_ms"`
 	HeartbeatPort int    `json:"heartbeat_port"`
+	ReloadDelay   int    `json:"reload_delay"`
 }
 
 // LAGOptionsArgs tunes a LAG's LACP.

@@ -111,8 +111,9 @@ static struct {
 	long long     last_link, last_hb;
 	unsigned char mac[6], sys[6];
 	int           prio;
-	unsigned char up[NOSAIC_MLAG_MAX_ID + 1];
+	unsigned char up[NOSAIC_MLAG_MAX_ID + 1];     /* 0 down, 1 ready but held, 2 carrying */
 	unsigned char known[NOSAIC_MLAG_MAX_ID + 1];   /* the peer has reported it */
+	unsigned char ack[NOSAIC_MLAG_MAX_ID + 1];     /* it has seen our half, and blocked */
 	/* MAC sync being received, and the last complete set */
 	unsigned      gen;
 	int           nrx;
@@ -129,7 +130,37 @@ static unsigned tx_gen;
 static long long peer_down_since[NOSAIC_MLAG_MAX_ID + 1];   /* 0: not reported down */
 static long long local_up_since[NOSAIC_MLAG_MAX_ID + 1];    /* 0: not up here */
 static unsigned char local_up[NOSAIC_MLAG_MAX_ID + 1];
+static unsigned char local_ready[NOSAIC_MLAG_MAX_ID + 1];
 static int trigger;                                          /* a hello, now */
+
+/*
+ * Holding a half back.
+ *
+ * A half that could carry -- LACP has selected its links -- is kept out of
+ * service, not claiming sync, while either:
+ *
+ *   HOLD_RELOAD  the reload delay has not run out since MLAG started: a
+ *                switch just rebooted keeps the device on its peer until its
+ *                own routing has caught up;
+ *   HOLD_PEER    this half is carrying and the peer has not yet confirmed
+ *                it has seen it. A peer carrying alone delivers floods from
+ *                the peer-link to the device; until it has blocked them
+ *                again, a flood let out of this half too would reach the
+ *                device twice -- the duplicate seen in the link-loss test.
+ *
+ * Only the reload delay holds the half itself, through LACP (lag.c reads
+ * held_lag without the lock). HOLD_PEER holds only its floods: unicast
+ * goes both ways at once, and floods reach the device the one way they
+ * already did, through the peer, until the peer has taken that way away.
+ * Holding the half instead, the first version, left a second in which a
+ * flood from this side went nowhere at all, while LACP caught up.
+ */
+enum { HOLD_NONE, HOLD_RELOAD, HOLD_PEER };
+static const char *hold_name[] = { "", "reload", "peer" };
+static int reload_ms;
+static long long enabled_at;
+static volatile int held_lag[NOSAIC_MAX_LAGS + 1];
+static bcm_pbmp_t all_ports;                                 /* every front-panel port */
 
 static long long now_ms(void)
 {
@@ -244,7 +275,7 @@ static void send_frames(int plk)
 		put16(f + 12, ETYPE);
 		len = 14;
 		memcpy(f + len, "NMLG", 4); len += 4;
-		f[len++] = 1;                                     /* version */
+		f[len++] = 2;                                     /* version */
 		f[len++] = 0;
 		put16(f + len, (unsigned)priority); len += 2;
 		memcpy(f + len, my_mac, 6); len += 6;
@@ -257,9 +288,17 @@ static void send_frames(int plk)
 			for (k = 1; k <= NOSAIC_MAX_LAGS; k++) {
 				if (!mlag_of[k] || nosaic_lag_tid(k) < 0)
 					continue;
-				put16(f + len, (unsigned)mlag_of[k]);
-				f[len + 2] = !shut && nosaic_lag_active(k) > 0;
-				len += 3;
+				id = (unsigned)mlag_of[k];
+				put16(f + len, id);
+				/* 2 carrying, 1 ready but held, 0 neither. */
+				f[len + 2] = shut ? 0 : nosaic_lag_active(k) > 0 ? 2 :
+					     nosaic_lag_ready(k) > 0 ? 1 : 0;
+				/* Seen the peer's half, and this side will not hand
+				 * the device a second copy of a flood: blocked from
+				 * the peer-link, or not carrying at all. */
+				f[len + 3] = peer.up[id] >= 1 &&
+					     (!local_up[id] || !BCM_PBMP_IS_NULL(blocked_p[id]));
+				len += 4;
 				nifs++;
 			}
 			put16(f + at, (unsigned)nifs);
@@ -322,7 +361,7 @@ static int rx_port(int unit, bcm_pkt_t *pkt)
 static bcm_rx_t mlag_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 {
 	const unsigned char *p = pkt->pkt_data[0].data;
-	int len = (int)pkt->pkt_data[0].len, off = 12, n, i, nifs;
+	int len = (int)pkt->pkt_data[0].len, off = 12, n, i, nifs, version, es;
 	bcm_pbmp_t plp;
 	unsigned gen, chunk, chunks;
 
@@ -335,8 +374,9 @@ static bcm_rx_t mlag_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 		return BCM_RX_NOT_HANDLED;
 	p += off + 2;
 	len -= off + 2;
-	if (len < 26 || memcmp(p, "NMLG", 4) != 0 || p[4] != 1 || !enabled)
+	if (len < 26 || memcmp(p, "NMLG", 4) != 0 || (p[4] != 1 && p[4] != 2) || !enabled)
 		return BCM_RX_HANDLED;
+	version = p[4];
 
 	pthread_mutex_lock(&mlag_lock);
 	/* Only from the peer-link: the same frame arriving anywhere else is a
@@ -353,20 +393,26 @@ static bcm_rx_t mlag_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 	nifs = (int)get16(p + 20);
 	p += 22;
 	len -= 22;
-	if (len < nifs * 3 + 6) {
+	/* Version 1 has no acknowledgement: three bytes an interface. */
+	es = version >= 2 ? 4 : 3;
+	if (len < nifs * es + 6) {
 		pthread_mutex_unlock(&mlag_lock);
 		return BCM_RX_HANDLED;
 	}
 	memset(peer.up, 0, sizeof(peer.up));
 	memset(peer.known, 0, sizeof(peer.known));
+	memset(peer.ack, 0, sizeof(peer.ack));
 	for (i = 0; i < nifs; i++) {
 		unsigned id = get16(p);
 
 		if (id >= 1 && id <= NOSAIC_MLAG_MAX_ID) {
-			peer.up[id] = p[2];
+			/* Version 1 said only up or down, and never acknowledges:
+			 * taken as always having done so, which is how it behaved. */
+			peer.up[id] = version >= 2 ? p[2] : p[2] ? 2 : 0;
+			peer.ack[id] = version >= 2 ? p[3] : 1;
 			peer.known[id] = 1;
 		}
-		p += 3;
+		p += es;
 	}
 	for (i = 1; i <= NOSAIC_MLAG_MAX_ID; i++) {
 		if (peer.known[i] && !peer.up[i]) {
@@ -381,7 +427,7 @@ static bcm_rx_t mlag_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 	chunks = p[3];
 	n = (int)get16(p + 4);
 	p += 6;
-	len -= nifs * 3 + 6;
+	len -= nifs * es + 6;
 	if (chunk == 0) {
 		peer.gen = gen;
 		peer.nrx = 0;
@@ -490,7 +536,8 @@ static void set_block(int id, int on, bcm_pbmp_t plp, bcm_pbmp_t mem)
 			bcm_port_flood_block_set(mlag_unit, p, m, FLOODS);
 	BCM_PBMP_ASSIGN(blocked_p[id], plp);
 	BCM_PBMP_ASSIGN(blocked_m[id], mem);
-	printf("mlag: %d: flooding from the peer-link to it %s%s\n", id,
+	trigger = 1;                 /* the peer may be waiting on this to go ahead */
+	printf("mlag: %d: floods into it %s%s\n", id,
 	       BCM_PBMP_IS_NULL(plp) ? "allowed" : "blocked", block_why);
 	fflush(stdout);
 }
@@ -539,6 +586,51 @@ static void unsync_all(void)
 /* The peer's MACs: on this switch's half of the same MLAG interface if it has
  * one up, otherwise on the peer-link. Static, so learning here does not move
  * them and this switch does not advertise them back. */
+/* One of the peer's MACs, installed where it is reached from here now: this
+ * switch's half of its MLAG interface if that is carrying, else the
+ * peer-link. 0 if it went in. */
+static int install_one(const struct smac *w, int plk)
+{
+	bcm_l2_addr_t l2;
+	int lag = lag_of_id((int)w->id), tid;
+
+	bcm_l2_addr_t_init(&l2, (uint8 *)w->mac, (bcm_vlan_t)w->vid);
+	l2.flags = BCM_L2_STATIC;
+	if (lag && !shut && nosaic_lag_active(lag) > 0 && (tid = nosaic_lag_tid(lag)) >= 0) {
+		l2.flags |= BCM_L2_TRUNK_MEMBER;
+		l2.tgid = tid;
+	} else if (plk >= NOSAIC_MAX_TAPS && nosaic_lag_tid(plk - NOSAIC_MAX_TAPS) >= 0) {
+		l2.flags |= BCM_L2_TRUNK_MEMBER;
+		l2.tgid = nosaic_lag_tid(plk - NOSAIC_MAX_TAPS);
+	} else {
+		bcm_gport_t gp;
+		int port = key_xmit_port(plk);
+
+		if (port < 0 || bcm_port_gport_get(mlag_unit, port, &gp) != BCM_E_NONE)
+			return -1;
+		l2.port = gp;
+	}
+	return bcm_l2_addr_add(mlag_unit, &l2) == BCM_E_NONE ? 0 : -1;
+}
+
+/*
+ * ⚠ AT ONCE WHEN A HALF GOES DOWN OR UP, NOT AT THE NEXT HELLO.
+ *
+ * The synced MACs of an MLAG interface point at this side's half while it
+ * carries. When it stops, they point at a trunk with no members until the
+ * peer's next hello brings the list round and apply_sync moves them to the
+ * peer-link: up to a hello of the device's traffic from here dropped. That
+ * was most of a second lost at the default hello in the link-loss test.
+ */
+static void repoint(int id, int plk)
+{
+	int i;
+
+	for (i = 0; i < ninstalled; i++)
+		if ((int)installed[i].id == id)
+			install_one(&installed[i], plk);
+}
+
 static void apply_sync(int plk)
 {
 	static struct smac want[MAX_SYNC];
@@ -558,26 +650,7 @@ static void apply_sync(int plk)
 		}
 	}
 	for (i = 0; i < n; i++) {
-		bcm_l2_addr_t l2;
-		int lag = lag_of_id((int)want[i].id), tid;
-
-		bcm_l2_addr_t_init(&l2, want[i].mac, (bcm_vlan_t)want[i].vid);
-		l2.flags = BCM_L2_STATIC;
-		if (lag && !shut && nosaic_lag_active(lag) > 0 && (tid = nosaic_lag_tid(lag)) >= 0) {
-			l2.flags |= BCM_L2_TRUNK_MEMBER;
-			l2.tgid = tid;
-		} else if (plk >= NOSAIC_MAX_TAPS && nosaic_lag_tid(plk - NOSAIC_MAX_TAPS) >= 0) {
-			l2.flags |= BCM_L2_TRUNK_MEMBER;
-			l2.tgid = nosaic_lag_tid(plk - NOSAIC_MAX_TAPS);
-		} else {
-			bcm_gport_t gp;
-			int port = key_xmit_port(plk);
-
-			if (port < 0 || bcm_port_gport_get(mlag_unit, port, &gp) != BCM_E_NONE)
-				continue;
-			l2.port = gp;
-		}
-		if (bcm_l2_addr_add(mlag_unit, &l2) != BCM_E_NONE)
+		if (install_one(&want[i], plk) != 0)
 			continue;
 		if (smac_find(installed, ninstalled, &want[i]) < 0 && ninstalled < MAX_SYNC)
 			installed[ninstalled++] = want[i];
@@ -632,8 +705,10 @@ static void evaluate(long long now)
 		bcm_pbmp_t mem;
 		int id = mlag_of[k];
 
-		if (!id)
+		if (!id) {
+			held_lag[k] = HOLD_NONE;         /* no longer an MLAG interface */
 			continue;
+		}
 		lag_pbm(k, &mem);
 		/*
 		 * ⚠ BLOCKED UNLESS BOTH HALVES HAVE STAYED PUT.
@@ -672,13 +747,52 @@ static void evaluate(long long now)
 				 */
 				if (!up && nosaic_lag_tid(k) >= 0)
 					bcm_l2_addr_delete_by_trunk(mlag_unit, nosaic_lag_tid(k), 0);
+				if (peer_alive)
+					repoint(id, plk);
 			}
 			single = peer_down_since[id] && now - peer_down_since[id] >= settle_ms &&
 				 local_up[id] && now - local_up_since[id] >= settle_ms;
 			block_why = !peer_alive ? " (no peer)" : shut ? " (shut)" :
 				    single ? " (the peer's half is down: this side delivers for both)" :
 				    " (the peer's half is up, or has not settled)";
-			set_block(id, peer_alive && !shut && !single, plp, mem);
+			/* HOLD_PEER: floods from anywhere kept off this half. */
+			if (peer_alive && up && !shut && !peer.ack[id]) {
+				bcm_pbmp_t in;
+
+				BCM_PBMP_ASSIGN(in, all_ports);
+				BCM_PBMP_REMOVE(in, mem);
+				block_why = " (from every port, until the peer confirms it has blocked its own)";
+				set_block(id, 1, in, mem);
+			} else {
+				set_block(id, peer_alive && !shut && !single, plp, mem);
+			}
+
+			/* Ready -- could carry -- is news for the peer too. */
+			{
+				int ready = nosaic_lag_ready(k) > 0;
+
+				if (ready != local_ready[id]) {
+					local_ready[id] = (unsigned char)ready;
+					trigger = 1;
+				}
+			}
+			/* Held back? See HOLD_*. A half already carrying is never
+			 * pulled: the handshake is for one coming up. */
+			{
+				int hold = HOLD_NONE;
+
+				if (reload_ms > 0 && now - enabled_at < reload_ms)
+					hold = HOLD_RELOAD;
+				else if (peer_alive && up && !shut && !peer.ack[id])
+					hold = HOLD_PEER;
+				if (hold != held_lag[k]) {
+					printf("mlag: %d: %s\n", id, hold == HOLD_RELOAD ?
+					       "held for the reload delay" : hold == HOLD_PEER ?
+					       "floods held until the peer confirms it" : "released");
+					fflush(stdout);
+					held_lag[k] = hold;
+				}
+			}
 		}
 	}
 	if (peer_alive)
@@ -752,7 +866,7 @@ int nosaic_mlag_supported(void)
 }
 
 int nosaic_mlag_set(int on, const char *plink, const char *paddr, int prio,
-		    int hello, int dead, int settle, int port, char *err, size_t n)
+		    int hello, int dead, int settle, int port, int reload, char *err, size_t n)
 {
 	bcm_pbmp_t pbm;
 	int k;
@@ -771,6 +885,7 @@ int nosaic_mlag_set(int on, const char *plink, const char *paddr, int prio,
 		unsync_all();
 		enabled = 0;
 		memset((void *)excluded, 0, sizeof(excluded));
+		memset((void *)held_lag, 0, sizeof(held_lag));
 		peer_link[0] = peer_addr[0] = '\0';
 		peer.heard = 0;
 		role = ROLE_NONE;
@@ -837,6 +952,13 @@ int nosaic_mlag_set(int on, const char *plink, const char *paddr, int prio,
 	dead = dead ? dead : 3500;
 	settle = settle ? settle : 2500;
 	port = port ? port : 47101;
+	if (reload < 0 || reload > 3600) {
+		if (err != NULL)
+			snprintf(err, n, "mlag reload-delay %d s: must be 0 to 3600", reload);
+		peer_link[0] = '\0';
+		pthread_mutex_unlock(&mlag_lock);
+		return -1;
+	}
 	if (hello < 100 || hello > 10000 || dead < 2 * hello || dead > 60000 ||
 	    settle < 0 || settle > 60000 || port < 1 || port > 65535) {
 		if (err != NULL)
@@ -857,7 +979,11 @@ int nosaic_mlag_set(int on, const char *plink, const char *paddr, int prio,
 	hb_port = port;
 	snprintf(peer_addr, sizeof(peer_addr), "%s", paddr ? paddr : "");
 	priority = prio;
+	reload_ms = reload * 1000;
 	if (!enabled) {
+		/* The reload delay runs from here, when MLAG starts. The same
+		 * configuration applied again later does not restart it. */
+		enabled_at = now_ms();
 		printf("mlag: on, peer-link %s%s%s\n", peer_link,
 		       peer_addr[0] ? ", heartbeat to " : "", peer_addr);
 		fflush(stdout);
@@ -922,8 +1048,8 @@ void nosaic_mlag_query(FILE *out)
 
 	pthread_mutex_lock(&mlag_lock);
 	fprintf(out, "{\"ok\":true,\"result\":{\"HelloMs\":%d,\"DeadMs\":%d,\"SettleMs\":%d,"
-		"\"HeartbeatPort\":%d,\"Priority\":%d,\"PeerAddress\":\"%s\",",
-		hello_ms, dead_ms, settle_ms, hb_port, priority, peer_addr);
+		"\"HeartbeatPort\":%d,\"Priority\":%d,\"PeerAddress\":\"%s\",\"ReloadDelay\":%d,",
+		hello_ms, dead_ms, settle_ms, hb_port, priority, peer_addr, reload_ms / 1000);
 	fprintf(out, "\"Enabled\":%s,\"Role\":\"%s\",\"PeerLink\":\"%s\","
 		"\"PeerLinkUp\":%s,\"PeerAlive\":%s,\"Heartbeat\":%s,\"Peer\":\"",
 		enabled ? "true" : "false", role_name[enabled ? role : ROLE_NONE], peer_link,
@@ -942,12 +1068,19 @@ void nosaic_mlag_query(FILE *out)
 		if (!id || nosaic_lag_tid(k) < 0)
 			continue;
 		local = nosaic_lag_active(k) > 0 && !shut;
-		rem = peer_alive && peer.up[id];
+		rem = peer_alive && peer.up[id] == 2;
 		st = shut ? "disabled" : local && rem ? "active" : local ? "local" :
 		     rem ? "peer" : "down";
-		fprintf(out, "%s{\"LAG\":\"%s\",\"ID\":%d,\"Local\":%s,\"Peer\":%s,\"State\":\"%s\"}",
-			first ? "" : ",", nosaic_lag_name(k), id, local ? "true" : "false",
-			rem ? "true" : "false", st);
+		{
+			int h = enabled ? held_lag[k] : HOLD_NONE;
+			long long left = h == HOLD_RELOAD ? enabled_at + reload_ms - now_ms() : 0;
+
+			fprintf(out, "%s{\"LAG\":\"%s\",\"ID\":%d,\"Local\":%s,\"Peer\":%s,"
+				"\"State\":\"%s\",\"Held\":\"%s\",\"HeldSeconds\":%lld}",
+				first ? "" : ",", nosaic_lag_name(k), id, local ? "true" : "false",
+				rem ? "true" : "false", st, hold_name[h],
+				left > 0 ? (left + 999) / 1000 : 0);
+		}
 		first = 0;
 	}
 	fprintf(out, "]}}\n");
@@ -960,6 +1093,12 @@ void nosaic_mlag_query(FILE *out)
 int nosaic_mlag_id(int lag)
 {
 	return lag >= 1 && lag <= NOSAIC_MAX_LAGS ? mlag_of[lag] : 0;
+}
+
+/* Is this LAG's half held out of service (see HOLD_*)? Lock-free, for lag.c. */
+int nosaic_mlag_held(int lag)
+{
+	return enabled && lag >= 1 && lag <= NOSAIC_MAX_LAGS && held_lag[lag] == HOLD_RELOAD;
 }
 
 int nosaic_mlag_lacp(int lag, unsigned char sys[6], unsigned *key, unsigned *port_offset)
@@ -1004,6 +1143,13 @@ int nosaic_mlag_start(int unit)
 
 	if (nosaic_tap_count() > 0)
 		nosaic_tap_info(0, NULL, NULL, NULL, NULL, my_mac);
+	{
+		bcm_port_config_t cfg;
+
+		BCM_PBMP_CLEAR(all_ports);
+		if (bcm_port_config_get(unit, &cfg) == BCM_E_NONE)
+			BCM_PBMP_ASSIGN(all_ports, cfg.port);
+	}
 	rv = bcm_rx_register(unit, "nosaic-mlag", mlag_rx, RX_PRIORITY, NULL,
 			     BCM_RCO_F_ALL_COS);
 	if (rv != BCM_E_NONE) {

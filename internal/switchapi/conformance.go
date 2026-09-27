@@ -672,8 +672,11 @@ func checkMLAG(sw Switch, caps Capabilities, p0, p1 string) []error {
 	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, HelloMs: 1000, DeadMs: 1500}); err == nil {
 		bad("SetMLAG accepted a dead interval shorter than two hellos")
 	}
+	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, ReloadDelay: 3601}); err == nil {
+		bad("SetMLAG accepted a reload delay of 3601 s")
+	}
 	if err := sw.SetMLAG(MLAGConfig{Enabled: true, PeerLink: p0, PeerAddress: "192.0.2.2", Priority: 100,
-		HelloMs: 500, DeadMs: 2000, SettleMs: 3000, HeartbeatPort: 47200}); err != nil {
+		HelloMs: 500, DeadMs: 2000, SettleMs: 3000, HeartbeatPort: 47200, ReloadDelay: 30}); err != nil {
 		return append(probs, fmt.Errorf("SetMLAG(peer-link %s): %w", p0, err))
 	}
 	if st, err := sw.MLAG(); err != nil {
@@ -681,9 +684,10 @@ func checkMLAG(sw Switch, caps Capabilities, p0, p1 string) []error {
 	} else if !st.Enabled || st.PeerLink != p0 {
 		bad("MLAG reports enabled=%v peer-link %q after SetMLAG(on, %s)", st.Enabled, st.PeerLink, p0)
 	} else if st.HelloMs != 500 || st.DeadMs != 2000 || st.SettleMs != 3000 || st.HeartbeatPort != 47200 ||
-		st.Priority != 100 || st.PeerAddress != "192.0.2.2" {
-		bad("MLAG reads back hello %d dead %d settle %d port %d priority %d peer %q, set 500 2000 3000 47200 100 192.0.2.2",
-			st.HelloMs, st.DeadMs, st.SettleMs, st.HeartbeatPort, st.Priority, st.PeerAddress)
+		st.Priority != 100 || st.PeerAddress != "192.0.2.2" || st.ReloadDelay != 30 {
+		bad("MLAG reads back hello %d dead %d settle %d port %d priority %d peer %q reload-delay %d, "+
+			"set 500 2000 3000 47200 100 192.0.2.2 30",
+			st.HelloMs, st.DeadMs, st.SettleMs, st.HeartbeatPort, st.Priority, st.PeerAddress, st.ReloadDelay)
 	}
 
 	if err := sw.AddLAG("po2", false); err != nil {

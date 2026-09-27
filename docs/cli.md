@@ -82,6 +82,7 @@ turned on. [stp.md](stp.md).
 
     mlag on peer-link <port> [peer-address <ip>] [priority <n>]
             [hello <ms>] [dead <ms>] [settle <ms>] [heartbeat-port <n>]
+            [reload-delay <s>]
     mlag off
     lag <poN> lacp|static <port,...> mlag <id>
 

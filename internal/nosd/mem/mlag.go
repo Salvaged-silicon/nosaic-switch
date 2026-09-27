@@ -83,6 +83,7 @@ func (s *Switch) MLAG() (switchapi.MLAGStatus, error) {
 	if s.mlag.Enabled {
 		out.PeerAddress, out.Priority = s.mlag.PeerAddress, s.mlag.Priority
 		out.HelloMs, out.DeadMs, out.SettleMs, out.HeartbeatPort = switchapi.MLAGTimes(s.mlag)
+		out.ReloadDelay = s.mlag.ReloadDelay
 	}
 	if p, ok := s.byName[s.mlag.PeerLink]; ok {
 		out.PeerLinkUp = p.adminUp

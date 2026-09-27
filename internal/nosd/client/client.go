@@ -341,7 +341,8 @@ func (c *Client) STP() (switchapi.STPStatus, error) {
 func (c *Client) SetMLAG(cfg switchapi.MLAGConfig) error {
 	return c.call(proto.OpSetMLAG, proto.MLAGArgs{Enabled: cfg.Enabled, PeerLink: cfg.PeerLink,
 		PeerAddress: cfg.PeerAddress, Priority: cfg.Priority, HelloMs: cfg.HelloMs,
-		DeadMs: cfg.DeadMs, SettleMs: cfg.SettleMs, HeartbeatPort: cfg.HeartbeatPort}, nil)
+		DeadMs: cfg.DeadMs, SettleMs: cfg.SettleMs, HeartbeatPort: cfg.HeartbeatPort,
+		ReloadDelay: cfg.ReloadDelay}, nil)
 }
 
 func (c *Client) SetLAGOptions(name string, o switchapi.LAGOptions) error {

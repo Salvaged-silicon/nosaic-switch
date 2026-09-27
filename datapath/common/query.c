@@ -406,7 +406,8 @@ static int handle_lag(FILE *out, const char *req)
 		rv = nosaic_mlag_set(strstr(req, "\"enabled\":true") != NULL, plink, paddr,
 				     req_int(req, "priority", 32768), req_int(req, "hello_ms", 0),
 				     req_int(req, "dead_ms", 0), req_int(req, "settle_ms", 0),
-				     req_int(req, "heartbeat_port", 0), err, sizeof(err));
+				     req_int(req, "heartbeat_port", 0), req_int(req, "reload_delay", 0),
+				     err, sizeof(err));
 	} else if (strcmp(op, "lag.options") == 0) {
 		char rate[16];
 
@@ -729,7 +730,7 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.9\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.10\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
