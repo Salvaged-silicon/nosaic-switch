@@ -3300,6 +3300,34 @@ presence is `word & 0x6 == 0` and the laser is `word & 0x40 == 0`, checked
 against an independent signal on every cage rather than inferred from a
 handful of readings.
 
+### And the cages do come up powered, 2026-09-27
+
+The open worry was that only the vendor OS configures the cages, so a switch
+that had never run it would show a module as an empty cage. This switch could
+not answer the question — its SCD had been configured by EOS and a NOSaic
+boot does not reset it — so the mains were pulled at the PDU. The outlet was
+confirmed by the name the PDU itself prints against it, and the command was
+confirmed to have reached *this* box by a down-then-up transition on its
+management address, which is the check the lab's own power notes insist on
+after three rounds of diagnosis were once built on a PDU command that
+switched the wrong outlet.
+
+It came back with every cage configured: **live**
+
+```
+4 populated, 48 empty, 0 not powered, 0 undetermined, of 52 cages
+```
+
+cages 1–4 at `0x180`, 5–52 at `0x187`, and the module EEPROMs agreeing
+exactly — 1–4 answer with identifier `0x03`, 5 and 6 read `0xff`.
+`release-asic` does not disturb them either. **Optics work from a cold start
+with no vendor OS involved, and NOSaic has nothing to do here.**
+
+The `0x1DF` reading was real when it was recorded and is not reproducible on
+current software, so what produced it is genuinely unknown rather than
+explained away. The decode keeps handling it: reporting `cage not powered`
+instead of `empty` costs nothing and stays correct if that state returns.
+
 ⚠ **`0x1DF` is still matched as a whole word, and must be.** It is a cage
 nothing has powered, and a module in one is *invisible* — no EEPROM, no
 presence bit. The bit decode would call it empty, which is the silent

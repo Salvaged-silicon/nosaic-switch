@@ -35,6 +35,11 @@ func TestCageWordDecode(t *testing.T) {
 		// unpowered cage answers nothing, so "empty" would be a wrong answer
 		// presented confidently.
 		{"cage nothing has powered", xcvrUnconfigured, PresenceUnconfigured},
+
+		// An unpowered cage that does report its module. Decodes as
+		// present with the laser off, which is what it is -- nothing has
+		// enabled the transmitter yet.
+		{"unpowered, module detected", xcvrUnconfiguredPresent, PresentLaserOff},
 	}
 
 	for _, tc := range cases {
@@ -64,7 +69,8 @@ func TestCageWordDecode(t *testing.T) {
 // table has to come back -- so it is worth failing loudly rather than letting
 // one new sample quietly widen the meaning of "present".
 func TestCageAbsentBitsDisjoint(t *testing.T) {
-	populated := []uint32{xcvrEOSPresentOff, xcvrEOSPresentOn, xcvrPresentPreRead}
+	populated := []uint32{xcvrEOSPresentOff, xcvrEOSPresentOn, xcvrPresentPreRead,
+		xcvrUnconfiguredPresent}
 	empty := []uint32{xcvrEOSEmpty, xcvrEmptyNOSaic}
 
 	for _, w := range populated {

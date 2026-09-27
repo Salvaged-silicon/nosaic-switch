@@ -556,17 +556,22 @@ has a reason, in code, parameterised by the board.
       the chip had been through EOS, NOSaic sees four modules at accelerator 2
       buses 0-3 and cages 1-4 present out of all 52 scanned. Sequential, and
       on evidence that could have contradicted it.
-- [ ] ⚠ **NOSaic must power the cages itself.** That is the step EOS performs
-      and we do not: `0x1DF` is the unconfigured cage register, `0x187`
-      configured-and-empty, `0x180` configured-with-a-module. A module in a
-      cage this board has not powered is invisible — no EEPROM, no presence
-      bit — so transceiver discovery silently under-reports on a cold box.
-      ⚠ Still open, and **do not be reassured by this switch reporting all 52
-      cages correctly today**: its SCD was configured by EOS and a NOSaic boot
-      does not reset it, so the cages read `0x187`/`0x180` rather than
-      `0x1DF`. A box that has been power-cycled without EOS is the case that
-      matters, and the decode now names it (`cage not powered`) instead of
-      reporting it as empty — which makes the gap visible, not fixed.
+- [x] ~~**NOSaic must power the cages itself.**~~ **It does not have to —
+      settled 2026-09-27 by pulling the mains.** The concern was that `0x1DF`
+      is an unconfigured cage, that a module in one is invisible, and that
+      only EOS configured them. The previous note warned against being
+      reassured by this switch, because its SCD had been configured by EOS
+      and a NOSaic boot does not reset it. So the switch was power-cycled at
+      the PDU — outlet confirmed by name and by a down-then-up transition on
+      the target — and came back with **all 52 cages configured**: 4 at
+      `0x180` and 48 at `0x187`, `0 not powered`, and the module EEPROMs
+      agreeing exactly (1–4 answer, 5+ read `0xff`). `release-asic` does not
+      disturb them either. Optics work from a cold start with no vendor OS
+      involved.
+      The `0x1DF` reading was real when recorded but is not reproducible on
+      current software, so what produced it is unknown. The decode keeps
+      handling it — reporting `cage not powered` rather than `empty` costs
+      nothing and stays correct if that state ever returns.
 - [x] **the EPL gates alone do not light a lane** — measured. Writing
       `CFG_A 0x7E1D7899` and `CFG_B 0x00090033` on EPL 14 with a live far end
       leaves PORT_STATUS at the dark `0x15`. The SerDes lane-enable is

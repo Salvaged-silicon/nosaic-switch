@@ -92,6 +92,15 @@ const (
 	// of it, and inferring which bit means "unconfigured" from one sample is
 	// the mistake this file has already made once.
 	xcvrUnconfigured = 0x000001df
+
+	// xcvrUnconfiguredPresent is the same unpowered cage with a module in
+	// it. Recorded before the vendor OS had run on this board.
+	//
+	// Kept because it is the word that shows the presence bits are usable
+	// even unpowered *sometimes* -- and the two cages that read 0x1df while
+	// holding modules show they are not usable reliably, which is the whole
+	// reason 0x1df is not decoded as "empty".
+	xcvrUnconfiguredPresent = 0x000001e0
 )
 
 // xcvrAbsent is bits 1 and 2: set when the cage is empty, clear when a module
