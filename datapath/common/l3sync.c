@@ -1612,6 +1612,14 @@ static void poll_hosts6(void)
 #define MAX_LOOPBACK 8
 static uint32_t lo_done[MAX_LOOPBACK];
 static int      nlo_done;
+/*
+ * ⚠ AND IPV6 TOO. This was IPv4 only, and an IPv6 loopback was exactly the
+ * address this comment describes: the AS5610's 2001:470:882d:1111::241,
+ * advertised by OSPFv3 and routed to by every router in the lab, dropped by
+ * the AS5610's own chip. Found testing the IPv6 virtual gateway.
+ */
+static uint8_t  lo6_done[MAX_LOOPBACK][16];
+static int      nlo6_done;
 
 static void loopback_punt(void)
 {
@@ -1658,6 +1666,44 @@ static void loopback_punt(void)
 		fflush(stdout);
 		if (rv == BCM_E_NONE)
 			lo_done[nlo_done++] = ip;
+	}
+
+	for (a = head; a != NULL; a = a->ifa_next) {
+		struct sockaddr_in6 *s6;
+		bcm_l3_host_t h;
+		bcm_field_entry_t ent = -1;
+		const uint8_t *ip;
+		int seen = 0, stat = -1, rv;
+
+		if (a->ifa_addr == NULL || a->ifa_addr->sa_family != AF_INET6)
+			continue;
+		if ((a->ifa_flags & IFF_LOOPBACK) == 0)
+			continue;
+		s6 = (struct sockaddr_in6 *)a->ifa_addr;
+		ip = s6->sin6_addr.s6_addr;
+		if (IN6_IS_ADDR_LOOPBACK(&s6->sin6_addr) || IN6_IS_ADDR_LINKLOCAL(&s6->sin6_addr) ||
+		    is_mcast6(ip))
+			continue;
+		for (i = 0; i < nlo6_done; i++)
+			if (memcmp(lo6_done[i], ip, 16) == 0)
+				seen = 1;
+		if (seen || nlo6_done >= MAX_LOOPBACK)
+			continue;
+
+		bcm_l3_host_t_init(&h);
+		h.l3a_flags = BCM_L3_IP6 | BCM_L3_L2TOCPU;
+		memcpy(h.l3a_ip6_addr, ip, 16);
+		h.l3a_intf = cpu_eg;
+		rv = bcm_l3_host_add(l3_unit, &h);
+		if (fp_grp6 >= 0) {
+			memcpy(q_self6_ip, ip, 16);
+			fp_add(fp_grp6, "v6 self lo", &ent, &stat, q_self6);
+		}
+		printf("l3: %s self v6 %02x%02x:%02x%02x:..:%02x%02x -> CPU: %d\n", a->ifa_name,
+		       ip[0], ip[1], ip[2], ip[3], ip[14], ip[15], rv);
+		fflush(stdout);
+		if (rv == BCM_E_NONE)
+			memcpy(lo6_done[nlo6_done++], ip, 16);
 	}
 	freeifaddrs(head);
 }

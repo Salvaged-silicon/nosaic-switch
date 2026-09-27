@@ -70,13 +70,19 @@ func ValidVirtualMAC(mac string) error {
 	return nil
 }
 
-// ValidVirtualGateway checks a gateway address: IPv4, for now, since IPv6
-// needs neighbour discovery answered with the virtual MAC too.
+// ValidVirtualGateway checks a gateway address, IPv4 or IPv6. Whether a
+// datapath takes IPv6 at all is Capabilities.VirtualGateway6.
 func ValidVirtualGateway(addr netip.Prefix) error {
-	if !addr.Addr().Is4() {
-		return fmt.Errorf("virtual gateway %s: IPv4 only", addr)
+	max := 32
+	if addr.Addr().Is6() && !addr.Addr().Is4In6() {
+		max = 128
+		if addr.Addr().IsLinkLocalUnicast() || addr.Addr().IsMulticast() {
+			return fmt.Errorf("virtual gateway %s: a global or unique-local unicast address is needed", addr)
+		}
+	} else if !addr.Addr().Is4() {
+		return fmt.Errorf("virtual gateway %s: not an address", addr)
 	}
-	if addr.Bits() < 1 || addr.Bits() > 32 {
+	if addr.Bits() < 1 || addr.Bits() > max {
 		return fmt.Errorf("virtual gateway %s: prefix length", addr)
 	}
 	return nil

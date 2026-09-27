@@ -847,7 +847,9 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		}
 		fmt.Fprintf(w, "stp\t%v\n", caps.STP)
 		fmt.Fprintf(w, "mlag\t%v\n", caps.MLAG)
-		fmt.Fprintf(w, "virtual gateway\t%v\n", caps.VirtualGateway)
+		fmt.Fprintf(w, "virtual gateway\t%v\n", map[[2]bool]string{
+			{false, false}: "false", {true, false}: "true, ipv4", {true, true}: "true, ipv4 and ipv6",
+			{false, true}: "false"}[[2]bool{caps.VirtualGateway, caps.VirtualGateway6}])
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
 		if caps.ACL {
 			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)

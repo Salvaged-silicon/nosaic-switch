@@ -93,7 +93,10 @@ import (
 // them, so no flood reaches the device from both switches; the reload delay
 // holds every half out of service for that long after MLAG starts. It
 // defaults to 0, off.
-const Version = "1.10"
+//
+// 1.11 added IPv6 virtual gateways, gated by Capabilities.VirtualGateway6:
+// neighbour discovery answered with the virtual MAC, as ARP is for IPv4.
+const Version = "1.11"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -142,6 +145,8 @@ type Capabilities struct {
 	// a virtual MAC, and routed for in the chip, by every switch that has
 	// it -- both of an MLAG pair, active-active.
 	VirtualGateway bool
+	// VirtualGateway6 is the same for IPv6 addresses.
+	VirtualGateway6 bool
 
 	L2Learning bool
 	MaxFDB     int

@@ -31,9 +31,23 @@
  *
  * No macvlan: none of the switch kernels has one, and the kernel is outside
  * the A/B slot.
+ *
+ * IPV6 (switchapi 1.11) is the same three pieces, with neighbour discovery
+ * for ARP:
+ *   - tapbridge answers a neighbour solicitation for a gateway address with
+ *     an advertisement from the virtual MAC (nosaic_gw_na), and an
+ *     unsolicited one goes out when a gateway is added;
+ *   - the address goes on the SVI as a /128 with duplicate address detection
+ *     off -- the other switch of the pair answers for it too, and the kernel
+ *     would take that as a duplicate and refuse it -- and DEPRECATED, so the
+ *     kernel never picks it as the source of its own traffic. That is
+ *     arp_announce's job for IPv4: a solicitation the kernel sent from the
+ *     gateway address would carry the SVI's own MAC, and hosts would believe
+ *     it.
  */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <linux/if_addr.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
@@ -53,7 +67,8 @@
 
 #define MAX_GW 256
 
-struct gw { int vid; uint32_t ip; int plen; };      /* ip in network order */
+/* ip in network order for IPv4; a for IPv6. */
+struct gw { int vid; int v6; uint32_t ip; unsigned char a[16]; int plen; };
 
 static pthread_mutex_t gw_lock = PTHREAD_MUTEX_INITIALIZER;
 static int gw_unit = -1;
@@ -76,7 +91,7 @@ static void rta_add(struct nlmsghdr *n, int type, const void *data, int len)
 	n->nlmsg_len = NLMSG_ALIGN(n->nlmsg_len) + RTA_ALIGN(r->rta_len);
 }
 
-static int kernel_addr(int add, int vid, uint32_t ip)
+static int kernel_addr(int add, int vid, const struct gw *g)
 {
 	struct { struct nlmsghdr n; struct ifaddrmsg a; char buf[64]; } req;
 	char name[IFNAMSIZ], ack[256];
@@ -93,11 +108,26 @@ static int kernel_addr(int add, int vid, uint32_t ip)
 	req.n.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
 	req.n.nlmsg_type = add ? RTM_NEWADDR : RTM_DELADDR;
 	req.n.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | (add ? NLM_F_CREATE | NLM_F_REPLACE : 0);
-	req.a.ifa_family = AF_INET;
-	req.a.ifa_prefixlen = 32;
 	req.a.ifa_index = idx;
-	rta_add(&req.n, IFA_LOCAL, &ip, 4);
-	rta_add(&req.n, IFA_ADDRESS, &ip, 4);
+	if (g->v6) {
+		uint32_t fl = IFA_F_NODAD;
+		struct ifa_cacheinfo ci;
+
+		req.a.ifa_family = AF_INET6;
+		req.a.ifa_prefixlen = 128;
+		rta_add(&req.n, IFA_ADDRESS, g->a, 16);
+		rta_add(&req.n, IFA_FLAGS, &fl, sizeof(fl));
+		/* Preferred for no time at all: deprecated, never a source. */
+		memset(&ci, 0, sizeof(ci));
+		ci.ifa_prefered = 0;
+		ci.ifa_valid = 0xffffffffu;
+		rta_add(&req.n, IFA_CACHEINFO, &ci, sizeof(ci));
+	} else {
+		req.a.ifa_family = AF_INET;
+		req.a.ifa_prefixlen = 32;
+		rta_add(&req.n, IFA_LOCAL, &g->ip, 4);
+		rta_add(&req.n, IFA_ADDRESS, &g->ip, 4);
+	}
 	if (send(fd, &req, req.n.nlmsg_len, 0) > 0 && (r = recv(fd, ack, sizeof(ack), 0)) > 0) {
 		struct nlmsghdr *h = (struct nlmsghdr *)ack;
 
@@ -160,6 +190,67 @@ static void station_set(int want)
 	}
 }
 
+static void garp(int vid, uint32_t ip);
+
+/*
+ * A neighbour advertisement for gateway address target, from the virtual MAC,
+ * into out (at least 86 bytes): to dst_ip at dst_mac, solicited or not.
+ * Returns its length. The router flag is set -- it is one -- and override,
+ * so a host that had the address at another MAC takes this one.
+ */
+int nosaic_gw_na(unsigned char *out, const unsigned char target[16],
+		 const unsigned char dst_ip[16], const unsigned char dst_mac[6], int solicited)
+{
+	unsigned char *ip = out + 14, *icmp = out + 54;
+	uint32_t sum = 0;
+	int i;
+
+	memset(out, 0, 86);
+	memcpy(out, dst_mac, 6);
+	for (i = 0; i < 6; i++)
+		out[6 + i] = vmac[i];
+	out[12] = 0x86; out[13] = 0xdd;
+	ip[0] = 0x60;
+	ip[4] = 0; ip[5] = 32;                 /* payload: the NA and one option */
+	ip[6] = 58;                            /* ICMPv6 */
+	ip[7] = 255;                           /* hop limit, as ND requires */
+	memcpy(ip + 8, target, 16);            /* from the gateway address */
+	memcpy(ip + 24, dst_ip, 16);
+	icmp[0] = 136;                         /* neighbour advertisement */
+	icmp[4] = 0x80 | 0x20 | (solicited ? 0x40 : 0);   /* router, override, solicited */
+	memcpy(icmp + 8, target, 16);
+	icmp[24] = 2; icmp[25] = 1;            /* target link-layer address */
+	for (i = 0; i < 6; i++)
+		icmp[26 + i] = vmac[i];
+	/* Checksum over the pseudo-header and the message. */
+	for (i = 0; i < 32; i += 2)
+		sum += (uint32_t)(ip[8 + i] << 8 | ip[8 + i + 1]);
+	sum += 32 + 58;
+	for (i = 0; i < 32; i += 2)
+		sum += (uint32_t)(icmp[i] << 8 | icmp[i + 1]);
+	while (sum >> 16)
+		sum = (sum & 0xffff) + (sum >> 16);
+	sum = ~sum & 0xffff;
+	icmp[2] = (unsigned char)(sum >> 8);
+	icmp[3] = (unsigned char)sum;
+	return 86;
+}
+
+/* What a gratuitous ARP is for IPv4: every host on the link told where the
+ * gateway is now. */
+static void announce(const struct gw *g)
+{
+	static const unsigned char all_nodes[16] = { 0xff, 0x02, [15] = 0x01 };
+	static const unsigned char all_nodes_mac[6] = { 0x33, 0x33, 0, 0, 0, 0x01 };
+	unsigned char f[86];
+
+	if (!g->v6) {
+		garp(g->vid, g->ip);
+		return;
+	}
+	nosaic_tap_svi_xmit(g->vid, f, nosaic_gw_na(f, g->a, all_nodes, all_nodes_mac, 0));
+}
+
 /* A gratuitous ARP from the virtual MAC, so hosts that already know the
  * gateway -- from the other switch, or from before -- have it right. */
 static void garp(int vid, uint32_t ip)
@@ -180,11 +271,12 @@ static void garp(int vid, uint32_t ip)
 
 /* ---------------------------------------------------------------------- */
 
-static int parse(const char *svi, const char *prefix, int *vid, uint32_t *ip, int *plen,
+static int parse(const char *svi, const char *prefix, int *vid, struct gw *g,
 		 char *err, size_t n)
 {
 	char a[64], *slash;
 	struct in_addr in;
+	struct in6_addr in6;
 
 	if (svi == NULL || sscanf(svi, "vlan%d", vid) != 1 || *vid < 1 || *vid > 4094) {
 		if (err != NULL)
@@ -192,18 +284,37 @@ static int parse(const char *svi, const char *prefix, int *vid, uint32_t *ip, in
 		return -1;
 	}
 	snprintf(a, sizeof(a), "%s", prefix ? prefix : "");
-	*plen = 32;
+	memset(g, 0, sizeof(*g));
+	g->vid = *vid;
+	g->plen = -1;
 	if ((slash = strchr(a, '/')) != NULL) {
 		*slash = '\0';
-		*plen = atoi(slash + 1);
+		g->plen = atoi(slash + 1);
 	}
-	if (inet_pton(AF_INET, a, &in) != 1 || *plen < 1 || *plen > 32) {
-		if (err != NULL)
-			snprintf(err, n, "virtual gateway %s: IPv4 only", prefix ? prefix : "");
-		return -1;
+	if (inet_pton(AF_INET, a, &in) == 1) {
+		g->ip = in.s_addr;
+		if (g->plen == -1)
+			g->plen = 32;
+		if (g->plen >= 1 && g->plen <= 32)
+			return 0;
+	} else if (inet_pton(AF_INET6, a, &in6) == 1) {
+		g->v6 = 1;
+		memcpy(g->a, &in6, 16);
+		if (g->plen == -1)
+			g->plen = 128;
+		if (IN6_IS_ADDR_LINKLOCAL(&in6) || IN6_IS_ADDR_MULTICAST(&in6)) {
+			if (err != NULL)
+				snprintf(err, n, "virtual gateway %s: a global or unique-local "
+					 "unicast address is needed", prefix);
+			return -1;
+		}
+		if (g->plen >= 1 && g->plen <= 128)
+			return 0;
 	}
-	*ip = in.s_addr;
-	return 0;
+	if (err != NULL)
+		snprintf(err, n, "virtual gateway %s: not an address and prefix length",
+			 prefix ? prefix : "");
+	return -1;
 }
 
 int nosaic_gw_supported(void)
@@ -235,20 +346,26 @@ int nosaic_gw_set_mac(const char *mac, char *err, size_t n)
 		vmac[i] = (unsigned char)m[i];
 	station_set(ngw > 0);
 	for (i = 0; i < ngw; i++)
-		garp(gws[i].vid, gws[i].ip);
+		announce(&gws[i]);
 	pthread_mutex_unlock(&gw_lock);
 	return 0;
+}
+
+static int same(const struct gw *a, const struct gw *b)
+{
+	return a->vid == b->vid && a->v6 == b->v6 &&
+	       (a->v6 ? memcmp(a->a, b->a, 16) == 0 : a->ip == b->ip);
 }
 
 int nosaic_gw_add(const char *svi, const char *prefix, char *err, size_t n)
 {
 	char name[IFNAMSIZ];
-	uint32_t ip;
-	int vid, plen, i;
+	struct gw g;
+	int vid, i;
 
 	if (!nosaic_gw_supported())
 		return -2;
-	if (parse(svi, prefix, &vid, &ip, &plen, err, n) != 0)
+	if (parse(svi, prefix, &vid, &g, err, n) != 0)
 		return -1;
 	snprintf(name, sizeof(name), "vlan%d", vid);
 	if (if_nametoindex(name) == 0) {
@@ -258,10 +375,11 @@ int nosaic_gw_add(const char *svi, const char *prefix, char *err, size_t n)
 	}
 	pthread_mutex_lock(&gw_lock);
 	for (i = 0; i < ngw; i++) {
-		if (gws[i].vid == vid && gws[i].ip == ip) {
-			gws[i].plen = plen;
-			kernel_addr(1, vid, ip);        /* again, in case the tap was remade */
-			quiet_arp(vid);
+		if (same(&gws[i], &g)) {
+			gws[i].plen = g.plen;
+			kernel_addr(1, vid, &g);        /* again, in case the tap was remade */
+			if (!g.v6)
+				quiet_arp(vid);
 			pthread_mutex_unlock(&gw_lock);
 			return 0;
 		}
@@ -272,20 +390,19 @@ int nosaic_gw_add(const char *svi, const char *prefix, char *err, size_t n)
 			snprintf(err, n, "at most %d virtual gateways", MAX_GW);
 		return -1;
 	}
-	if (kernel_addr(1, vid, ip) != 0) {
+	if (kernel_addr(1, vid, &g) != 0) {
 		pthread_mutex_unlock(&gw_lock);
 		if (err != NULL)
 			snprintf(err, n, "%s: could not put %s on it", svi, prefix);
 		return -1;
 	}
-	quiet_arp(vid);
-	gws[ngw].vid = vid;
-	gws[ngw].ip = ip;
-	gws[ngw].plen = plen;
+	if (!g.v6)
+		quiet_arp(vid);
+	gws[ngw] = g;
 	ngw++;
 	on_vid[vid] = 1;
 	station_set(1);
-	garp(vid, ip);
+	announce(&g);
 	pthread_mutex_unlock(&gw_lock);
 	printf("gateway: %s %s, answered with %02x:%02x:%02x:%02x:%02x:%02x\n", svi, prefix,
 	       vmac[0], vmac[1], vmac[2], vmac[3], vmac[4], vmac[5]);
@@ -306,17 +423,17 @@ static void remove_at(int i)
 
 int nosaic_gw_del(const char *svi, const char *prefix, char *err, size_t n)
 {
-	uint32_t ip;
-	int vid, plen, i;
+	struct gw g;
+	int vid, i;
 
 	if (!nosaic_gw_supported())
 		return -2;
-	if (parse(svi, prefix, &vid, &ip, &plen, err, n) != 0)
+	if (parse(svi, prefix, &vid, &g, err, n) != 0)
 		return -1;
 	pthread_mutex_lock(&gw_lock);
 	for (i = 0; i < ngw; i++) {
-		if (gws[i].vid == vid && gws[i].ip == ip) {
-			kernel_addr(0, vid, ip);
+		if (same(&gws[i], &g)) {
+			kernel_addr(0, vid, &g);
 			remove_at(i);
 			break;
 		}
@@ -340,13 +457,16 @@ void nosaic_gw_svi_gone(int vid)
 
 void nosaic_gw_query(FILE *out)
 {
-	char a[INET_ADDRSTRLEN];
+	char a[INET6_ADDRSTRLEN];
 	int i;
 
 	pthread_mutex_lock(&gw_lock);
 	fprintf(out, "{\"ok\":true,\"result\":[");
 	for (i = 0; i < ngw; i++) {
-		inet_ntop(AF_INET, &gws[i].ip, a, sizeof(a));
+		if (gws[i].v6)
+			inet_ntop(AF_INET6, gws[i].a, a, sizeof(a));
+		else
+			inet_ntop(AF_INET, &gws[i].ip, a, sizeof(a));
 		fprintf(out, "%s{\"SVI\":\"vlan%d\",\"Address\":\"%s/%d\","
 			"\"MAC\":\"%02x:%02x:%02x:%02x:%02x:%02x\"}", i ? "," : "",
 			gws[i].vid, a, gws[i].plen, vmac[0], vmac[1], vmac[2], vmac[3],
@@ -369,7 +489,17 @@ int nosaic_gw_is(int vid, uint32_t ip_be)
 	int i, n = ngw;
 
 	for (i = 0; i < n && i < MAX_GW; i++)
-		if (gws[i].vid == vid && gws[i].ip == ip_be)
+		if (gws[i].vid == vid && !gws[i].v6 && gws[i].ip == ip_be)
+			return 1;
+	return 0;
+}
+
+int nosaic_gw_is6(int vid, const unsigned char a[16])
+{
+	int i, n = ngw;
+
+	for (i = 0; i < n && i < MAX_GW; i++)
+		if (gws[i].vid == vid && gws[i].v6 && memcmp(gws[i].a, a, 16) == 0)
 			return 1;
 	return 0;
 }

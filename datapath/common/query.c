@@ -730,14 +730,15 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.10\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.11\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
 			"\"ACL\":%s,\"ACLEntries\":%d,"
 			"\"ACL6\":%s,\"ACL6Entries\":%d,"
 			"\"LAGs\":%s,\"MaxLAGs\":%d,\"MaxLAGMembers\":%d,"
-			"\"LACP\":%s,\"STP\":%s,\"MLAG\":%s,\"VirtualGateway\":%s}}\n",
+			"\"LACP\":%s,\"STP\":%s,\"MLAG\":%s,\"VirtualGateway\":%s,"
+			"\"VirtualGateway6\":%s}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
 			maxecmp > 1 ? "true" : "false", maxecmp,
 			acl.v4 ? "true" : "false", acl.v4_total,
@@ -746,6 +747,7 @@ static void handle(FILE *out, const char *req)
 			maxlags > 0 ? "true" : "false",
 			nosaic_rstp_supported() ? "true" : "false",
 			nosaic_mlag_supported() ? "true" : "false",
+			nosaic_gw_supported() ? "true" : "false",
 			nosaic_gw_supported() ? "true" : "false");
 		return;
 	}
