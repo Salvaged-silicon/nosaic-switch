@@ -162,6 +162,47 @@ static long long enabled_at;
 static volatile int held_lag[NOSAIC_MAX_LAGS + 1];
 static bcm_pbmp_t all_ports;                                 /* every front-panel port */
 
+/*
+ * ⚠ THE PEER-LINK MUST FORWARD A "STATIC STATION MOVE", NOT DROP IT.
+ *
+ * The device's MACs are installed here as static entries on this switch's
+ * half of the MLAG interface (MAC sync). The device can still reach this
+ * switch through the peer: its frame arrives on the peer-link, with a source
+ * this switch holds static on another port. By default the chip calls that a
+ * static station move and DROPS the frame. On the AS5610 (Trident+) paired
+ * with the SX2, every frame the TX dual-homed device sent through the SX2
+ * died at the AS5610 that way: its ARP requests never reached the AS5610,
+ * which could not resolve the TX at all.
+ *
+ * bcmPortControlForwardStaticL2MovePkt (PORT_TAB.DISABLE_STATIC_MOVE_DROP)
+ * forwards them instead, and the static entry is left alone. Set on the
+ * peer-link's ports only; everywhere else a static move still means what it
+ * always did.
+ */
+static bcm_pbmp_t static_fwd;
+
+static void peer_link_static_fwd(bcm_pbmp_t want)
+{
+	bcm_port_t p;
+
+	if (BCM_PBMP_EQ(want, static_fwd))
+		return;
+	BCM_PBMP_ITER(static_fwd, p)
+		if (!BCM_PBMP_MEMBER(want, p))
+			bcm_port_control_set(mlag_unit, p, bcmPortControlForwardStaticL2MovePkt, 0);
+	BCM_PBMP_ITER(want, p)
+		if (!BCM_PBMP_MEMBER(static_fwd, p)) {
+			int rv = bcm_port_control_set(mlag_unit, p,
+						      bcmPortControlForwardStaticL2MovePkt, 1);
+
+			if (rv != BCM_E_NONE)
+				fprintf(stderr, "mlag: port %d: forwarding static moves: %s; the "
+					"device's frames through the peer will be dropped\n",
+					p, bcm_errmsg(rv));
+		}
+	BCM_PBMP_ASSIGN(static_fwd, want);
+}
+
 static long long now_ms(void)
 {
 	struct timespec ts;
@@ -665,6 +706,7 @@ static void evaluate(long long now)
 	int plk = peer_link_key(&plp), k, was_alive = peer_alive, old_role = role;
 
 	link_up = key_link(plk);
+	peer_link_static_fwd(plp);
 	peer_alive = peer.heard && now - peer.last_link < dead_ms && link_up;
 	hb_alive = peer_addr[0] && now - peer.last_hb < dead_ms;
 
@@ -886,6 +928,8 @@ int nosaic_mlag_set(int on, const char *plink, const char *paddr, int prio,
 		enabled = 0;
 		memset((void *)excluded, 0, sizeof(excluded));
 		memset((void *)held_lag, 0, sizeof(held_lag));
+		BCM_PBMP_CLEAR(pbm);
+		peer_link_static_fwd(pbm);
 		peer_link[0] = peer_addr[0] = '\0';
 		peer.heard = 0;
 		role = ROLE_NONE;

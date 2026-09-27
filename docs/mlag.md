@@ -201,6 +201,35 @@ returns.
 Hellos are version 2 now. A version 1 peer is still understood, and is taken
 as always confirming, which is how it behaved.
 
+### A Trident+ peer
+
+Proven on 2026-09-27 with the **AS5610 (Trident+) as a peer of the 7050SX2**:
+- **Peer-link:** et3/et4 to swp1/swp2.
+- **Dual-homed:** the 7050TX-64, on one link to each.
+- **Gateway:** `10.99.40.254` on both peers.
+
+Results, under 20 pings a second from the TX to the SX2 and through the
+gateway:
+
+| Event | Lost | Duplicates |
+|---|---|---|
+| The SX2's half down and up | 3 and 17 of 600 | none |
+| The AS5610's half down and up | 0 of 600 | none |
+| Peer-link lost (the AS5610 shut its half) | 0 of 600 | none |
+| The AS5610's datapath killed | 0 of 600 | none |
+
+The AS5610 rejoined 3 s after its configuration was back.
+
+⚠ **It found a bug the Trident2 pair never showed: a static station move is
+dropped.** MAC sync installs the device's MACs as static entries on this
+switch's half. A frame from the device that came through the peer arrives on
+the peer-link, with a source this switch holds static elsewhere. The chip
+calls that a static station move and, by default, drops it. On the AS5610
+every frame the TX sent by way of the SX2 died there, so the AS5610 could not
+even resolve the TX. The peer-link's ports now set
+`bcmPortControlForwardStaticL2MovePkt`, which forwards such frames and
+leaves the static entry alone.
+
 ### Four bugs the hardware found
 
 - ⚠ **`BCM_PORT_FLOOD_BLOCK_ALL` is not "all kinds of flooding".** It is the
