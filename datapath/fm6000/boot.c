@@ -387,13 +387,55 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	}
 	fm_bank_mark_initialised(d);
 	set(d, rep, FM_STEP_MEMORY_INIT, FM_OK,
-	    "STATS filled and readable; 0x240000 and 0x260000 are register "
-	    "blocks, not banks, and are left alone");
+	    "STATS filled and readable. 0x240000 and 0x260000 are left "
+	    "alone -- they are MCAST_DEST_TABLE and MCAST_VLAN_TABLE, and "
+	    "a software fill is the wrong mechanism for them");
 
 	/* The EPL block is now safe to read. Measured: the same word that takes
 	 * the chip off the bus before this sequence returns 0x00080000 after it,
 	 * with the chip still answering. The ECC bank memories are NOT unlocked
 	 * -- they wait for step 12. */
+	/*
+	 * Step 5, AGAIN, now that the chip is settled.
+	 *
+	 * ⚠ THE FIRST ATTEMPT DOES NOT SURVIVE. Measured: the step-5 chain
+	 * write costs three watchdog self-resets when it runs in its
+	 * documented position, and the watchdog puts the fabric back to
+	 * defaults under it -- so whatever it configured is gone before step 6
+	 * begins. The same write on a chip that has finished the sequence is
+	 * free: FATAL_COUNT does not move, twice over, with and without the
+	 * quiesce in front of it.
+	 *
+	 * So this is not belt and braces. Without it, "core logic and EPLs to
+	 * normal operating mode" is a step this chip has never actually had.
+	 * Doing it here is the only place measured to work.
+	 *
+	 * Why it is free later is not established. The obvious guess is that
+	 * the modules being out of soft reset is what lets the write retire,
+	 * which would mean Table 4-1's ordering does not hold on this part --
+	 * but that is a guess and the measurement is the reset count.
+	 */
+	rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88800000u);
+	if (rv == FM_OK)
+		rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88008000u);
+	if (rv == FM_OK)
+		rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x80000040u);
+	if (rv == FM_OK)
+		rv = fm_wr(d, FM6000_SCAN_CHAIN_DATA_IN, 0xffffffff);
+	if (rv != FM_OK) {
+		set(d, rep, FM_STEP_SCAN_CHAIN, rv,
+		    "the settled-chip repeat of step 5 failed");
+		return rv;
+	}
+	/* Annotate step 5 directly rather than through set(): set() also moves
+	 * rep->reached, and calling it here would move it backwards to step 3
+	 * and report every later step as never attempted. The same trap is
+	 * documented at FM_STEP_MODULES above, and this is the second time it
+	 * has been fallen into. */
+	rep->step[FM_STEP_SCAN_CHAIN].note =
+	    "done twice: once in order, and again once the chip had settled, "
+	    "because the first one is reset out from under itself";
+
 	fm_boot_mark_done(d);
 	return FM_OK;
 }

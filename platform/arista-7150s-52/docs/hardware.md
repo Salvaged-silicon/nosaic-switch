@@ -4824,3 +4824,22 @@ plainly: if it is right, the last three self-resets in Table 4-1 are not
 fixable without the vendor's chain data, and the useful question becomes
 whether three resets that early actually matter, given the boot's later steps
 all run after them.
+
+## Step 5 has never taken effect, and now it does
+
+The three remaining self-resets all land on step 5's chain write, and the
+watchdog puts the fabric back to defaults under it — so whatever step 5
+configured is gone before step 6 begins. "Core logic and EPLs to normal
+operating mode" is a step this chip has never actually had.
+
+The same write on a chip that has finished the sequence is **free**: measured
+twice, with and without the quiesce in front of it, `FATAL_COUNT` does not
+move. So `boot.c` now does step 5 twice — once in its documented position, and
+again once the chip has settled, which is the only place measured to work.
+
+Why it is free later is not established. The obvious guess is that the modules
+being out of soft reset is what lets the write retire, which would mean Table
+4-1's ordering does not hold on this part. That is a guess; the measurement is
+the reset count.
+
+It does not start the ring.
