@@ -111,6 +111,56 @@
 #define FM6000_ESCHED_DRR_DC_INIT	0x003c00
 #define FM6000_CM_ESCHED_STATE		0x116c00
 
+/*
+ * The Counter Rate Monitor. See crm.h for the whole story; these are the
+ * addresses and the field packing, the latter confirmed against both the
+ * datasheet's field order and the vendor SDK's own encoder. [DS 9.3 / RE]
+ *
+ * Every one of the four indexed blocks is 64 entries of two words except
+ * CRM_PARAM, which is one word, and each ends exactly where the next named
+ * register begins -- which is how the stride was established.
+ */
+#define FM6000_CRM_DATA			0x01e000	/* 2048 x 2w */
+#define FM6000_CRM_CTRL			0x01f000
+#define FM6000_CRM_STATUS		0x01f001
+#define FM6000_CRM_TIME			0x01f002
+#define FM6000_CRM_IP			0x01f004	/* 2w, one bit per slot */
+#define FM6000_CRM_IM			0x01f006	/* 2w */
+#define FM6000_CRM_COMMAND(n)		(0x01f080u + (n) * 2u)
+#define FM6000_CRM_REGISTER(n)		(0x01f100u + (n) * 2u)
+#define FM6000_CRM_PERIOD(n)		(0x01f180u + (n) * 2u)
+#define FM6000_CRM_PARAM(n)		(0x01f200u + (n))
+
+/* CRM_CTRL: Run[0], FirstCommandIndex[6:1], LastCommandIndex[12:7],
+ * Continuous[13], TickPrescale[17:14]. CRM_STATUS: Running[0],
+ * CommandIndex[6:1]. */
+#define FM6000_CRM_CTRL_RUN		(1u << 0)
+#define FM6000_CRM_CTRL_FIRST_SHIFT	1
+#define FM6000_CRM_CTRL_LAST_SHIFT	7
+#define FM6000_CRM_CTRL_CONTINUOUS	(1u << 13)
+#define FM6000_CRM_CTRL_PRESCALE_SHIFT	14
+#define FM6000_CRM_STATUS_RUNNING	(1u << 0)
+#define FM6000_CRM_STATUS_IDX_SHIFT	1
+
+/* CRM_COMMAND: Command[2:0], DataIndex[13:3], Count[33:14] -- so Count
+ * straddles the word boundary, with its low 18 bits in the low word from bit
+ * 14 and its top 2 bits at the bottom of the high word. */
+#define FM6000_CRM_CMD_MASK		0x7u
+#define FM6000_CRM_COUNT_MASK		0xfffffu
+#define FM6000_CRM_COUNT_SHIFT		14
+#define FM6000_CRM_COUNT_HI_SHIFT	18
+
+/* CRM_REGISTER: BaseAddress[21:0], Size[23:22], BlockSize1Shift[27:24],
+ * Stride1Shift[31:28], BlockSize2Shift[35:32], Stride2Shift[39:36] -- the last
+ * two being bits 3:0 and 7:4 of the high word. */
+#define FM6000_CRM_BASE_MASK		0x3fffffu
+#define FM6000_CRM_SIZE_SHIFT		22
+#define FM6000_CRM_BS1_SHIFT		24
+#define FM6000_CRM_ST1_SHIFT		28
+#define FM6000_CRM_BS2_SHIFT_HI		0
+#define FM6000_CRM_ST2_SHIFT_HI		4
+#define FM6000_CRM_SHIFT_MAX		15u	/* the shift fields are 4 bits */
+
 /* 80 ring slots, one byte each; five 16-bit slow-port masks. */
 #define FM6000_SSCHED_NEXT_PORT_WORDS	20
 #define FM6000_SSCHED_SLOW_PORT_WORDS	5

@@ -4515,3 +4515,65 @@ is a `CHIP_RESET_N` pulse like any other held chip.
 - The tables the sweepers walk, for whoever initialises them next:
   `L2L_MAC_TABLE` `0x280000`, `L2L_MAC_TABLE_SWEEPER` `0x2c0000`, and the four
   policer regions above.
+
+## The CRM initialises memory in hardware, and we were only doing one region
+
+Table 4-1 step 12 offers two ways to initialise memory: "Use CRM to setup
+memory table. Launch CRM execution. Wait for completion." Or: "Software writes
+memory manually." This port has always done the second. That is wrong twice
+over.
+
+**Mechanism.** A software fill is the CPU writing every word through the
+management ring, and an access that cannot complete raises a CRM access
+timeout and resets the fabric.
+
+**Coverage.** The vendor initialises **128 memory regions** this way before
+anything else runs — every parser, mapper, policer, L2AR, MOD, FFU, stats and
+MAC table on the die. We initialise exactly one, `STATS`, by hand.
+
+`datapath/fm6000/crm.c` implements the hardware path. The field packing came
+from the datasheet's field order and was then confirmed field by field against
+the vendor SDK's own `fm6000CrmSetMemory` — `Command[2:0]`, `Count[33:14]`,
+`BaseAddress[21:0]`, `Size[23:22]`, the four shift fields at `[27:24]`,
+`[31:28]`, `[35:32]`, `[39:36]`, and `CRM_CTRL` as `Run[0]`,
+`FirstCommandIndex[6:1]`, `LastCommandIndex[12:7]`. The SDK also computes
+`CRM_COMMAND`'s address as `(slot + 0xf840) * 2` = `0x1f080 + slot*2`, which
+confirms base and stride independently of the register map.
+
+### It works, and it narrows the problem sharply
+
+Each run from a fresh boot with `FATAL_COUNT` at 8:
+
+| region | width | result |
+|---|---|---|
+| `STATS` `0x200000` | 32-bit | **8 → 8**, clean |
+| `L2L_MAC_TABLE` `0x280000` | 32-bit ×1024 | **8 → 8**, clean |
+| `POLICER_CFG_4K` `0x130000` | 64-bit ×4096 | **8 → 8**, clean |
+| `POLICER_STATE_4K` `0x138000` | 64-bit ×4096 | storms |
+| `MCAST_DEST_TABLE` `0x240000` | 96-bit ×4096 | storms |
+| `MCAST_VLAN_TABLE` `0x260000` | 32-bit ×32768 | storms |
+
+So the mechanism is sound — the same policer region that cost 82 self-resets
+under a software fill has a sibling that the CRM fills for nothing. What
+remains is three specific memories, and the pattern is suggestive: the *config*
+banks initialise and the *state* banks do not.
+
+### Register widths are not guessable, and getting them wrong looks identical
+
+The SDK passes a width per region: `L2L_MAC_TABLE` is 4 words per entry,
+the policer banks 2, `MCAST_DEST_TABLE` 3 significant of 4 stride,
+`MCAST_VLAN_TABLE` 1, `STATS` 2 — and `STATS` is filled with `0xffffffff`,
+not zero as this port has been doing.
+
+This matters: filling a 64-bit ECC entry as two independent 32-bit registers
+writes half an entry and leaves invalid ECC, which faults exactly like a
+memory that was never initialised. A first pass here ran every region as
+32-bit and had to be redone.
+
+### Correction: `0x240000` and `0x260000` are memories, not register blocks
+
+This document previously recorded them as "register blocks, not banks" because
+a software fill died at `0x240036` and `0x260014`. They are
+`FM6000_MCAST_DEST_TABLE` and `FM6000_MCAST_VLAN_TABLE`, and both are in the
+vendor's CRM initialisation list. The fill died because a software fill is the
+wrong mechanism for them, not because they are not memories.

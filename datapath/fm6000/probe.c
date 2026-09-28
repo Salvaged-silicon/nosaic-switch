@@ -29,6 +29,7 @@
 #include "esched.h"
 #include "ssched.h"
 #include "mrl.h"
+#include "crm.h"
 #include "cmwm.h"
 #include "cmrest.h"
 #include "parser.h"
@@ -55,6 +56,10 @@ static void usage(void)
 "  --bist [config]       configure the memory controllers and run the BIST\n"
 "                        march. 'config' stops after the controllers. WRITES,\n"
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
+"  --crm BASE COUNT [SIZE [VAL]]\n"
+"                        initialise a memory block with the CRM, in\n"
+"                        hardware, the way Table 4-1 step 12 says to --\n"
+"                        and report whether the chip reset itself. WRITES.\n"
 "  --fatal               has the chip been resetting itself? Read this after\n"
 "                        ANY sequence -- a step that reports ok while the\n"
 "                        watchdog reset the fabric under it did not happen.\n"
@@ -708,6 +713,38 @@ int main(int argc, char **argv)
 			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			printf("\n%s\n", rv == FM_OK ? "ok" : rvstr(rv));
 			rc = rv == FM_OK ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--crm") == 0 && i + 2 < argc) {
+		uint32_t cbase = strtoul(argv[i + 1], NULL, 0);
+		uint32_t ccount = strtoul(argv[i + 2], NULL, 0);
+		/* The register WIDTH matters and is not guessable: a 64-bit ECC
+		 * entry written as one 32-bit register gets half an entry and
+		 * invalid ECC, which faults exactly like an uninitialised one. */
+		unsigned csize = (i + 3 < argc) ? (unsigned)strtoul(argv[i + 3], NULL, 0)
+						: FM_CRM_SIZE_32;
+		uint32_t cval = (i + 4 < argc) ? strtoul(argv[i + 4], NULL, 0) : 0;
+		uint32_t before, after;
+
+		if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			rc = 1;
+		} else {
+			printf("CRM memory set: 0x%06x for %u registers of %u bits, value 0x%x\n"
+			       "The whole point is the reset count below. A software\n"
+			       "fill of the policer regions moved it by 82.\n\n",
+			       cbase, ccount, 32u + csize * 32u, cval);
+			before = fm_fatal_count(&dev);
+			rv = fm_crm_memset(&dev, 0, cbase, ccount, csize, cval);
+			after = fm_fatal_count(&dev);
+			printf("  result                  %s\n",
+			       rv == FM_OK ? "completed" : rvstr(rv));
+			printf("  FATAL_COUNT             %u -> %u%s\n",
+			       before, after,
+			       after == before ? "   (unchanged -- the chip never reset)"
+					       : "   <-- the CRM hit the same wall");
+			printf("  chip                    %s\n",
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = (rv == FM_OK && after == before) ? 0 : 2;
 		}
 	} else if (strcmp(argv[i], "--fatal") == 0) {
 		struct fm_fatal f;

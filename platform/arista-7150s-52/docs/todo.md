@@ -553,8 +553,24 @@ hang rather than an error.
 - [x] **`WATCHDOG_CFG` bit 0 holds the chip rather than sparing it** — a
       diagnostic for reading `LAST_FATAL_CODE` cleanly, not a fix. The sweeper
       trigger's code is `0xa6`
-- [ ] **the chicken-and-egg to break: the sweepers storm because their tables
-      are uninitialised, and initialising the tables storms too.** Filling the
+- [x] **the CRM is the mechanism, and it works, 2026-09-28.** Table 4-1 step
+      12's other option. `datapath/fm6000/crm.c`, packing confirmed against the
+      SDK's own encoder. `STATS`, `L2L_MAC_TABLE` and `POLICER_CFG_4K` all fill
+      with **zero** self-resets where a software fill of the policer regions
+      cost 82. See
+      [hardware.md](hardware.md#the-crm-initialises-memory-in-hardware-and-we-were-only-doing-one-region)
+- [x] **we were initialising 1 memory region of 128.** The vendor CRM-initialises
+      128 named regions before anything else runs; step 12 here does `STATS`
+      alone, by hand, and with 0 rather than the `0xffffffff` the vendor uses
+- [ ] **three regions still fault even under the CRM**: `POLICER_STATE_4K`
+      `0x138000`, `MCAST_DEST_TABLE` `0x240000`, `MCAST_VLAN_TABLE` `0x260000`.
+      The pattern is that config banks initialise and *state* banks do not,
+      which points at those blocks needing to be enabled or clocked first
+- [ ] **run the full 128-region init, then arm the sweeper.** That is the real
+      test of whether this unblocks the scheduler. The region list and each
+      one's width are recoverable from the SDK's call sites; do not guess the
+      width, a half-written ECC entry faults exactly like an uninitialised one
+- [ ] the old software-fill chicken-and-egg, now mostly superseded: Filling the
       four policer regions took `FATAL_COUNT` from 8 to 90. Either find the
       order that works, or find what makes those regions safe to write first.
       Tables: `L2L_MAC_TABLE` `0x280000`, `L2L_MAC_TABLE_SWEEPER` `0x2c0000`,
