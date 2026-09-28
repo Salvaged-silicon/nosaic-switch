@@ -4732,3 +4732,45 @@ expects.
   nothing.
 - **BIST controller configuration and march** — now done, and it changes
   nothing.
+
+## Our ring init now matches the vendor's, and it still does not circulate
+
+The vendor's ring builder sits immediately before `fm6000ValidateSchedulerToken`
+in the SDK. Compared line for line with `ssched.c`:
+
+| step | vendor | us |
+|---|---|---|
+| ring tokens | `0x8060`, `0x8020` | same |
+| visit table | `0x8040+i` and `0x8000+i`, i = 0..19 | same |
+| slow-port mask | `0x8070+i`, **i = 0..4**, 16-bit values | **was one word** — fixed |
+| `INIT_COMPLETE` | `0x8061`, `0x8021` ← 1 | same |
+
+Two things came out of that comparison.
+
+**The slow-port mask was wrong.** `ssched.c` wrote one word and carried a
+comment claiming "the running switch writes only the first, and the other four
+are left as the boot leaves them". The vendor loops over all five, and each
+takes a *sixteen*-bit value — so this is one bit per scheduler port across 80
+bits, not a 32-bit mask in a single register, which matches the 76-port segment
+scheduler. Now written in full, with the upper four explicitly zero rather than
+left to whatever the boot put there.
+
+**Our circulation check is exactly the vendor's validation.**
+`fm6000ValidateSchedulerToken` writes `0x8062`, delays `0xc350` (50 ms), reads
+it back, and repeats for `0x8022` — the same registers and the same 50 ms our
+find-probe uses. So the probe is right and the ring genuinely is not advancing.
+
+Neither fix starts the ring.
+
+### The reframing that matters
+
+The SDK calls `ValidateSchedulerToken` **before** `MemoryInitCRM`. The vendor
+expects the ring to be circulating on a chip whose 129 memories have not been
+initialised yet.
+
+So the ring does not depend on the memories — which is exactly what we measured
+from the other direction when initialising 114 of them changed nothing. And it
+means the ring should come up very early, on a chip that has had little more
+than Table 4-1.
+
+Since the builder is now faithful, the difference is upstream of it.

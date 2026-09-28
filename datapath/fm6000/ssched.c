@@ -227,10 +227,29 @@ no_sweeper:
 
 	phase(d, rep, FM_SSCHED_PH_VISIT);
 
-	/* One slow-port mask, not five: the running switch writes only the
-	 * first, and the other four are left as the boot leaves them. */
-	if ((rv = fm_wr(d, FM6000_SSCHED_RX_SLOW_PORT(0), 0x0000000fu)) != FM_OK)
-		return rv;
+	/*
+	 * The slow-port mask, all five words.
+	 *
+	 * ⚠ THE COMMENT THAT USED TO BE HERE WAS WRONG. It said the running
+	 * switch writes only the first word and the other four are left as the
+	 * boot leaves them. The vendor writes all five, in a loop over i = 0..4,
+	 * and each takes a SIXTEEN-bit value -- so this is one bit per
+	 * scheduler port across 80 bits, not a 32-bit mask in one register.
+	 * That matches the 76-port segment scheduler with room to spare. [RE]
+	 *
+	 * Word 0 keeps the value measured from a running switch. The upper four
+	 * are written explicitly as zero rather than left alone: the vendor
+	 * computes all five from per-port state we do not have, and leaving a
+	 * register to whatever the boot left in it is how this port has been
+	 * bitten before. Zero is "no slow ports here", which is the right
+	 * default for a chassis whose front panel is uniform.
+	 */
+	for (i = 0; i < FM6000_SSCHED_SLOW_PORT_WORDS; i++) {
+		uint32_t mask = (i == 0) ? 0x0000000fu : 0u;
+
+		if ((rv = fm_wr(d, FM6000_SSCHED_RX_SLOW_PORT(i), mask)) != FM_OK)
+			return rv;
+	}
 
 	phase(d, rep, FM_SSCHED_PH_SLOW);
 

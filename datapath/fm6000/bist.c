@@ -33,6 +33,8 @@ static void nap_us(long us)
 #define R_SRBM_MARCH    0x01d708	/* 4 words */
 #define R_BM_IP         0x01d08c
 #define R_BM_STATUS     0x01d08e
+/* Bits BM_IP raises when the five BIST controllers are armed. [RE] */
+#define BM_IP_CONTROLLERS 0x000003e0u
 
 static int wrp(struct fm6000 *d, uint32_t w, uint32_t v, unsigned pace_us)
 {
@@ -224,7 +226,15 @@ int fm_bist_memory_init(struct fm6000 *d, unsigned pace_us,
 	{
 		uint32_t v = 0;
 
-		if (fm_rd(d, R_BM_IP, &v) == FM_OK && v != 0)
+		/* ⚠ Mask the five bits the controller configuration raises.
+		 * Measured: BM_IP reads 0 on a booted chip, and 0x3e0 --
+		 * exactly five bits -- once fm_bist_configure_controllers()
+		 * has run, which is exactly the number of controller
+		 * instances. Reading that as five defects is wrong, and it is
+		 * how this counter first reported a defect that was not there.
+		 * What the bits mean beyond "one per instance, set by arming
+		 * them" is inferred from the count and not established. */
+		if (fm_rd(d, R_BM_IP, &v) == FM_OK && (v & ~BM_IP_CONTROLLERS) != 0)
 			rep->defects++;
 		for (n = 0; n < 4; n++)
 			if (fm_rd(d, 0x1d21b + n * 0x80, &v) == FM_OK && v != 0)
@@ -302,8 +312,17 @@ int fm_bist_configure_controllers(struct fm6000 *d, unsigned *written)
 	for (i = 0; i < sizeof bist_inst / sizeof bist_inst[0]; i++)
 		WR(BIST_INST_START_SEQ(bist_inst[i].base), bist_inst[i].start_seq);
 
-	/* Finally clear the buffer manager's status and acknowledge its
-	 * interrupts, which is how the vendor closes the sequence. */
+	/* Finally clear the buffer manager's status and write what the vendor
+	 * writes to its interrupt-pending register.
+	 *
+	 * ⚠ That write does NOT acknowledge anything here: measured, BM_IP
+	 * reads 0 before this sequence and 0x3e0 after it, and writing 0x802
+	 * again leaves it at 0x3e0. The five bits it gains are one per
+	 * controller instance and appear to be the controllers signalling that
+	 * they are armed. The write is kept because it is what the vendor
+	 * does and removing a step from a recovered sequence because it looks
+	 * inert is how sequences get quietly broken -- but nothing here
+	 * depends on it having an effect. */
 	WR(R_BM_STATUS, 0);
 	WR(R_BM_IP, 0x802);
 #undef WR
