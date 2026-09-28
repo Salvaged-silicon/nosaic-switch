@@ -223,10 +223,31 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 		 */
 		rv = fm_rd(d, eb + FM6000_EPL_CFG_SLOT + FM6000_EPL_CFG_B_OFF, &b);
 		if (rv == FM_OK) {
+			/*
+			 * ⚠ THROUGH PCS_DISABLE, NOT STRAIGHT TO THE MODE.
+			 *
+			 * Datasheet §6.8.9, "Changing PCS Mode": the correct
+			 * method is to set PCS_DISABLE first and then the
+			 * desired mode. This used to be one read-modify-write
+			 * from whatever the selector held to 10GBASE-R, which
+			 * happens to start from disable on a freshly booted
+			 * chip and does not on a port being reconfigured --
+			 * so it worked exactly often enough not to be
+			 * noticed.
+			 *
+			 * Two writes, and the first one is not redundant.
+			 */
+			b &= ~(0xfu << (4 * p->lane));
+			b |= (uint32_t)FM6000_EPL_PCS_DISABLE << (4 * p->lane);
+			b |= 1u << 16;
+			rv = fm_wr(d, eb + FM6000_EPL_CFG_SLOT +
+				      FM6000_EPL_CFG_B_OFF, b);
+		}
+		if (rv == FM_OK) {
 			b &= ~(0xfu << (4 * p->lane));
 			b |= (uint32_t)FM6000_EPL_PCS_10GBASE_R << (4 * p->lane);
-			b |= 1u << 16;
-			rv = fm_wr(d, eb + FM6000_EPL_CFG_SLOT + FM6000_EPL_CFG_B_OFF, b);
+			rv = fm_wr(d, eb + FM6000_EPL_CFG_SLOT +
+				      FM6000_EPL_CFG_B_OFF, b);
 		}
 		if (rv == FM_OK)
 			rv = fm_rd(d, eb + FM6000_EPL_CFG_SLOT + FM6000_EPL_CFG_A_OFF, &a);

@@ -76,6 +76,27 @@
 /* A find is asynchronous: the engine has to reach the slot. */
 #define FM6000_SSCHED_FIND_US		50000
 
+/*
+ * The SerDes reference clock, datasheet §6.4 Table 6-7: one 156.25 MHz
+ * input per group of six EPLs.
+ *
+ *   ETH_REFCLK1  EPL  1  3  5  7  9 11
+ *   ETH_REFCLK2  EPL  2  4  6  8 10 12
+ *   ETH_REFCLK3  EPL 13 15 17 19 21 23
+ *   ETH_REFCLK4  EPL 14 16 18 20 22 24
+ *
+ * ⚠ EVERY PORT THIS PORT HAS EVER BROUGHT UP IS ON ETH_REFCLK4. Panels 1-8
+ * are EPL 14 and EPL 16, which share a reference clock, so "the receiver
+ * never locks" has only ever been observed on one of the four. That is a
+ * blind spot rather than a finding: a dead reference would look exactly
+ * like this. Bringing a port up on an EPL in another group is the cheap way
+ * to rule it out, and it needs a module moved to a cage on one.
+ */
+static inline unsigned fm6000_epl_refclk(unsigned epl)
+{
+	return ((epl - 1) % 2) + (epl >= 13 ? 3 : 1);
+}
+
 /* The scheduler's tick -- the clock the whole engine, and ESCHED, runs on. */
 #define FM6000_SSCHED_TICK_CFG		0x00f010
 #define FM6000_SSCHED_TICK_PERIOD	0x2
@@ -411,6 +432,41 @@
  * [UNKNOWN]
  */
 #define FM6000_EPL_CFG_B		0x0e3b02	/* EPL 14: the FIRST one */
+/*
+ * ⚠ TEN OF THE TWENTY-FOUR EPLs HAVE THEIR LANES REVERSED INSIDE THE
+ * PACKAGE. Datasheet §6.2.3, Table 6-2: for these, external lanes
+ * {A,B,C,D} reach internal channels {3,2,1,0} rather than {0,1,2,3}.
+ *
+ * Nothing in this tree depends on it yet, and that is exactly why it is
+ * written down. The only ports brought up so far are on EPL 14 and EPL 16,
+ * both of which are straight-through, so a lane index that ignored the
+ * reversal would work on every port tested and fail on the other
+ * forty-four -- as a port that configures cleanly and never links.
+ *
+ * ⚠ AND IT IS NOT YET KNOWN WHICH INDEX THE BOARD'S FDL GIVES US. The port
+ * table in serdes.c takes its lane from the FDL; whether that is the
+ * external lane or the internal channel cannot be told from EPL 14 and 16,
+ * where the two are the same. Settle it on the first port brought up on a
+ * reversed EPL, and use fm6000_epl_lane_reversed() to do the conversion --
+ * do not discover it by wondering why the port is dark.
+ */
+static inline int fm6000_epl_lane_reversed(unsigned epl)
+{
+	switch (epl) {
+	case 1: case 2: case 4: case 8: case 12:
+	case 13: case 17: case 20: case 22: case 24:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+/* The internal channel an external lane reaches on a given EPL. */
+static inline unsigned fm6000_epl_channel(unsigned epl, unsigned lane)
+{
+	return fm6000_epl_lane_reversed(epl) ? 3u - lane : lane;
+}
+
 #define FM6000_EPL_PCS_10GBASE_R		3
 #define FM6000_EPL_PCS_DISABLE			0
 #define FM6000_EPL_CFG_B_10GBASE_R	0x00090003	/* configured, forwarding */

@@ -3534,6 +3534,68 @@ an untouched register, so a block that discarded every write would have
 passed. A plain front-panel port's first word is `0x0010000f`, which nothing
 produces by accident.
 
+## What the datasheet says about the EPL, and what we were doing instead
+
+*2026-09-28, from Intel 331496-002 chapter 6.* Four findings, of which one
+was a bug we were shipping, two are latent bugs we would have hit on the
+next 44 ports, and one reframes the receiver problem.
+
+**§6.8.9 — a PCS mode change must go through `PCS_DISABLE`.** "The correct
+method is to first set to PCS_DISABLE and then change to the desired mode."
+`serdes.c` did it in one read-modify-write, straight from whatever the
+selector held to 10GBASE-R. That happens to start from disable on a freshly
+booted chip and does not on a port being reconfigured, so it worked exactly
+often enough not to be noticed. Now two writes, and the first is not
+redundant. **It did not fix the receiver** — as expected, since our test
+always started from a fresh boot.
+
+**§6.2.3 Table 6-2 — ten of the 24 EPLs have their lanes reversed inside the
+package.** For EPLs 1, 2, 4, 8, 12, 13, 17, 20, 22 and 24, external lanes
+{A,B,C,D} reach internal channels {3,2,1,0}. Every port we have ever brought
+up is on EPL 14 or EPL 16, both straight-through, so a lane index that
+ignores this works on everything tested and fails on the other forty-four —
+as a port that configures cleanly and never links. ⚠ It is also **not yet
+known which index the board's FDL gives us**, because on EPL 14 and 16 the
+two are identical. `fm6000_epl_lane_reversed()` and `fm6000_epl_channel()`
+hold the table; the first port brought up on a reversed EPL settles the
+question.
+
+**§6.4 Table 6-7 — one reference clock per six EPLs**, and ⚠ **every port
+this port has ever tested is on ETH_REFCLK4.** Panels 1–8 are EPL 14 and
+EPL 16, which are in the same group. "The receiver never locks" has only
+ever been observed on one of the four reference clocks, and a dead
+reference would look exactly like this. That is a blind spot, not a
+finding. Ruling it out needs a module in a cage on an EPL in another group.
+
+**§6.11 Table 6-15 — for 10GBASE-R the only *required* link condition is
+block lock.** SerDes Ready, SerDes Signal Detect and Idle Detection are all
+optional and software-selectable. This matters because the receiver has
+been diagnosed for weeks off "signal detect never asserts" — and signal
+detect is both optional as a link condition and, as this port already
+established, reads the same on a forwarding lane as on a dark one. The
+diagnosis rests on an indicator that carries no information.
+
+### What the datasheet did not settle
+
+The EPL register map is not in it, so the per-lane configuration still has
+to come from measurement. Comparing ours against a forwarding chip:
+
+| | ours | forwarding |
+|---|---|---|
+| `EPL_CFG_A` | `0x0c7d7899` | `0x7e1d7899` |
+| `EPL_CFG_B` | `0x00090003` | `0x00090033` |
+
+`CFG_B` is right — the difference is lane 1, which EOS had up and we do
+not. `CFG_A` differs in four upper bits, 25 and 28–30.
+
+⚠ **I set those four bits to see what would happen, and it made things
+worse**: `SerXmit` dropped, taking the transmitter down. That was
+bit-guessing on a register whose upper fields are undocumented, which is
+the thing this port's own rules forbid, and it is recorded here because the
+result is useful — those bits are not a simple "enable the receiver", and
+whatever they do reaches the transmitter. The chip was restored with a
+reset pulse and the port is back to `PORT_STATUS 0x815`.
+
 ## The GLORT assignment, settled 2026-09-28
 
 The forwarding path does not address ports by their physical number; it uses

@@ -590,11 +590,23 @@ has a reason, in code, parameterised by the board.
       required first; this rules out the cheap path.
 - [x] **port 1 transmits** -- `PORT_STATUS 0x815`, SerXmit set, under our own
       lane-enable in `datapath/fm6000/serdes.c`.
-- [ ] **the receiver.** Signal detect never asserts with -2.16 dBm arriving.
-      Ruled out: RX polarity, the threshold across its whole range, the EPL
-      config words, `EPL_CFG_A` at its forwarding value, the datapath enable.
-      `reg 20` reads `0x14` unchanged throughout, which points at the RX front
-      end not running rather than at a threshold being wrong.
+- [ ] **the receiver.** The lane never locks: `+0x38` stays `0x00000000`
+      against `0x940` on a lane that has, and `PORT_STATUS` is `0x815`
+      against a forwarding lane's `0x8c0` — SerXmit set, RxLinkUp and
+      HeartbeatOk clear. Ruled out: RX polarity, the threshold across its
+      whole range, the EPL config words, the datapath enable, the DFE, and
+      the PCS mode-change ordering of §6.8.9.
+      ⚠ **The old wording of this item said "signal detect never asserts"
+      and treated that as the fault. Drop that reasoning.** Datasheet
+      Table 6-15 makes SerDes Signal Detect an *optional* link condition —
+      only block lock is required for 10GBASE-R — and this port had already
+      found that `reg 20` bit 6 reads the same on a forwarding lane as on a
+      dark one. The indicator carries no information.
+      ⚠ **And every port ever tested is on ETH_REFCLK4** (Table 6-7: EPL 14
+      and 16 are in the same group of six). A dead reference clock would
+      look exactly like this and has never been excluded. Moving a module
+      to a cage on an EPL in another group is the cheap test, and it should
+      come before any more register work.
 - [x] **the DFE is implemented and is not the cause.** `fm_lane_dfe` drives
       the mailbox from the host with no SPICO firmware and it responds --
       `0x2b` moves -- but settles at `0x07`, not `0x03`. And equalisation
