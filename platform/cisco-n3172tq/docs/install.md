@@ -393,6 +393,14 @@ nothing it recognises to boot.
 The path through is the EDK2 UEFI Shell, which is already `Boot0002` and
 already active.
 
+An ESP on its own changes nothing. Confirmed on 2026-09-28: with a complete,
+mountable NOSaic ESP on `/dev/sda1` and the partition typed `0xEF`, an
+untouched power cycle still went down the vendor path — `CardIndex = 11091`,
+`Image valid` — and came up in NX-OS at its login prompt. The firmware boots
+what its boot order says, and finding `\EFI\BOOT\BOOTX64.EFI` does not move
+it up. That cuts both ways: writing the ESP is not the step that commits you,
+and step 5 is not optional.
+
 1. Reboot, catch the loader with **Ctrl-L**, and tell it to come up in the
    shell next time:
 
@@ -427,8 +435,11 @@ already active.
    fs0:\> startup.nsh
    ```
 
-   ⚠ Whether the shell finds `startup.nsh` by itself on this firmware has not
-   been confirmed. If it does not, the arrangement in step 5 is what you need.
+   The shell does auto-run it on this firmware — confirmed on the lab box on
+   2026-09-28, from an ESP written to `/dev/sda1` with nothing else on the
+   disk. The console showed `fs0` appear in `map`, then `NOSaic 0.1.0`,
+   `booting from fs0:`, and the EFI stub reporting `Loaded initrd from command
+   line option`. Booting by hand is still there if you want it.
 
 4. Confirm it boots. See [First boot](#first-boot).
 
@@ -604,6 +615,28 @@ partition is not typed as an EFI system partition — the installer verifies the
 FAT signature at the ESP offset and fails loudly if it is absent, so a clean
 install run rules the second out. Try `mount blk<n> fs0` to force it, and check
 `blk` device paths for `Pci(0x1D,0x0)/USB`.
+
+⚠ **If you built that ESP by hand on the switch, this is why.** BusyBox's
+`mkfs.vfat` makes **FAT32 only** — it accepts `-F 16` and ignores it, and its
+own `--help` says "Make a FAT32 filesystem". On a boot partition of this size
+the result is a FAT32 volume with fewer than the 65525 clusters FAT32 requires,
+which is out of spec, and EDK2's FAT driver declines to mount it: no `fs0`, and
+the shell never finds `startup.nsh`. It mounts fine under Linux, so the switch
+itself will tell you nothing is wrong.
+
+Tell them apart from the boot sector. FAT16 puts the type string at offset 54
+and leaves a non-zero root entry count at 17 and FAT size at 22; FAT32 zeroes
+both and puts its type string at 82:
+
+```
+# dd if=/dev/sda1 bs=1 skip=54 count=8 2>/dev/null; echo
+FAT16
+```
+
+The image builder does not have this problem — it runs `mkfs.fat -F 16` from
+dosfstools inside the build container and ships the finished `esp.vfat`, which
+the installer writes out whole. Nothing in the install path runs mkfs on the
+switch. This bites only hand-made test partitions.
 
 **The kernel starts and then nothing.** The most likely cause is no command
 line: you got here through a plain `Boot####` entry rather than through
