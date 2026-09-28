@@ -3665,6 +3665,32 @@ firmware in it; enabling a micro-controller with no code is not something to
 do because a working chip's register says so. Setting it by hand changes
 nothing on the receiver, which is the expected result and was checked.
 
+### Two more facts from the vendor material, and one dead end
+
+**There is a memory-mapped SerDes register path, with separate read and
+write windows.** The header defines `FM6000_SERDES_ETH_WRITE_BASE 0xB0500`
+and `FM6000_SERDES_ETH_READ_BASE 0xC0500`, each `0x10000` words. That is the
+clean explanation for the read/write asymmetry on this bus: they are
+genuinely different address spaces, not one register behaving oddly.
+
+⚠ It is not usable yet. Reading the obvious address for our lane —
+`0xC0500 + (index << 8) + reg`, and three other indexings — returns zero for
+every register, while the SBus path returns sensible values for the same
+lane. The chip stays up throughout. So the window exists, is documented, and
+something about reaching it is not understood. Not pursued further, because
+our SBus writes demonstrably work: `SerXmit` is the proof.
+
+**The SDK's own mapping chain**, from the vendor Python HAL, is
+`physical → (EPL, channel) → lane → serdes`:
+`fm6000PhysicalToEplChannel`, then `fm6000EplChannelToLane` — which is
+Table 6-2's reversal — then a search over `fm6000SerdesToEplLane`. The
+tables themselves are inside the SDK binary, so this gives the shape and not
+the numbers, but the shape confirms two things we had inferred: the lane
+reversal is part of the real addressing path and not a footnote, and
+serdes ↔ EPL is a permutation rather than arithmetic. EPL 14 lane 0 is
+serdes 68 — measured here, and stated outright in the golden dump's own
+header — where `(14-1)*4 + 0` would be 52.
+
 ### So what is actually missing, and it is not a mystery
 
 The lane bring-up is the SDK's 18-step `fm6000EnableSerDes`. The prior work
