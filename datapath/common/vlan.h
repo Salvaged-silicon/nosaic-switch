@@ -23,6 +23,9 @@ int nosaic_vlan_del(int vid, char *err, size_t errlen);
 int nosaic_vlan_port_set(const char *port, int vid, int tagged,
 			 char *err, size_t errlen);
 int nosaic_vlan_port_del(const char *port, int vid, char *err, size_t errlen);
+/* QinQ: a customer port of service VLAN svid; a port's outer tag ethertype. */
+int nosaic_vlan_tunnel(const char *port, int svid, char *err, size_t errlen);
+int nosaic_vlan_tpid(const char *port, int tpid, char *err, size_t errlen);
 int nosaic_svi_add(int vid, char *err, size_t errlen);
 int nosaic_svi_del(int vid, char *err, size_t errlen);
 

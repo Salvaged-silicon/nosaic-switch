@@ -308,6 +308,13 @@ static int handle_vlan(FILE *out, const char *req)
 		rv = nosaic_vlan_port_set(port, vid,
 					  strstr(req, "\"tagged\":true") != NULL,
 					  err, sizeof(err));
+	} else if (strcmp(op, "vlan.tunnel") == 0 || strcmp(op, "port.tpid") == 0) {
+		char nm[32];
+
+		req_str(req, "name", nm, sizeof(nm));
+		rv = strcmp(op, "vlan.tunnel") == 0
+			? nosaic_vlan_tunnel(nm, req_int(req, "svid", 0), err, sizeof(err))
+			: nosaic_vlan_tpid(nm, req_int(req, "tpid", 0), err, sizeof(err));
 	} else if (strcmp(op, "vlan.port.del") == 0) {
 		rv = nosaic_vlan_port_del(port, vid, err, sizeof(err));
 	} else if (strcmp(op, "svi.add") == 0) {
@@ -747,7 +754,7 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.12\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.13\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
@@ -755,7 +762,7 @@ static void handle(FILE *out, const char *req)
 			"\"ACL6\":%s,\"ACL6Entries\":%d,"
 			"\"LAGs\":%s,\"MaxLAGs\":%d,\"MaxLAGMembers\":%d,"
 			"\"LACP\":%s,\"STP\":%s,\"MLAG\":%s,\"VirtualGateway\":%s,"
-			"\"VirtualGateway6\":%s,\"MACAging\":true}}\n",
+			"\"VirtualGateway6\":%s,\"MACAging\":true,\"QinQ\":true}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
 			maxecmp > 1 ? "true" : "false", maxecmp,
 			acl.v4 ? "true" : "false", acl.v4_total,

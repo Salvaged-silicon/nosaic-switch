@@ -199,3 +199,17 @@ func ValidMACAging(s int) error {
 	}
 	return nil
 }
+
+// DefaultTPID is 802.1Q's tag ethertype.
+const DefaultTPID = 0x8100
+
+// ValidTPID checks an outer tag ethertype: 802.1Q's 0x8100, 802.1ad's 0x88a8,
+// or the pre-standard 0x9100 and 0x9200 some providers still use. 0 is the
+// default.
+func ValidTPID(t int) error {
+	switch t {
+	case 0, 0x8100, 0x88a8, 0x9100, 0x9200:
+		return nil
+	}
+	return fmt.Errorf("tpid 0x%04x: must be 0x8100, 0x88a8, 0x9100 or 0x9200", t)
+}

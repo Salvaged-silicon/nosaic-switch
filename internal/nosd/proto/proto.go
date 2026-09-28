@@ -116,6 +116,8 @@ const (
 	OpSetLAGOptions = "lag.options"
 	OpSetLACPPrio   = "lacp.priority"
 	OpSetMACAging   = "mac.aging.set"
+	OpSetPortTunnel = "vlan.tunnel"
+	OpSetPortTPID   = "port.tpid"
 	OpMACAging      = "mac.aging"
 	OpSetLAGMLAG    = "lag.mlag"
 	OpMLAG          = "mlag"
@@ -269,4 +271,16 @@ type ACLList struct {
 // MACAgingArgs sets, and reports, the MAC aging time in seconds.
 type MACAgingArgs struct {
 	Seconds int `json:"seconds"`
+}
+
+// PortTunnelArgs makes a port a customer port of service VLAN SVID.
+type PortTunnelArgs struct {
+	Name string `json:"name"`
+	SVID int    `json:"svid"`
+}
+
+// PortTPIDArgs sets a port's outer tag ethertype.
+type PortTPIDArgs struct {
+	Name string `json:"name"`
+	TPID int    `json:"tpid"`
 }

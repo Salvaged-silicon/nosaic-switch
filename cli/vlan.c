@@ -134,18 +134,35 @@ int nosaic_switchport_cmd(int argc, char **argv)
 {
 	static const char usage[] =
 		"usage: nosaic switchport <port> access <vid>\n"
-		"       nosaic switchport <port> trunk <vid,...> [native <vid>]\n"
+		"       nosaic switchport <port> trunk <vid,...> [native <vid>] [tpid <0x..>]\n"
+		"       nosaic switchport <port> tunnel <svid>\n"
 		"       nosaic switchport <port> none\n";
 	unsigned char want[MAX_VID], have[MAX_VID];
 	const char *port;
 	char req[256], *resp;
-	int vid, rc = 0;
+	int vid, rc = 0, tpid = -1;
 
 	if (argc < 4) {
 		fputs(usage, stderr);
 		return 2;
 	}
 	port = argv[2];
+	/* A QinQ customer port: one statement, one membership. */
+	if (strcmp(argv[3], "tunnel") == 0 && argc == 5) {
+		if ((vid = parse_vid(argv[4])) < 0)
+			return 2;
+		snprintf(req, sizeof(req), "{\"op\":\"vlan.tunnel\",\"args\":"
+			 "{\"name\":\"%s\",\"svid\":%d}}", port, vid);
+		return ask(req);
+	}
+	/* A trunk's outer TPID, if given: the last two words. */
+	if (strcmp(argv[3], "trunk") == 0) {
+		tpid = 0;
+		if (argc >= 7 && strcmp(argv[argc - 2], "tpid") == 0) {
+			tpid = (int)strtol(argv[argc - 1], NULL, 0);
+			argc -= 2;
+		}
+	}
 	memset(want, 0, sizeof(want));
 	if (strcmp(argv[3], "access") == 0 && argc == 5) {
 		if ((vid = parse_vid(argv[4])) < 0)
@@ -196,6 +213,12 @@ int nosaic_switchport_cmd(int argc, char **argv)
 			 want[vid] == 2 ? ",\"tagged\":true" : "");
 		rc |= ask(req);
 	}
+	/* The whole statement: a trunk line without a tpid is 0x8100 again. */
+	if (tpid >= 0) {
+		snprintf(req, sizeof(req), "{\"op\":\"port.tpid\",\"args\":"
+			 "{\"name\":\"%s\",\"tpid\":%d}}", port, tpid);
+		rc |= ask(req);
+	}
 	return rc;
 }
 
@@ -210,11 +233,11 @@ int nosaic_show_vlans(void)
 	for (v = resp; (v = strstr(v, "{\"VID\":")) != NULL; v++) {
 		const char *next = strstr(v + 1, "{\"VID\":");
 		const char *m = v;
-		char untagged[512] = "", tagged[512] = "";
+		char untagged[512] = "", tagged[512] = "", tunnel[512] = "";
 		int vid = atoi(v + 7);
 
 		if (!any)
-			printf("%-6s%-9s%-24s%s\n", "VLAN", "SVI", "UNTAGGED", "TAGGED");
+			printf("%-6s%-9s%-24s%-24s%s\n", "VLAN", "SVI", "UNTAGGED", "TAGGED", "TUNNEL");
 		any = 1;
 		while ((m = strstr(m, "{\"Port\":\"")) != NULL && (next == NULL || m < next)) {
 			char name[64];
@@ -225,12 +248,27 @@ int nosaic_show_vlans(void)
 			while (*q != '"' && *q != '\0' && n + 1 < sizeof(name))
 				name[n++] = *q++;
 			name[n] = '\0';
-			/* {"Port":"<name>","Tagged":true|false} -- q is at the
-			 * name's closing quote. */
-			dst = strncmp(q, "\",\"Tagged\":true", 15) == 0 ? tagged : untagged;
-			if (dst[0] != '\0')
-				strncat(dst, ",", 511 - strlen(dst));
-			strncat(dst, name, 511 - strlen(dst));
+			/* {"Port":"<name>","Tagged":true|false,"Tunnel":..,"TPID":n}
+			 * -- q is at the name's closing quote. */
+			{
+				const char *e = strchr(q, '}');
+				const char *tu = strstr(q, "\"Tunnel\":true");
+				const char *tp = strstr(q, "\"TPID\":");
+				int t = tp != NULL && (e == NULL || tp < e) ? atoi(tp + 7) : 0x8100;
+
+				dst = strncmp(q, "\",\"Tagged\":true", 15) == 0 ? tagged : untagged;
+				if (tu != NULL && (e == NULL || tu < e))
+					dst = tunnel;
+				if (dst[0] != '\0')
+					strncat(dst, ",", 511 - strlen(dst));
+				strncat(dst, name, 511 - strlen(dst));
+				if (dst != tunnel && t != 0x8100) {
+					char s[16];
+
+					snprintf(s, sizeof(s), "(0x%04x)", t);
+					strncat(dst, s, 511 - strlen(dst));
+				}
+			}
 			m++;
 		}
 		{
@@ -239,8 +277,9 @@ int nosaic_show_vlans(void)
 			if (strstr(v, "\"SVI\":true") != NULL &&
 			    (next == NULL || strstr(v, "\"SVI\":true") < next))
 				snprintf(svi, sizeof(svi), "vlan%d", vid);
-			printf("%-6d%-9s%-24s%s\n", vid, svi,
-			       untagged[0] ? untagged : "-", tagged[0] ? tagged : "-");
+			printf("%-6d%-9s%-24s%-24s%s\n", vid, svi,
+			       untagged[0] ? untagged : "-", tagged[0] ? tagged : "-",
+			       tunnel[0] ? tunnel : "-");
 		}
 	}
 	if (!any)

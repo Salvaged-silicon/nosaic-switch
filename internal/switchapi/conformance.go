@@ -73,6 +73,9 @@ func Check(sw Switch) []error {
 	}
 	probs = append(probs, checkSTP(sw, caps, p0)...)
 	probs = append(probs, checkMACAging(sw, caps)...)
+	if len(ports) > 1 {
+		probs = append(probs, checkQinQ(sw, caps, p0, ports[1].Name)...)
+	}
 	probs = append(probs, checkGateway(sw, caps)...)
 	probs = append(probs, checkL3(sw, caps, p0)...)
 
@@ -860,6 +863,66 @@ func checkMACAging(sw Switch, caps Capabilities) []error {
 	}
 	if err := sw.SetMACAging(5); err == nil {
 		bad("SetMACAging accepted 5 s, below 802.1D's 10")
+	}
+	return probs
+}
+
+// checkQinQ: a tunnel port and a provider TPID read back, a TPID that is not
+// one is refused, and DelPortVLAN ends a tunnel. Without the capability, a
+// tunnel is refused.
+func checkQinQ(sw Switch, caps Capabilities, p0, p1 string) []error {
+	if !caps.VLANs {
+		return nil
+	}
+	if err := sw.AddVLAN(303); err != nil {
+		return []error{fmt.Errorf("AddVLAN(303): %w", err)}
+	}
+	defer sw.DelVLAN(303)
+	err := sw.SetPortTunnel(p0, 303)
+	if probs := wantSupport(caps.QinQ, err, "SetPortTunnel", "Capabilities.QinQ"); len(probs) > 0 || !caps.QinQ {
+		return probs
+	}
+	var probs []error
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	defer sw.DelPortVLAN(p0, 303)
+	if err := sw.SetPortVLAN(p1, 303, true); err != nil {
+		return append(probs, fmt.Errorf("SetPortVLAN(%s, 303, tagged): %w", p1, err))
+	}
+	defer sw.DelPortVLAN(p1, 303)
+	if err := sw.SetPortTPID(p1, 0x88a8); err != nil {
+		bad("SetPortTPID(%s, 0x88a8): %v", p1, err)
+	}
+	defer sw.SetPortTPID(p1, 0)
+	if err := sw.SetPortTPID(p1, 0x1234); err == nil {
+		bad("SetPortTPID accepted 0x1234")
+	}
+	member := func(port string) (VLANMember, bool) {
+		vl, err := sw.VLANs()
+		if err != nil {
+			bad("VLANs: %v", err)
+		}
+		for _, v := range vl {
+			if v.VID != 303 {
+				continue
+			}
+			for _, m := range v.Members {
+				if m.Port == port {
+					return m, true
+				}
+			}
+		}
+		return VLANMember{}, false
+	}
+	if m, ok := member(p0); !ok || !m.Tunnel || m.Tagged {
+		bad("%s is not reported as a tunnel port of vlan 303: %+v", p0, m)
+	}
+	if m, ok := member(p1); !ok || m.TPID != 0x88a8 {
+		bad("%s reports tpid 0x%04x, set 0x88a8", p1, m.TPID)
+	}
+	if err := sw.DelPortVLAN(p0, 303); err != nil {
+		bad("DelPortVLAN(%s, 303): %v", p0, err)
+	} else if _, ok := member(p0); ok {
+		bad("%s is still in vlan 303 after DelPortVLAN", p0)
 	}
 	return probs
 }

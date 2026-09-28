@@ -147,6 +147,57 @@ states what should exist and never deletes. `nosaic vlan del`,
 to the addresses and routes they belong with. The two are different on
 purpose for now, and one of them should probably move.
 
+## QinQ (802.1ad)
+
+A provider bridge: a customer's traffic, tagged or not, carried across the
+network inside one service VLAN, with the customer's own VLANs untouched
+inside it. switchapi 1.13, `Capabilities.QinQ`.
+
+    nosaic vlan add 500
+    nosaic switchport et3 tunnel 500                # a customer port
+    nosaic switchport et52 trunk 500 tpid 0x88a8    # a provider trunk
+
+The same lines go in network.conf.
+
+- **`tunnel <svid>`** makes a port or LAG a customer port of service VLAN
+  `svid`, and that is its only membership. Every frame it receives, tagged or
+  untagged, gets `svid`'s tag on the outside, and its own tag, if any, rides
+  inside. Leaving by it, the outer tag comes off.
+- **`tpid`** on a trunk sets its outer tag's ethertype: 0x8100 (802.1Q, the
+  default), 0x88a8 (802.1ad), 0x9100 or 0x9200. A trunk line without one puts
+  it back to 0x8100, as does a port going back to routed.
+- `show vlans` lists tunnel ports in their own column, and a trunk's TPID
+  beside it when it is not 0x8100:
+
+      VLAN  SVI  UNTAGGED  TAGGED        TUNNEL
+      500   -    -         et52(0x88a8)  et3
+
+In the chip it is Broadcom's double-tag mode: a customer port is
+`DTAG_MODE_EXTERNAL`, which always adds the service VLAN's tag. The outer
+TPID is per port.
+
+Proven on 2026-09-28:
+- **Topology:** the 7050SX2 and the 7050TX-64 as the provider, S-VLAN 500
+  over their 40G link at 0x88a8.
+- **Customers:** the AS5610 and the Nexus 3172TQ, each a plain trunk with
+  tagged VLANs 10 and 20 and native VLAN 30.
+- **Traffic:** 20 of 20 pings on each tagged VLAN, and 10 of 10 on the
+  untagged one, across the provider.
+- **The outer tag on the wire:** with the two ends of the provider trunk set
+  to different TPIDs (0x88a8 against 0x8100), 0 of 10 got through. Matched,
+  at 0x8100, 0x9100 or 0x88a8, all of them did.
+- **The AS5610 (Trident+) as a provider too,** paired with the SX2 over
+  swp1-et3 at 0x88a8, with the TX and the Nexus as customers: 20 of 20 on
+  VLANs 10, 20 and native 30. A TPID mismatch on its trunk stopped traffic,
+  and a match at 0x9100 or 0x88a8 carried it.
+- ⚠ **Found and fixed:** a port set back to routed kept its provider TPID,
+  and its OSPF adjacency stayed down. Going back to routed now resets it,
+  re-tested on the SX2, the TX and the AS5610.
+- **The virtual board does not support QinQ.** It reports `QinQ: false`, and
+  `switchport ... tunnel` or a `tpid` is refused as unsupported. A Linux
+  bridge is 802.1Q or 802.1ad for all its ports at once, so it cannot hold
+  customer ports and 802.1Q trunks side by side the way a chip does.
+
 ## MAC aging
 
     nosaic mac aging 600        # in network.conf: mac aging 600
