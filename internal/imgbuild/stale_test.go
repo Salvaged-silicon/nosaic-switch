@@ -322,3 +322,34 @@ func TestARecordedRecipeStillChecksLocalSource(t *testing.T) {
 		t.Error("local source newer than the package did not stop the build")
 	}
 }
+
+// The Nexus 3172TQ's first flash install, exactly. A linux package built from
+// a url source, carrying no recorded digest, and a config fragment added to
+// its recipe directory six days later. The image shipped a kernel whose
+// modules.dep described modules it did not contain: i2c-devices exited 1, the
+// s6 database never came up, nosd never started, and the switch reached a
+// login prompt with no management address. The build said nothing, because a
+// url source used to skip the check outright.
+func TestADigestlessUpstreamPackageChecksItsRecipeDirectory(t *testing.T) {
+	o, refs, _ := staleFixture(t, false, upstream)
+
+	// The package is the old thing here; the fragment is what arrives later.
+	pkg := filepath.Join(o.PackageDir, "thing_1_x86_64.nos")
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(pkg, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := filepath.Join(o.Root, "recipes", "thing", "config")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "x86_64.fragment"),
+		[]byte("CONFIG_SENSORS_ADT7462=m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := reportStale(o, refs); err == nil {
+		t.Error("a config fragment added since the package was built did not stop the build")
+	}
+}

@@ -1484,28 +1484,44 @@ func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr err
 				continue
 			}
 		}
-		if rec.Source == nil || rec.Source.Local == "" {
-			continue
-		}
-
-		// A package that predates the digest is checked by the recipe's file
-		// time instead, as it always was.
+		// A package that predates the digest is checked by file time instead.
+		//
+		// ⚠ THE WHOLE RECIPE DIRECTORY, NOT JUST recipe.yml. A kernel's config
+		// fragments and a recipe's patches sit beside it and change what the
+		// package contains without recipe.yml being touched -- and the kernel
+		// is exactly where that bites, because a fragment is how a board asks
+		// for a driver.
+		//
+		// This is not hypothetical. The Nexus 3172TQ's first flash install
+		// shipped a linux package built six days before the fragment that
+		// added CONFIG_SENSORS_ADT7462=m. The image had the modules.dep of a
+		// kernel it did not contain: no adt7462, no pca953x, no pmbus. So
+		// i2c-devices exited 1, the s6 database never came up, nosd never
+		// started, no interface was ever created and the switch booted to a
+		// login prompt with no management address. Nothing in the build said
+		// a word, because the package recorded no digest and its source is a
+		// url -- which used to mean no check ran at all.
 		newest, name := time.Time{}, ""
 		if recorded == "" {
-			if fi, err := os.Stat(recPath); err == nil {
-				newest, name = fi.ModTime(), recPath
-			}
+			newest, name = newestSource(filepath.Dir(recPath), nil)
 		}
 
-		// Only the part of the tree this recipe actually compiles. nosd-td2p
-		// and nosd-tdp both declare `local: datapath` and differ by subdir:
-		// td2p builds td2p/ and common/, and never tdp/. Walking the whole
-		// tree marks this board's package stale when the other board's daemon
-		// is edited -- a warning that fires for something that cannot affect
-		// the binary is how a check gets ignored.
-		skip := others[rec.Source.Local][subdirOf(rec)]
-		if t, n := newestSource(filepath.Join(o.Root, rec.Source.Local), skip); t.After(newest) {
-			newest, name = t, n
+		// A url source has no tree of ours to walk. That is a reason to skip
+		// the source comparison below, and not a reason to skip the recipe
+		// comparison above -- which is what returning here unconditionally
+		// used to do.
+		if rec.Source != nil && rec.Source.Local != "" {
+			// Only the part of the tree this recipe actually compiles.
+			// nosd-td2p and nosd-tdp both declare `local: datapath` and differ
+			// by subdir: td2p builds td2p/ and common/, and never tdp/.
+			// Walking the whole tree marks this board's package stale when the
+			// other board's daemon is edited -- a warning that fires for
+			// something that cannot affect the binary is how a check gets
+			// ignored.
+			skip := others[rec.Source.Local][subdirOf(rec)]
+			if t, n := newestSource(filepath.Join(o.Root, rec.Source.Local), skip); t.After(newest) {
+				newest, name = t, n
+			}
 		}
 
 		if newest.IsZero() || !newest.After(pkg.ModTime()) {
