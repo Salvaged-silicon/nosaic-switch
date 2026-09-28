@@ -232,3 +232,84 @@ int fm_bist_memory_init(struct fm6000 *d, unsigned pace_us,
 	}
 	return FM_OK;
 }
+
+/*
+ * The per-memory BIST controllers.
+ *
+ * There are five controller instances at a stride of 0x80, each with an
+ * address ceiling and a sequence selector, and a set of chain instances at a
+ * stride of 0x20 carrying a general config and a latency. The layout is from
+ * the register map -- SPDP_BIST at 0x1d400 names +0x09 MAX_ADDR, +0x0b
+ * START_SEQUENCE, +0x40 CHAIN_GENERAL_CONFIG and +0x41 CHAIN_LATENCY, and the
+ * instances repeat that.
+ *
+ * The ceilings differ per instance because the memories differ in size, and
+ * the latencies differ because the chains differ in depth. Neither is
+ * derivable from anything we can see, so both are the vendor's numbers.
+ */
+#define BIST_INST_MAX_ADDR(b)	((b) + 0x09u)
+#define BIST_INST_START_SEQ(b)	((b) + 0x0bu)
+#define BIST_CHAIN_CFG(b)	(b)
+#define BIST_CHAIN_LATENCY(b)	((b) + 0x01u)
+
+static const struct { uint32_t base, max_addr, start_seq; } bist_inst[] = {
+	{ 0x01d400, 0x0fff, 0 },
+	{ 0x01d480, 0x7fff, 2 },
+	{ 0x01d500, 0x3fff, 2 },
+	{ 0x01d580, 0x0fff, 2 },
+	{ 0x01d600, 0x03ff, 0 },
+};
+
+static const struct { uint32_t base, latency; } bist_chain[] = {
+	{ 0x01d440, 0x4 }, { 0x01d4c0, 0x4 }, { 0x01d4e0, 0x4 }, { 0x01d540, 0x4 },
+	{ 0x01d5c0, 0x6 }, { 0x01d5e0, 0x6 }, { 0x01d640, 0xa }, { 0x01d660, 0xa },
+};
+
+/* The CDP chains take the general config and nothing else. */
+static const uint32_t bist_cdp_chain[] = {
+	0x01d241, 0x01d261, 0x01d281, 0x01d2a1, 0x01d2c1,
+};
+
+#define BIST_CHAIN_CFG_VALUE	0x4u
+
+int fm_bist_configure_controllers(struct fm6000 *d, unsigned *written)
+{
+	unsigned i, n = 0;
+	int rv;
+
+	if (d == NULL)
+		return FM_ERR;
+
+#define WR(a, v) do { rv = fm_wr(d, (a), (v)); if (rv != FM_OK) goto out; n++; } while (0)
+
+	/* Chain general configs first: the CDP chains, then the instance
+	 * general config the vendor sets alongside them, then the chains. */
+	for (i = 0; i < sizeof bist_cdp_chain / sizeof bist_cdp_chain[0]; i++)
+		WR(bist_cdp_chain[i], BIST_CHAIN_CFG_VALUE);
+	WR(0x01d604, BIST_CHAIN_CFG_VALUE);
+	for (i = 0; i < sizeof bist_chain / sizeof bist_chain[0]; i++)
+		WR(BIST_CHAIN_CFG(bist_chain[i].base), BIST_CHAIN_CFG_VALUE);
+
+	/* Then each instance's address ceiling. */
+	for (i = 0; i < sizeof bist_inst / sizeof bist_inst[0]; i++)
+		WR(BIST_INST_MAX_ADDR(bist_inst[i].base), bist_inst[i].max_addr);
+
+	/* Then the chain latencies. */
+	for (i = 0; i < sizeof bist_chain / sizeof bist_chain[0]; i++)
+		WR(BIST_CHAIN_LATENCY(bist_chain[i].base), bist_chain[i].latency);
+
+	/* Then the sequence selectors, which is what arms each controller. */
+	for (i = 0; i < sizeof bist_inst / sizeof bist_inst[0]; i++)
+		WR(BIST_INST_START_SEQ(bist_inst[i].base), bist_inst[i].start_seq);
+
+	/* Finally clear the buffer manager's status and acknowledge its
+	 * interrupts, which is how the vendor closes the sequence. */
+	WR(R_BM_STATUS, 0);
+	WR(R_BM_IP, 0x802);
+#undef WR
+
+out:
+	if (written != NULL)
+		*written = n;
+	return rv;
+}

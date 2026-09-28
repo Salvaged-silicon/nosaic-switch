@@ -56,6 +56,8 @@ static void usage(void)
 "  --bist [config]       configure the memory controllers and run the BIST\n"
 "                        march. 'config' stops after the controllers. WRITES,\n"
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
+"  --bist-cfg            configure the per-memory BIST controllers, which\n"
+"                        nothing in this port has ever done. WRITES.\n"
 "  --crm-batch FILE      run a whole memory-init list: one\n"
 "                        \"base count size value\" per line.\n"
 "  --crm BASE COUNT [SIZE [VAL]]\n"
@@ -715,6 +717,24 @@ int main(int argc, char **argv)
 			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			printf("\n%s\n", rv == FM_OK ? "ok" : rvstr(rv));
 			rc = rv == FM_OK ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--bist-cfg") == 0) {
+		unsigned n = 0;
+		uint32_t before, after;
+
+		if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			rc = 1;
+		} else {
+			before = fm_fatal_count(&dev);
+			rv = fm_bist_configure_controllers(&dev, &n);
+			after = fm_fatal_count(&dev);
+			printf("  BIST controllers        %u writes, %s\n", n,
+			       rv == FM_OK ? "ok" : rvstr(rv));
+			printf("  FATAL_COUNT             %u -> %u\n", before, after);
+			printf("  chip                    %s\n",
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = (rv == FM_OK && after == before) ? 0 : 2;
 		}
 	} else if (strcmp(argv[i], "--crm-batch") == 0 && i + 1 < argc) {
 		/* Each line is "base count size value". The list of regions is a

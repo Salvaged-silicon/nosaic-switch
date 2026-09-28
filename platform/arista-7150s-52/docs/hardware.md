@@ -4688,3 +4688,47 @@ hundred and fourteen others accept one? Every remaining symptom — the ring not
 circulating, the sweeper storming, `ESCHED` unreadable, `CM_ESCHED_STATE` at
 zero — hangs off that. It is a much smaller and much better-posed question than
 the one this started with.
+
+## The BIST controllers were never configured — and it still is not the answer
+
+`fm6000BistMemoryInit` in the SDK sets up **fourteen** BIST controllers. This
+port drove **two**: `BM_MARCH` and `SRBM_MARCH`.
+
+Measured on a chip that had completed Table 4-1 end to end, all five controller
+instances (`0x1d400` at stride `0x80`) read `MAX_ADDR` 0, `START_SEQUENCE` 0
+and `CHAIN_GENERAL_CONFIG` 0. The documented boot does not configure them and
+neither did we.
+
+The structure, from the register map's `SPDP_BIST` naming repeated per
+instance: `+0x09` `MAX_ADDR`, `+0x0b` `START_SEQUENCE`, `+0x40`
+`CHAIN_GENERAL_CONFIG`, `+0x41` `CHAIN_LATENCY`. Five instances with address
+ceilings `0xfff`, `0x7fff`, `0x3fff`, `0xfff`, `0x3ff` and sequence selectors
+`0`, `2`, `2`, `2`, `0`; eight chain instances at stride `0x20` with latencies
+`4`,`4`,`4`,`4`,`6`,`6`,`0xa`,`0xa`; five CDP chains taking the general config
+only. `fm_bist_configure_controllers()` does it, 34 writes.
+
+**It is a real missing step and it is safe**: 34 writes, `FATAL_COUNT`
+unchanged, chip answering. The march then completes in 29 ms.
+
+**It does not unlock the fifteen.** `POLICER_STATE_4K` still hard-resets the
+chip under a CRM walk after both the controller configuration and the march.
+So a missing BIST setup is not why those memories are unreachable — though the
+configuration is worth keeping regardless, since running a march on
+unconfigured controllers was never right.
+
+One loose end: the march reports **one** result register set where zero is
+wanted. A real defect, or a controller still not configured the way this part
+expects.
+
+### Hypotheses eliminated for the fifteen
+
+- **`SOFT_RESET`** — all five bits are named and boot leaves it at 0.
+- **Freelist sizing** — the BM block is populated after Table 4-1
+  (`BM_TXQ_HS_SEGMENTS` `0x3ff7`, `BM_RXQ_PAGES` `0x3fe`, `BM_MODEL_INFO`
+  `0x002abff7`), which is exactly what the vendor's `fm6000FreelistPointerInit`
+  writes.
+- **Freelists reading empty** — a misreading; those are write-side ports.
+- **Memory-init order** — 114 regions initialise cleanly first and it changes
+  nothing.
+- **BIST controller configuration and march** — now done, and it changes
+  nothing.

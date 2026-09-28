@@ -58,3 +58,26 @@ int fm_bist_configure_only(struct fm6000 *d, unsigned pace_us,
 			   struct fm_bist_report *rep);
 
 #endif /* NOSAIC_FM6000_BIST_H */
+
+/*
+ * Configure the per-memory BIST controllers.
+ *
+ * ⚠ NOTHING IN THIS PORT HAS EVER DONE THIS. Measured 2026-09-28 on a chip
+ * that had completed Table 4-1 end to end: all five BIST instances read
+ * MAX_ADDR 0, START_SEQUENCE 0 and CHAIN_GENERAL_CONFIG 0. The documented boot
+ * does not configure them and neither did we -- bist.c drove exactly two
+ * controllers, BM_MARCH and SRBM_MARCH, out of the fourteen the vendor sets up.
+ *
+ * WHY IT MATTERS. Fifteen egress-path memories reject even a hardware CRM
+ * walk, and a memory whose BIST controller has never been configured has never
+ * had its RAM written, so its ECC is meaningless. That is the shape of the
+ * remaining problem, and this is the missing step that best fits it.
+ *
+ * The register names are [RE] from the map; the values are the vendor's, and
+ * they are configuration for a documented block rather than captured state --
+ * five address ceilings, eight chain latencies and five sequence selectors.
+ *
+ * Returns FM_OK if every write landed. Check FATAL_COUNT across it like
+ * anything else on this chip.
+ */
+int fm_bist_configure_controllers(struct fm6000 *d, unsigned *written);
