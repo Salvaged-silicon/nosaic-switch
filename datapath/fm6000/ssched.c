@@ -118,6 +118,12 @@ static void ring_slot(uint32_t *visit, unsigned port)
 	visit[port / 4] |= (uint32_t)port << (8 * (port % 4));
 }
 
+/* Same table, but the byte for `port` names the port served after it. */
+static void ring_next(uint32_t *visit, unsigned port, unsigned next)
+{
+	visit[port / 4] |= ((uint32_t)next & 0xffu) << (8 * (port % 4));
+}
+
 static const char *phase_names[FM_SSCHED_PH__COUNT] = {
 	[FM_SSCHED_PH_TICK]    = "tick",
 	[FM_SSCHED_PH_SWEEPER] = "sweeper config",
@@ -166,9 +172,26 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 
 	for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++)
 		visit[i] = 0;
-	for (i = 0; i <= 3; i++)
-		ring_slot(visit, i);
-	ring_slot(visit, SSCHED_MGMT_PORT);
+	if (flags & FM_SSCHED_NEXT_CHAIN) {
+		/* Each enrolled port points at the next in service order, and
+		 * the last wraps to the first: a closed cycle. The management
+		 * port is spliced in at the end so it is served once per lap
+		 * rather than left pointing nowhere. */
+		unsigned n = sizeof ssched_ring;
+
+		for (i = 0; i < n; i++) {
+			unsigned here = ssched_ring[i];
+			unsigned next = (i + 1 == n) ? SSCHED_MGMT_PORT
+						     : ssched_ring[i + 1];
+
+			ring_next(visit, here, next);
+		}
+		ring_next(visit, SSCHED_MGMT_PORT, ssched_ring[0]);
+	} else {
+		for (i = 0; i <= 3; i++)
+			ring_slot(visit, i);
+		ring_slot(visit, SSCHED_MGMT_PORT);
+	}
 
 	/*
 	 * The tick first: it is the clock the whole engine runs on, and every

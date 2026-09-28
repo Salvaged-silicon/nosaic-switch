@@ -1063,6 +1063,8 @@ sweep_done:
 			flags |= FM_SSCHED_SYNC_MGMT;
 		if (i + 1 < argc && strcmp(argv[i + 1], "nosweep") == 0)
 			flags |= FM_SSCHED_NO_SWEEPER;
+		if (i + 1 < argc && strcmp(argv[i + 1], "chain") == 0)
+			flags |= FM_SSCHED_NEXT_CHAIN;
 		rv = fm_ssched_ring_init(&dev, flags, &circ, &srep);
 		printf("scheduler ring: %s\n", rv == FM_OK ? "initialised" : rvstr(rv));
 		printf("  circulation: %s\n", circ

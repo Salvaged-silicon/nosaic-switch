@@ -5048,3 +5048,36 @@ the RX path never reads.
 token has bit 10 clear, so here the two coincide and it is not wrong — but it
 is an assumption the code was making silently, and it holds only while that
 field is zero. Now commented.
+
+## The visit table read two ways, and neither starts the ring
+
+The registers are named `SSCHED_{RX,TX}_NEXT_PORT`, and the table is 20 words
+= 80 bytes, one per port. "Next port" invites reading an entry as *the port
+served after this one*, which would make the enrolled ports a closed cycle.
+
+What `ssched.c` has always written is `entry[p] = p`, for five ports only —
+every enrolled port pointing at itself. Under the next-pointer reading that is
+64 tokens in a ring whose every pointer is a self-loop, which is exactly what
+"programs cleanly, reports no error, never advances" would look like.
+
+So it was implemented as a cycle behind `FM_SSCHED_NEXT_CHAIN`
+(`--ssched chain`) and tested. The table lands correctly — read back,
+`byte[0]=21`, `byte[1]=22`, `byte[2]=68`, `byte[3]=23`, exactly the ring's
+service order. **The ring still does not circulate.**
+
+Both flag and original are kept, because the semantics remain ambiguous and
+having both implemented and measured is worth more than deleting the loser.
+
+### The find-probe is not lying
+
+Worth checking before trusting years of "not advancing" readings. The vendor's
+`fm6000ValidateSchedulerToken`:
+
+- writes `port & 0x7f` to `0x8062`, delays `0xc350`, reads it back, tests
+  **bit 21** (`shr $0x15; and $1`)
+- writes `port & 0x7f` to `0x8022`, delays, reads back, tests **bit 30**
+  (`shr $0x1e; and $1`)
+
+`FM6000_SSCHED_RX_FOUND` is bit 21 and `TX_FOUND` is bit 30 in `regs.h`. Same
+registers, same delay, same bits. The probe is a faithful copy and the ring
+genuinely is not advancing.

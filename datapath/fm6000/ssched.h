@@ -52,6 +52,30 @@ struct fm6000;
 #define FM_SSCHED_NO_SWEEPER	(1u << 1)
 
 /*
+ * Build the visit table as a CYCLE over the ring rather than as self-pointers.
+ *
+ * The registers are named NEXT_PORT, and the table is 80 bytes indexed by
+ * port. Read that way an entry says which port the engine serves after this
+ * one, and the enrolled ports should form a closed cycle in service order.
+ *
+ * What this file has always written instead is entry[p] = p, for five ports
+ * only -- every enrolled port pointing at itself. If the name means what it
+ * says, that is 64 tokens in a ring whose every next-pointer is a self-loop,
+ * which would look exactly like what we see: a ring that programs cleanly,
+ * reports no error, and never advances to the port the find-probe asks for.
+ *
+ * ⚠ TESTED 2026-09-28 AND IT IS NOT THE ANSWER. The cycle builds correctly --
+ * read back, byte[0]=21, byte[1]=22, byte[2]=68, byte[3]=23, exactly the ring
+ * order -- and the ring still does not circulate. Neither reading of this
+ * table starts it.
+ *
+ * The flag stays because the semantics of NEXT_PORT are genuinely ambiguous
+ * and both interpretations are now implemented and measured, which is worth
+ * more than one of them being quietly deleted. Default is the original.
+ */
+#define FM_SSCHED_NEXT_CHAIN	(1u << 2)
+
+/*
  * Where the ring init was when the chip reset itself.
  *
  * ⚠ THIS IS THE POINT OF THE REPORT, not a nicety. Measured on this board: a
