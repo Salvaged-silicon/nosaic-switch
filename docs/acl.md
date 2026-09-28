@@ -140,6 +140,20 @@ And the day after, for IPv6 and for L4 ports:
 - `deny ipv4 src 2001:db8::/32` and `deny ipv6 src 10.0.0.0/8` were refused,
   each naming the prefix and the family it does not belong to.
 
+On the Trident2, 2026-09-27, the third Broadcom chip:
+
+- The 7050TX-64 reports 2560 IPv4 and 1024 IPv6 rules. On a single-wide IPv4
+  group and a double-wide IPv6 one, that is the chip's own choice, as on
+  the others.
+- `deny in et32 proto icmp src <neighbour>` took 10 of 10 of the Nexus's pings
+  and counted 10; a permit above it let 10 of 10 through, counted on the
+  permit.
+- `deny in et32 proto ospf` took the adjacency to the Nexus down and left the
+  other four Full. `deny in et52 ipv6 proto ospf` took the OSPFv3 adjacency to
+  the AS5610 down, counting 4 and 5 hellos. Both came back when removed.
+- On the Nexus 3172TQ, the same chip on another vendor's board, a deny on
+  eth1_32 blocked and counted 10 of 10, and removing it let them through.
+
 ## The contract, and where each piece is
 
 Access lists are part of `switch-api`, contract 1.1: three methods on the

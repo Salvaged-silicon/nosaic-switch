@@ -100,11 +100,6 @@ phybus.o: phybus.c phybus.h ../scdmdio/scdmdio.h
 ../common/rstp.o: ../common/rstp.c ../common/rstp.h ../common/lag.h ../common/tapbridge.h
 ../common/lag.o: ../common/lag.c ../common/lag.h ../common/vlan.h ../common/tapbridge.h ../common/l3sync.h
 ../common/l3sync.o: ../common/l3sync.c ../common/l3sync.h ../common/props.h
-# Linked, not called. query.c is shared by every datapath and asks the access
-# list module for its capability unconditionally, so a datapath that does not
-# link acl.o does not link at all. Starting it is a separate step and is not
-# done here: see feature/acl-td2, which adds the calls and has never run on
-# this chip.
 ../common/acl.o: ../common/acl.c ../common/acl.h ../common/props.h ../common/tapbridge.h
 ../common/props.o: ../common/props.c ../common/props.h
 
