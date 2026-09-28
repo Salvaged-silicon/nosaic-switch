@@ -4577,3 +4577,54 @@ a software fill died at `0x240036` and `0x260014`. They are
 `FM6000_MCAST_DEST_TABLE` and `FM6000_MCAST_VLAN_TABLE`, and both are in the
 vendor's CRM initialisation list. The fill died because a software fill is the
 wrong mechanism for them, not because they are not memories.
+
+## Running the vendor's whole memory init
+
+`fm6000-probe --crm-batch FILE` runs a list of `base count size value` lines.
+The list is a **runtime input, not part of NOSaic** — it is chip geometry
+recovered for bring-up, and the tree does not carry it. Recover it from the
+SDK's `MemoryInitCRM` (`api/fm6000/fm6000_api_init.c`, entry `0x3be713` in
+EOS 4.16.8M's `libFocalpointSDK.so`), which is the only caller of the CRM
+memory-set wrapper and issues exactly 129 of them:
+
+```sh
+objdump -d libFocalpointSDK.so | awk '
+/movl +\$0x[0-9a-f]+,0x[0-9a-f]+\(%esp\)/ {
+  match($0,/\$0x[0-9a-f]+/); v=substr($0,RSTART+1,RLENGTH-1)
+  match($0,/,0x[0-9a-f]+\(%esp\)/); o=substr($0,RSTART+1,RLENGTH-7); a[o]=v; next }
+/call.*<fm6000CrmSetMemoryExt@plt>/ {
+  printf "0x%06x %d %d %s\n", strtonum(a["0x4"]), strtonum(a["0x10"]),
+                              strtonum(a["0xc"])-1, a["0x8"]; delete a }'
+```
+
+The arguments are `(sw, base, value, words, count, ...)`, and the CRM `Size`
+field is `words - 1` — 1, 2, 3, 4 words per entry mapping to 32, 64, 96 and
+128-bit registers.
+
+### What it achieves
+
+About a hundred of the 129 regions initialise with **zero** self-resets. The
+rest hard-reset the chip, and the batch stops at the first one because the chip
+does not come back on its own — so a run reports the first failure, not all of
+them. Re-running with that region excluded simply finds the next.
+
+Confirmed region-specific rather than positional: `MOD_L2_VLAN1_TX_TAGGED`
+`0x150000` and `MOD_CAM` `0x158000` fail on their own from a fresh boot, while
+`FFU_SLICE_CAM` `0x380000` — later in the list — is clean.
+
+Known failures so far: `POLICER_STATE_4K` `0x138000`, `POLICER_STATE_1K`
+`0x13c000`, `CM_QUEUE_STATE_INIT` `0x118800`, `MCAST_DEST_TABLE` `0x240000`,
+`MCAST_VLAN_TABLE` `0x260000`, `ESCHED_DRR_DC_INIT` `0x003c00`,
+`MOD_L2_VLAN1_TX_TAGGED` `0x150000`, `MOD_CAM` `0x158000`.
+
+`ESCHED_DRR_DC_INIT` is the chicken-and-egg we already know about: the egress
+scheduler is unreachable until the ring circulates, and the ring is what we are
+trying to start.
+
+### The ordering question, answered
+
+The SDK calls `MemoryInitCRM` once, from its top-level init, **before**
+`fm6000InitRegisterCache`. The two register writes immediately preceding it are
+`FC_MRL_RATE_LIMITER` `0x28022` and `FC_MRL_FC_TOKEN_LIMIT` `0x28020`. So the
+memory init comes early and the sweepers are armed over already-initialised
+tables — which is the opposite of the order this port has been using.

@@ -56,6 +56,8 @@ static void usage(void)
 "  --bist [config]       configure the memory controllers and run the BIST\n"
 "                        march. 'config' stops after the controllers. WRITES,\n"
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
+"  --crm-batch FILE      run a whole memory-init list: one\n"
+"                        \"base count size value\" per line.\n"
 "  --crm BASE COUNT [SIZE [VAL]]\n"
 "                        initialise a memory block with the CRM, in\n"
 "                        hardware, the way Table 4-1 step 12 says to --\n"
@@ -713,6 +715,54 @@ int main(int argc, char **argv)
 			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			printf("\n%s\n", rv == FM_OK ? "ok" : rvstr(rv));
 			rc = rv == FM_OK ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--crm-batch") == 0 && i + 1 < argc) {
+		/* Each line is "base count size value". The list of regions is a
+		 * runtime input, not part of NOSaic: it is chip geometry recovered
+		 * for bring-up experiments, and the tree does not carry it. */
+		FILE *bf = fopen(argv[i + 1], "r");
+		char line[160];
+		unsigned done = 0, failed = 0;
+		uint32_t before, after;
+
+		if (bf == NULL) {
+			printf("cannot open %s\n", argv[i + 1]);
+			rc = 1;
+		} else if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			fclose(bf);
+			rc = 1;
+		} else {
+			before = fm_fatal_count(&dev);
+			while (fgets(line, sizeof line, bf) != NULL) {
+				uint32_t bb, cc, vv;
+				unsigned ss;
+				uint32_t f0, f1;
+
+				if (sscanf(line, "%x %u %u %x", &bb, &cc, &ss, &vv) != 4)
+					continue;
+				f0 = fm_fatal_count(&dev);
+				rv = fm_crm_memset(&dev, 0, bb, cc, ss, vv);
+				f1 = fm_fatal_count(&dev);
+				if (rv == FM_OK && f1 == f0) {
+					done++;
+				} else {
+					failed++;
+					printf("  0x%06x x%-6u size %u  %s%s\n",
+					       bb, cc, ss, rvstr(rv),
+					       f1 == f0 ? "" : "  RESET THE CHIP");
+				}
+				if (fm_alive(&dev) != 1)
+					break;
+			}
+			fclose(bf);
+			after = fm_fatal_count(&dev);
+			printf("\n  regions initialised     %u\n", done);
+			printf("  regions that failed     %u\n", failed);
+			printf("  FATAL_COUNT             %u -> %u\n", before, after);
+			printf("  chip                    %s\n",
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = failed ? 2 : 0;
 		}
 	} else if (strcmp(argv[i], "--crm") == 0 && i + 2 < argc) {
 		uint32_t cbase = strtoul(argv[i + 1], NULL, 0);
