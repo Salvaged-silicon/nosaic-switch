@@ -35,9 +35,25 @@
 #include "portmap.h"
 #include "regs.h"
 
-#define ESCHED_CFG_1(p) (0x002000u + (unsigned)(p))
-#define ESCHED_CFG_2(p) (0x002080u + (unsigned)(p))
+/*
+ * The block is eight instances of the same four arrays, 0x200 apart, each
+ * array holding one word per physical port.
+ *
+ * Array 2 is left at zero -- a forwarding chip has it zero in all eight
+ * instances, and our earlier prior-art tool wrote it as an explicit zero.
+ * Arrays 0, 1 and 3 are filled.
+ */
+#define ESCHED_INSTANCES	8u
+#define ESCHED_INSTANCE_STRIDE	0x200u
+#define ESCHED_ARRAY_STRIDE	0x080u
+#define ESCHED_PORTS		128u
+#define ESCHED_CFG(inst, arr, p)					\
+	(0x002000u + (inst) * ESCHED_INSTANCE_STRIDE +			\
+	 (arr) * ESCHED_ARRAY_STRIDE + (unsigned)(p))
+
+/* The round-robin word is one array, and it covers the switch ports only. */
 #define ESCHED_DRR(p)   (0x003800u + (unsigned)(p))
+#define ESCHED_DRR_PORTS	76u
 
 /* Strict priority on all twelve classes, all twelve enabled. */
 #define ESCHED_ALL_TC       0x00ffffffu
@@ -93,9 +109,26 @@ static int esched_wr(struct fm6000 *d, uint32_t word, uint32_t val,
 	return FM_OK;
 }
 
+/* Which arrays of an instance carry values. */
+static const unsigned esched_arrays[] = { 0, 1, 3 };
+
+/*
+ * A port's configuration word.
+ *
+ * Every port is strict on all twelve traffic classes with all twelve
+ * enabled, except the host port, which is strict on a subset -- and its
+ * second array differs from its other two.
+ */
+static uint32_t esched_cfg_value(unsigned arr, unsigned port)
+{
+	if (port != ESCHED_CPU_PORT)
+		return ESCHED_ALL_TC;
+	return arr == 1 ? ESCHED_CPU_CFG_2 : ESCHED_CPU_CFG_1;
+}
+
 int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
 {
-	unsigned port[FM6000_FRONT_PORTS], np = 0, i, n = 0;
+	unsigned inst, ai, port, n = 0;
 	uint32_t dead = 0;
 	int rv;
 
@@ -107,59 +140,55 @@ int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
 		*culprit = 0;
 
 	/*
-	 * By physical port, ascending.
+	 * The configuration arrays, every instance, every port.
 	 *
-	 * The front-panel map is not monotonic -- panel port 1 is physical 40
-	 * and panel port 2 is physical 20 -- so iterating the panel would
-	 * write the same addresses in a different order, and this is a block
-	 * where that is not a free choice.
+	 * ⚠ THE HOST PORT IS WRITTEN LAST IN EACH ARRAY, not first. That is the
+	 * order the running switch uses and this block is one where sequences
+	 * have already proved to matter, so it is not tidied away.
 	 */
-	for (i = 1; i <= FM6000_FRONT_PORTS; i++) {
-		unsigned p = fm6000_alta_of[i], j = np++;
+	for (inst = 0; inst < ESCHED_INSTANCES; inst++) {
+		for (ai = 0; ai < sizeof esched_arrays / sizeof esched_arrays[0]; ai++) {
+			unsigned arr = esched_arrays[ai];
 
-		while (j > 0 && port[j - 1] > p) {
-			port[j] = port[j - 1];
-			j--;
+			for (port = 1; port < ESCHED_PORTS; port++)
+				if ((rv = WR(ESCHED_CFG(inst, arr, port),
+					     esched_cfg_value(arr, port))) != FM_OK)
+					return esched_fail(rv, n, dead, written, culprit);
+			if ((rv = WR(ESCHED_CFG(inst, arr, ESCHED_CPU_PORT),
+				     esched_cfg_value(arr, ESCHED_CPU_PORT))) != FM_OK)
+				return esched_fail(rv, n, dead, written, culprit);
 		}
-		port[j] = p;
 	}
 
-	/* Both configuration words across every front-panel port, in turn. */
-	for (i = 0; i < np; i++)
-		if ((rv = WR(ESCHED_CFG_1(port[i]), ESCHED_ALL_TC)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-	for (i = 0; i < np; i++)
-		if ((rv = WR(ESCHED_CFG_2(port[i]), ESCHED_ALL_TC)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-
-	/* Then the CPU port, which is the only one that is not ALL_TC. */
-	if ((rv = WR(ESCHED_CFG_1(ESCHED_CPU_PORT), ESCHED_CPU_CFG_1)) != FM_OK)
-		return esched_fail(rv, n, dead, written, culprit);
-	if ((rv = WR(ESCHED_CFG_2(ESCHED_CPU_PORT), ESCHED_CPU_CFG_2)) != FM_OK)
-		return esched_fail(rv, n, dead, written, culprit);
-
 	/*
-	 * The round-robin word, every port twice: once with the inter-frame-gap
-	 * penalty and once with it cleared.
+	 * The round-robin word, every switch port twice: once with the
+	 * inter-frame-gap penalty and once with it cleared.
 	 *
 	 * ⚠ THE TWO PASSES ARE WHOLE-CHIP, NOT PER-PORT. Every port is given
 	 * the penalty before any port has it taken away. Writing each port's
-	 * pair back to back touches the same 53 addresses with the same two
+	 * pair back to back touches the same addresses with the same two
 	 * values and is not the same thing: the intermediate state the
 	 * scheduler latches against is "all ports penalised", and it never
 	 * exists if the passes are interleaved.
+	 *
+	 * ⚠ AND THE INTERNAL PORTS KEEP THE PENALTY. A forwarding chip has
+	 * exactly two of its seventy-six round-robin words still at the
+	 * penalised value, and they are physical ports 1 and 3 -- the two
+	 * ports with no cage. That is not leftover state from bring-up: it is
+	 * the same two ports the store-and-forward table singles out, arrived
+	 * at from a different direction, and settling them would be
+	 * configuring the switch differently from one that works.
 	 */
-	if ((rv = WR(ESCHED_DRR(ESCHED_CPU_PORT), ESCHED_DRR_PENALTY)) != FM_OK)
-		return esched_fail(rv, n, dead, written, culprit);
-	for (i = 0; i < np; i++)
-		if ((rv = WR(ESCHED_DRR(port[i]), ESCHED_DRR_PENALTY)) != FM_OK)
+	for (port = 0; port < ESCHED_DRR_PORTS; port++)
+		if ((rv = WR(ESCHED_DRR(port), ESCHED_DRR_PENALTY)) != FM_OK)
 			return esched_fail(rv, n, dead, written, culprit);
 
-	if ((rv = WR(ESCHED_DRR(ESCHED_CPU_PORT), ESCHED_DRR_SETTLED)) != FM_OK)
-		return esched_fail(rv, n, dead, written, culprit);
-	for (i = 0; i < np; i++)
-		if ((rv = WR(ESCHED_DRR(port[i]), ESCHED_DRR_SETTLED)) != FM_OK)
+	for (port = 0; port < ESCHED_DRR_PORTS; port++) {
+		if (port == FM6000_ALTA_CPU || port == FM6000_ALTA_INTERNAL)
+			continue;
+		if ((rv = WR(ESCHED_DRR(port), ESCHED_DRR_SETTLED)) != FM_OK)
 			return esched_fail(rv, n, dead, written, culprit);
+	}
 
 	if (written != NULL)
 		*written = n;

@@ -3534,6 +3534,47 @@ an untouched register, so a block that discarded every write would have
 passed. A plain front-panel port's first word is `0x0010000f`, which nothing
 produces by accident.
 
+### The egress scheduler, checked against a chip that forwards
+
+The block cannot be written on our switch, so `esched.c` could not be tested
+the way every other block was. The golden dump closes that: it contains the
+whole `0x2000`–`0x3fff` block as a **forwarding** chip holds it, so what we
+generate can be compared against what works, offline.
+
+The first comparison was reassuring and incomplete: **all 159 addresses we
+wrote agreed exactly, none disagreed** — and the forwarding chip had 3,001
+more that we never touched.
+
+Those turned out to be completely regular. The block is **eight instances of
+four arrays**, `0x200` apart, each array one word per physical port across
+all 128:
+
+| | |
+|---|---|
+| arrays 0, 1 and 3 | filled; port 0 special, every other port `0x00ffffff` |
+| array 2 | zero in all eight instances — which is what our earlier tool wrote as an explicit `CFG_3 = 0` |
+| port 0, arrays 0 and 3 | `0x00fff800` |
+| port 0, array 1 | `0x00fff000` |
+
+⚠ **And the round-robin word is not what we had.** A forwarding chip writes
+all 76 switch ports and leaves **exactly two** still carrying the
+inter-frame-gap penalty: physical ports **1 and 3**. Those are the two ports
+with no cage — the same two the store-and-forward table singles out, arrived
+at from a completely different direction. Our version settled everything and
+never wrote ports 1 and 3 at all, which is not a tidier way of doing the
+same thing; it is configuring the switch differently from one that works.
+
+`esched.c` now produces 3,222 writes over 3,148 addresses, and diffing that
+against the forwarding chip gives **zero disagreements and zero extras**.
+
+**The one remaining gap is 12 words at `0x3000`–`0x300b`**, which our model
+would call instance 8 array 0 and which is plainly something else: twelve
+entries — the traffic-class count — holding `0x1450` (5200) except indices 3
+and 5 at `0x5c8` (1480), 9 and 10 at `0x6590` (26000), and 11 at `0x39d0`
+(14800). Two bases and their multiples, so per-class quanta. Why classes 3
+and 5 differ is not derivable from here, and inventing a rule to cover
+twelve words would be worse than recording that they are not covered.
+
 ### The same wall, silently: the transmit watermark tables
 
 The egress scheduler at least fails loudly, by taking the chip off the bus.
