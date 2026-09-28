@@ -4812,3 +4812,15 @@ the boot commands. That is wrong. `fm6000PrebootSwitch` calls, in order:
 So both the BIST setup and the scan program belong in the pre-boot, ahead of
 step 5 — and this port does neither there. The remaining three self-resets are
 the obvious place that shows.
+
+Tested: running the 34 BIST controller writes before the quiesce and the chain
+write, from a bare reset pulse, leaves the count at three. So it is not the
+BIST half. By elimination the remaining three belong to the MRL scan program,
+which is the one pre-boot step we cannot reproduce — it needs the payload this
+tree deliberately does not carry.
+
+That is a hypothesis by elimination, not a measurement, and it is worth saying
+plainly: if it is right, the last three self-resets in Table 4-1 are not
+fixable without the vendor's chain data, and the useful question becomes
+whether three resets that early actually matter, given the boot's later steps
+all run after them.
