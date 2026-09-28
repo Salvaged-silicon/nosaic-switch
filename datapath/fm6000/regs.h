@@ -337,6 +337,28 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
 #define FM6000_FATAL_COUNT		0x000008
 #define FM6000_RESET_CFG		0x00000a	/* [RE] reads 0x4010 booted */
 #define FM6000_WATCHDOG_CFG		0x00000b	/* [RE] reads 0 */
+
+/*
+ * WATCHDOG_CFG has exactly one writable bit -- bit 0. Writing 0x2, 0x4 or 0x8
+ * reads back 0; writing 0xffffffff reads back 0x1. [RE]
+ *
+ * It does NOT stop the chip resetting itself. It stops the chip RECOVERING.
+ * With it clear (the default) a fatal resets the fabric and the chip comes
+ * back, so a repeating cause loops forever. With it set the chip is held after
+ * the reset: FATAL_COUNT freezes, LAST_FATAL_CODE stops being overwritten, and
+ * only the watchdog block still answers -- BOOT_CTRL, SOFT_RESET and PIN_STRAP
+ * all stop reading, and writes no longer stick.
+ *
+ * Measured twice each way, 2026-09-28: arming the sweeper with bit 0 clear
+ * gives a count that jumps around forever; with bit 0 set it stops at exactly
+ * 0x16 and holds there for as long as you watch it.
+ *
+ * So it is a DIAGNOSTIC, not a fix. Set it when you want to know which fatal
+ * code a particular trigger produces: the storm would otherwise overwrite
+ * LAST_FATAL_CODE faster than you can read it. Recovery is a CHIP_RESET_N
+ * pulse, the same as any other held chip.
+ */
+#define FM6000_WATCHDOG_CFG_HOLD	(1u << 0)
 #define FM6000_MGMT_SCRATCH		0x00000c	/* [RE] scratch, reads 0 */
 
 /* The local CPU interface, which is the path everything here takes. [RE] */

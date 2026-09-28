@@ -4435,18 +4435,22 @@ are words of it. It programs the manageability module's reference timers —
 PAUSE, POLICERS, the L2 lookup sweepers and FRAME TIMEOUT [DS §9.2], and the
 very next section of the datasheet is the Counter Rate Monitor.
 
-Poking the words one at a time on a booted chip, sampling `FATAL_COUNT` after
-each:
+Writing each word **alone, from a fresh boot**, and sampling `FATAL_COUNT`
+three times after:
 
 | write | `FATAL_COUNT` |
 |---|---|
-| after boot | 8, stable |
-| `TICK_CFG` | 8, stable |
-| `SWEEPER_CFG` word 0, 1, 2 | 8, stable |
-| **`SWEEPER_CFG` word 3 (`0x1c04b` ← `0x0030a2c3`)** | **storm** |
-| word 4 | storm continues |
+| `TICK_CFG` only (control) | 8, stable |
+| `SWEEPER_CFG` word 0 (`0x1c048` ← `0x0008bb2c`) | 8, stable |
+| word 1 (`0x1c049` ← `0x2`) | 8, stable |
+| word 2 (`0x1c04a` ← `0x0`) | 8, stable |
+| **word 3 (`0x1c04b` ← `0x0030a2c3`)** | **storm** |
+| **word 4 (`0x1c04c` ← `0x00002000`)** | **storm** |
 
-So one write starts it. Arming those timers sets background engines walking the
+Two independent triggers, not one. Isolating them needs a fresh boot per word:
+a first pass that wrote them in order made word 4 look harmless, because word 3
+had already started the storm and there is no way to tell a second trigger from
+a continuing one. Arming those timers sets background engines walking the
 MAC table and the policer banks; on a chip whose tables are not initialised
 those accesses time out, a CRM access timeout writes `FATAL_CODE`, and the
 watchdog resets the chip — forever. The value being written is a golden one
@@ -4468,3 +4472,46 @@ chip for the first time, so for the first time the question is answerable.
 logged uncorrectable errors. `--boot` and `--ssched` now report self-resets per
 step and per phase. **Read the count before and after any sequence on this chip
 and treat an increase as failure, whatever the sequence said.**
+
+## `WATCHDOG_CFG` bit 0 freezes the chip instead of fixing it
+
+`WATCHDOG_CFG` (word `0xb`) has exactly one writable bit: bit 0. Writing `0x2`,
+`0x4` or `0x8` reads back `0`; writing `0xffffffff` reads back `0x1`.
+
+It does not stop the chip resetting itself. It stops the chip *recovering*.
+
+| bit 0 | arming `SWEEPER_CFG` word 3 |
+|---|---|
+| clear (default) | `FATAL_COUNT` jumps around forever — the storm |
+| set | count stops at exactly `0x16` and holds indefinitely |
+
+Measured twice each way. With it set, only the watchdog block still answers:
+`BOOT_CTRL`, `SOFT_RESET` and `PIN_STRAP` all stop reading and writes stop
+sticking, which is what "held in `MASTER_RESET`" looks like from outside. The
+watchdog survives because `MASTER_RESET` does not reset the watchdog itself.
+
+**Use it as a diagnostic.** When you want to know which fatal code a particular
+trigger produces, set bit 0 first: the storm otherwise overwrites
+`LAST_FATAL_CODE` faster than it can be read. With it set the code is stable
+(`0xa6` for the sweeper trigger, read six times over twelve seconds). Recovery
+is a `CHIP_RESET_N` pulse like any other held chip.
+
+## Other things measured on a stable chip
+
+- **The SSCHED block accepts writes.** Write-then-read after boot: `SLOW_PORT`
+  (`0x8070`) and the visit table (`0x8000`, `0x8001`) hold what is written.
+  `RX/TX_INIT_TOKEN` (`0x8020`, `0x8060`) read back 0 — they are insertion
+  ports, not storage, which is what "INIT_TOKEN" should be. So the ring not
+  circulating is not the block refusing our writes.
+- **Filling the policer banks storms too.** `POLICER_CFG_4K` `0x130000`,
+  `POLICER_CFG_1K` `0x134000`, `POLICER_STATE_4K` `0x138000`,
+  `POLICER_STATE_1K` `0x13c000`: filling all four took `FATAL_COUNT` from 8 to
+  90. The fill reports success because the chip keeps coming back.
+- **The CRM is not running**: `CRM_CTRL` (`0x1f000`) and `CRM_STATUS` are 0,
+  `CRM_IM` is `0xffffffff` (everything masked), and `CRM_COMMAND` (`0x1f080`)
+  reads uninitialised garbage. So "CRM access timeout" is not the CRM's own
+  program running amok — it is accesses through the management ring failing to
+  complete.
+- The tables the sweepers walk, for whoever initialises them next:
+  `L2L_MAC_TABLE` `0x280000`, `L2L_MAC_TABLE_SWEEPER` `0x2c0000`, and the four
+  policer regions above.

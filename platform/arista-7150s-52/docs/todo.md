@@ -544,6 +544,24 @@ hang rather than an error.
 - [ ] **the ring still does not circulate on a stable chip.** This is now a
       clean question for the first time — every previous answer was measured on
       a chip resetting several times a second. Re-run the old dead ends
+- [x] **it is not the SSCHED block refusing our writes** — write-then-read
+      after boot: `SLOW_PORT` and the visit table hold what is written, and
+      `RX/TX_INIT_TOKEN` read back 0 because they are insertion ports
+- [x] **`SWEEPER_CFG` word 4 is a second, independent trigger** — an earlier
+      note called it harmless, which was measured after word 3 had already
+      started the storm. Isolating needs a fresh boot per word
+- [x] **`WATCHDOG_CFG` bit 0 holds the chip rather than sparing it** — a
+      diagnostic for reading `LAST_FATAL_CODE` cleanly, not a fix. The sweeper
+      trigger's code is `0xa6`
+- [ ] **the chicken-and-egg to break: the sweepers storm because their tables
+      are uninitialised, and initialising the tables storms too.** Filling the
+      four policer regions took `FATAL_COUNT` from 8 to 90. Either find the
+      order that works, or find what makes those regions safe to write first.
+      Tables: `L2L_MAC_TABLE` `0x280000`, `L2L_MAC_TABLE_SWEEPER` `0x2c0000`,
+      `POLICER_{CFG,STATE}_{4K,1K}` `0x130000`/`0x134000`/`0x138000`/`0x13c000`
+- [ ] **is the ring supposed to need the sweeper at all?** `--ssched nosweep`
+      is clean and still does not circulate, so either the ring needs something
+      else entirely, or it needs the sweeper and the sweeper needs its tables
 - [ ] read `CM_ESCHED_STATE` (`0x116c00`) around a ring init. It reads 0 now,
       and it is the only register we have that watches the egress scheduler
       from outside the block that is stuck

@@ -39,9 +39,11 @@ struct fm6000;
  * timeout writes FATAL_CODE, and the watchdog answers that by resetting the
  * management module and the core fabric [DS §4.2].
  *
- * Measured on this board, 2026-09-28, and it is one write: with FATAL_COUNT
- * stable at 8 after a clean boot, writing word 3 of SWEEPER_CFG (0x1c04b)
- * starts a reset storm that never stops. Words 0, 1, 2 and 4 are harmless.
+ * Measured on this board, 2026-09-28, each word written alone from a fresh
+ * boot with FATAL_COUNT stable at 8: words 0, 1 and 2 leave it stable, and
+ * word 3 (0x1c04b) and word 4 (0x1c04c) EACH start a reset storm that never
+ * stops. Two triggers, not one -- an earlier note here said word 4 was
+ * harmless, which was measured after word 3 had already started the storm.
  *
  * That is very likely why this ring has never circulated. It is programmed
  * correctly into a chip that is being reset several times a second, so nothing
