@@ -1,11 +1,11 @@
 # Building an image for the AS5610-52X
 
-Nothing has been built for this board yet. This page is what the build needs,
-and what of it exists — written now so the first person to try does not have
-to work it out from scratch.
+This board builds and runs: the image it boots is made by the three commands
+below. The page was written before the first build, as what the build would
+need, and the notes on why each piece is the way it is still hold.
 
 ```sh
-make toolchain ARCH=powerpc          # does not exist yet -- see below
+make toolchain ARCH=powerpc          # about 38 minutes -- see below
 make packages ARCH=powerpc PROFILE=minimal
 make image BOARD=edgecore-as5610-52x
 ```
@@ -57,19 +57,20 @@ userspace BDE over `soc_cm_device_vectors_t`, a tap bridge, an FIB mirror.
 What must not carry is anything that assumes the 7050SX2's board — the SCD, the
 port map, the flash layout, and the LED path are all different here.
 
-This is also the first real test of the per-ASIC split. If `nosd-tdp` ends up
-sharing most of its code with `nosd-td2p`, the split was drawn in the right
-place. If it ends up copying it, the split is in the wrong place and the fix
-belongs in the shared layer rather than in a third copy.
+This was also the first real test of the per-ASIC split, and it held: the two
+daemons share `datapath/common` -- the tap bridge, the route sync, the query
+server, and since then VLANs, LAG, spanning tree, MLAG, the gateway, QinQ and
+ACLs -- and differ only where the silicon does.
 
 ## Two board differences that will bite
 
 - **The PCI domain is not zero.** The ASIC is at `0001:01:00.0`. A P2020 has
   more than one PCIe controller, and anything that hardcodes `0000:` will not
   find this chip.
-- **The DMA region comes from CMA, not `memmap=`.** The vendor kernel command
-  line is `console=ttyS0,115200 cma=32M`. The Trident+ needs contiguous DMA the
-  same way the Trident2+ does, and the mechanism differs.
+- **The DMA region is a `reserved-memory` node, not `memmap=`.** The vendor
+  kernel command line is `console=ttyS0,115200 cma=32M`, and NOSaic does not
+  use the CMA pool: the device tree reserves `nosaic-dma@28000000`, 64 MiB,
+  `no-map` ([todo](todo.md#not-blockers-but-decide-early)).
 
 ## Configuration knobs EdgeNOS needed, and which of them are ours
 

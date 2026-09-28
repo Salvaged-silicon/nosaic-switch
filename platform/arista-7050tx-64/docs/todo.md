@@ -3,19 +3,20 @@
 Ordered by whether the switch works without it, not by effort. The board status
 as a whole is in [the README](../README.md).
 
-This port is at `bringup`: NOSaic boots on the switch, initialises the Trident2
-and brings its three cabled 40G links up, and forwards nothing. The split below
-is by what blocks what.
+This port is at `experimental`: NOSaic is installed on the switch's own flash,
+boots itself from a cold power cut, and switches and routes in silicon over its
+three cabled 40G links and its cabled copper ports. The split below is by what
+blocks what.
 
 ## Done
 
 - **An image builds.** `make image BOARD=arista-7050tx-64` produces a 14.6 MiB
   SWI with a 63.1 MiB root filesystem, from the shared x86_64 toolchain and the
-  `minimal` profile. Not booted.
+  `minimal` profile. Booted since 2026-09-11.
 - **`datapath/td2` and `recipes/nosd-td2` exist and build.** Derived from
   `td2p` — PCI device `0xb855` and revision `0x03`, both read off the board.
-  The image picks it up and the "no datapath" warning is gone. Never run on
-  hardware.
+  The image picks it up and the "no datapath" warning is gone. Running on the
+  hardware since 2026-09-11.
 
 - **`config/asic.conf` and the generators are written**, and both generators
   were checked against this board rather than assumed: fed the capture from a
@@ -45,7 +46,28 @@ is by what blocks what.
   with what the PHY negotiated, which is the failure that reads as a dead cable.
   Ports are discovered from the properties rather than a number range, matched
   once and re-checked when a link drops, and the MDIO budget is bounded to four
-  reads a second. **Never executed** — see below.
+  reads a second. Executed and corrected on the hardware — see
+  *Fixed on the hardware, 2026-09-14*.
+
+## Proven on the hardware, 2026-09-25 to 2026-09-28
+
+The switching and gateway features, each on this chip with traffic. The
+measurements are in [the README](../README.md#what-works) and the feature docs.
+
+- **LAG**, LACP, to the SX2 over et49/et50 and to the Nexus over et31/et32.
+- **Rapid spanning tree** with the Nexus: loop broken, root moved (398 of 400),
+  a LAG as the forwarding root port failing over (580 of 600).
+- **MLAG** as the SX2's peer, and as the dual-homed device of the SX2 and the
+  AS5610.
+- **The virtual gateway**, IPv4 and IPv6, in the SX2 pair.
+- **ACLs on td2**: 2560 IPv4 and 1024 IPv6 rules, deny and permit counted,
+  OSPF and OSPFv3 denied per port.
+- **QinQ** as the provider: et49 a trunk at 0x88a8, et32 a tunnel port.
+- **IS-IS**: an adjacency on et49 with the SX2, and two-hop IS-IS routes in
+  the chip.
+- **A datapath restart is 180 s, from 374 s.** The copper PHYs' firmware is
+  downloaded only into a PHY not already running it, set per copper port in
+  `config/asic.conf`. After a power cycle the PHYs read 0 and download as before.
 
 ## Fixed on the hardware, 2026-09-11/12
 
@@ -259,18 +281,13 @@ A deliberate pass over the claims this board had not been asked to prove.
 
 ## Blocking — the board is not at parity with the predecessor without these
 
-- **Nothing has been ROUTED over a copper port.** Frames cross them now, both
-  ways, but the proof used `et3` and `et4` patched to each other — and both ends
-  being the same host is exactly what stops it going further: Linux answers no
-  ARP for a request that arrives carrying its own address. So the datapath is
-  proven and the protocol above it is not. **Either put a real neighbour on
-  `et1`/`et2` and give it an address in `config/network.conf`, or put one end of
-  the patch in a network namespace** — blocked on a neighbour or a namespace,
-  not on code.
+- **~~Nothing has been ROUTED over a copper port~~** — done. `et31` and `et32`
+  carry OSPF adjacencies, a LAG, spanning tree and ACLs to the Nexus 3172TQ, and
+  `et5` is an out-of-band path to the lab's management switch.
 
-- **44 of the 48 copper ports are still untried.** All 48 answer `0x600d` and
+- **41 of the 48 copper ports are still untried.** All 48 answer `0x600d` and
   bind, so there is no reason to expect the rest to differ, but that is an
-  inference and the other four are a measurement.
+  inference and the seven cabled ones are a measurement.
 
 - **The watchdog is not armed, and arming it alone would be worse than leaving
   it.** Its action is a power cycle, so it needs a petting service to exist
@@ -308,10 +325,12 @@ A deliberate pass over the claims this board had not been asked to prove.
   every cage decodes as "undetermined". Honest but useless, and read-only to
   fix: measure the four values here.
 
-- **`boot-config` still points at EOS, deliberately.** NOSaic is booted as a
-  one-shot from the Aboot prompt every time, so a power cycle returns to the
-  vendor OS on its own. Making it the default is one line, and it should wait
-  until the box forwards.
+- **BPDU guard and root guard have not been run on this chip.** Built into the
+  td2 datapath and proven on the SX2 and the AS5610; nothing here has sent a
+  guarded port a BPDU.
+
+- **MAC aging has not been measured here.** `mac aging <s>` is the shared
+  datapath's, 300 s by default, and proven on the SX2 and the AS5610.
 
 - **The kernel has no `tigon/tg357766.bin`**, so `tg3` logs a firmware load
   failure and disables EEE on the management port. The port works; only energy-

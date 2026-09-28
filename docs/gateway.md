@@ -11,8 +11,9 @@ Proven on 2026-09-26 on the MLAG test bed:
 - **Dual-homed:** a Nexus 3172TQ.
 - **Gateway:** `10.99.40.254` on vlan400 of both peers.
 
-The AS5610's datapath (tdp) implements it too, untested. The virtual board
-refuses it.
+The AS5610 (Trident+, tdp) ran the IPv4 gateway on 2026-09-27, as the SX2's
+MLAG peer ([mlag.md](mlag.md#a-trident-peer)). Its IPv6 gateway is built and
+has not been run. The virtual board does not support the gateway.
 
 ## Commands
 

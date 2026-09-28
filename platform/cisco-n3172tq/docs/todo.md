@@ -7,8 +7,10 @@ the board to copy from — its `config/` and its `docs/todo.md` are the model fo
 this one. The 7050SX2-72Q is td2**p** and is only worth reading for the shape of
 its `walkthrough.md`, which is the one rack-to-forwarding document in the tree.
 
-Status as of 2026-09-18: **the board boots, cools itself and its datapath is
-up.** It is not yet a switch, because nothing is on the Linux stack.
+Status as of 2026-09-28: **a switch, netbooted.** It boots, cools itself,
+routes with three OSPF neighbours, and has run every L2/L3 feature the lab has
+tested it for with the other NOSaic switches. What it has not done is install:
+every boot is still a netboot.
 
 ## What is proven on the hardware
 
@@ -32,6 +34,22 @@ Measured, not inferred. Everything below has been seen on the lab chassis.
 - **Environmentals.** `adt7462` plus two `pmbus` bound at boot; three board
   diodes and the controller die read; four fans commanded by the thermal loop;
   PSU presence. See [hardware.md](hardware.md).
+- **Switching and routing with the other NOSaic switches**, each with traffic;
+  the [README](../README.md#running-it-today) has the detail:
+  - VLANs and SVIs, a trunk to the 7050SX2 with OSPF over the native SVI;
+  - LAG, LACP over eth1_31/eth1_32 to the 7050TX-64;
+  - the dual-homed device in the SX2+TX MLAG test, po7 over eth1_54 and
+    eth1_31, zero duplicates;
+  - rapid spanning tree with the TX: loop broken, root moved, a LAG as the
+    tree port;
+  - the IPv6 virtual gateway as a client, resolved to the virtual MAC;
+  - ACLs on td2: a deny on eth1_32 blocked and counted 10 of 10;
+  - QinQ as a customer across the SX2+TX provider;
+  - `nosaic verify ports` and `verify routes` clean.
+- **A datapath restart takes 141 s, down from 242 s**, with the copper PHYs'
+  firmware downloaded only when it is not already running (per port,
+  `phy_force_firmware_load_<1..48>.0=0`). Proven by a power cycle from the PDU,
+  apc2 outlet 3: copper at 10G, both 40G cages up, OSPF 3 neighbours.
 
 ## Blocking — this is not a switch until these are done
 
@@ -171,7 +189,10 @@ Ordered so each step's failure is diagnosable with the one before it working.
       `CHIP route 15/15360  intf 55/8192` — 54 taps plus one, and routes in
       the silicon.
 
-- [ ] **The 7050TX-64 needs this same fix before two-hop traffic works.**
+- [x] ~~**The 7050TX-64 needs this same fix before two-hop traffic works.**~~
+      Done: the TX has run the current datapath since, and traffic between
+      this board and switches beyond it -- the orphan AS5610 in the MLAG
+      test, for one -- has been routed through it.
       Its `nosd` now knows 52 taps and it is running the old binary:
       `intf 9/8192`, so 44 of its ports have no router interface. The
       symptom from here is that `10.101.255.50` (one hop) answers while
@@ -281,7 +302,12 @@ Ordered so each step's failure is diagnosable with the one before it working.
       tuning -- so the datapath side of the cages is finished, not merely
       linking.
 
-      **Both 40G links now carry traffic.** `eth1_53` to the AS5610 and
+      ⚠ **Not true any more for `eth1_53`.** The AS5610 has no swp50 tap
+      today, so `eth1_53` to its swp50 is not a live link and the
+      configuration described below is no longer on that switch. `eth1_54`
+      to the 7050SX2 is the 40G link in use.
+
+      **Both 40G links then carried traffic.** `eth1_53` to the AS5610 and
       `eth1_54` to the 7050SX2 each hold a Full OSPF adjacency and ping
       clean -- 1.28 ms and 0.44 ms average -- with four adjacencies total
       once the two copper uplinks are counted. Nothing on this board needed
@@ -471,13 +497,15 @@ Ordered so each step's failure is diagnosable with the one before it working.
       router-id as the fallback, and a log path the daemons cannot write, are
       both wrong independently of this port. Left alone here because it
       changes every board and the 7050TX-64 is mid-configuration.
-- [ ] **Identity, watchdog and reset lines report `ErrUnsupported`**, each
-      honestly: the PROM layout is the vendor's and undecoded, and no watchdog
-      or reset line has been found to be reachable.
-- [ ] **ACL is not wired for td2 here.** `feature/acl-td2` exists and is
-      untested. This chip's ingress FP is 4096 entries, twice Trident+'s; the
-      prediction on record is ~2560 v4 + ~1536 v6, expected to come out lower.
-      Record whichever way it falls.
+- [ ] **Watchdog and reset lines report `ErrUnsupported`**, honestly: no
+      watchdog or reset line has been found to be reachable. Identity is done
+      -- the ID PROM is decoded (above).
+- [x] ~~**ACL is not wired for td2 here.**~~ Done: ACLs run on the td2
+      datapath, and on this board a deny on eth1_32 blocked and counted 10 of
+      10, and removing it let them through. This chip's ingress FP is 4096
+      entries, twice Trident+'s; the prediction on record was ~2560 v4 +
+      ~1536 v6. The 7050TX-64, on the same datapath, reports 2560 v4 and 1024
+      v6.
 - [x] ~~**The ASIC die temperature is invisible to the thermal loop.**~~ —
       it reads, and it is the hottest thing in the box by 14 °C.
 

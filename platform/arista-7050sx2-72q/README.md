@@ -27,18 +27,20 @@ NOSaic's first real board, and the one M6 is written against.
 The board runs as a router. On the switch, verified rather than assumed:
 
 - the chip comes out of reset, enumerates and initialises through the SDK;
-- ports link, and front-panel ports appear on the Linux stack as `et1`, `et2`,
-  `et53`, `et54`;
-- **both 40G QSFP+ cages link at 40000 and pass traffic**, to two different
+- ports link, and front-panel ports appear on the Linux stack as `et1` to
+  `et54`;
+- **the 40G QSFP+ cages link at 40000 and pass traffic**, to three different
   neighbours, from a cold boot with no manual step — see
   [hardware](docs/hardware.md#the-40g-cages) for what that took;
-- FRR holds an **OSPFv2 adjacency at Full** with the AS5610 over a 40G cage.
-  OSPFv3 has run here, and the `frr.conf` on the switch today carries
-  `router ospf` and no `ospf6` at all, so nothing holds a v6 adjacency;
+- **cabled today:** et3/et4 to the AS5610's swp1/swp2, et52/et53 to the
+  7050TX-64's et49/et50, et49 to the Nexus 3172TQ's eth1_54, and et54 to the
+  AS5610's swp51. FRR holds **six OSPF neighbours** over them. OSPFv3 has run
+  here too;
 - **its addressing and OSPF configuration come back on their own** after a power
   cycle: loopback, every routed port, and the routing daemons, nothing typed in;
 - the kernel FIB is mirrored into the ASIC — `CHIP route 96/8192`, from the
-  chip's own accounting;
+  chip's own accounting — including **ECMP**, proven 2026-09-11: 75 transit
+  packets split 40 and 35 across et52 and et53;
 - **forwarding happens in silicon**: 100 packets routed through the box raised
   the chip's port counter by 101 and the CPU's by 44, which is the background
   OSPF for four adjacencies and nothing like 100;
@@ -60,6 +62,40 @@ The board runs as a router. On the switch, verified rather than assumed:
   The CPU counters were flat for both, so the chip did it. As a trunk to the
   7050TX-64 and to the AS5610, tagged 100 plus native 200, both VLANs carried
   traffic and OSPF ran over the native SVI;
+- **LAG, static and LACP** ([docs/lag.md](../../docs/lag.md)), 2026-09-25:
+  et52/et53 as a bundle to the 7050TX-64 in every mode, and a LAG to the
+  AS5610, first one member on et54 and then two on et3/et4;
+- **rapid spanning tree** ([docs/stp.md](../../docs/stp.md)), 2026-09-26, with
+  the AS5610: a loop broken, the root port lost and taken over, the root moved,
+  a LAG as a tree port, and transit in the chip. `show stp` shows the root
+  times, the ones a bridge below the root runs on;
+- **root guard** ([docs/stp.md](../../docs/stp.md)), 2026-09-27: on et3, with
+  the AS5610 given priority 0, et3 was held and et4 became the root port with
+  traffic carrying on; with the priority restored, et3 went back to forwarding
+  by itself. BPDU guard was proven on the AS5610's end of the same links;
+- **MLAG, as a peer, twice** ([docs/mlag.md](../../docs/mlag.md)). With the
+  7050TX-64 on 2026-09-26, the Nexus 3172TQ dual-homed: 0 of 1200 lost with the
+  TX's datapath killed. With the AS5610 on 2026-09-27, the TX dual-homed: 3 and
+  17 of 600 lost with this switch's half taken down and up, none with the
+  AS5610's, and no duplicates;
+- **the virtual gateway, IPv4 and IPv6** ([docs/gateway.md](../../docs/gateway.md)),
+  2026-09-26 and 27, with the TX as the other peer: with the TX's datapath
+  killed, this switch carried 1200 of 1200 pings through the gateway in each
+  family, with no duplicates;
+- **QinQ, as the provider** ([docs/vlan.md](../../docs/vlan.md)), 2026-09-28:
+  S-VLAN 500 at 0x88a8 over et52 to the TX, and again over et3 to the AS5610,
+  with customer tagged and native VLANs carried across;
+- **IS-IS** ([docs/isis.md](../../docs/isis.md)), 2026-09-28: adjacencies on
+  et3 with the AS5610 and on et52 with the TX, IS-IS routes in the chip and
+  forwarded, with OSPF left running;
+- **ACLs in the chip** ([docs/acl.md](../../docs/acl.md)), 2026-09-17: a deny
+  on et52 dropped 5 of 5 pings and counted 5, with every OSPF adjacency Full
+  throughout;
+- **MAC aging** (`mac aging <s>`, `show mac`): learned MACs now age out, 300 s
+  by default; before this they were permanent;
+- **`nosaic verify ports` and `verify routes` are clean**, with LAG members and
+  switched ports recognised rather than flagged;
+- **a datapath restart takes about 50 s**;
 - **the management VRF** ([docs/vrf.md](../../docs/vrf.md)): eth0 is in
   table 1001, the pin route is gone, and transfers run at the pinned rate;
 - **its addresses are its own**: tap and SVI MACs are derived at boot from
@@ -83,9 +119,8 @@ The board runs as a router. On the switch, verified rather than assumed:
 
 ## What does not
 
-- **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
-  (s6) has been booted.
-- **ECMP.** `l3sync` takes one next hop per prefix.
+- **The `full` profile.** `board.yml` declares `minimal` (s6), the only
+  profile that has run here; `full` (systemd) has not been made to boot.
 - **The `prefdl` SEEPROM is not read**, so the management MAC comes from
   `config/network.conf` and that file is correct for exactly one switch.
 - **`fanread` returns garbage.** Temperatures, PSU presence and fan control all
@@ -98,7 +133,7 @@ slot confirms itself and commits; one that boots and does not forward burns its
 three attempts and rolls back, unattended.
 
 It stays `experimental` rather than being called production for the reasons
-listed above — ECMP, `prefdl`, `fanread` — and because nothing here is called
+listed above — `prefdl`, `fanread` — and because nothing here is called
 production until it has run somewhere that matters for longer than a lab
 afternoon.
 

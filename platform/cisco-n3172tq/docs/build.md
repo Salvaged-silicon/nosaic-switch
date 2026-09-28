@@ -165,11 +165,12 @@ quick-write probe is a write to every address on a bus carrying a fan
 controller and two power supplies. And it leaves the mux deselected on exit
 even if interrupted.
 
-⚠ **The result is not yet something `board.yml` accepts.** `platform_hal.i2c`
-and the Linux-i2c HAL behind it were written for the Edgecore AS4610 and live
-on `board/edgecore-as4610-54t`. Two boards now want it, which is the argument
-for landing it on `main`. Until then `--yaml` prints the block as a record of
-what was measured.
+⚠ **The result is a record, not something this board's `board.yml` takes.**
+`platform_hal.i2c` and `internal/platformhal/i2cmap.go` are on `main` now, but
+they do not fit this board: `I2CMap` requires a board controller, and here
+that is CCTRL, the one part we cannot reach. This board has its own HAL,
+`n3172tq`, instead ([hardware.md](hardware.md#platform-hal)), and `--yaml`
+prints the block as a record of what was measured.
 
 ### The Broadcom SDK is a build dependency and is never shipped
 

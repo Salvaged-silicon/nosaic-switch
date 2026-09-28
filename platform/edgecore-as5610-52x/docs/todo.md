@@ -3,6 +3,9 @@
 NOSaic runs this board. As of 2026-09-03 it boots unattended to a switch that
 forwards in hardware, holds four OSPFv2 adjacencies and one OSPFv3, load-balances
 across an ECMP pair, controls its own fans and reports its own environmentals.
+By 2026-09-28 it had VLANs, LAG, rapid spanning tree with BPDU guard, MLAG as a
+peer of the 7050SX2, the IPv4 virtual gateway, QinQ, IS-IS and MAC aging too,
+each proven with traffic -- see [the README](../README.md).
 
 What follows is what is *not* done, in the order worth attacking it. The
 finished work is kept as struck-through headings rather than deleted, because
@@ -12,6 +15,25 @@ Status is in [the README](../README.md); the hardware is in
 [hardware.md](hardware.md), read off a running unit. The 7050SX2's equivalent is
 [its own todo](../../arista-7050sx2-72q/docs/todo.md), and the two share a
 datapath -- `datapath/common` -- so a fix in one often lands in both.
+
+## Fixed on 2026-09-27 and 28
+
+Found by the MLAG, QinQ and IS-IS tests here; details in the
+[README](../README.md#mlag).
+
+- **A static station move is dropped.** MAC sync makes the dual-homed device's
+  MACs static on this half, so the device's frames arriving on the peer-link
+  died -- the AS5610 could not resolve the 7050TX. The peer-link's ports set
+  `bcmPortControlForwardStaticL2MovePkt` now. Trident+ only; the Trident2
+  pair never showed it.
+- **The IPv6 loopback was never delivered to the CPU.** l3sync missed it;
+  fixed, and pinged through the chip.
+- **A port routed again kept its QinQ TPID** and lost OSPF. Reset now.
+- *(shared)* **L2 aging was never on**, so learned MACs were permanent; 300 s
+  by default now. **Every port sat in VLAN 1 for seconds at datapath start**;
+  ports now leave it before any is enabled. **The SDK's L2 table walk cleared
+  532 B of uncached DMA memory per entry** (`recipes/openbcm/patches/0002`),
+  which had held MLAG's MAC-sync lock for over a second.
 
 ## Fixed on 2026-09-16
 
@@ -1165,12 +1187,15 @@ are marked *(shared)*.
   permit/deny by port, protocol, addresses and L4 ports, with counters, proven
   on this board. See *Fixed on 2026-09-16* above. Not yet: layer 2, ranges,
   policing, egress, and an atomic swap on change.
-- **VLANs as a user-facing feature.** Ports sit in per-port service VLANs and
-  `--bridge` throws every port into one. Neither is a VLAN *model*: there is no
-  way to say "these six ports are VLAN 100, tagged on the uplink". This is the
-  first thing an operator will ask for and the datapath already has the calls.
-- **Link aggregation.** *(shared)* No LACP, no static bonds. The chip does
-  trunking and the SDK exposes it; nothing above knows the concept.
+- ~~**VLANs as a user-facing feature.**~~ *(shared)* Done, 2026-09-24:
+  access, trunk and native, SVIs, and QinQ as provider and customer since
+  2026-09-28. [docs/vlan.md](../../../docs/vlan.md).
+- ~~**Link aggregation.**~~ *(shared)* Done, 2026-09-25/26: static and LACP,
+  on swp51 and on po5 (swp1+swp2). [docs/lag.md](../../../docs/lag.md).
+- ~~**Spanning tree and MLAG.**~~ *(shared)* Done: rapid spanning tree
+  2026-09-26 and BPDU guard 2026-09-27; MLAG as a peer of the 7050SX2 with
+  the IPv4 virtual gateway, 2026-09-27. Not yet run here: the IPv6 virtual
+  gateway (built), and root guard from this side.
 - **Storm control, and any policer at all.** Nothing rate-limits broadcast,
   multicast or unknown-unicast, so one loop on a neighbour is this box's
   problem too.
@@ -1180,7 +1205,10 @@ are marked *(shared)*.
 ### Control plane
 
 - **BGP.** FRR is built with it; nothing configures it and it has never run
-  here. OSPF works, so the plumbing underneath is proven.
+  here. OSPF and IS-IS work, so the plumbing underneath is proven.
+- ~~**IS-IS.**~~ Done, 2026-09-28: `isisd` beside ospfd, an adjacency with the
+  7050SX2 on swp1, and this switch's loopback prefix routed by IS-IS in two
+  other chips. [docs/isis.md](../../../docs/isis.md).
 - **BFD.** Fast failure detection matters much more on a box whose punt path is
   milliseconds; worth doing after ACLs, since CoPP protects it.
 - **CoPP.** *(shared)* Nothing protects the CPU from the punt path. A broadcast
@@ -1293,7 +1321,11 @@ patching. Checking for it is one line:
   prints a table to its log once a minute, which is not the same thing.
 - ~~**Anything that queries a running nosd.**~~ Done: the daemon serves the
   contract on a socket, and both CLIs read it.
-- **Restarting `nosd` takes the switch off the network, silently.** The taps are
+- ~~**Restarting `nosd` takes the switch off the network, silently.**~~
+  *(shared)* Fixed: a `network-reconcile` service re-runs `apply-network.sh`
+  every 30 s and puts back whatever is missing. In the MLAG test this switch's
+  datapath was killed and it rejoined the pair 3 s after its configuration was
+  back. What it was: the taps are
   created by the daemon, so restarting it destroys and recreates them -- without
   addresses and at the default MTU. `apply-network.sh` ran once at boot and
   nothing re-runs it, so the box comes back with every front-panel address gone
@@ -1301,8 +1333,8 @@ patching. Checking for it is one line:
   OSPFv3 hangs in ExStart, which is the MTU mismatch showing. The s6 dependency
   is declared but s6 does not restart dependents when a dependency restarts.
   Recovering by hand is `sh /etc/nosaic/apply-network.sh` then restarting
-  `ospfd`/`ospf6d`; the fix is for the network service to be a consumer that
-  re-runs, or for nosd to persist the taps.
+  `ospfd`/`ospf6d`; the fix was for the network service to become a consumer
+  that re-runs.
 
 ## ~~Known blocker inherited from EdgeNOS~~ — it was not one
 

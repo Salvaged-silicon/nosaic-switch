@@ -1,8 +1,10 @@
 # Arista DCS-7050TX-64 — Trident2 (BCM56855), 48x 10GBASE-T + 4x QSFP+.
 #
-# STATE: bringup. Nothing in NOSaic has booted on this board yet. Everything
-# recorded here was read off the running switch under EdgeNOS, the predecessor
-# project, which does boot it and forwards in hardware.
+# STATE: experimental. NOSaic is installed on this board's own flash with A/B
+# slots, boots itself from a cold power cut, and switches and routes in silicon
+# (VLANs, LAG, RSTP, MLAG, the virtual gateway, ACLs, QinQ, IS-IS). Much of what
+# is recorded here was first read off the running switch under EdgeNOS, the
+# predecessor project, and has since been confirmed under NOSaic.
 #
 # What makes this board different from arista-7050sx2-72q, and why it was
 # deferred behind it: the 48 front-panel ports are 10GBASE-T copper behind
@@ -27,7 +29,7 @@ boot: aboot
 profile: minimal
 kernel: ""
 
-status: bringup
+status: experimental
 
 # Read off the running switch, not guessed: a wrong baud rate
 # makes a working board look hung.

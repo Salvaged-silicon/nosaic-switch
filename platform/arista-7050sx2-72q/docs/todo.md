@@ -198,7 +198,7 @@ It was read as an SDK rate limit, then as a polling-versus-interrupt problem.
 Both readings were plausible and both had supporting evidence. The number did
 not move until somebody read the loop that runs once per packet.
 
-### Management traffic follows learned routes
+### ~~Management traffic follows learned routes~~ — fixed 2026-09-24
 
 This switch runs OSPF on its front panel, so it **learns** a route to the build
 network over it, and a learned /24 beats the default route by longest prefix.
@@ -279,10 +279,11 @@ interface after a cold boot.
 
 What is left:
 
-  - **Nothing writes it.** Configuration is edited by hand on the flash
-    partition. `nosaic` has no command that changes a setting and stores it,
-    which is what an operator would expect and what the CLI gate at M6 is
-    really about.
+  - **~~Nothing writes it~~** — done. `nosaic config set` writes a setting
+    through to flash (see *Configuration does not persist here*, below), and
+    every knob the datapath has — VLANs, LAGs, spanning tree, MLAG, the
+    gateway, MAC aging, ACLs — is both a CLI command and a `network.conf`
+    line.
   - **The partition is found by looking.** The initramfs tries a short list of
     devices and takes the first with a `nosaic/config` directory on it. That is
     honest on a board with one flash device and wants stating properly once a
@@ -311,9 +312,10 @@ written, this file is correct for exactly one switch.
 
 ### The full profile has never been booted here
 
-`board.yml` says `profile: full` (systemd). Only `minimal` (s6) has run on this
-board. Either boot it or change the declaration; a board description that
-disagrees with reality is worse than either.
+`board.yml` now declares `profile: minimal` (s6), the only profile that has run
+on this board, so the description agrees with reality (see *Fixed on
+2026-09-03*). `full` (systemd) remains unbooted: the one image tried reached
+"Started ospf6d" and never came up.
 
 ### ~~ECMP~~ — proven here on 2026-09-11, in hardware
 
@@ -726,16 +728,31 @@ one fix lands on both. The AS5610's list is
   IPv6 rules. IPv6 is not yet traffic-tested here (no v6 neighbour on an et
   port). CoPP is the next thing on top: a meter per rule and a CPU queue per
   class.
-- **VLANs as a user-facing feature.** *(shared)* No way to say "these ports are
-  VLAN 100, tagged on the uplink". The datapath has the calls.
-- **Link aggregation.** *(shared)* No LACP, no static bonds, on a box with six
-  40G uplinks where it matters more than on the AS5610.
+- **~~VLANs as a user-facing feature~~** — done. *(shared)* Access ports,
+  trunks with a native VLAN, SVIs, and QinQ (`switchport <p> tunnel <svid>`,
+  `trunk <vids> tpid 0x88a8`), proven here as the provider with the TX and with
+  the AS5610 on 2026-09-28. See [docs/vlan.md](../../../docs/vlan.md).
+- **~~Link aggregation~~** — done. *(shared)* Static and LACP, proven here
+  2026-09-25 against the TX and the AS5610. See
+  [docs/lag.md](../../../docs/lag.md).
+- **~~Spanning tree, MLAG, a virtual gateway~~** — done. *(shared)* RSTP with
+  root guard (held et3 against a better root, 2026-09-27); MLAG as a peer of
+  the TX and of the AS5610; the virtual gateway over IPv4 and IPv6, 1200 of
+  1200 through it with the peer's datapath killed. See
+  [docs/stp.md](../../../docs/stp.md), [docs/mlag.md](../../../docs/mlag.md)
+  and [docs/gateway.md](../../../docs/gateway.md).
+- **~~Learned MACs never age~~** — fixed. *(shared)* L2 aging was never turned
+  on, so learned MACs were permanent. Now 300 s by default, and a setting:
+  `mac aging <s>`, `show mac`.
 - **Storm control and policers.** *(shared)* Nothing rate-limits flooding.
 - **VXLAN**, which the silicon and the SDK both already have — see its own
   section below.
 
 ### Control plane
 
+- **~~IS-IS~~** — done. FRR's `isisd` runs beside OSPF; adjacencies here with
+  the AS5610 on et3 and the TX on et52 on 2026-09-28, IS-IS routes in the chip
+  and forwarded. See [docs/isis.md](../../../docs/isis.md).
 - **BGP** and **BFD.** *(shared)* FRR carries both; neither has run here.
 
 ### The box itself
@@ -817,9 +834,10 @@ worst possible place to find it.
 - ~~**A/B slots, trial boot and rollback**~~ — done, and proven on this board
   in both directions: a healthy image commits itself, and one that boots and
   does not forward rolls back unattended after three attempts.
-- **Counters an operator can see.** *(shared)* Same gap as the AS5610: the
-  daemon logs a table once a minute and there is no way to ask a running one
-  anything.
+- **~~Counters an operator can see~~** — done. *(shared)* `nosaic show ports`
+  asks the running daemon and gets each port's counters back, and
+  `nosaic verify ports` / `verify routes` compare Linux against the chip —
+  clean here, with LAG members and switched ports recognised.
 
 ### VXLAN, which the silicon and the SDK both already have
 
