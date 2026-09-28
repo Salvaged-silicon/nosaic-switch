@@ -4082,6 +4082,34 @@ the scheduler and would need re-running once the ring circulates — is
 withdrawn. See the correction above: they are write-only, and a forwarding
 chip reads them zero as well.)*
 
+### Every block checked against the part's own register names
+
+*2026-09-28.* The ESCHED correction raised the obvious question: what else
+was authored from inferred geometry? So all of them were checked against
+`fm6000_api_regs_int.h`, which names every register, its address, its entry
+count and its bit fields.
+
+| block | verdict |
+|---|---|
+| `saf` | ✅ `SAF_MATRIX(index, word) = 0xA0000 + 4*index + word`, 76 × 3 — exactly ours, pitch included. Bit 0 is `EnableSNF`, bits 80–81 `CutThruMode` |
+| `lbs` | ✅ `LBS_CAM = 0x14000 + index`, 76 entries; `LBS_PROFILE_TABLE = 0x14080`, 16 — exactly ours, and the profile table we declined to write is 16 entries as observed |
+| `cmwm` | ✅ all six tables, addresses *and* dimensions: RXMP private/pause 12 × 76, RXMP hog 16 × 76, TXMP private/hog 16 × **80** — the asymmetry we found by measurement is the documented shape |
+| `cmrest` | ⚠ addresses and values right, **names invented and two of them misleading** |
+| `esched` | ❌ corrected above |
+
+`cmrest` is renamed to the part's own vocabulary. What it called a "hash"
+at `0x112200` is `CM_GLOBAL_WM`, the global watermark; what it called a
+"partition" map is `CM_TC_PC_MAP`, traffic-class to port-class. The six
+words at the base of the block are not one table but three two-word maps —
+`CM_RXMP_MAP`, `CM_TXMP_MAP`, `CM_TC_MAP` — which is why they looked like a
+header followed by two repeating pairs. The rest: `CM_BSG_MAP`,
+`CM_PC_RXMP_MAP`, `CM_SHARED_RXMP_WM`, `CM_RXMP_SOFT_DROP_WM`,
+`CM_SHARED_RXMP_PAUSE_ON/OFF_WM`, `CM_PAUSE_CFG`.
+
+No address or value changed, and it still diffs 701 of 701 against a
+forwarding chip. What changed is that the file now says what it is
+configuring.
+
 ### Congestion management, the parts that do work
 
 `cmrest.c` is the rest of the CM block: the PAUSE configuration, the class
