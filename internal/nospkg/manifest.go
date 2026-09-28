@@ -89,6 +89,12 @@ type BuildInfo struct {
 	Toolchain string `json:"toolchain,omitempty"` // e.g. "crosstool-ng 1.28.0"
 	Triple    string `json:"triple,omitempty"`    // e.g. "powerpc-nosaic-linux-gnu"
 	NOSaic    string `json:"nosaic,omitempty"`    // the version that built it
+
+	// Recipe is recipe.Digest of the recipe directory this package was built
+	// from. An image build compares it with the recipe on disk and refuses a
+	// package whose recipe has changed since. Empty in packages built before
+	// it was recorded, which are checked by file time alone.
+	Recipe string `json:"recipe_sha256,omitempty"`
 }
 
 // Signature is reserved. Packages are SHA-256 hashed today, which detects
