@@ -353,6 +353,45 @@ bash-4.2# chmod +x NOSaic-0.1.0-cisco-n3172tq.sh
 NX-OS image is.** The installer overwrites the whole disk, `/bootflash`
 included. If the image is still on there, copy it off first.
 
+## Check the image before you erase anything
+
+The installer verifies the disk it wrote. Nothing verifies that the image was
+built from a current kernel, and on this board that is the failure that costs
+you the vendor OS before you find out.
+
+Mount the slot image out of the installer's payload -- or, if it is already
+written, out of the disk -- and look for the board's sensor modules:
+
+```
+bash-4.2# find /lib/modules -path '*hwmon*' -name '*.ko' | head
+/lib/modules/6.12.105/kernel/drivers/hwmon/adt7462.ko
+/lib/modules/6.12.105/kernel/drivers/hwmon/pmbus/pmbus.ko
+```
+
+**Empty output means do not install.** This board's kernel fragment asks for
+`CONFIG_SENSORS_ADT7462=m`, `CONFIG_PMBUS=m` and `CONFIG_GPIO_PCA953X=m`, so
+an image with no `hwmon` modules was built from a kernel package older than
+that fragment. It installs and boots perfectly, and then:
+
+* `i2c-devices` exits 1, because `modprobe adt7462` found nothing to load and
+  `new_device` had no driver to bind;
+* s6 reports `unable to start service i2c-devices` and the service database
+  never comes up;
+* `nosd` therefore never starts, so no `eth1_*` interface is ever created;
+* `apply-network` never reaches `eth0`, so the switch sits at a login prompt
+  with **no management address** and the only way in is the console.
+
+Every layer reports its own symptom and none of them names the kernel. The
+count is the quickest tell: 16 modules is the stale set, 26 is the current one.
+
+⚠ `modules.dep` is **not** a check. It is regenerated from whatever modules
+were staged, so a stale image has a perfectly consistent `modules.dep`
+describing a kernel that cannot drive this board.
+
+This is prevented at build time now -- a package whose recipe directory
+changed after it was built stops the build -- but the check is worth a minute
+before an irreversible write.
+
 ## Installing
 
 ```
