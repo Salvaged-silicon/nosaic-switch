@@ -201,11 +201,41 @@ Ordered so each step's failure is diagnosable with the one before it working.
       `CONFIG_EFI_STUB`. Those are two different handoffs and only the first
       has ever run. Do not assume the install works because netboot does.
 
-- [ ] **Recovery has never been exercised.** There is exactly one copy of
-      `n3100-compact.7.0.3.I7.9.bin` on the chassis. Save it off and verify
-      its md5 *before* installing, then prove the way back by netbooting it
-      and running `install all`. Recovery that has never been run is not
-      recovery.
+- [ ] **Recovery is half-exercised: the image is saved, the way back is not.**
+
+      The copy is off the chassis and verified. `n3100-compact.7.0.3.I7.9.bin`
+      sits at `~/projects/cisco-firmware/nexus3172tq/` and its md5 matches the
+      one on the chassis byte for byte:
+
+          5247d2cac220b2072001baa5ff1546e6   (both, 2026-09-28)
+
+      read from `/dev/sda3` mounted read-only from a netbooted NOSaic, which is
+      also how the bootflash was identified: sda3 is the 1565 MB ext3 partition
+      and it holds the vendor image.
+
+      ⚠ **What is still untested is the way back**, and that is the half that
+      matters. Netbooting that image and running `install all` has never been
+      done, so "we have the file" is not yet "we can undo this". Do that before
+      the first install, not after it goes wrong.
+
+- [x] **The installer builds, and the image it produces is verified complete.**
+      `make image BOARD=cisco-n3172tq` emits
+      `NOSaic-0.1.0-cisco-n3172tq.sh` (79 MiB), a self-extracting installer
+      run from a root shell on the box; the firmware then boots the kernel
+      itself from an EFI system partition.
+
+      ⚠ The image was checked for the thing that locks you out rather than
+      assumed good: `rootfs.sqsh` carries `portmap.conf`, `polarity.conf`,
+      `retimer.conf`, `network.conf`, `frr.conf` AND `authorized_keys`. A
+      worktree built without those produces an image that boots, has no
+      datapath and no key, on a box whose only other way in is the console.
+
+      ⚠ **Those generated files were nearly lost.** They are gitignored, they
+      lived only in the board's worktree, and that worktree was deleted when
+      its branch merged. They were recovered from `/etc/nosaic` on the running
+      switch -- which is RAM-booted, so a power cycle would have taken them
+      with it. Regenerating `portmap.conf` means booting NX-OS again. Keep a
+      copy outside any worktree.
 
 ## Not blocking — the board runs, short of these
 
