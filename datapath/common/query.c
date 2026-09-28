@@ -44,6 +44,8 @@
 #include "tapbridge.h"
 #include "acl.h"
 #include "query.h"
+#include "lag.h"
+#include "vlan.h"
 #include "vlan.h"
 #include "lag.h"
 #include "rstp.h"
@@ -170,7 +172,7 @@ static void port_json(FILE *out, int i)
 	bcm_vlan_t pvid = 0;
 	bcm_stg_t stg = -1;
 	bcm_pbmp_t pbm, ubm;
-	int cpu_member = -1;
+	int cpu_member = -1, lag;
 
 	if (nosaic_tap_info(i, &name, &port, &want_vlan, &want_mtu, mac) != 0)
 		return;
@@ -209,13 +211,23 @@ static void port_json(FILE *out, int i)
 	if (pvid != 0 && bcm_vlan_port_get(query_unit, pvid, &pbm, &ubm) == BCM_E_NONE)
 		cpu_member = BCM_PBMP_MEMBER(pbm, 0) ? 1 : 0;
 
+	/*
+	 * What the port is being used as. A switched port lives in a user VLAN,
+	 * not its routed service VLAN, and the CPU is a member only if the VLAN
+	 * has an SVI; a LAG member is carried by its LAG's tap, not its own; and
+	 * a port spanning tree blocks is doing its job. Without these the
+	 * comparison calls all three faults.
+	 */
+	lag = nosaic_lag_of_port(port);
 	fprintf(out,
 		"%s{\"name\":\"%s\",\"port\":%d,\"link\":%d,\"enabled\":%d,"
 		"\"pvid\":%d,\"want_vlan\":%d,\"stg\":%d,\"stp\":%d,"
 		"\"cpu_member\":%d,\"frame_max\":%d,\"speed\":%d,"
+		"\"switched\":%d,\"lag\":\"%s\","
 		"\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\"}",
 		i ? "," : "", name, port, link, enabled, (int)pvid, want_vlan,
 		(int)stg, stp, cpu_member, frame_max, speed,
+		nosaic_vlan_port_switched(port) ? 1 : 0, lag ? nosaic_lag_name(lag) : "",
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 

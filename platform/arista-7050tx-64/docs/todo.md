@@ -252,11 +252,10 @@ A deliberate pass over the claims this board had not been asked to prove.
   withdrawal, ECMP member removal and FIB reconvergence are all still unproven
   here.
 
-- ⚠ **`nosaic verify ports` and `nosaic verify routes` are stubs.** Both are
-  advertised in the CLI's own help and both answer "implemented in the C CLI and
-  not yet here". They are the commands that compare what Linux believes against
-  what the chip actually holds, which is exactly the check this board most
-  wants — every FIB claim here rests on reading the datapath's own log instead.
+- ✅ **`nosaic verify ports` and `nosaic verify routes` work on this board**
+  (2026-09-28). The Go CLI does the same comparison as the C one. On the TX
+  every route the kernel holds that is not directly attached was in the chip,
+  its ECMP routes marked as such.
 
 ## Blocking — the board is not at parity with the predecessor without these
 

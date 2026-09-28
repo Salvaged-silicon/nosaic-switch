@@ -136,9 +136,9 @@ int nosaic_asic_ports(void)
 
 	printf("%-7s %-30s %-42s %s\n", "port", "linux", "asic", "");
 	for (p = p != NULL ? strchr(p, '{') : NULL; p != NULL; p = strchr(p + 1, '{')) {
-		char name[32], mac[32], lin[80], asic[96], verdict[96];
+		char name[32], mac[32], lin[80], asic[96], verdict[96], lag[16];
 		struct linux_state ls;
-		int link, ena, pvid, want, stp, cpu, fmax;
+		int link, ena, pvid, want, stp, cpu, fmax, sw, info = 0;
 
 		nosaic_jstr(p, "name", name, sizeof(name));
 		if (name[0] == '\0')
@@ -151,6 +151,8 @@ int nosaic_asic_ports(void)
 		stp  = nosaic_jint(p, "stp", -1);
 		cpu  = nosaic_jint(p, "cpu_member", -1);
 		fmax = nosaic_jint(p, "frame_max", -1);
+		sw   = nosaic_jint(p, "switched", 0);
+		nosaic_jstr(p, "lag", lag, sizeof(lag));
 
 		linux_state(name, &ls);
 		n++;
@@ -168,18 +170,35 @@ int nosaic_asic_ports(void)
 		 * would bury the one that matters -- a port with no punt path is
 		 * broken whatever its MTU says.
 		 */
+		/*
+		 * A LAG member or a switched port is not a routed port: its VLAN is
+		 * the LAG's or a user VLAN, the CPU is in that VLAN only if it has
+		 * an SVI, and spanning tree may block it on purpose. Those are
+		 * reported for what they are, not as faults.
+		 */
 		verdict[0] = '\0';
 		if (!ls.present)
 			snprintf(verdict, sizeof(verdict), "NO LINUX INTERFACE");
-		else if (cpu == 0)
+		else if (ena == 0)
+			snprintf(verdict, sizeof(verdict), "PORT DISABLED IN THE CHIP");
+		else if (lag[0] != '\0') {
+			snprintf(verdict, sizeof(verdict), "member of %s%s", lag,
+				 stp >= 0 && stp != 4 ? ", blocked by spanning tree" : "");
+			info = 1;
+		} else if (sw && stp >= 0 && stp != 4) {
+			snprintf(verdict, sizeof(verdict),
+				 "switched, vlan %d; blocked by spanning tree", pvid);
+			info = 1;
+		} else if (sw) {
+			snprintf(verdict, sizeof(verdict), "switched, vlan %d", pvid);
+			info = 1;
+		} else if (cpu == 0)
 			snprintf(verdict, sizeof(verdict),
 				 "CPU NOT IN VLAN %d - nothing can reach Linux", pvid);
 		else if (want != 0 && pvid != want)
 			snprintf(verdict, sizeof(verdict),
 				 "VLAN MISMATCH - chip has %d, daemon asked for %d",
 				 pvid, want);
-		else if (ena == 0)
-			snprintf(verdict, sizeof(verdict), "PORT DISABLED IN THE CHIP");
 		else if (stp >= 0 && stp != 4)
 			snprintf(verdict, sizeof(verdict),
 				 "NOT FORWARDING - stp is %s in vlan %d", stp_name(stp), pvid);
@@ -189,7 +208,7 @@ int nosaic_asic_ports(void)
 			snprintf(verdict, sizeof(verdict),
 				 "MTU %d exceeds what the chip will carry (%d)", ls.mtu, fmax);
 
-		if (verdict[0] != '\0' && strncmp(verdict, "link down", 9) != 0)
+		if (verdict[0] != '\0' && !info && strncmp(verdict, "link down", 9) != 0)
 			bad++;
 		printf("%-7s %-30s %-42s %s\n", name, lin, asic, verdict);
 	}
