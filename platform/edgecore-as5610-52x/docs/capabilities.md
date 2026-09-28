@@ -61,8 +61,14 @@ starts lying.
 | Jumbo frames | 9216 | **no** | taps come up at 1500; nothing plumbs an MTU |
 | ECMP | yes | **yes** | 150 transit packets split 80/70 across a pair |
 | ACLs / field processor | yes | **yes** | ingress IPv4 and IPv6: port, protocol, addresses, L4 ports; permit and deny, with counters. 1280 v4 and 768 v6 rules. See [docs/acl.md](../../../docs/acl.md) and [below](#the-blocker-that-was-never-the-silicon) |
-| VLANs (user-facing) | 4K | **no** | per-port service VLANs only; no VLAN model |
-| Link aggregation | yes | **no** | no LACP, no static bonds |
+| VLANs (user-facing) | 4K | **yes** | access, trunk and native, SVIs routed in the chip; see [docs/vlan.md](../../../docs/vlan.md). Unconfigured ports stay in per-port service VLANs |
+| QinQ (802.1ad) | yes | **yes** | provider (tunnel port, 0x88a8 trunk) and customer, 2026-09-28; a TPID mismatch passed 0 of 10 |
+| Link aggregation | yes | **yes** | static and LACP, routed and as a trunk; a member lost cost about 200 ms. [docs/lag.md](../../../docs/lag.md) |
+| Rapid spanning tree | yes | **yes** | loop broken, failover, root moved, a LAG as a tree port; BPDU guard tripped and released. One instance for all VLANs. [docs/stp.md](../../../docs/stp.md) |
+| MLAG | yes | **yes** | a peer of the 7050SX2, 2026-09-27: this half down, peer-link lost or datapath killed, 0 of 600 lost. [docs/mlag.md](../../../docs/mlag.md#a-trident-peer) |
+| Virtual gateway | yes | **IPv4** | in that MLAG pair; IPv6 is built and not run here. [docs/gateway.md](../../../docs/gateway.md) |
+| MAC aging | yes | **yes** | 300 s by default, `mac aging <s>`, 0 for never |
+| IS-IS | — | **yes** | FRR `isisd`, adjacency with the 7050SX2, routes in the chip. [docs/isis.md](../../../docs/isis.md) |
 | Storm control / policers | yes | **no** | nothing rate-limits flooding |
 | Per-port LEDs | link, speed, activity | **yes** | passthrough microcode in the chip's LED processors: dark / green / amber, blinking on traffic. Speed is not shown — this board's chain has two bits per port and both are spent on colour |
 | System LEDs | PSU1, PSU2, diagnostic, fans, locator | read-only | the two registers are known, their bits are not; `platform ledwalk` exists to map them |

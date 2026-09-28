@@ -138,8 +138,9 @@ every boot; on an installed switch it is the ext4 data image and survives both
 a reboot and an upgrade, which is the whole point of keeping configuration out
 of the slot.
 
-**Chip initialisation takes around six minutes** at this log verbosity. Wait
-for it before concluding anything:
+**Chip initialisation takes about 50 s** on a datapath restart; early images,
+logging every SDK message, took around six minutes. Wait for it before
+concluding anything:
 
 ```sh
 doas s6-svstat /run/service/nosd
@@ -190,12 +191,13 @@ doas vtysh -c "conf t" \
 None of this persists in a RAM boot: the overlay is a tmpfs. That is the point
 of this mode.
 
-**A flash-installed image does not need any of the above.** The board's
-`config/network.conf` and `recipes/frr/nosaic/frr.conf` ship in the image, and
-after a power cycle the switch comes back with its loopback, every routed port
-addressed, and `zebra`/`ospfd` already running against them. Changing an
-address means rebuilding an image, which is the wrong shape and is on the
-[todo](todo.md) — but nothing is typed in at the console any more.
+**A flash-installed image does not need any of the above.** The switch's own
+`network.conf` and `frr.conf` live on its data partition, in
+`/mnt/data/config/`, not in the image (`config/network.conf.example` shows the
+shape). After a power cycle it comes back with its loopback, every routed port
+addressed, its VLANs, LAGs and the rest of its switching configuration, and
+`zebra`/`ospfd` already running against them. Changing an address is an edit to
+that file or a `nosaic` command, not an image rebuild.
 
 Note the ordering that makes it work. Front-panel interfaces do not exist until
 `nosd` has created them, minutes after boot, so `apply-network.sh` **waits** for
@@ -299,7 +301,7 @@ doas s6-svc -u /run/service/nosd
 ```
 
 Check the md5 against the build host. The chip is fully reinitialised on
-restart, so this costs the same six minutes as a boot — but not the boot.
+restart, which takes about 50 s here — but not the boot.
 
 ---
 
@@ -308,8 +310,10 @@ restart, so this costs the same six minutes as a boot — but not the boot.
 - **`reboot` needs no `-f`.** PID 1 handles the signal, brings services down
   with a bounded wait, and calls the kernel. Earlier images had no handler and
   hung with services dead and the shell still answering.
-- **Addresses are lost on every `nosd` restart**, because the tap devices are
-  recreated.
+- **Runtime addresses are lost on every `nosd` restart**, because the tap
+  devices are recreated. Anything in `network.conf` comes back on its own: the
+  `network-reconcile` service puts back whatever is missing. An address added
+  by hand with `ip` does not.
 - **There is a window after configuring an address** where traffic to it is
   dropped: `MY_STATION` is already routing packets aimed at us and the
   self-punt entry has not been installed yet. `l3sync` closes it within a

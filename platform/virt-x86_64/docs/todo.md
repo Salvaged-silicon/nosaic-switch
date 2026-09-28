@@ -36,11 +36,14 @@ implementations and two silicon families agree on.
 
 The point of the capability model is that the CLI reports an unsupported
 operation rather than quietly doing less, and this board does exercise that:
-it has no VLAN support, says so, and `dataplane-test.sh` requires the refusal —
-`vlans: reported as unsupported, as this datapath actually is`.
+it has no MLAG, no virtual gateway and no QinQ, and says so for each (see
+[hardware.md](hardware.md#datapath) for why). VLANs were once refused here
+too; they are now a VLAN-filtering bridge, and like LAG and spanning tree they
+are refused only in a namespace where the tool behind them does not work —
+`dataplane-test.sh` reports that case rather than failing it.
 
 What it cannot exercise is *disagreement between two implementations*. It says
-no to one thing and yes to the rest, so a capability that some silicon has and
+no to three things and yes to the rest, so a capability that some silicon has and
 other silicon lacks — ECMP width, ACL slices, IPv6 route capacity — has nothing
 here to differ from. A deliberately restricted second virtual profile would give
 the model two datapaths to be different about, which is the case real boards

@@ -288,6 +288,15 @@ in the x86_64 kernel fragment. [todo.md](todo.md) carries it.
 Two independent network paths, tested on the hardware on 2026-09-17. One is
 alive and one is a dead end, and it is worth being precise about which.
 
+**Since 2026-09-18 the loader's NBI boots our kernel to userspace**, and it is
+how the lab unit runs. The loader defects that reset the board silently --
+the 512-byte vtag 17, the vtag 20 tail padding and the half-written
+`efi_loader_signature` among them -- are worked around by `nbi_build.py`
+([install.md](install.md#the-loaders-own-tftp--this-is-the-one), and the
+list in `board.yml`). What follows is the investigation that got there; where
+it speaks of a next probe or of what is left, that is where it stood at the
+time.
+
 ### The vendor loader's own TFTP — alive, and it loads our kernel
 
 This is the path. `boot tftp://<server>/<file>` moves data fast (5.3 MB across
@@ -923,9 +932,24 @@ detail:
   get by version what Cisco got by backporting, which is the concrete reason
   being on the newer SDK is worth more than the version numbers suggest.
 
-**Capabilities.** Nothing is advertised yet, because nothing has run. The Field
-Processor geometry is measured on this chip and is the one number worth having
-in advance:
+**Download the copper PHYs' firmware only when it is not running.** By default
+the SDK downloads it into all 48 BCM84848s at every datapath start, although
+they keep it for as long as they have power. `phy_force_firmware_load_<1..48>.0=0`
+in `config/asic.conf` lets the driver read each PHY's running version and skip
+the download; after a power cycle it reads 0 and downloads as before. A
+datapath restart went from **242 s to 141 s**, and a power cycle from the PDU
+with that bundle brought the copper up at 10G, both cabled 40G cages up and
+OSPF back to its 3 neighbours.
+
+⚠ **Per port, and only ports 1-48.** A global `phy_force_firmware_load=0`
+reaches the cages' BCM84328s too, whose driver does not check a running
+version: it skips the download outright, and after a power cycle the cage
+transmits and never receives. On this board a global 0 also crashed the
+datapath on a warm restart. The cages keep the global `0x11`.
+
+**Capabilities.** The datapath serves this board the same switchapi as the
+7050TX-64, 1.13, and `show caps` reports it. The Field Processor geometry was
+measured on this chip before anything ran:
 
 | stage | TCAM entries | slices |
 |---|---|---|
@@ -935,8 +959,9 @@ in advance:
 
 Slice entry counts come back as both 256 and 512, so a wide key costs a slice
 twice what a narrow one does — the same double-wide-costs-more behaviour NOSaic
-measured on Trident+ one generation earlier, which is a good sign the ACL model
-in `datapath/common/acl.c` carries over.
+measured on Trident+ one generation earlier. The ACL model in
+`datapath/common/acl.c` did carry over: a deny on eth1_32 blocked and counted
+10 of 10.
 
 ## Platform HAL
 

@@ -4,9 +4,9 @@ How this switch is built and how NOSaic drives it. Everything below was read off
 a running unit; where a value has not been measured yet it says so rather than
 carrying a plausible number.
 
-NOSaic boots on this board and drives the chip; what it does not do yet is
-forward. Measurements marked as EdgeNOS's come from the predecessor project,
-which does forward here — see [todo.md](todo.md) for the split.
+NOSaic is installed on this board, drives the chip, and switches and routes in
+silicon. Measurements marked as EdgeNOS's come from the predecessor project,
+which established the board first — see [todo.md](todo.md) for what is left.
 
 ## At a glance
 
@@ -66,9 +66,9 @@ graph LR
 
 Aboot enforces no signing here and `boot0` is a shell script we control, so an
 unsigned SWI boots. `boot flash:/<image>.swi` at the Aboot prompt is a
-**one-shot**: `boot-config` is never modified, so the next power cycle returns to
-the vendor OS by itself. That is the recovery path and the reason the EOS images
-stay on flash.
+**one-shot**: it does not modify `boot-config`. On this switch `boot-config`
+names NOSaic, so a power cycle boots NOSaic; the EOS images stay on flash, and
+booting one by name at the prompt is the recovery path.
 
 Two things `boot0` does that the kernel cannot do for itself:
 
@@ -234,17 +234,27 @@ it, and three things about how are deliberate:
 A port is matched once and left alone until its link drops, which is the event
 that can change the negotiated speed.
 
+**The firmware download is skipped when it is not needed.** The PHYs keep their
+firmware for as long as they have power, so `asic.conf` sets
+`phy_force_firmware_load_<n>=0` for each copper port, 1–48: the driver reads the
+running version first and downloads only into a PHY that reads 0. A datapath
+restart went from 374 s to 180 s. ⚠ Never set it globally — that reaches the
+40G cages' BCM84328s, which then skip their download outright and, after a power
+cycle, transmit and never receive.
+
 EdgeNOS drives this chip through Broadcom's OpenBCM SDK with a userspace BDE
 over an mmap of BAR0 — the same shape NOSaic uses — and reaches hardware
 forwarding for IPv4 and IPv6, OSPFv2/v3 adjacencies, and ECMP programmed as a
-shared `bcm_l3_egress_ecmp` group. None of that is NOSaic code yet.
+shared `bcm_l3_egress_ecmp` group. NOSaic now does all of that here with its
+own code, and switches as well: VLANs, LAG, RSTP, MLAG, the virtual gateway,
+ACLs and QinQ, all on `nosd-td2`.
 
 ## Platform HAL
 
-`driver: scd`, which NOSaic already implements for the 7050SX2. Expected to
-carry over with different bit assignments: ASIC reset, temperature sensors, PSU
-presence and status, status LEDs, watchdog, and the i2c adapters that reach the
-QSFP EEPROMs.
+`driver: scd`, the same driver as the 7050SX2's, carried over with this
+board's own placements: four temperature sensors and fan control, PSU presence,
+the chassis lamps, the QSFP cages and the i2c adapters that reach their EEPROMs
+all run here. The watchdog is present and not armed.
 
 Not yet established on this board: which reset bits, whether `fanread` is
 trustworthy here (it is not on the SX2), and whether the prefdl SEEPROM can be
@@ -288,9 +298,10 @@ Diagnose it by reading MMD `7.19`, the link-partner ability — `0x0000` on a po
 whose neighbour reports carrier means our PHY was never brought into service,
 not that a pair is broken.
 
-**`boot flash:` is a one-shot.** A plain reboot returns to the vendor OS. That
-is the safety property, not a bug, but it means "reboot the switch" and "reboot
-into our image" are different operations.
+**`boot flash:` is a one-shot.** A plain reboot follows `boot-config`, not
+whatever was last booted by name. That is the safety property, not a bug, but it
+means "reboot the switch" and "reboot into the image I just booted" are
+different operations until `boot-config` names it.
 
 ## Reverse engineering
 

@@ -25,6 +25,15 @@ this board runs the C CLI from `cli/` instead of the Go one — the same command
 against the same contract, which is checked by diffing the two implementations'
 output on a board that can run both.
 
+Since then its datapath has grown to switchapi 1.13 with the other boards',
+and these are proven here with traffic against the other NOSaic switches: VLANs
+and SVIs, LAG (static and LACP), rapid spanning tree with BPDU guard, MLAG as
+a peer of the 7050SX2, the virtual gateway over IPv4, QinQ as provider and
+customer, IS-IS, MAC aging, ACLs, and `nosaic verify`. Each has a section
+below. The IPv6 virtual gateway is built into its datapath and has not been
+run here, and root guard has only been run from the SX2's side of this pair.
+OSPF holds 4 neighbours.
+
 See [install.md](docs/install.md) for how to install it and
 [todo.md](docs/todo.md) for what is left.
 
@@ -181,9 +190,13 @@ regulates the box after the loop stops.
 
 **This CLI is C, not Go.** The gc toolchain has ppc64 and ppc64le and has never
 had 32-bit big-endian PowerPC, so the Go CLI cannot be built for this board at
-all -- see cli/. It provides `platform status` and `platform thermal` and
-refuses the rest of the Go CLI's surface by name, so an operator can tell "this
-board cannot" from "this build has not".
+all -- see cli/. Under `platform` it provides `status`, `thermal`, `ledwalk`,
+`transceivers` and `xcvr`, and refuses the rest of the Go CLI's platform
+commands by name, so an operator can tell "this board cannot" from "this build
+has not". Everything that talks to the datapath is there, down to the newest
+commands: `mac aging` / `show mac`, `switchport ... tunnel` and `tpid`, the
+`stp port` guards, `mlag ... reload-delay` and `verify ports|routes`
+([docs/cli.md](../../docs/cli.md) has the table).
 
 **The PSU decode is not what the register map suggests.** PSU1's status is in
 0x02 and PSU2's in 0x01 -- two registers, not two fields of one -- and presence
@@ -198,8 +211,10 @@ bits mean is not.
 
 ## ECMP
 
-swp1 and swp2 both face the Nexus at equal OSPF cost, so routes behind it have
-two paths. 150 packets across 30 destination addresses, forwarded through the
+When this was measured, swp1 and swp2 both faced the Nexus at equal OSPF cost,
+so routes behind it had two paths. (Since 2026-09-26 they go to the 7050SX2's
+et3 and et4; see [Cabling](#cabling).) 150 packets across 30 destination
+addresses, forwarded through the
 box in hardware, came out 70 on swp1 and 80 on swp2.
 
 Two things had to be right and only one is obvious. `l3sync` reads routes over
@@ -275,6 +290,113 @@ Two more things are specific to this board:
   needed the FIT rewritten, since the kernel is outside the A/B slot, and that
   boot found the initramfs was not waiting for the USB disk.
 
+## LAG and spanning tree
+
+    nosaic lag po5 lacp swp1,swp2
+    nosaic stp on
+    nosaic stp port swp1 bpdu-guard
+
+[docs/lag.md](../../docs/lag.md) and [docs/stp.md](../../docs/stp.md) have
+the measurements; in short, against the 7050SX2 on 2026-09-25 and 26:
+- **LAG.** LACP on swp51 alone, then po5 over swp1 and swp2 in every mode,
+  static and LACP, routed and as a VLAN trunk with SVIs. A member shut under
+  four flows cost the two hashed to it 4 of 300 pings, about 200 ms.
+- **Rapid spanning tree.** A loop of swp1/swp2 against et3/et4 broken with
+  swp2 discarding. The root port lost and back cost 2 pings, the root moved
+  cost 1, and po5 as a tree port taking over from swp51 and handing back cost
+  5 of 400.
+- **BPDU guard,** on 2026-09-27, on swp1, the root port at the time. The
+  first BPDU from the SX2 blocked it and the root port moved to swp2, 200 of
+  200 pings through. Link down released it and link up tripped it again;
+  configured again without the guard, it went back to root and forwarding.
+  The C CLI's `show stp` has the GUARD column.
+
+## MLAG
+
+    nosaic mlag on peer-link <port|poN> [reload-delay <s>]
+    nosaic lag <poN> lacp <port> mlag <id>
+
+Proven on 2026-09-27 as **a peer of the 7050SX2**, with swp1/swp2 to et3/et4
+as the peer-link, the 7050TX-64 dual-homed on one link to each, and a
+[virtual gateway](../../docs/gateway.md) `10.99.40.254` on both. Under 20
+pings a second from the TX to the SX2 and through the gateway, with no
+duplicates in any case:
+
+| Event | Lost |
+|---|---|
+| The SX2's half down and up | 3 and 17 of 600 |
+| This switch's half down and up | 0 of 600 |
+| Peer-link lost | 0 of 600 |
+| This switch's datapath killed | 0 of 600 |
+
+It rejoined 3 s after its configuration was back.
+[docs/mlag.md](../../docs/mlag.md#a-trident-peer) has the test.
+
+⚠ **Found and fixed: Trident+ drops a static station move.** MAC sync installs
+the dual-homed device's MACs as static entries on this switch's half, so a
+frame from the device that came round through the peer arrives on the
+peer-link with a source held static elsewhere. The chip drops that by default,
+and at first every frame the TX sent by way of the SX2 died here -- the AS5610
+could not even resolve the TX. The Trident2 pair never showed it. The
+peer-link's ports now set `bcmPortControlForwardStaticL2MovePkt`.
+
+The IPv6 virtual gateway (switchapi 1.11) is built into this datapath and has
+not been run on this board.
+
+## QinQ
+
+    nosaic switchport swp1 trunk <svid> tpid 0x88a8
+    nosaic switchport swp52 tunnel <svid>
+
+Proven on 2026-09-28 ([docs/vlan.md](../../docs/vlan.md)) both ways round:
+- **Customer:** a plain trunk, tagged 10 and 20 and native 30, across the
+  SX2 and TX as the provider.
+- **Provider:** paired with the SX2 over swp1-et3 at 0x88a8, swp52 a tunnel
+  port, the TX and the Nexus as customers: 20 of 20 on VLANs 10, 20 and
+  native 30. A TPID mismatch on the trunk got 0 of 10 through; a match at
+  0x9100 or 0x88a8 carried it.
+
+⚠ **Found and fixed:** a port set back to routed kept its provider TPID, and
+its OSPF adjacency stayed down. Going back to routed now resets it, re-tested
+here.
+
+## IS-IS
+
+FRR's `isisd` runs beside ospfd and ospf6d and is configured in frr.conf
+([docs/isis.md](../../docs/isis.md)). On 2026-09-28 it formed a level-2
+point-to-point adjacency with the 7050SX2, swp1 to et3, and a prefix only
+IS-IS knew, on this switch's loopback, was learned by the SX2 and two hops
+away by the TX, and was in both their chips.
+
+⚠ **Found and fixed on the way: this switch's IPv6 loopback was unreachable.**
+l3sync never delivered an IPv6 loopback address to the CPU. It does now: in
+the [IPv6 gateway](../../docs/gateway.md) test on the SX2 and TX, 20 of 20
+pings reached it in transit through the chip.
+
+## MAC aging and verify
+
+    nosaic mac aging 300
+    nosaic show mac
+    nosaic verify ports
+    nosaic verify routes
+
+Learned MACs age out after 300 s by default, 0 for never, and `mac aging <s>`
+goes in network.conf too. Before switchapi 1.12 L2 aging was never turned on
+and every learned MAC was permanent. `verify ports` and `verify routes` come
+back clean here, and name LAG members and switched ports for what they are
+rather than flagging them.
+
+## Cabling
+
+As of 2026-09-28:
+
+| Port | Far end |
+|---|---|
+| swp1, swp2 | 7050SX2 et3, et4 |
+| swp51 | 7050SX2 et54 |
+| swp52 | 7050TX-64 et52 |
+| swp50 | Nexus 3172TQ eth1_53 -- **not a live link**: this board has no swp50 tap |
+
 ## What is left before this replaces EdgeNOS
 
 Measured against `edgenos/platform/accton-as5610-52x`.
@@ -285,7 +407,10 @@ swp1 and swp2 with traffic on both; OSPFv2 with four adjacencies and OSPFv3 with
 one; forwarding enabled; cooling and environmentals through `nosaic platform`;
 an unattended boot to all of it, 1.7 ms punt latency to a hardware responder,
 and ingress access lists, IPv4 and IPv6, that drop in silicon and count what
-they matched.
+they matched. Past parity since: VLANs and SVIs, LAG, rapid spanning tree
+with BPDU guard, MLAG and the IPv4 virtual gateway, QinQ, IS-IS, MAC aging,
+and a datapath restart the addresses survive -- the `network-reconcile`
+service puts them back.
 
 **Small gaps.** LED writes: both registers are known and their bits are not.
 Per-tray fan status: the register is read and reported raw, because EdgeNOS does

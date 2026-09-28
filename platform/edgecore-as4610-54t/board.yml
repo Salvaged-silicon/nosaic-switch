@@ -141,16 +141,17 @@ device_tree: dts/as4610-54t.dts
 # the platform HAL below rather than a script, so there is no front_panel_init.
 
 # How long the network service waits for interfaces named in network.conf.
-# The swp ports come from the datapath daemon and there is no nosd-helix4 yet,
-# so they cannot appear at all -- the default 600 would be ten minutes spent
-# waiting for something impossible. Raise it once the datapath exists.
+# The swp ports come from the datapath daemon, and nosd-helix4 has never run
+# on this switch, so they cannot be relied on to appear -- the default 600
+# would be ten minutes spent waiting. Raise it once the datapath runs.
 net_wait_secs: 60
 
 profile: minimal
 kernel: ""
 
 # planned. Nothing here has been built or booted: there is no armhf toolchain
-# yet, no nosd-helix4, and NOSaic has never run on this switch. What exists is
+# yet, nosd-helix4 exists in source and has never run, and NOSaic has never
+# run on this switch. What exists is
 # a board directory whose facts were read off the running machine rather than
 # copied from EdgeNOS -- the FIT addresses, the U-Boot capabilities, the CPU
 # feature list, the i2c topology, the flash layout.

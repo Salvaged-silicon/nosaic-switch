@@ -477,11 +477,20 @@ Proven on the switch:
 | | |
 |---|---|
 | Chip out of reset, on the bus, initialised | yes |
-| Ports link, transmit and receive | yes, on all four cabled ports |
+| Ports link, transmit and receive | yes, on every cabled port |
 | 40G QSFP+ cages | link at 40000 and pass traffic, cold boot, no manual step |
 | Tap bridge, ARP and ICMP over hardware ports | yes |
-| OSPFv2 and OSPFv3 adjacencies | Full, to two different vendors' boxes |
+| OSPFv2 and OSPFv3 adjacencies | Full, to two different vendors' boxes; six OSPF neighbours today |
+| IS-IS adjacencies | with the AS5610 and the 7050TX-64, IS-IS routes in the chip (2026-09-28) |
 | Routes into the ASIC | `CHIP route 96/8192`, the chip's own count |
+| ECMP in the chip | 75 transit packets split 40/35 over et52/et53 (2026-09-11) |
+| VLANs, trunks, SVIs, QinQ | yes; QinQ as the provider with the TX and with the AS5610 |
+| LAG, static and LACP | yes |
+| RSTP, root guard | loop, failover, root move, a LAG as tree port; root guard held et3 |
+| MLAG and the virtual gateway | peered with the TX and with the AS5610; gateway IPv4 and IPv6 |
+| ACLs in the field processor | deny and permit, counted |
+| MAC aging | 300 s by default, a setting |
+| `verify ports` / `verify routes` | clean |
 | Hardware forwarding, CPU not involved | measured, see section 6 |
 | Addressing and OSPF across a power cycle | loopback, every routed port, daemons -- unaided |
 | Fans, temperatures, PSUs, transceivers | yes |
@@ -490,17 +499,8 @@ Proven on the switch:
 
 Not proven:
 
-- **ECMP.** `l3sync` takes one next hop per prefix, so the multipath half of
-  the contract is unexercised on this silicon.
 - **The ceiling of the control plane.** 500/s at zero loss is measured; where
   it actually stops is not. Section 6 has the numbers.
-- **Where site configuration lives.** Addresses and OSPF now come back after a
-  power cycle, but they come back from the board's committed `config/` and
-  `recipes/frr/nosaic/frr.conf`, which is the wrong home for site addressing:
-  it means rebuilding an image to change an IP. `/mnt/data` is a tmpfs on a RAM
-  boot, so there is still nowhere persistent for it. See [todo.md](todo.md).
-- **The `full` profile.** `board.yml` says `full` (systemd); only `minimal`
-  (s6) has ever been booted here.
-- **ECMP.** The two uplinks have different costs, so FRR picks one. Equal costs
-  would be needed to see multipath, and `l3sync` takes a single next hop per
-  prefix today.
+- **The `full` profile.** `board.yml` declares `minimal` (s6), the only
+  profile ever booted here; `full` (systemd) has not been made to boot.
+- **BGP and BFD.** FRR carries both; neither has run here.

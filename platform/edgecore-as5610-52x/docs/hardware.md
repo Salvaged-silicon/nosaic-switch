@@ -432,8 +432,11 @@ unselected, and its EEPROM never answers at `0x50`.
 Measured on this board: driving them took the modules answering at `0x50` from
 none to three, and swp49/51/52 from down to up. The three that answer are on
 buses labelled `qsfp_rx_eq_0`, `_2` and `_3`; `qsfp_rx_eq_1` stays silent
-because that cage is empty, which matches `network.conf` listing swp49, swp51
+because that cage was empty, which matches `network.conf` listing swp49, swp51
 and swp52 and not swp50.
+
+⚠ The Nexus 3172TQ's eth1_53 has since been patched to swp50, and it is **not a
+live link**: this board has no swp50 tap, so nothing on it reaches the CPU.
 
 Find them by **address and driver**, never by bus number or address alone:
 `0x70`-`0x77` is also the PCA954x mux range, so an address scan finds muxes. A

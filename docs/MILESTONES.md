@@ -12,8 +12,8 @@ leaves something bootable.
 | **M4** | Base system, and a VM that boots | **Done.** Boots, persists, upgrades atomically with rollback, and the CLI drives a real veth datapath through the contract. All three profiles build and boot in CI: minimal on busybox+s6, slim and full on systemd |
 | **M5** | The boot axis | **Done.** Four backends (virt, onie-sfx, aboot, uboot) emit installable artifacts. Two are now confirmed on hardware rather than by extraction: Aboot boots the 7050SX2 from its own flash, and the ONIE installer put NOSaic on the AS5610's disk |
 | **M6** | First real board | **Done.** The 7050SX2 boots from its own from-source base, reports real sensors and forwards traffic, and `nosaic show ports` answers from Trident2+ silicon through the same contract the virtual platform implements — the speeds come back from the chip |
-| **M7** | Routing and upgrades | **Upgrades done, BGP not started.** On the 7050SX2 a healthy image installed into the inactive slot confirms itself and commits, and one built with an empty port map — it boots, answers ssh and does not forward — burns three attempts and rolls back unattended. OSPFv2 and OSPFv3 hold adjacencies on both boards; no `bgpd` is packaged yet |
-| **M8** | Older architectures | **Started.** The PowerPC toolchain is done and the AS5610-52X is ported, installed on its own disk and back from a cold power cut in ~90 s — 10 ports up, 52 routes, 7 OSPFv2 and 3 OSPFv3 adjacencies, and an A/B upgrade the switch committed itself. armhf and the `onl-swi` backend are not started |
+| **M7** | Routing and upgrades | **Upgrades done, IS-IS done, BGP not started.** On the 7050SX2 a healthy image installed into the inactive slot confirms itself and commits, and one built with an empty port map — it boots, answers ssh and does not forward — burns three attempts and rolls back unattended. OSPFv2 and OSPFv3 hold adjacencies on all four lab switches, and IS-IS on the three Trident generations, with its routes forwarded by the chip. `bgpd` is built into the FRR package but has no service and has not been run |
+| **M8** | Older architectures | **Started.** The PowerPC toolchain is done and the AS5610-52X is ported, installed on its own disk and back from a cold power cut in ~90 s — 10 ports up, 52 routes, 7 OSPFv2 and 3 OSPFv3 adjacencies, and an A/B upgrade the switch committed itself. On armhf the AS4610's Helix4 datapath compiles and has not run; the `onl-swi` backend is not started |
 
 ## Spikes
 
@@ -32,10 +32,19 @@ rest: what was proven, and where.
 
 | | Feature | Gate |
 |---|---|---|
-| **F1** | Access lists | **Done.** IPv4 and IPv6 rules in the ingress field processor, counted by traffic, on the AS5610 and the 7050SX2. See [acl.md](acl.md) |
+| **F1** | Access lists | **Done on three chip families.** IPv4 and IPv6 rules in the ingress field processor, counted by traffic, on the AS5610, the 7050SX2, the 7050TX-64 and the Nexus 3172TQ. See [acl.md](acl.md) |
 | **F2** | Management VRF | **Done.** eth0 and its routes in table 1001 on all four lab switches, and nothing of the management network in the main table. On the 7050SX2 the pin route is gone and transfers over eth0 run at the pinned rate. See [vrf.md](vrf.md) |
 | **F3** | VLANs and SVIs (switchapi 1.2) | **Done on three chip families.** Between NOSaic switches, both ends set to `trunk 100 native 200` with an SVI in each: tagged and native traffic, and OSPF over the native SVI, on Trident2+/Trident2 (SX2↔TX) and Trident+/Trident2+ (AS5610↔SX2). The Nexus 3172TQ (Trident2) passed the same trunk test against the SX2. Routed into the tagged VLAN by the SX2's chip, the AS5610's and the Nexus's, and switched between access ports by the SX2's, with the CPU counters flat each time. The virtual board passes the same contract with traffic in `make dataplane-test`. See [vlan.md](vlan.md) |
 | **F4** | Switch-derived addresses | **Done.** Every tap and SVI MAC comes from the switch's own base, worked out at boot: the Nexus from its ID PROM, and the AS5610 from its own network.conf, with no fallback warning. The two Aristas derive the same addresses they had by hand |
+| **F5** | Link aggregation (switchapi 1.3) | **Done on three chip families.** Static and LACP port-channels, routed or as trunks, between NOSaic switches on Trident2+, Trident2 and Trident+, with failover under traffic in a second or less. See [lag.md](lag.md) |
+| **F6** | Rapid spanning tree (switchapi 1.4, 1.8) | **Done on three chip families.** A real loop blocked, failover under traffic, a root move, and a LAG as a port in the tree, on SX2↔AS5610 and Nexus↔TX. `show stp` gives the root's times. See [stp.md](stp.md) |
+| **F7** | BPDU guard and root guard (switchapi 1.9) | **Done on Trident2+ and Trident+; built for Trident2.** BPDU guard shut an AS5610 port on the first BPDU and released on a link cycle; root guard held an SX2 port against a better root. The virtual board uses the bridge's own guard and root_block |
+| **F8** | MLAG (switchapi 1.5, 1.10) | **Done, two pairs.** SX2+TX with the Nexus dual-homed, and SX2+AS5610 with the TX dual-homed: no duplicates, and the peer-link or a whole peer lost without losing a packet. A returning half holds its floods, and `reload-delay` holds it through LACP. Not supported on the virtual board. See [mlag.md](mlag.md) |
+| **F9** | Virtual gateway (switchapi 1.6, 1.11) | **IPv4 and IPv6 done on Trident2+ and Trident2; IPv4 on Trident+.** 1200/1200 pings through the gateway with one peer's datapath killed, in both families. See [gateway.md](gateway.md) |
+| **F10** | Tunables (switchapi 1.7, 1.12) | **Done.** Every protocol number (LACP, STP and MLAG timers and priorities) and MAC aging is a setting with a CLI command and a network.conf line. MAC aging was never on before 1.12: learnt addresses were permanent |
+| **F11** | QinQ (switchapi 1.13) | **Done on three chip families.** The SX2 as provider edge to the TX and to the AS5610, with an 802.1ad trunk and a tunnel port; a TPID mismatch drops 10/10. Not supported on the virtual board. See [vlan.md](vlan.md#qinq-8021ad) |
+| **F12** | IS-IS | **Done on three chip families.** FRR's isisd as a service; adjacencies SX2↔AS5610 and SX2↔TX, and IS-IS routes forwarded in the chip. See [isis.md](isis.md) |
+| **F13** | `verify ports`, `verify routes` | **Done in both CLIs.** Linux set against what the chip holds, read back from the chip; LAG members and switched ports named rather than flagged. Clean on all four lab switches. See [cli.md](cli.md) |
 
 Found and fixed on the way, each of them general:
 - a 40G port whose far end was down at bring-up never carried traffic on the
@@ -43,7 +52,17 @@ Found and fixed on the way, each of them general:
 - the initramfs did not wait for a USB data partition, and the AS5610 booted
   stateless;
 - the chip only ever sent an interface's first address to the CPU;
-- an L2 entry's port is (module, port) on a chip that spans two module IDs.
+- an L2 entry's port is (module, port) on a chip that spans two module IDs;
+- L2 aging was never switched on, so every learnt MAC was permanent;
+- at datapath start every port sat in VLAN 1 for seconds, and a neighbour with
+  two links got hundreds of thousands of its own frames back;
+- the SDK's L2 table walk cleared 532 bytes of uncached DMA memory per entry,
+  which starved MLAG's hellos (patched in `recipes/openbcm/patches/0002`);
+- Trident+ drops a static station move unless the port is told to forward it;
+- the kernel sent IPv6 neighbour solicitations from a virtual gateway address,
+  and IPv6 loopback addresses were never delivered to the CPU;
+- downloading firmware to the 48 copper PHYs of the TX and Nexus when it was
+  already running doubled their datapath's start time.
 
 S1 runs ahead of M8 rather than as part of it. If the answer is no, that class of hardware
 needs a pinned ancient compiler, and M8's scope changes — which is worth knowing before a
@@ -51,7 +70,12 @@ distro is built on the assumption that every architecture is equally reachable.
 
 ## Current state
 
-**M0** through **M3** complete. **S1** answered.
+**M0** through **M6** complete; **M7** done but for BGP; **M8** started. **S1**
+answered. The features are in the table above; what each switch can do is on
+[the front page](../README.md#what-each-switch-can-do).
+
+What follows is the history of the early milestones, kept because the reasons
+still hold.
 
 Three toolchains, each gated on three independent properties rather than "did it build":
 
@@ -257,11 +281,8 @@ addresses and routes are installed in the kernel, and multipath is the kernel's
 own — so the ECMP path of the contract is exercised against something that
 genuinely implements it.
 
-It declares VLANs unsupported rather than faking them. Doing them properly
-means a bridge with VLAN filtering, which changes how addresses behave on a
-port; half-implementing them would be exactly what the conformance suite exists
-to catch.
-
-Still to come in M4: the systemd profiles.
-
-Next: the full and slim profiles.
+It declared VLANs unsupported rather than faking them, until it could do them
+properly: a bridge with VLAN filtering, which it now has (switchapi 1.2). What
+a Linux bridge cannot do at all, MLAG, the virtual gateway and QinQ, it still
+declares unsupported rather than half-implements, which is exactly what the
+conformance suite exists to catch.

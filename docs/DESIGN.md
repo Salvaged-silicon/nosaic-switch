@@ -157,6 +157,22 @@ implementation changes with it in the same commit, the virtual one included.
 | 1.0 | ports, admin state, MTU, counters, VLANs (write-only), FDB, addresses, routes with ECMP |
 | 1.1 | access lists: `ACLs`, `SetACL`, `DelACL` ([acl.md](acl.md)) |
 | 1.2 | VLANs you can read back and undo, and routed VLAN interfaces: `VLANs`, `DelPortVLAN`, `AddSVI`, `DelSVI` ([vlan.md](vlan.md)) |
+| 1.3 | link aggregation, static and LACP ([lag.md](lag.md)) |
+| 1.4 | rapid spanning tree ([stp.md](stp.md)) |
+| 1.5 | MLAG ([mlag.md](mlag.md)) |
+| 1.6 | a virtual gateway on an SVI, IPv4 ([gateway.md](gateway.md)) |
+| 1.7 | tunables: LACP, STP and MLAG timers and priorities as settings |
+| 1.8 | the root's times in spanning-tree status |
+| 1.9 | BPDU guard and root guard |
+| 1.10 | MLAG's reload delay, and a returning half that holds its floods |
+| 1.11 | the virtual gateway over IPv6, `Capabilities.VirtualGateway6` |
+| 1.12 | MAC aging as a setting, `Capabilities.MACAging` |
+| 1.13 | QinQ: `SetPortTunnel`, `SetPortTPID`, `Capabilities.QinQ` ([vlan.md](vlan.md#qinq-8021ad)) |
+
+Every setting has a CLI command and a `network.conf` line; one without the
+other is not finished. A board that cannot do something says so in its
+capabilities and refuses the call, as the virtual board does for MLAG, the
+gateway and QinQ.
 
 1.2 also fixed a model the earlier calls only implied. **A port is routed
 until it joins a VLAN, and switched while it is in one.** A routed port is a
@@ -192,7 +208,9 @@ running them side by side on a board that can host either: `show caps` and `show
 come back byte-for-byte identical. An architecture the compiler cannot reach is not a
 reason for a switch to be operated differently. The VLAN commands followed the same rule:
 `vlan`, `switchport`, `svi` and `show vlans` exist in both, with the same grammar and the
-same end-state semantics, and the AS5610 was driven through the C one to prove it.
+same end-state semantics, and the AS5610 was driven through the C one to prove it. So did
+everything after them: LAG, spanning tree and its guards, MLAG, the gateway, MAC aging,
+QinQ, and `verify ports` and `verify routes`.
 
 ## Image layout and upgrades
 

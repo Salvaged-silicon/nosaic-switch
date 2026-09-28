@@ -31,8 +31,9 @@ asic: td2
 # built as a PE32+ EFI application and stored inside the BIOS flash, not on
 # the disk. It is deliberately not in NOSaic's path, for one measured reason:
 # it boots only an `mknbi-linux` NBI container, and an image built in its exact
-# four-descriptor shape transfers, passes the load-address check, prints
-# `CardIndex = 11091` and then resets the board. Nobody has established why.
+# four-descriptor shape transferred, passed the load-address check, printed
+# `CardIndex = 11091` and then reset the board. (Established since, and worked
+# around: see Status below. The lab unit netboots that way today.)
 #
 # Underneath it the firmware will launch a kernel directly, and there is
 # nothing in the way: no Platform Key, no `db`/`dbx`, no TCG protocol, no
@@ -43,8 +44,8 @@ asic: td2
 #
 # So: `boot: uefi`. The kernel is the boot image, CONFIG_EFI_STUB makes it a
 # valid PE32+ application, and it lives on an EFI system partition as
-# \EFI\BOOT\BOOTX64.EFI. Nothing of ours needs the NBI format, and the NBI
-# reset is somebody else's problem to finish.
+# \EFI\BOOT\BOOTX64.EFI. An install does not need the NBI format; only the
+# netboot does.
 boot: uefi
 
 # The kernel command line, rendered into startup.nsh on the EFI system
@@ -167,7 +168,10 @@ kernel: ""
 # its NBI container, with nothing installed: kernel, initramfs, s6-rc, a login
 # prompt, FRR -- and nosd attaches the Trident II and runs through the SDK's
 # chip bring-up (soc_reset_init, soc_misc_init, soc_mmu_init, bcm_attach,
-# bcm_init). It is not installed, and no port has been brought up yet.
+# bcm_init). It is not installed. Since then all 48 copper ports and the six
+# 40G cages come up, and it routes and has run LAG, RSTP, ACLs, QinQ and the
+# rest with the other lab switches -- see README.md. Still netboot-only, which
+# is why this stays bringup.
 #
 # Getting there meant working around five defects in that loader, all of them
 # read out of its own modules and written up in the RE repository's
@@ -268,10 +272,8 @@ status: bringup
 # ours. Until it has been run, no i2c map is declared here, because one would
 # be a guess that reads a device that is not there.
 #
-# ⚠ And the shape it will be declared in does not exist on this branch yet:
-# platform_hal.i2c and internal/platformhal/i2cmap.go were written for the
-# Edgecore AS4610 and live on board/edgecore-as4610-54t. Two boards now want
-# it, which is the argument for landing it on main.
+# platform_hal.i2c and internal/platformhal/i2cmap.go are on main now, and
+# still do not fit, for the reason given above.
 #
 # ⚠ THE UNMANAGED DUTY IS STILL UNOBSERVED.
 #

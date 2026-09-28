@@ -3,8 +3,9 @@
 What `nosaic config set acl_<seq> "<rule>"` does, on a board whose datapath has
 a field processor to put it in. Proven on the
 [Edgecore AS5610-52X](../platform/edgecore-as5610-52x/README.md#acls), IPv4 on
-2026-09-16 and IPv6 the day after; built into the 7050SX2's datapath and not
-yet tested there.
+2026-09-16 and IPv6 the day after; IPv4 on the 7050SX2 (Trident2+) on
+2026-09-17; and on the Trident2, the 7050TX-64 and the Nexus 3172TQ, on
+2026-09-27.
 
 ## A rule is a setting
 
@@ -179,7 +180,7 @@ encoding would be a second grammar to keep in step.
 |---|---|---|---|
 | `mem` (the reference) | memory | nothing; it forwards nothing | the conformance suite, in `go test` |
 | `virt` (veth) | one nftables chain on the prerouting hook, rewritten atomically on each change | `drop`; `accept` for a permit ends the chain so a later deny is shadowed | `boot/virt/dataplane-test.sh` in CI: pings from a neighbour namespace, dropped, counted, restored |
-| `nosd-tdp`, `nosd-td2p` (Broadcom) | the configuration file, then the ingress field processor | the FP entry's drop, paired with cancel-copy-to-CPU | the measurements above, on the AS5610 |
+| `nosd-tdp`, `nosd-td2p`, `nosd-td2` (Broadcom) | the configuration file, then the ingress field processor | the FP entry's drop, paired with cancel-copy-to-CPU | the measurements above, on the AS5610, the 7050SX2, the 7050TX-64 and the Nexus |
 
 `datapath/common/acl.c` is the whole Broadcom side: written against the
 SDK's `bcm_field` API alone, so it is shared by every Broadcom datapath, and

@@ -12,8 +12,11 @@ the vendor has abandoned, given a modern, open, maintained OS.
 > set of commands. They route with OSPF, and switch and route VLANs in silicon —
 > access, trunk and routed VLAN interfaces, proven between NOSaic switches on
 > three chip families, bundle links into LACP port-channels, break
-> switching loops with rapid spanning tree, and pair up for MLAG with a shared
-> gateway. Their management ports sit in a VRF of their own. The ones
+> switching loops with rapid spanning tree guarded against rogue BPDUs, carry
+> customer VLANs through QinQ tunnels, and pair up for MLAG with a shared IPv4
+> and IPv6 gateway. They route with IS-IS as well as OSPF, and can check their
+> own chip against Linux with `nosaic verify`. Their management ports sit in a
+> VRF of their own. The ones
 > installed to flash take A/B upgrades that the switch itself commits or rolls
 > back, and come back from a cold power cut on their own.
 >
@@ -25,7 +28,7 @@ the vendor has abandoned, given a modern, open, maintained OS.
 > [docs/MILESTONES.md](docs/MILESTONES.md) is what lands when.
 > Operating one: [the CLI](docs/cli.md), [VLANs and SVIs](docs/vlan.md),
 > [link aggregation](docs/lag.md), [spanning tree](docs/stp.md), [MLAG](docs/mlag.md), [virtual gateway](docs/gateway.md),
-> [the management VRF](docs/vrf.md),
+> [IS-IS](docs/isis.md), [the management VRF](docs/vrf.md),
 > [access lists](docs/acl.md).
 
 ## The switches
@@ -39,7 +42,7 @@ hand-maintained list of hardware on the front page is the first thing to go stal
 | Switch | Silicon | Arch | Boots via | Status |
 |---|---|---|---|---|
 | [arista 7050sx2-72q](platform/arista-7050sx2-72q/) | td2p | x86_64 | aboot | experimental |
-| [arista 7050tx-64](platform/arista-7050tx-64/) | td2 | x86_64 | aboot | bringup |
+| [arista 7050tx-64](platform/arista-7050tx-64/) | td2 | x86_64 | aboot | experimental |
 | [cisco n3172tq](platform/cisco-n3172tq/) | td2 | x86_64 | uefi | bringup |
 | [edgecore as4610-54t](platform/edgecore-as4610-54t/) | helix4 | armhf | onie-sfx | planned |
 | [edgecore as5610-52x](platform/edgecore-as5610-52x/) | tdp | powerpc | onie-sfx | experimental |
@@ -74,17 +77,22 @@ Tridents 2 and 2+, and never to the AS5610's Trident+, which predates it.
 | VLANs, trunks, SVIs | ✅ | ✅ | ✅ | ✅ bridge |
 | QinQ (802.1ad tunnels) | ✅ | ✅ | ✅ | not supported |
 | LAG, static and LACP | ✅ | ✅ | ✅ | ✅ bonds |
-| Rapid spanning tree | ✅ | ✅ | ✅ | ✅ bridge |
+| Rapid spanning tree | ✅ | ✅ | ✅ | ✅ bridge, 802.1D |
 | BPDU guard, root guard | ✅ | 🔧 | ✅ | ✅ bridge |
-| MLAG | ✅ | ✅ | ✅ | ✗ refused |
-| Virtual gateway, IPv4 | ✅ | ✅ | ✅ | ✗ refused |
-| Virtual gateway, IPv6 | ✅ | ✅ | 🔧 | ✗ refused |
+| MLAG | ✅ | ✅ | ✅ | not supported |
+| Virtual gateway, IPv4 | ✅ | ✅ | ✅ | not supported |
+| Virtual gateway, IPv6 | ✅ | ✅ | 🔧 | not supported |
+| MAC aging, settable | ✅ | ✅ | ✅ | ✅ bridge |
 | Access lists, IPv4 and IPv6 | ✅ | ✅ | ✅ | host nftables |
 | IS-IS (FRR isisd) | ✅ | ✅ | ✅ | 🔧 |
 | Management VRF | ✅ | ✅ | ✅ | not used |
+| `verify ports`, `verify routes` | ✅ | ✅ | ✅ | not used |
 
 ✅ proven on the hardware with traffic · 🔧 built and in the daemon, not yet
-run on that chip · ✗ not implemented.
+run on that chip · *not supported*: the board says so in `show caps` and
+refuses the command. On the virtual board that is by design: MLAG and the
+gateway need a chip to steer, and a Linux bridge is either 802.1Q or 802.1ad
+for every port at once, so it cannot tunnel on some ports and trunk on others.
 
 The Edgecore AS4610 (Helix4) has a datapath that compiles but has not run. The
 Arista 7150S (Intel FM6000) is being brought up on its own branch. Neither
@@ -206,7 +214,7 @@ Everything else outstanding is in each board's own list:
 
 For most of its life NOSaic ran every front-panel port as a routed port. It
 switches now, in the chip, and the contract that says how is
-**switchapi 1.8**:
+**switchapi 1.13**:
 
 - **VLANs and SVIs** ([docs/vlan.md](docs/vlan.md)). A port is routed until it
   joins a VLAN; `switchport` makes it an access port or a trunk with a native
@@ -230,17 +238,34 @@ switches now, in the chip, and the contract that says how is
   802.1D-2004 RSTP over the switched ports and LAGs, never the routed ones.
   On a real loop between two NOSaic switches it blocked the redundant link.
   When the forwarding link was cut, it failed over under traffic for two lost
-  pings. A LAG works as a port in the tree.
+  pings. A LAG works as a port in the tree. `show stp` gives the times the
+  root is imposing, and **BPDU guard** and **root guard** protect edge ports
+  and the root's position: BPDU guard shut an AS5610 port on the first BPDU,
+  root guard held a 7050SX2 port against a better root.
 - **MLAG** ([docs/mlag.md](docs/mlag.md)). Two switches joined by a peer-link
   present a LAG as one LACP partner, so a device cabled to both bundles the
   links as one. Between a 7050SX2 and a 7050TX-64, with a Nexus 3172TQ
   dual-homed, it carried traffic every way without duplicates. It survived
   losing the device's link to one peer, the peer-link, and the peer itself,
-  the last two without losing a packet.
+  the last two without losing a packet. The same held for a 7050SX2 paired
+  with an AS5610, across two chip generations and two CPU architectures. A
+  returning half holds its floods until its peer is ready, and a
+  `reload-delay` keeps a rebooted switch out until its routes are in.
 - **A virtual gateway** ([docs/gateway.md](docs/gateway.md)). Both switches of an
   MLAG pair answer for one gateway address with one MAC and route for it, so a
-  host's default gateway survives either switch. With one peer killed under
-  traffic, all 1200 pings through the gateway still arrived.
+  host's default gateway survives either switch, over IPv4 and IPv6. With one
+  peer killed under traffic, all 1200 pings through the gateway still arrived,
+  in both families.
+- **QinQ** ([docs/vlan.md](docs/vlan.md#qinq-8021ad)). `switchport et32 tunnel
+  100` carries whatever a customer sends, tags and all, inside service VLAN
+  100; a trunk can take the 802.1ad TPID, 0x88a8. Proven with the 7050SX2 as
+  provider edge to a 7050TX and to an AS5610.
+- **MAC aging** ([docs/vlan.md](docs/vlan.md#mac-aging)). `mac aging <seconds>`,
+  300 by default. Aging was never switched on before this: learnt addresses
+  were permanent.
+- **IS-IS** ([docs/isis.md](docs/isis.md)). FRR's isisd runs on every switch
+  beside OSPF. Its routes go into the chip like any other; adjacencies and
+  transit forwarding were proven on all three Trident generations.
 - **A management VRF** ([docs/vrf.md](docs/vrf.md)). eth0 lives in its own
   routing table, so what the front panel learns can never capture the switch's
   own management traffic. That once cut an image pull to 21 KB/s and had to be
@@ -253,7 +278,9 @@ switches now, in the chip, and the contract that says how is
 
 `nosaic verify contract` runs the contract's conformance suite against whatever
 datapath is running, over its socket. The checks that gate the reference
-implementation apply unchanged to a switch in a rack. The commands are in
+implementation apply unchanged to a switch in a rack. `nosaic verify ports` and
+`verify routes` set what Linux believes against what the chip holds, read back
+from the chip, and name anything that would stop traffic. The commands are in
 [docs/cli.md](docs/cli.md).
 
 ## The second architecture
@@ -296,13 +323,18 @@ The **[Arista 7050TX-64](platform/arista-7050tx-64/)** is the copper sibling of
 the SX2: Trident2 rather than Trident2+, and 48 ports of 10GBASE-T behind
 external PHYs that need their firmware loaded over MDIO before a single port
 will link. It boots from its own flash, routes over its 40G and copper links,
-and was the far end of the first VLAN trunk between two NOSaic switches.
+and was the far end of the first VLAN trunk between two NOSaic switches. It is
+an MLAG peer of the SX2, runs access lists, QinQ and IS-IS, and restarts its
+datapath in 180 seconds, down from 374, now that PHY firmware already running is
+not downloaded again.
 
 The **[Cisco Nexus 3172TQ](platform/cisco-n3172tq/)** is the first board whose
 vendor never meant it to run anything else. Its firmware is the bootloader, so
 the way in was the vendor loader's own TFTP boot with three of its defects
 worked around. It netboots NOSaic, cools itself through its own platform HAL,
 routes over copper and 40G, and takes its addresses from its identity PROM.
+It is the dual-homed device in the lab's MLAG tests, and has run spanning tree,
+access lists and QinQ. It still netboots and has never been installed.
 
 If you have one of these switches, the ordered path from a rack to a forwarding
 box is **[the walkthrough](platform/arista-7050sx2-72q/docs/walkthrough.md)**.
@@ -371,8 +403,9 @@ lists what there is to choose from, and offers to pick if you are at a terminal:
 $ nosaic build
 Which switch?
       BOARD               INSTALLS BY                                        STATUS
-  1.  arista-7050sx2-72q  a SWI booted by Aboot: copy to flash and point...  bringup
-  2.  virt-x86_64         no installer: QEMU is given the kernel...          bringup
+  1.  arista-7050sx2-72q  a SWI booted by Aboot: copy to flash and point...  experimental
+  2.  arista-7050tx-64    a SWI booted by Aboot: copy to flash and point...  experimental
+  ...
 
 number or name:
 ```
@@ -423,6 +456,12 @@ derivative works — which is what makes an image containing it publishable. It
 also requires that **every distributed copy reproduce all proprietary notices**,
 so those ship in the image's NOTICE. No SDK source is copied into this
 repository; it is referenced by `file:line`.
+
+OpenBCM 6.5.24 is built with two patches, in `recipes/openbcm/patches/`: one to
+build with a current toolchain, and one that sizes the L2 table walk's buffer
+to the table. Without the second, every entry visited cleared 532 bytes of
+uncached DMA memory, and a full walk of the MAC table held MLAG's lock for over
+a second.
 
 ## License
 

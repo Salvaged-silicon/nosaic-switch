@@ -11,9 +11,11 @@ machine and its firmware.
 
 **NOSaic runs on this board.** It netboots through the vendor loader's own
 TFTP to userspace, drives the fans off the ASIC die temperature, brings up all
-48 copper ports and all six 40G cages, and routes: four OSPF adjacencies, two
-over copper to the 7050TX-64 and two over 40G to the 7050SX2 and the AS5610,
-each pinging under 1.3 ms.
+48 copper ports and all six 40G cages, and routes, with three OSPF neighbours
+as of 2026-09-28. On top of that it has been the dual-homed device in an MLAG
+test, run rapid spanning tree with the 7050TX-64, and carried VLANs, QinQ as a
+customer, ACLs and an IPv6 virtual gateway as a client --
+[Running it today](#running-it-today) has the list.
 
 Everything here was read off the hardware rather than guessed — there is no
 ONIE, no installer environment, no reference design and no documentation for
@@ -39,15 +41,15 @@ this machine.
 | Console | `ttyS0` @ **9600** |
 | Board codename | **`quickzinc2`** (`qz2`) — Cisco's, and it is how the firmware refers to this board throughout |
 | Vendor OS | NX-OS 7.0(3)I7(9) |
-| Status | **bringup** — boots, cools, routes; 48 copper and 6 × 40G up; netbooted, with the management VRF and VLAN/SVI support (switchapi 1.2) |
+| Status | **bringup** — boots, cools, routes; 48 copper and 6 × 40G up; netbooted only, never installed; runs the same build as the other lab switches (switchapi 1.13) |
 
 - **[Hardware reference](docs/hardware.md)** — the block diagram, the boot
   chain, the port map, the four platform transports, and the quirks
 - **[Build](docs/build.md)** — building an image, and the three generators you
   have to run against your own switch
 - **[Install](docs/install.md)** — getting it onto the switch, and getting back
-- **[Todo](docs/todo.md)** — the ordered path from here, and it starts with the
-  fans
+- **[Todo](docs/todo.md)** — what is proven, and what is left: an install,
+  recovery, the front-panel LEDs
 
 > **Start over the network, not with an install.** The vendor loader's own TFTP
 > boots an `mknbi-linux` NBI container and ours goes all the way to userspace.
@@ -103,8 +105,8 @@ vendor OS to compare against register by register when ours misbehaves. When
 wrong, this box shows what the same chip reports when it is working: `fp show`
 prints the qsets, the select codes, the slice assignment and the meter
 accounting in one output. Its ingress Field Processor is **4096 entries**,
-measured — twice Trident+'s, and the number `datapath/common/acl.c` will be
-judged against.
+measured — twice Trident+'s. `datapath/common/acl.c` runs on this chip now:
+a deny on eth1_32 blocked and counted 10 of 10.
 
 ## The firmware is the bootloader
 
@@ -280,8 +282,8 @@ The kernel and the image carry what that needs — `I2C_I801`,
 `I2C_MUX_PCA954x`, `GPIOLIB` (⚠ which no x86 defconfig sets, and which the
 mux driver silently needs), `HWMON`, a shortlist of sensor drivers as modules,
 and busybox's `i2c*` applets. A switch that cannot read its own temperature is
-one nobody should leave running, so that path ships even though the HAL that
-will use it does not exist yet.
+one nobody should leave running, so that path ships, and the board's own HAL,
+`n3172tq`, now uses it for the fans, sensors and PSUs.
 
 ## Running it today
 
@@ -296,7 +298,8 @@ can stay in the tree.
 The generated `portmap.conf`, `polarity.conf` and `retimer.conf` have to be
 there too, or nosd restart-loops.
 
-As of 2026-09-25 it runs the same build as the other lab switches:
+As of 2026-09-28 it runs the same build as the other lab switches, main at
+switchapi 1.13:
 - **the management VRF** ([docs/vrf.md](../../docs/vrf.md)), mgmt0 as `eth0`
   in table 1001;
 - **addresses from its own ID PROM**: `switch-mac.sh` asks `nosaic platform
@@ -311,11 +314,48 @@ As of 2026-09-25 it runs the same build as the other lab switches:
   - traffic from the 7050TX-64 arriving on the routed eth1_31 was routed by
     this chip into the tagged VLAN, 20/20, with the next hop resolved to
     eth1_54 from the L2 table and the CPU counters not moving at all;
+- **LAG**, 2026-09-26 ([docs/lag.md](../../docs/lag.md)): LACP over
+  eth1_31/eth1_32 to the TX's et31/et32, OSPF over it and transit forwarded
+  into it in the chip. A member shut under four flows cost the two hashed to
+  it 20 of 300 pings, about 1 s.
+- **The dual-homed device in an MLAG test** ([docs/mlag.md](../../docs/mlag.md)),
+  with the 7050SX2 and 7050TX-64 as the peers: `lag po7 lacp
+  eth1_54,eth1_31`, one link to each, nothing MLAG-specific configured here,
+  and no duplicates.
+- **Rapid spanning tree** with the TX over the two copper links
+  ([docs/stp.md](../../docs/stp.md)): the loop broken with eth1_32 as the
+  alternate, the root port lost and regained, the root moved, and a LAG as
+  the tree port.
+- **The IPv6 virtual gateway, as a client** ([docs/gateway.md](../../docs/gateway.md)):
+  it resolved the pair's gateway to the virtual MAC `00:00:5e:00:01:01` and
+  kept it.
+- **ACLs** ([docs/acl.md](../../docs/acl.md)): a deny on eth1_32 blocked and
+  counted 10 of 10, and removing it let them through.
+- **QinQ, as a customer** ([docs/vlan.md](../../docs/vlan.md)): a plain
+  trunk, tagged 10 and 20 and native 30, carried across the SX2 and TX as
+  the provider.
+- **`nosaic verify ports` and `verify routes`** come back clean.
 - **ssh by key.** A netbooted image has no data partition, so a key cannot
   come from `/mnt/data/secrets`. The board's gitignored
   `config/authorized_keys` is baked into the image instead, the same file
   the other boards use, and `ssh root@<address>` works like on any other
   board.
+
+**A datapath restart takes 141 s, down from 242 s.** Most of it was the SDK
+downloading firmware into all 48 BCM84848 copper PHYs over MDIO, every time,
+though they keep it while they have power. `asic.conf` now sets
+`phy_force_firmware_load_<1..48>.0=0`, so each copper PHY is loaded only when
+it is not already running. ⚠ **Per port, never global:** a global 0 also
+reaches the 40G cages' BCM84328s, whose driver skips the download outright,
+and after a power cycle those cages transmit and never receive. The bundle
+with the per-port form was proven by a power cycle from the PDU (apc2 outlet
+3): the copper came up at 10G, both cabled 40G cages came up, and OSPF
+reached its 3 neighbours.
+
+⚠ **eth1_53 to the AS5610's swp50 is not a live link.** The fibre is there,
+but the AS5610 has no swp50 tap, so nothing crosses it. The earlier record of
+an adjacency over it, in [todo.md](docs/todo.md), is from a configuration
+that is no longer on that switch.
 
 ⚠ **The console server can lose this port.** Three times on 2026-09-24/25,
 port 30 of the 2811 went silent: the telnet negotiation arrives and then

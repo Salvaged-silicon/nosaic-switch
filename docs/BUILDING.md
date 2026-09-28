@@ -252,7 +252,8 @@ implementation has no safety net at all.
 
 ## What is not here yet
 
-The only board is `virt-x86_64`, which is a real image with a virtual dataplane
-(veth pairs behind a bridge) rather than a stub. Real switches land from M6; see
-[MILESTONES.md](MILESTONES.md). The `full` and `slim` profiles are unfinished —
-`minimal` is the one that boots today.
+`virt-x86_64` is a real image with a virtual dataplane (veth pairs behind a
+bridge) rather than a stub, and the one CI boots. The real switches build the
+same way, `nosaic build <board>`; their own **build** pages say what else they
+need, such as the OpenBCM SDK. See [MILESTONES.md](MILESTONES.md) for what is
+done. All three profiles, minimal, slim and full, build and boot in CI.

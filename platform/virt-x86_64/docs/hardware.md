@@ -109,6 +109,55 @@ honestly: what the Linux bridge cannot do is reported as unsupported rather than
 silently doing less. That is the behaviour the contract exists to enforce, and
 this board is where it is tested.
 
+It speaks contract **1.13**, the same as the silicon datapaths, and what it
+does is the kernel's own switching (`internal/nosd/virt/`):
+
+| Feature | How the kernel does it |
+|---|---|
+| VLANs and SVIs | a VLAN-filtering bridge, `br0`; an SVI is `vlan<VID>` on top of it |
+| LAG, static and LACP | a bond per LAG (`balance-xor` or `802.3ad`), accepted wherever a port is |
+| Spanning tree | the bridge's own, at hello 1 s, forward delay 4 s, max age 6 s |
+| BPDU guard, root guard | the bridge port's `guard` and `root_block` |
+| MAC aging | the bridge's `ageing_time` |
+| Access lists, IPv4 and IPv6 | nftables, with its counters |
+| Routes, ECMP, IPv6 | the kernel's routing table |
+
+Each is declared only where the tool behind it (the bridge, bonding, nftables)
+works in the namespace, and refused where it does not. `make dataplane-test`
+drives VLANs, LACP, a spanning tree loop and both guards with real frames.
+
+Three things the bridge does differently from a chip, and the datapath says so
+rather than hiding it:
+
+- **The spanning tree is 802.1D, not rapid.** It is what a Linux bridge runs.
+  It elects the same root and blocks the same loops, more slowly (about eight
+  seconds to converge with the short timers), and it has no edge ports: an edge
+  setting is kept and shown as configured, but is never operational. The
+  kernel reports only the times in use, so `show stp`'s root times read the
+  same as the bridge's own.
+- **Root guard is inferred, not read.** The kernel throws the better BPDU away
+  without recording it, so nothing names the root it refused. A root-guarded
+  port that stays in listening for longer than one forward delay is reported
+  as held. The chip datapaths know, and say so exactly.
+- **MAC aging cannot be told "never".** An `ageing_time` of 0 turns learning
+  off and the bridge floods every frame, so `mac aging 0` is handed to the
+  kernel as 1,000,000 s and still reads back as 0. The learned table itself is
+  not read back: `L2Learning` is false here.
+
+**Not supported, by design.** Each is refused as unsupported:
+
+- **MLAG.** A Linux bond has no way to present one LACP system from two
+  machines.
+- **The virtual gateway**, IPv4 or IPv6. It would need a macvlan per address
+  answering with the virtual MAC, and is not done here.
+- **QinQ.** A Linux bridge's VLAN protocol is the bridge's, 802.1Q or 802.1ad
+  for every port at once, so it cannot hold customer ports and 802.1Q trunks
+  side by side the way a chip does. A half-honest imitation would pass tests
+  the hardware then fails.
+
+IS-IS is FRR's and needs nothing from the datapath, but it has not been tested
+on this board.
+
 ## Platform HAL
 
 Stubbed. There are no sensors, fans, PSUs or transceivers to read, and the HAL
