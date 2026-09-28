@@ -35,11 +35,52 @@ const char *fm_boot_step_name(int step)
 	return step_names[step];
 }
 
-static void set(struct fm_boot_report *rep, int step, int rv, const char *note)
+/*
+ * Record a step, and with it how many times the chip reset itself while the
+ * step ran.
+ *
+ * The count is sampled here rather than around the whole sequence because the
+ * interesting question is never "did the boot reset the chip" -- it does --
+ * but which step did it. A step that returns FM_OK with a non-zero reset count
+ * did not happen: the watchdog put the fabric back to defaults underneath it,
+ * and everything it wrote is gone.
+ */
+/*
+ * Close the report off: the last fatal code, and whether the run was clean.
+ *
+ * `ok` and `clean` are deliberately different. `ok` is what the steps said.
+ * `clean` also requires that the chip never reset itself, and it is the one
+ * to believe -- a boot with resets in it has written its registers into a
+ * fabric that was subsequently put back to defaults.
+ */
+static void finish(struct fm6000 *d, struct fm_boot_report *rep)
 {
+	struct fm_fatal f;
+	int i, all_ok = 1;
+
+	if (fm_fatal_read(d, &f) == FM_OK)
+		rep->last_fatal = f.last;
+
+	for (i = 1; i < FM_STEP__COUNT; i++)
+		if (i <= rep->reached && rep->step[i].rv != FM_OK &&
+		    rep->step[i].rv != FM_ENOADDR)
+			all_ok = 0;
+
+	rep->ok = all_ok;
+	rep->clean = all_ok && rep->resets == 0;
+}
+
+static void set(struct fm6000 *d, struct fm_boot_report *rep, int step, int rv,
+		const char *note)
+{
+	uint32_t now = fm_fatal_count(d);
+
 	rep->step[step].rv = rv;
 	rep->step[step].what = fm_boot_step_name(step);
 	rep->step[step].note = note;
+	rep->step[step].resets = now > rep->mark ? now - rep->mark : 0;
+	rep->resets += rep->step[step].resets;
+	rep->mark = now;
 	rep->reached = step;
 }
 
@@ -132,11 +173,12 @@ int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 	return fm_boot_cold_opt(d, rep, 1);
 }
 
-int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
+static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 {
 	int rv;
 
 	memset(rep, 0, sizeof(*rep));
+	rep->mark = fm_fatal_count(d);
 
 	/*
 	 * Steps 1-3. Asserting and releasing CHIP_RESET_N is the board's job,
@@ -148,25 +190,25 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 * So the test for "steps 1-3 happened" is simply that the chip answers.
 	 */
 	if (d->regs == NULL) {
-		set(rep, FM_STEP_RESET_RELEASED, FM_ERR,
+		set(d, rep, FM_STEP_RESET_RELEASED, FM_ERR,
 		    "no BAR mapped -- is the chip still held in reset by the SCD?");
 		return FM_ERR;
 	}
 	if (fm_alive(d) != 1) {
-		set(rep, FM_STEP_RESET_RELEASED, FM_EOFFBUS,
+		set(d, rep, FM_STEP_RESET_RELEASED, FM_EOFFBUS,
 		    "chip is not answering. On the local bus that means it has "
 		    "had no reset PULSE -- being found with the resets clear is "
 		    "not the same thing");
 		return FM_EOFFBUS;
 	}
-	set(rep, FM_STEP_RESET_RELEASED, FM_OK, NULL);
+	set(d, rep, FM_STEP_RESET_RELEASED, FM_OK, NULL);
 
 	/*
 	 * Step 4. With boot-from-ROM disabled the boot controller stalls until
 	 * the CPU drives BOOT_CTRL, which is the mode we are in by construction
 	 * -- we are the CPU and we are about to. Nothing to write.
 	 */
-	set(rep, FM_STEP_BOOT_METHOD, FM_OK, "boot controller waits for us");
+	set(d, rep, FM_STEP_BOOT_METHOD, FM_OK, "boot controller waits for us");
 
 	/*
 	 * Step 5. "Write 0xFFFFFFFF to SCAN_CHAIN_DATA_IN to put the core logic
@@ -186,10 +228,10 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 */
 	rv = fm_wr(d, FM6000_SCAN_CHAIN_DATA_IN, 0xffffffff);
 	if (rv != FM_OK) {
-		set(rep, FM_STEP_SCAN_CHAIN, rv, "write to SCAN_CHAIN_DATA_IN failed");
+		set(d, rep, FM_STEP_SCAN_CHAIN, rv, "write to SCAN_CHAIN_DATA_IN failed");
 		return rv;
 	}
-	set(rep, FM_STEP_SCAN_CHAIN, FM_OK, NULL);
+	set(d, rep, FM_STEP_SCAN_CHAIN, FM_OK, NULL);
 
 	/*
 	 * Step 6. Initialise the PLL and wait for lock, 80 ms maximum.
@@ -202,7 +244,7 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 */
 	rv = fm_wr(d, FM6000_DLL_CTRL, FM6000_DLL_CTRL_ENABLE);
 	if (rv != FM_OK) {
-		set(rep, FM_STEP_PLL, rv, "write to DLL_CTRL failed");
+		set(d, rep, FM_STEP_PLL, rv, "write to DLL_CTRL failed");
 		return rv;
 	}
 	rv = poll_bits(d, FM6000_PLL_STATUS, FM6000_PLL_STATUS_LOCKED_ALL,
@@ -215,12 +257,12 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 		 * sequence needs and they are in the low two bits. Report it
 		 * and carry on, so one unlocked DLL does not hide whether the
 		 * boot commands work. */
-		set(rep, FM_STEP_PLL, rv,
+		set(d, rep, FM_STEP_PLL, rv,
 		    (v & FM6000_PLL_STATUS_PLL_MASK) == FM6000_PLL_STATUS_PLL_MASK
 		    ? "PLLs locked but a DLL did not within 80 ms -- continuing"
 		    : "PLLs did not lock within 80 ms");
 	} else {
-		set(rep, FM_STEP_PLL, FM_OK, NULL);
+		set(d, rep, FM_STEP_PLL, FM_OK, NULL);
 	}
 
 	/*
@@ -234,11 +276,11 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 */
 	rv = release_modules(d, (uint32_t)~FM6000_SOFT_RESET_MSB);
 	if (rv != FM_OK) {
-		set(rep, FM_STEP_MODULES, rv,
+		set(d, rep, FM_STEP_MODULES, rv,
 		    "could not release the non-MSB modules in SOFT_RESET");
 		return rv;
 	}
-	set(rep, FM_STEP_MODULES, FM_OK, "MSB deliberately still held");
+	set(d, rep, FM_STEP_MODULES, FM_OK, "MSB deliberately still held");
 
 	/*
 	 * Steps 8, 9 and 10. Three boot-controller commands, each written into
@@ -250,17 +292,17 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 * untouchable, and it is what fm_bank_mark_initialised() is waiting for.
 	 */
 	rv = boot_command(d, FM6000_BOOT_CMD_FFU_SLICE_NUMBERS);
-	set(rep, FM_STEP_FFU_SLICES, rv, rv == FM_OK ? NULL : "command 1 did not complete");
+	set(d, rep, FM_STEP_FFU_SLICES, rv, rv == FM_OK ? NULL : "command 1 did not complete");
 	if (rv != FM_OK)
 		return rv;
 
 	rv = boot_command(d, FM6000_BOOT_CMD_BANK_MEMORY_REPAIRS);
-	set(rep, FM_STEP_BANK_REPAIR, rv, rv == FM_OK ? NULL : "command 2 did not complete");
+	set(d, rep, FM_STEP_BANK_REPAIR, rv, rv == FM_OK ? NULL : "command 2 did not complete");
 	if (rv != FM_OK)
 		return rv;
 
 	rv = boot_command(d, FM6000_BOOT_CMD_FREELISTS_ALL);
-	set(rep, FM_STEP_FREELISTS, rv, rv == FM_OK ? NULL : "command 3 did not complete");
+	set(d, rep, FM_STEP_FREELISTS, rv, rv == FM_OK ? NULL : "command 3 did not complete");
 	if (rv != FM_OK)
 		return rv;
 
@@ -270,7 +312,7 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 */
 	rv = release_modules(d, 0);
 	if (rv != FM_OK) {
-		set(rep, FM_STEP_MODULES, rv, "could not release MSB");
+		set(d, rep, FM_STEP_MODULES, rv, "could not release MSB");
 		return rv;
 	}
 	/* set() also moves rep->reached, and this one moves it backwards to step
@@ -288,7 +330,7 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 * whatever wants packet DMA. Saying "ok" would claim a link that has not
 	 * been brought up.
 	 */
-	set(rep, FM_STEP_PCIE, FM_ENOADDR,
+	set(d, rep, FM_STEP_PCIE, FM_ENOADDR,
 	    "not attempted: the PCIe block is configured separately, and "
 	    "nothing before packet DMA needs it");
 
@@ -310,18 +352,18 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 * plain 32-bit RAM.
 	 */
 	if (!mem_init) {
-		set(rep, FM_STEP_MEMORY_INIT, FM_ENOADDR, "skipped by request");
+		set(d, rep, FM_STEP_MEMORY_INIT, FM_ENOADDR, "skipped by request");
 		fm_boot_mark_done(d);
 		return FM_OK;
 	}
 	rv = fm_mem_fill(d, FM6000_BANK_STATS_BASE, FM6000_BANK_STATS_SPAN, 0);
 	if (rv != FM_OK) {
-		set(rep, FM_STEP_MEMORY_INIT, rv,
+		set(d, rep, FM_STEP_MEMORY_INIT, rv,
 		    "the chip stopped answering during the STATS fill");
 		return rv;
 	}
 	fm_bank_mark_initialised(d);
-	set(rep, FM_STEP_MEMORY_INIT, FM_OK,
+	set(d, rep, FM_STEP_MEMORY_INIT, FM_OK,
 	    "STATS filled and readable; 0x240000 and 0x260000 are register "
 	    "blocks, not banks, and are left alone");
 
@@ -331,6 +373,21 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	 * -- they wait for step 12. */
 	fm_boot_mark_done(d);
 	return FM_OK;
+}
+
+/*
+ * Every one of boot_steps()' thirteen exits has to be followed by the same
+ * accounting, and the failure paths are the ones where it matters most -- a
+ * sequence that stopped early is exactly when you want to know whether it
+ * stopped because the chip reset itself. So the steps are an inner function
+ * and this is the only way out.
+ */
+int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
+{
+	int rv = boot_steps(d, rep, mem_init);
+
+	finish(d, rep);
+	return rv;
 }
 
 void fm_boot_report_print(const struct fm_boot_report *rep)
@@ -360,8 +417,20 @@ void fm_boot_report_print(const struct fm_boot_report *rep)
 		default:          mark = "FAIL"; break;
 		}
 		printf("  %2d  %s  %s\n", i, mark, fm_boot_step_name(i));
+		if (rep->step[i].resets != 0)
+			printf("          ⚠ the chip reset ITSELF %u time%s under "
+			       "this step -- whatever it wrote is gone\n",
+			       rep->step[i].resets,
+			       rep->step[i].resets == 1 ? "" : "s");
 		if (rep->step[i].note != NULL)
 			printf("          %s\n", rep->step[i].note);
 	}
+
+	if (rep->resets != 0)
+		printf("\n  ⚠ %u self-reset%s during this sequence, last code "
+		       "0x%02x. Steps marked ok above ran, but the watchdog put "
+		       "the fabric back to defaults under them.\n",
+		       rep->resets, rep->resets == 1 ? "" : "s",
+		       rep->last_fatal);
 	fflush(stdout);
 }

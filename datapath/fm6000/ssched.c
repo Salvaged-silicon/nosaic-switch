@@ -36,6 +36,8 @@
 
 #include "pci.h"
 #include "regs.h"
+#include <string.h>
+
 #include "ssched.h"
 
 /*
@@ -105,7 +107,40 @@ static void ring_slot(uint32_t *visit, unsigned port)
 	visit[port / 4] |= (uint32_t)port << (8 * (port % 4));
 }
 
-int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
+static const char *phase_names[FM_SSCHED_PH__COUNT] = {
+	[FM_SSCHED_PH_TICK]    = "tick",
+	[FM_SSCHED_PH_SWEEPER] = "sweeper config",
+	[FM_SSCHED_PH_CLEAR1]  = "replace tokens cleared",
+	[FM_SSCHED_PH_TOKENS]  = "ring tokens inserted",
+	[FM_SSCHED_PH_VISIT]   = "visit table",
+	[FM_SSCHED_PH_SLOW]    = "slow-port mask",
+	[FM_SSCHED_PH_START]   = "RX/TX INIT_COMPLETE",
+	[FM_SSCHED_PH_CLEAR2]  = "replace tokens cleared again",
+	[FM_SSCHED_PH_FIND]    = "find probe",
+};
+
+const char *fm_ssched_phase_name(int ph)
+{
+	if (ph < 0 || ph >= FM_SSCHED_PH__COUNT || phase_names[ph] == NULL)
+		return "?";
+	return phase_names[ph];
+}
+
+/* Close off a phase: how many times did the chip reset itself during it. */
+static void phase(struct fm6000 *d, struct fm_ssched_report *rep, int ph)
+{
+	uint32_t now;
+
+	if (rep == NULL)
+		return;
+	now = fm_fatal_count(d);
+	rep->resets[ph] = now > rep->mark ? now - rep->mark : 0;
+	rep->total += rep->resets[ph];
+	rep->mark = now;
+}
+
+int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
+			struct fm_ssched_report *rep)
 {
 	uint32_t visit[FM6000_SSCHED_NEXT_PORT_WORDS];
 	unsigned i;
@@ -113,6 +148,10 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 
 	if (circulating != NULL)
 		*circulating = 0;
+	if (rep != NULL) {
+		memset(rep, 0, sizeof(*rep));
+		rep->mark = fm_fatal_count(d);
+	}
 
 	for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++)
 		visit[i] = 0;
@@ -128,7 +167,13 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	if ((rv = fm_wr(d, FM6000_SSCHED_TICK_CFG, FM6000_SSCHED_TICK_PERIOD)) != FM_OK)
 		return rv;
 
-	/* The sweeper shares that domain and is configured with it. */
+	phase(d, rep, FM_SSCHED_PH_TICK);
+
+	/* The sweeper shares that domain and is configured with it -- but see
+	 * FM_SSCHED_NO_SWEEPER: word 3 of this register starts a reset storm on
+	 * a chip whose swept tables are not initialised yet. */
+	if (flags & FM_SSCHED_NO_SWEEPER)
+		goto no_sweeper;
 	if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_0, 0x0008bb2cu)) != FM_OK)
 		return rv;
 	if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_1, 0x00000002u)) != FM_OK)
@@ -142,11 +187,16 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
 
+no_sweeper:
+	phase(d, rep, FM_SSCHED_PH_SWEEPER);
+
 	/* Clear both replace-token registers before programming. */
 	if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, 0)) != FM_OK)
 		return rv;
 	if ((rv = fm_wr(d, FM6000_SSCHED_TX_REPLACE_TOKEN, 0)) != FM_OK)
 		return rv;
+
+	phase(d, rep, FM_SSCHED_PH_CLEAR1);
 
 	/* Insert the ring, in service order, both directions. */
 	for (i = 0; i < sizeof ssched_ring; i++) {
@@ -163,6 +213,8 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
 
+	phase(d, rep, FM_SSCHED_PH_TOKENS);
+
 	/* The visit table, same in both directions. */
 	for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++) {
 		if ((rv = fm_wr(d, FM6000_SSCHED_RX_NEXT_PORT(i), visit[i])) != FM_OK)
@@ -173,10 +225,14 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
 
+	phase(d, rep, FM_SSCHED_PH_VISIT);
+
 	/* One slow-port mask, not five: the running switch writes only the
 	 * first, and the other four are left as the boot leaves them. */
 	if ((rv = fm_wr(d, FM6000_SSCHED_RX_SLOW_PORT(0), 0x0000000fu)) != FM_OK)
 		return rv;
+
+	phase(d, rep, FM_SSCHED_PH_SLOW);
 
 	/*
 	 * Start it. These are write-1 strobes, and they are checked separately
@@ -192,12 +248,16 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
 
+	phase(d, rep, FM_SSCHED_PH_START);
+
 	/* Clear the replace-token registers again, as the running switch does,
 	 * before they are used as a find-probe below. */
 	if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, 0)) != FM_OK)
 		return rv;
 	if ((rv = fm_wr(d, FM6000_SSCHED_TX_REPLACE_TOKEN, 0)) != FM_OK)
 		return rv;
+
+	phase(d, rep, FM_SSCHED_PH_CLEAR2);
 
 	/*
 	 * Ask the running engine to find a token.
@@ -241,6 +301,14 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating)
 		 * one, and sixty-four at 50 ms each is six seconds of nothing. */
 		if (i >= 3)
 			break;
+	}
+
+	phase(d, rep, FM_SSCHED_PH_FIND);
+	if (rep != NULL) {
+		struct fm_fatal f;
+
+		if (fm_fatal_read(d, &f) == FM_OK)
+			rep->last_fatal = f.last;
 	}
 
 	return fm_alive(d) ? FM_OK : FM_EOFFBUS;

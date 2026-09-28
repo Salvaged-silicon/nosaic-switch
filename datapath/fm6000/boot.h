@@ -19,6 +19,8 @@
 #ifndef NOSAIC_FM6000_BOOT_H
 #define NOSAIC_FM6000_BOOT_H
 
+#include <stdint.h>
+
 #include "pci.h"
 
 
@@ -41,12 +43,23 @@ struct fm_boot_step_result {
 	int         rv;		/* FM_OK, FM_ENOADDR, FM_EOFFBUS, FM_ERR */
 	const char *what;	/* what the step does */
 	const char *note;	/* why it stopped, when it did */
+	/* How many times the chip reset ITSELF while this step ran. A step can
+	 * return FM_OK with a non-zero count here, and when it does the step
+	 * did not happen -- the watchdog put the fabric back to defaults under
+	 * it. See struct fm_fatal in pci.h. */
+	unsigned    resets;
 };
 
 struct fm_boot_report {
 	struct fm_boot_step_result step[FM_STEP__COUNT];
 	int reached;		/* the last step attempted */
 	int ok;			/* every step returned FM_OK */
+	/* Total self-resets across the whole sequence, and the code of the last
+	 * one. `ok` does NOT account for these -- see `clean`. */
+	unsigned resets;
+	uint32_t last_fatal;
+	int      clean;		/* every step ok AND the chip never reset itself */
+	uint32_t mark;		/* running FATAL_COUNT, internal to the run */
 };
 
 /*

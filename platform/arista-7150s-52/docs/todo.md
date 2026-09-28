@@ -523,6 +523,27 @@ hang rather than an error.
       moves `_DONE`. Not yet a finding — a self-clearing trigger in an unclocked
       block reads the same — but it is the first asymmetry between what the boot
       controller claims and what the scheduler shows
+- [x] **THE CHIP HAS BEEN RESETTING ITSELF, 2026-09-28.** `FATAL_COUNT`
+      (`0x8`) counts watchdog self-resets; a CRM access timeout writes
+      `FATAL_CODE` and the watchdog puts the management module and core fabric
+      back to defaults, then the chip returns on the local bus by itself. So
+      every step reported `ok` and left nothing behind. Table 4-1 costs 8
+      resets, the ring init cost **315**. See
+      [hardware.md](hardware.md#the-chip-has-been-resetting-itself-the-whole-time)
+- [x] **the ring init's resets are one write**: word 3 of `SWEEPER_CFG`
+      (`0x1c04b`), which arms the manageability reference timers over tables
+      that are not initialised. `FM_SSCHED_NO_SWEEPER` / `--ssched nosweep`
+      skips it, and the ring init now completes with **zero** self-resets
+- [x] **the boot's 8 are all in step 3**, the step-5 scan write, and they
+      depend entirely on `SCAN_CONTROL` bit 4 — 0-15 clean, 16-31 eight resets,
+      32 of 32. The reset default has bit 4 set
+- [ ] **so what does `SCAN_CONTROL` bit 4 mean?** Clearing it makes step 5
+      quiet, but a write that resets nothing may simply be a write that does
+      nothing. Settle whether step 5 is achieving anything either way before
+      calling this fixed
+- [ ] **the ring still does not circulate on a stable chip.** This is now a
+      clean question for the first time — every previous answer was measured on
+      a chip resetting several times a second. Re-run the old dead ends
 - [ ] read `CM_ESCHED_STATE` (`0x116c00`) around a ring init. It reads 0 now,
       and it is the only register we have that watches the egress scheduler
       from outside the block that is stuck

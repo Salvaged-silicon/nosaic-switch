@@ -304,6 +304,69 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
  * controller's bank-repair and freelist commands have run drops the CPU into an
  * unconfigured fabric and hangs it. Release it last.
  */
+/*
+ * The watchdog, and the registers that say the chip reset itself.
+ *
+ * ⚠⚠ READ THIS BEFORE TRUSTING ANY SEQUENCE ON THIS CHIP. FATAL_CODE has three
+ * documented writers: an uncorrectable SRAM error, a CRM access timeout, and a
+ * direct write from a bus master. When it is written the watchdog copies it to
+ * LAST_FATAL_CODE, clears it, increments FATAL_COUNT, waits 64 cycles and then
+ * asserts MASTER_RESET -- which puts the management module and the core fabric
+ * back to their defaults. [DS §4.2, "FATAL_CODE Register"]
+ *
+ * The chip comes back on the local bus by itself afterwards, so this is
+ * invisible: a sequence that reset the chip half way through reports every
+ * step ok and leaves nothing behind. Measured on this board 2026-09-28, from a
+ * chip-reset pulse with FATAL_COUNT at 0:
+ *
+ *	after --boot	FATAL_COUNT 8,  LAST_FATAL_CODE 0xc5
+ *	after --ssched	FATAL_COUNT 45, LAST_FATAL_CODE 0x83
+ *
+ * So Table 4-1 resets the chip eight times while reporting success, and the
+ * scheduler ring init resets it another thirty-seven. That is the most likely
+ * reason the ring initialises byte-perfectly and never circulates: it is being
+ * wiped while it is written. Any bring-up work on this chip should read
+ * FATAL_COUNT before and after and treat a delta as failure, whatever the
+ * step said.
+ *
+ * The SCD's reset pulse is CHIP_RESET_N: it zeroes FATAL_COUNT and
+ * LAST_FATAL_CODE, so a count is always "since the last pulse". Measured.
+ */
+#define FM6000_FATAL_CODE		0x000006
+#define FM6000_LAST_FATAL_CODE		0x000007
+#define FM6000_FATAL_COUNT		0x000008
+#define FM6000_RESET_CFG		0x00000a	/* [RE] reads 0x4010 booted */
+#define FM6000_WATCHDOG_CFG		0x00000b	/* [RE] reads 0 */
+#define FM6000_MGMT_SCRATCH		0x00000c	/* [RE] scratch, reads 0 */
+
+/* The local CPU interface, which is the path everything here takes. [RE] */
+#define FM6000_LCI_CFG			0x000000
+#define FM6000_LCI_RX_FIFO		0x000001
+#define FM6000_LCI_TX_FIFO		0x000002
+#define FM6000_LCI_IP			0x000003
+#define FM6000_LCI_IM			0x000004
+#define FM6000_LCI_STATUS		0x000005	/* [RE] reads 0x6001 booted */
+
+/*
+ * Per-SRAM ECC reporting. Four words each, one bit per SRAM block, and
+ * SRAM_UNCORRECTABLE_FATAL is the per-SRAM enable for "turn this into a chip
+ * reset". [DS §4.4.2 for what they do, RE for the addresses]
+ *
+ * On this board FATAL reads all zero, so an uncorrectable SRAM error does NOT
+ * reset this chip -- which means the resets counted above come from one of the
+ * other two FATAL_CODE writers, most likely the CRM access timeout. Measured
+ * on a booted chip, UNCORRECTABLE_IP has bits 36 and 69 set: two SRAMs have
+ * logged uncorrectable errors and were harmless. That makes IP a free,
+ * non-destructive log of which memories have been touched uninitialised.
+ */
+#define FM6000_SRAM_CORRECTED_IP	0x01c008	/* 4 words */
+#define FM6000_SRAM_CORRECTED_IM	0x01c00c	/* 4 words */
+#define FM6000_SRAM_UNCORRECTABLE_IP	0x01c010	/* 4 words */
+#define FM6000_SRAM_UNCORRECTABLE_IM	0x01c014	/* 4 words */
+#define FM6000_SRAM_UNCORRECTABLE_FATAL	0x01c018	/* 4 words */
+#define FM6000_SRAM_WORDS		4
+
+
 #define FM6000_SOFT_RESET		0x000009
 #define FM6000_SOFT_RESET_PCIE		(1u << 0)	/* PCIe controller */
 #define FM6000_SOFT_RESET_MSB		(1u << 1)	/* core fabric: parser, FFU, L2AR */

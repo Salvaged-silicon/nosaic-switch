@@ -4377,3 +4377,94 @@ clocked would read exactly like this, and so would a done bit that lives
 somewhere other than bit 0. It is written down because it is the first concrete
 asymmetry between "the boot controller says it did it" and "the scheduler says
 it happened", and the ring not circulating is precisely a symptom of that shape.
+
+## The chip has been resetting itself the whole time
+
+Found 2026-09-28, and it reframes most of the port's history.
+
+### The mechanism
+
+`FATAL_CODE` (word `0x6`) has three documented writers: an uncorrectable SRAM
+error, **a CRM access timeout**, and a direct write from a bus master. When it
+is written, the watchdog copies it to `LAST_FATAL_CODE` (`0x7`), clears it,
+increments `FATAL_COUNT` (`0x8`), waits 64 cycles and asserts `MASTER_RESET` —
+which puts the management module and the core fabric back to their defaults.
+[DS §4.2, "FATAL_CODE Register"]
+
+The chip then comes back on the local bus by itself. **That is why nobody
+noticed.** A sequence that was wiped half way through reports every step `ok`
+and leaves nothing behind.
+
+The SCD's reset pulse is `CHIP_RESET_N`: it zeroes `FATAL_COUNT` and
+`LAST_FATAL_CODE`, so a count is always "since the last pulse". Measured.
+
+### What it has been costing us
+
+From a chip-reset pulse with `FATAL_COUNT` at 0:
+
+| after | `FATAL_COUNT` | `LAST_FATAL_CODE` |
+|---|---|---|
+| `--boot` | 8 | `0xc5` |
+| `--ssched` | 315 | `0xa4` |
+
+Table 4-1 resets the chip eight times while reporting success. The scheduler
+ring init resets it **three hundred and fifteen** times. Every conclusion ever
+drawn about this ring was drawn on a chip being reset several times a second.
+
+### Where the boot's eight come from
+
+All eight land in step 3 — the step-5 write of `0xFFFFFFFF` to
+`SCAN_CHAIN_DATA_IN`. Sweeping all 32 values of `SCAN_CONTROL` (`0x1c039`)
+before that write gives a perfectly clean split:
+
+| `SCAN_CONTROL` | self-resets |
+|---|---|
+| `0`–`15` (bit 4 clear) | **0** |
+| `16`–`31` (bit 4 set) | 8 |
+
+32 of 32, no exceptions, and the reset default has bit 4 set — which is why we
+get eight without writing the selector at all. What bit 4 *means* is not
+established, and "clear it" is not yet a fix: an inert write is not the same as
+a correct one.
+
+### Where the ring init's come from: one write
+
+`SWEEPER_CFG` is **one eight-word register** at `0x1c048` (the map gives
+`0x1c050` as the next register), so what this port called `SWEEPER_CFG_0..4`
+are words of it. It programs the manageability module's reference timers —
+PAUSE, POLICERS, the L2 lookup sweepers and FRAME TIMEOUT [DS §9.2], and the
+very next section of the datasheet is the Counter Rate Monitor.
+
+Poking the words one at a time on a booted chip, sampling `FATAL_COUNT` after
+each:
+
+| write | `FATAL_COUNT` |
+|---|---|
+| after boot | 8, stable |
+| `TICK_CFG` | 8, stable |
+| `SWEEPER_CFG` word 0, 1, 2 | 8, stable |
+| **`SWEEPER_CFG` word 3 (`0x1c04b` ← `0x0030a2c3`)** | **storm** |
+| word 4 | storm continues |
+
+So one write starts it. Arming those timers sets background engines walking the
+MAC table and the policer banks; on a chip whose tables are not initialised
+those accesses time out, a CRM access timeout writes `FATAL_CODE`, and the
+watchdog resets the chip — forever. The value being written is a golden one
+captured from a *fully configured* switch, which is exactly the chip state that
+makes it safe.
+
+### The result
+
+`fm_ssched_ring_init()` takes `FM_SSCHED_NO_SWEEPER`, and `fm6000-probe
+--ssched nosweep` uses it. With it, the ring init completes with **zero**
+self-resets and `FATAL_COUNT` stays at 8 indefinitely.
+
+The ring still does not circulate. But it is now being programmed into a stable
+chip for the first time, so for the first time the question is answerable.
+
+### Use this
+
+`fm6000-probe --fatal` reports the count, the last code, and which SRAMs have
+logged uncorrectable errors. `--boot` and `--ssched` now report self-resets per
+step and per phase. **Read the count before and after any sequence on this chip
+and treat an increase as failure, whatever the sequence said.**

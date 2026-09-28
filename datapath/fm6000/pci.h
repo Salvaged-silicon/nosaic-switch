@@ -284,6 +284,34 @@ void fm_sched_mark_ready(struct fm6000 *d);
 int fm_rd_hazardous(struct fm6000 *d, uint32_t word, uint32_t *out);
 
 /*
+ * The watchdog's record of the chip resetting itself.
+ *
+ * ⚠ This is not a nicety. An uncorrectable SRAM error, a CRM access timeout or
+ * a direct write to FATAL_CODE all make the watchdog reset the management
+ * module and the core fabric -- and the chip comes back on the local bus by
+ * itself, so a sequence that was wiped half way through still reports every
+ * step ok. Measured on this board: Table 4-1 resets the chip eight times and
+ * the scheduler ring init another thirty-seven. See regs.h.
+ *
+ * So: read the count before a sequence and after it, and treat any increase as
+ * failure no matter what the sequence said. `readable` is 0 if the chip could
+ * not be read at all, which is different from a count of zero.
+ */
+struct fm_fatal {
+	uint32_t code;		/* FATAL_CODE: pending, not yet acted on */
+	uint32_t last;		/* LAST_FATAL_CODE: what caused the last reset */
+	uint32_t count;		/* FATAL_COUNT: resets since the CHIP_RESET_N pulse */
+	int	 readable;
+};
+
+int fm_fatal_read(struct fm6000 *d, struct fm_fatal *out);
+
+/* Just the count, for the before/after idiom. Returns 0 if unreadable, which
+ * is indistinguishable from a real zero on purpose -- a caller comparing two
+ * samples wants a delta, and an unreadable chip has bigger problems. */
+uint32_t fm_fatal_count(struct fm6000 *d);
+
+/*
  * Write `val` into every word of a bank memory, so its ECC bits become valid.
  *
  * This is Table 4-1 step 12's "software writes memory manually", and it is the

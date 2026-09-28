@@ -470,3 +470,42 @@ int fm_wr(struct fm6000 *d, uint32_t word, uint32_t val)
 		return FM_ERR;
 	return fm_wr_byte(d, word * 4, val);
 }
+
+/*
+ * The watchdog registers live at words 6, 7 and 8, below everything the
+ * hazard table covers, and they are readable whenever the chip answers at all
+ * -- they are in the management module, which is the thing that comes back
+ * after a self-reset. Read them plainly.
+ */
+int fm_fatal_read(struct fm6000 *d, struct fm_fatal *out)
+{
+	int rv;
+
+	if (d == NULL || out == NULL)
+		return FM_ERR;
+
+	out->code = out->last = out->count = 0;
+	out->readable = 0;
+
+	rv = fm_rd(d, FM6000_FATAL_CODE, &out->code);
+	if (rv != FM_OK)
+		return rv;
+	rv = fm_rd(d, FM6000_LAST_FATAL_CODE, &out->last);
+	if (rv != FM_OK)
+		return rv;
+	rv = fm_rd(d, FM6000_FATAL_COUNT, &out->count);
+	if (rv != FM_OK)
+		return rv;
+
+	out->readable = 1;
+	return FM_OK;
+}
+
+uint32_t fm_fatal_count(struct fm6000 *d)
+{
+	struct fm_fatal f;
+
+	if (fm_fatal_read(d, &f) != FM_OK)
+		return 0;
+	return f.count;
+}

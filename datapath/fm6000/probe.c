@@ -55,6 +55,9 @@ static void usage(void)
 "  --bist [config]       configure the memory controllers and run the BIST\n"
 "                        march. 'config' stops after the controllers. WRITES,\n"
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
+"  --fatal               has the chip been resetting itself? Read this after\n"
+"                        ANY sequence -- a step that reports ok while the\n"
+"                        watchdog reset the fabric under it did not happen.\n"
 "  --mrl i-mean-it       shift the vendor scan-chain sequence with a zero\n"
 "                        payload. ⚠ DESTRUCTIVE: it appears to overwrite the\n"
 "                        bank repairs step 9 installed, and the damage only\n"
@@ -62,8 +65,11 @@ static void usage(void)
 "  --try-pair EPL SBUS   confirm or refute one EPL-to-SBus pairing\n"
 "  --saf                 write the store-and-forward matrix (168 writes)\n"
 "  --esched              configure the egress scheduler\n"
-"  --ssched [sync]       initialise the scheduler ring and say whether it\n"
-"                        circulates. 'sync' sets Sync on the mgmt token.\n"
+"  --ssched [sync|nosweep]\n"
+"                        initialise the scheduler ring and say whether it\n"
+"                        circulates. 'sync' sets Sync on the mgmt token;\n"
+"                        'nosweep' skips SWEEPER_CFG, whose word 3 puts this\n"
+"                        chip into a permanent self-reset storm.\n"
 "  --sweep-pairs         find every EPL's SBus address by trying them\n"
 "  --spico N             is the SPICO running? post an interrupt and see\n"
 "  --dfe N               run the RX equaliser adaptation for port N\n"
@@ -703,6 +709,46 @@ int main(int argc, char **argv)
 			printf("\n%s\n", rv == FM_OK ? "ok" : rvstr(rv));
 			rc = rv == FM_OK ? 0 : 2;
 		}
+	} else if (strcmp(argv[i], "--fatal") == 0) {
+		struct fm_fatal f;
+		uint32_t w[FM6000_SRAM_WORDS];
+		unsigned k, b, n;
+
+		if (fm_fatal_read(&dev, &f) != FM_OK) {
+			printf("the chip is not answering\n");
+			rc = 2;
+		} else {
+			printf("  FATAL_COUNT       %u   self-resets since the "
+			       "CHIP_RESET_N pulse\n", f.count);
+			printf("  LAST_FATAL_CODE   0x%02x\n", f.last);
+			printf("  FATAL_CODE        0x%02x%s\n", f.code,
+			       f.code ? "  <-- pending, a reset is coming" : "");
+
+			/* Which SRAMs have logged an uncorrectable error. Free to
+			 * read and it does not clear anything, so it is a running
+			 * log of every memory touched uninitialised. */
+			for (k = 0, n = 0; k < FM6000_SRAM_WORDS; k++)
+				if (fm_rd(&dev, FM6000_SRAM_UNCORRECTABLE_IP + k,
+					  &w[k]) != FM_OK)
+					w[k] = 0;
+			printf("\n  SRAMs with an uncorrectable error logged:");
+			for (k = 0; k < FM6000_SRAM_WORDS; k++)
+				for (b = 0; b < 32; b++)
+					if (w[k] & (1u << b))
+						printf(" %u", k * 32 + b), n++;
+			printf("%s\n", n ? "" : " none");
+
+			for (k = 0; k < FM6000_SRAM_WORDS; k++)
+				if (fm_rd(&dev, FM6000_SRAM_UNCORRECTABLE_FATAL + k,
+					  &w[k]) != FM_OK)
+					w[k] = 0;
+			printf("  reset-on-uncorrectable enabled for: %s\n",
+			       (w[0] | w[1] | w[2] | w[3]) ? "some SRAMs"
+							   : "none -- so these "
+							     "resets come from "
+							     "elsewhere");
+			rc = 0;
+		}
 	} else if (strcmp(argv[i], "--mrl") == 0) {
 		struct fm_mrl_report mrep;
 		int confirmed = (i + 1 < argc &&
@@ -902,18 +948,33 @@ sweep_done:
 		printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 		rc = (rv == FM_OK && rep.verified == rep.readable) ? 0 : 2;
 	} else if (strcmp(argv[i], "--ssched") == 0) {
+		struct fm_ssched_report srep;
 		unsigned flags = 0;
-		int circ = 0;
+		int circ = 0, k;
 
 		if (i + 1 < argc && strcmp(argv[i + 1], "sync") == 0)
 			flags |= FM_SSCHED_SYNC_MGMT;
-		rv = fm_ssched_ring_init(&dev, flags, &circ);
+		if (i + 1 < argc && strcmp(argv[i + 1], "nosweep") == 0)
+			flags |= FM_SSCHED_NO_SWEEPER;
+		rv = fm_ssched_ring_init(&dev, flags, &circ, &srep);
 		printf("scheduler ring: %s\n", rv == FM_OK ? "initialised" : rvstr(rv));
 		printf("  circulation: %s\n", circ
 		       ? "FOUND -- the engine is walking the ring"
 		       : "not found -- the ring is programmed but not advancing");
 		printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
-		rc = (rv == FM_OK && circ) ? 0 : 2;
+
+		if (srep.total != 0) {
+			printf("\n  ⚠ the chip reset ITSELF %u times during this "
+			       "init, last code 0x%02x.\n  Everything written "
+			       "before each reset is gone:\n", srep.total,
+			       srep.last_fatal);
+			for (k = 0; k < FM_SSCHED_PH__COUNT; k++)
+				if (srep.resets[k] != 0)
+					printf("      %-30s %u\n",
+					       fm_ssched_phase_name(k),
+					       srep.resets[k]);
+		}
+		rc = (rv == FM_OK && circ && srep.total == 0) ? 0 : 2;
 	} else if (strcmp(argv[i], "--esched") == 0) {
 		unsigned n = 0;
 		uint32_t culprit = 0;
