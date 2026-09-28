@@ -165,6 +165,15 @@ func Build(o Options) (*Result, error) {
 		return nil, fmt.Errorf("%s: the build produced no files — check build.system and install:", r.Name)
 	}
 
+	// A recipe loaded from a file records what it was; one built in memory
+	// has no directory to hash, and its package is checked by file time.
+	var recipeSum string
+	if r.Path != "" {
+		if recipeSum, err = recipe.Digest(filepath.Dir(r.Path)); err != nil {
+			return nil, fmt.Errorf("%s: hashing the recipe: %w", r.Name, err)
+		}
+	}
+
 	m := &nospkg.Manifest{
 		Name:               r.Name,
 		Version:            r.Version,
@@ -180,6 +189,7 @@ func Build(o Options) (*Result, error) {
 		Build: nospkg.BuildInfo{
 			Epoch:  epoch,
 			Triple: o.Arch.Triple,
+			Recipe: recipeSum,
 		},
 	}
 	for _, u := range r.Users {

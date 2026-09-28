@@ -1401,6 +1401,11 @@ type staleFinding struct {
 	recipe string // the recipe that builds it
 	source string // the source file that changed after it was built
 	by     time.Duration
+
+	// recipeChanged is a finding by content: the recipe directory no longer
+	// hashes to what the package recorded. It has no "by", since a digest
+	// does not say when.
+	recipeChanged bool
 }
 
 // stalePackages reports selected packages that are older than the source they
@@ -1416,6 +1421,13 @@ type staleFinding struct {
 // It has cost real time: a CLI shipped without the commands just added to it,
 // and a datapath shipped without the contract ops the CLI had started calling,
 // each diagnosed on hardware as a missing feature rather than a stale build.
+//
+// Every recipe is checked, not only those three. A package records the digest
+// of the recipe directory it was built from (recipe.Digest), and one whose
+// recipe no longer matches is stale however it fetches its source: an FRR
+// package built before its recipe gained isisd went into an image unremarked
+// while only local sources were checked. Packages built before the digest was
+// recorded fall back to file times, and only for local sources, as before.
 //
 // The second return is a checking failure rather than a finding. The two are
 // kept apart because they mean opposite things: a finding stops the build, and
@@ -1439,20 +1451,50 @@ func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr err
 		// ordinary and not worth reporting.
 		recPath := filepath.Join(o.Root, "recipes", r.Name, "recipe.yml")
 		rec, err := recipe.Load(recPath)
-		if err != nil || rec == nil || rec.Source == nil || rec.Source.Local == "" {
+		if err != nil || rec == nil {
 			continue
 		}
-		pkg, err := os.Stat(filepath.Join(o.PackageDir, r.file))
+		pkgPath := filepath.Join(o.PackageDir, r.file)
+		pkg, err := os.Stat(pkgPath)
 		if err != nil {
 			continue
 		}
 
 		// The recipe is source too: it carries the compiler flags, the build
-		// targets and what gets staged, so changing it changes the binary
-		// without touching a line of C.
+		// targets, the dependencies and what gets staged, and its patches
+		// change the upstream code, so changing it changes the package
+		// without touching a line of C. Compared by content where the package
+		// recorded it.
+		recorded := ""
+		if m, err := nospkg.ReadManifestFile(pkgPath); err == nil {
+			recorded = m.Build.Recipe
+		}
+		if recorded != "" {
+			now, err := recipe.Digest(filepath.Dir(recPath))
+			if err != nil {
+				return nil, err
+			}
+			if now != recorded {
+				found = append(found, staleFinding{
+					pkg:           r.file,
+					recipe:        r.Name,
+					source:        rel(o.Root, filepath.Dir(recPath)),
+					recipeChanged: true,
+				})
+				continue
+			}
+		}
+		if rec.Source == nil || rec.Source.Local == "" {
+			continue
+		}
+
+		// A package that predates the digest is checked by the recipe's file
+		// time instead, as it always was.
 		newest, name := time.Time{}, ""
-		if fi, err := os.Stat(recPath); err == nil {
-			newest, name = fi.ModTime(), recPath
+		if recorded == "" {
+			if fi, err := os.Stat(recPath); err == nil {
+				newest, name = fi.ModTime(), recPath
+			}
 		}
 
 		// Only the part of the tree this recipe actually compiles. nosd-td2p
@@ -1503,6 +1545,10 @@ func reportStale(o Options, refs []pkgRef) error {
 	}
 	fmt.Fprintf(&b, "%d package(s) older than their source -- %s:\n", len(found), verb)
 	for _, f := range found {
+		if f.recipeChanged {
+			fmt.Fprintf(&b, "    %s: %s has changed since the package was built\n", f.pkg, f.source)
+			continue
+		}
 		fmt.Fprintf(&b, "    %s: %s changed %s after the package was built\n",
 			f.pkg, f.source, f.by)
 	}
