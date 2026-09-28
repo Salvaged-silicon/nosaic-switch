@@ -3579,6 +3579,53 @@ detect is both optional as a link condition and, as this port already
 established, reads the same on a forwarding lane as on a dark one. The
 diagnosis rests on an indicator that carries no information.
 
+### The lane that will not receive, compared against one that did
+
+There are register dumps of this chassis' SerDes taken while their ports
+were **up**, in the reverse-engineering tree's `scd-dumps/`. Diffing a lane
+that will not come up against one that did is the only way left to look
+inside a part whose register set is in no public document.
+
+**The EPL per-lane registers.** Ours after a full bring-up, against Et1 up:
+
+| | ours | working |
+|---|---|---|
+| `PORT_STATUS` `+0x00` | `0x00000815` | `0x00000ac0` |
+| `PCS_RX_STATUS` `+0x26` | `0x00000000` | `0x00000001` (block lock) |
+| `SERDES_CFG_lo` `+0x34` | `0x0aaaa005` | `0x0aaa86c0` |
+| `SERDES_CFG_hi` `+0x35` | `0x00000000` | `0x00000001` |
+| `LANE_CFG` `+0x37` | `0x00000001` | `0x000c0002` |
+| `LANE_STATUS` `+0x38` | `0x00000000` | `0x00000940` |
+
+Three of those our bring-up never writes at all, and one of them looked
+like the answer: `SERDES_CFG_lo` carries **RefSel** in bits [11:6], and ours
+is `0x00` where a working lane has `0x1b`. The prior work on this chassis
+had marked that same register "*** THE MISSING REG ***".
+
+**It is not sufficient.** Writing all three to the working values — verified
+to stick, tried both after the bring-up and before it, with the values
+surviving the bring-up — leaves `LANE_STATUS` at zero and no block lock.
+
+**The SBus registers.** Our SerDes `0x49` against the same device on a chip
+with three ports up: **35 of 256 registers differ**, including `0x19`–`0x27`
+which is populated there and entirely zero here, with a repeating
+`0e 61 f0` at `0x21`–`0x23` and again at `0x25`–`0x27` that looks like two
+equaliser coefficient sets.
+
+⚠ **But SBus register reads do not return what was written.** Writing reg 31
+`= 0x29` reads back `0x00`; writing reg 3 `= 0x01` reads back `0xaa`. That
+is not a stuck bus — the values are stable and plausible, they are simply
+not the ones written. Which means two things: the dump above cannot be read
+as "the state a working lane is in", and more seriously, **the
+read-modify-write that the whole lane bring-up is built on is computing
+from a base that may not be what it thinks.**
+
+Writing the working lane's 35 differing values directly does not bring the
+lane up either, which is consistent with the same thing.
+
+That is where the receiver stands: the failure is not a value we can
+transplant, on either side of the SBus.
+
 ### The SBus device map: two numbering spaces, and a test that tells them apart
 
 Datasheet §9.4.3 Table 9-4 gives each EPL four consecutive SBus addresses,
@@ -3622,13 +3669,27 @@ to come from measurement. Comparing ours against a forwarding chip:
 `CFG_B` is right — the difference is lane 1, which EOS had up and we do
 not. `CFG_A` differs in four upper bits, 25 and 28–30.
 
-⚠ **I set those four bits to see what would happen, and it made things
-worse**: `SerXmit` dropped, taking the transmitter down. That was
-bit-guessing on a register whose upper fields are undocumented, which is
-the thing this port's own rules forbid, and it is recorded here because the
-result is useful — those bits are not a simple "enable the receiver", and
-whatever they do reaches the transmitter. The chip was restored with a
-reset pulse and the port is back to `PORT_STATUS 0x815`.
+⚠ **I set those four bits to see what would happen. That was bit-guessing
+on undocumented fields, which this port's own rules forbid, and I should
+not have done it.**
+
+⚠ **And the result I reported from it was wrong.** I recorded that `SerXmit`
+dropped — reading `PORT_STATUS` at `0x0e3400`. EPL 14's lane base is
+`0x0e3800`, so `0x0e3400` is **EPL 13**, and what I read was a different
+EPL's status word, which is `0x15` whatever EPL 14 is doing. The experiment
+established nothing in either direction. Its only lasting product is this
+warning about the address, which cost two wrong conclusions before it was
+noticed.
+
+The per-lane addresses, since getting them wrong is evidently easy:
+
+| | |
+|---|---|
+| EPL *n* lane *l* base | `0x0e0400 + (n-1)*0x400 + l*0x80` |
+| EPL 14 lane 0 | `0x0e3800`, **not** `0x0e3400` |
+| `PORT_STATUS` | base + `0x00` |
+| `LANE_STATUS` | base + `0x38` → `0x0e3838` |
+| `EPL_CFG_A` / `_B` | `0x0e3b01` / `0x0e3b02` (these were right) |
 
 ## The GLORT assignment, settled 2026-09-28
 

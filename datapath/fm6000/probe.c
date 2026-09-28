@@ -423,6 +423,39 @@ int main(int argc, char **argv)
 	} else if (strcmp(argv[i], "--dump") == 0 && i + 2 < argc) {
 		rc = cmd_dump(&dev, (uint32_t)strtoul(argv[i + 1], NULL, 0),
 			      (uint32_t)strtoul(argv[i + 2], NULL, 0));
+	} else if (strcmp(argv[i], "--sbus-poke") == 0 && i + 3 < argc) {
+		/* One SerDes register, written and read straight back. */
+		uint8_t sd = (uint8_t)strtoul(argv[i + 1], NULL, 0);
+		uint8_t sr = (uint8_t)strtoul(argv[i + 2], NULL, 0);
+		uint32_t val = (uint32_t)strtoul(argv[i + 3], NULL, 0), got = 0;
+
+		rv = fm_sbus_write(&dev, sd, sr, val);
+		printf("write dev 0x%02x reg %u <- 0x%08x: %s\n",
+		       sd, sr, val, rvstr(rv));
+		rv = fm_sbus_read(&dev, sd, sr, &got);
+		printf("read  dev 0x%02x reg %u  = 0x%08x: %s\n", sd, sr, got, rvstr(rv));
+		rc = (got == val) ? 0 : 2;
+	} else if (strcmp(argv[i], "--sbus-dump") == 0 && i + 1 < argc) {
+		/*
+		 * Every SBus register of one SerDes.
+		 *
+		 * There are dumps of this chassis' SerDes taken while their
+		 * ports were UP, so a lane that will not come up can be
+		 * diffed against one that did -- which is the only way left
+		 * to look inside a part whose register set is not in any
+		 * public document.
+		 */
+		uint8_t sd = (uint8_t)strtoul(argv[i + 1], NULL, 0);
+		unsigned reg;
+
+		for (reg = 0; reg < 256; reg++) {
+			uint32_t v = 0;
+
+			if (fm_sbus_read(&dev, sd, (uint8_t)reg, &v) != FM_OK)
+				v = 0xffffffffu;
+			printf("%02x %08x\n", reg, v);
+		}
+		rc = fm_alive(&dev) == 1 ? 0 : 2;
 	} else if (strcmp(argv[i], "--load") == 0 && i + 1 < argc) {
 		/*
 		 * Write a list of "word value" pairs from a file.
