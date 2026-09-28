@@ -3560,12 +3560,16 @@ two are identical. `fm6000_epl_lane_reversed()` and `fm6000_epl_channel()`
 hold the table; the first port brought up on a reversed EPL settles the
 question.
 
-**§6.4 Table 6-7 — one reference clock per six EPLs**, and ⚠ **every port
-this port has ever tested is on ETH_REFCLK4.** Panels 1–8 are EPL 14 and
-EPL 16, which are in the same group. "The receiver never locks" has only
-ever been observed on one of the four reference clocks, and a dead
-reference would look exactly like this. That is a blind spot, not a
-finding. Ruling it out needs a module in a cage on an EPL in another group.
+**§6.4 Table 6-7 — one reference clock per six EPLs**, and every port this
+port has ever tested is on ETH_REFCLK4: panels 1–8 are EPL 14 and EPL 16,
+which are in the same group. That is a blind spot worth knowing about.
+
+It is **not**, however, the explanation for the receiver, and I nearly
+filed it as one. Step 6 of the lane enable waits for SerDes PLL lock and
+gets it, and that PLL is derived from the reference clock — so the clock
+reaches the SerDes and the PLL works. A dead ETH_REFCLK4 would have failed
+at step 6, not at step 12. Worth writing down because the blind spot is
+real and the conclusion it invites is wrong.
 
 **§6.11 Table 6-15 — for 10GBASE-R the only *required* link condition is
 block lock.** SerDes Ready, SerDes Signal Detect and Idle Detection are all

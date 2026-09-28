@@ -602,11 +602,12 @@ has a reason, in code, parameterised by the board.
       only block lock is required for 10GBASE-R — and this port had already
       found that `reg 20` bit 6 reads the same on a forwarding lane as on a
       dark one. The indicator carries no information.
-      ⚠ **And every port ever tested is on ETH_REFCLK4** (Table 6-7: EPL 14
-      and 16 are in the same group of six). A dead reference clock would
-      look exactly like this and has never been excluded. Moving a module
-      to a cage on an EPL in another group is the cheap test, and it should
-      come before any more register work.
+      Every port ever tested is on ETH_REFCLK4 (Table 6-7: EPL 14 and 16
+      are in the same group of six), which is a blind spot worth knowing —
+      but **a dead reference clock is not the explanation**: step 6 of the
+      lane enable waits for SerDes PLL lock and gets it, and that PLL is
+      derived from the reference clock. The clock reaches the SerDes and
+      the PLL works. Do not move optics to test this.
 - [x] **the DFE is implemented and is not the cause.** `fm_lane_dfe` drives
       the mailbox from the host with no SPICO firmware and it responds --
       `0x2b` moves -- but settles at `0x07`, not `0x03`. And equalisation
