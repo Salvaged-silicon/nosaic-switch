@@ -5127,3 +5127,43 @@ remaining problem is at least two problems rather than one uniform wall. That
 matters because "all fifteen are egress, therefore one cause" was the reasoning
 behind the unified hypothesis, and one of the two classes has now moved for a
 reason that had nothing to do with scan chains.
+
+## Re-swept, and MCAST turns out to be a rate problem
+
+The full 129-region sweep re-run against the current boot: **116 clean, 13
+failing** (11 distinct — `CM_QUEUE_STATE_INIT` appears twice). Nothing that was
+clean regressed, and both `POLICER_STATE` banks moved from failing to clean, as
+the spot-check suggested.
+
+Still failing: `CM_QUEUE_STATE_INIT` `0x118800`, `ESCHED_DRR_DC_INIT`
+`0x003c00`, both MCAST tables, and the eight MOD regions.
+
+### The MCAST tables are rate-sensitive, not unreachable
+
+Three measurements on `MCAST_DEST_TABLE`, all on the same boot:
+
+| access | result |
+|---|---|
+| single CPU write at `0x240000`, `0x240040`, `0x240080`, `0x241000`, `0x243fff` | all free |
+| twenty separate CPU writes to words 0–19 | free |
+| one 64-word `fm_mem_fill()` over those **same** words | chip off the bus |
+
+Same addresses, same values. The only difference is how fast the writes go in.
+So the memory is fully writable and the whole `0x4000`-word span is reachable —
+it simply cannot take back-to-back writes. That also explains the CRM
+boundary: the CRM walks flat out and hits the same wall at about the same
+point.
+
+`fm_mem_fill_paced()` exists now to bisect the gap it needs. A barrier after
+every word is **not** enough — 64 and 1024 words both still fail — which is
+unsurprising once stated, since an mmio barrier is an ordering fence rather
+than a delay. The twenty writes that worked were separate process
+invocations, milliseconds apart, so the working gap lies somewhere between
+those two and has not been bisected.
+
+### Why this matters beyond MCAST
+
+"The CRM cannot initialise this memory" was the wrong description twice over:
+the memory is reachable everywhere, and the failure is a property of the
+access pattern rather than of the address. That is worth carrying to the
+remaining regions before assuming any of them are dead.

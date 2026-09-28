@@ -282,6 +282,36 @@ void fm_boot_mark_done(struct fm6000 *d)
 	d->boot_done = 1;
 }
 
+int fm_mem_fill_paced(struct fm6000 *d, uint32_t base, uint32_t words,
+		      uint32_t val, unsigned every)
+{
+	int saved, rv = FM_OK;
+	uint32_t i;
+
+	if (d->regs == NULL)
+		return FM_ERR;
+	if (d->offbus)
+		return FM_EOFFBUS;
+	if ((uint64_t)(base + words) * 4 > d->bar_bytes)
+		return FM_ERR;
+	if (every == 0)
+		return fm_mem_fill(d, base, words, val);
+
+	saved = d->check_writes;
+	d->check_writes = 0;
+	for (i = 0; i < words; i++) {
+		nosaic_mmio_wr32((void *)((char *)d->regs + (base + i) * 4), val);
+		d->writes++;
+		if ((i % every) == every - 1)
+			nosaic_mmio_barrier();
+	}
+	nosaic_mmio_barrier();
+	d->check_writes = saved;
+	if (!fm_alive(d))
+		rv = FM_EOFFBUS;
+	return rv;
+}
+
 int fm_mem_fill(struct fm6000 *d, uint32_t base, uint32_t words, uint32_t val)
 {
 	int saved, rv = FM_OK;

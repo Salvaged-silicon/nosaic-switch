@@ -578,6 +578,20 @@ int main(int argc, char **argv)
 			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
 		}
+	} else if (strcmp(argv[i], "--fill-paced") == 0 && i + 3 < argc) {
+		uint32_t fb = strtoul(argv[i + 1], NULL, 0);
+		uint32_t fw = strtoul(argv[i + 2], NULL, 0);
+		unsigned fe = (unsigned)strtoul(argv[i + 3], NULL, 0);
+		uint32_t before = fm_fatal_count(&dev);
+
+		printf("filling 0x%06x for %u words, barrier every %u... ",
+		       fb, fw, fe);
+		fflush(stdout);
+		rv = fm_mem_fill_paced(&dev, fb, fw, 0, fe);
+		printf("%s\n", rv == FM_OK ? "chip still answering"
+					   : "CHIP STOPPED ANSWERING");
+		printf("  FATAL_COUNT %u -> %u\n", before, fm_fatal_count(&dev));
+		rc = rv == FM_OK ? 0 : 2;
 	} else if (strcmp(argv[i], "--fill") == 0 && i + 2 < argc) {
 		uint32_t base = (uint32_t)strtoul(argv[i + 1], NULL, 0);
 		uint32_t n = (uint32_t)strtoul(argv[i + 2], NULL, 0);

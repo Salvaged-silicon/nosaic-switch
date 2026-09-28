@@ -304,6 +304,28 @@ struct fm_fatal {
 	int	 readable;
 };
 
+/*
+ * A fill that does not run flat out.
+ *
+ * ⚠ SOME MEMORIES ON THIS CHIP CANNOT TAKE BACK-TO-BACK WRITES. Measured on
+ * MCAST_DEST_TABLE: twenty separate writes to words 0..19 are free, and a
+ * 64-word fm_mem_fill() over the same words takes the chip off the bus. Same
+ * addresses, same values -- the only difference is rate.
+ *
+ * `every` is how many words to write between barriers; 1 means a barrier after
+ * every word. 0 behaves like fm_mem_fill().
+ *
+ * ⚠ A BARRIER PER WORD IS NOT ENOUGH, measured: 64 words and 1024 words into
+ * MCAST_DEST_TABLE with `every` = 1 both still take the chip off the bus. An
+ * mmio barrier is an ordering fence, not a delay, so whatever gap that memory
+ * needs is longer than one. The twenty writes that did succeed were separate
+ * process invocations, which is milliseconds apart -- so the working gap is
+ * somewhere between "a barrier" and "a process start", and has not been
+ * bisected. This exists as the primitive to bisect it with.
+ */
+int fm_mem_fill_paced(struct fm6000 *d, uint32_t base, uint32_t words,
+		      uint32_t val, unsigned every);
+
 int fm_fatal_read(struct fm6000 *d, struct fm_fatal *out);
 
 /* Just the count, for the before/after idiom. Returns 0 if unreadable, which
