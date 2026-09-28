@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -302,8 +303,14 @@ int fm_mem_fill_paced(struct fm6000 *d, uint32_t base, uint32_t words,
 	for (i = 0; i < words; i++) {
 		nosaic_mmio_wr32((void *)((char *)d->regs + (base + i) * 4), val);
 		d->writes++;
-		if ((i % every) == every - 1)
+		if ((i % every) == every - 1) {
+			struct timespec ts = { 0, 1000 };
+
 			nosaic_mmio_barrier();
+			/* A real gap, not just an ordering fence. The barrier
+			 * alone was measured insufficient; see pci.h. */
+			nanosleep(&ts, NULL);
+		}
 	}
 	nosaic_mmio_barrier();
 	d->check_writes = saved;

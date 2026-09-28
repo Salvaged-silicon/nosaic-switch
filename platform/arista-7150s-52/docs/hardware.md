@@ -5167,3 +5167,47 @@ those two and has not been bisected.
 the memory is reachable everywhere, and the failure is a property of the
 access pattern rather than of the address. That is worth carrying to the
 remaining regions before assuming any of them are dead.
+
+## Correction: MCAST is not a rate problem, and none of the eleven are dead
+
+The previous section concluded the MCAST tables "cannot take back-to-back
+writes". **That is wrong**, and the reasoning behind it was confounded: twenty
+spaced writes covered words 0–19 while the failing fill covered words 0–63, so
+the comparison varied the addresses as well as the rate.
+
+Pacing settles it. `fm_mem_fill_paced()` with a real 1 µs gap after **every
+word** still takes the chip off the bus, at 64 words and at 16384. Rate is not
+the variable.
+
+### What is actually true
+
+Bisected on `MCAST_DEST_TABLE`, every run from a fresh boot:
+
+| access | result |
+|---|---|
+| single write to word 53, 54 or 55 | free |
+| single writes at words 0, 20, 63, 64, 1024, 16383 | free |
+| fill of 2, 8, 20, 24, 28, 32, 40, 48 words | free |
+| fill of **54** words | free |
+| fill of **55** words | **chip off the bus** |
+
+An exact, reproducible cumulative boundary. Word 54 on its own is harmless;
+word 54 at the end of a 55-word run is fatal. So it is neither a rate limit nor
+a bad address, and the old software fill dying at `0x240036` — word 54 — was
+this same boundary all along.
+
+What it *is* has not been established. Fifty-five words is not an obvious
+structure size for a table of 4-word entries.
+
+### And the bigger correction
+
+**Every one of the eleven remaining regions accepts a single write** — tested
+one spaced write each into `ESCHED_DRR_DC_INIT`, `CM_QUEUE_STATE_INIT`,
+`MOD_L2_VLAN1_TX_TAGGED`, `MOD_L2_VLAN2_TX_TAGGED` and `MOD_CAM`, all free,
+chip answering.
+
+So none of them are unreachable blocks, including the MOD regions whose
+*reads* are fatal and including the egress scheduler's own initialiser. The
+"fifteen unreachable egress memories" framing that shaped several sessions of
+work was wrong in every part: it was never fifteen, they are not unreachable,
+and they are not one phenomenon.

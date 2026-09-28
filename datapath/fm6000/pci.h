@@ -307,10 +307,14 @@ struct fm_fatal {
 /*
  * A fill that does not run flat out.
  *
- * ⚠ SOME MEMORIES ON THIS CHIP CANNOT TAKE BACK-TO-BACK WRITES. Measured on
- * MCAST_DEST_TABLE: twenty separate writes to words 0..19 are free, and a
- * 64-word fm_mem_fill() over the same words takes the chip off the bus. Same
- * addresses, same values -- the only difference is rate.
+ * ⚠ THE RATE EXPLANATION THIS COMMENT ONCE GAVE IS WRONG. It said some
+ * memories cannot take back-to-back writes, from twenty spaced writes to
+ * MCAST_DEST_TABLE words 0..19 succeeding where a 64-word fill failed. That
+ * comparison was confounded -- the fill also covered words 20..63 -- and
+ * pacing does not fix it: 1 us per word still dies. What is actually measured
+ * is a cumulative count boundary, exact and reproducible: a fill of 54 words
+ * is free, 55 words is fatal, and single writes to words 53, 54 and 55 are all
+ * free on their own. See hardware.md.
  *
  * `every` is how many words to write between barriers; 1 means a barrier after
  * every word. 0 behaves like fm_mem_fill().
