@@ -3984,13 +3984,34 @@ same thing; it is configuring the switch differently from one that works.
 `esched.c` now produces 3,222 writes over 3,148 addresses, and diffing that
 against the forwarding chip gives **zero disagreements and zero extras**.
 
-**The one remaining gap is 12 words at `0x3000`–`0x300b`**, which our model
-would call instance 8 array 0 and which is plainly something else: twelve
-entries — the traffic-class count — holding `0x1450` (5200) except indices 3
-and 5 at `0x5c8` (1480), 9 and 10 at `0x6590` (26000), and 11 at `0x39d0`
-(14800). Two bases and their multiples, so per-class quanta. Why classes 3
-and 5 differ is not derivable from here, and inventing a rule to cover
-twelve words would be worse than recording that they are not covered.
+**⚠ And the model above was wrong**, which the vendor's register header
+settled. The ESCHED block contains **three registers, 76 entries each** —
+nothing else:
+
+| register | address | fields |
+|---|---|---|
+| `ESCHED_CFG_1` | `0x2000 + port` | `prioritySetBoundary[11:0]`, `tcGroupBoundary[23:12]` |
+| `ESCHED_CFG_2` | `0x2080 + port` | `strictPriority[11:0]`, `tcEnable[23:12]` |
+| `ESCHED_CFG_3` | `0x2100 + port` | `tcInnerPriority[11:0]` |
+| `ESCHED_DRR_Q` | `MONITOR + port*0x10 + class` | 12 × 76 |
+| `ESCHED_DRR_CFG` | `MONITOR + 0x800 + port` | |
+
+So the "eight instances of four arrays over 128 ports" was **address
+aliasing**: the block decodes only part of the address and everything above
+`0x2180` is those same three registers seen again. The dump was 24 views of
+one array, and the model built from it wrote 3,222 words where the hardware
+has 304 registers. `esched.c` now writes 378.
+
+Two other corrections fall out. **The field names were on the wrong
+register** — what this file called CFG_1's `strictPriority`/`tcEnable` is
+CFG_2's layout. And **the 12 unexplained words at `0x3000`–`0x300b` are
+`ESCHED_DRR_Q[port 0][class 0..11]`**, the per-class deficit counters: not a
+configuration at all, but what that chip's scheduler had reached at the
+moment of the dump. Correctly not written, now for a reason rather than out
+of caution.
+
+⚠ Diffing against a forwarding chip will now show it holding values at
+addresses we do not write. Those are the aliases.
 
 ### ⚠ The transmit watermark tables are NOT blocked — that was my mistake
 

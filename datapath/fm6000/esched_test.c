@@ -9,8 +9,10 @@
  *
  * What has to hold:
  *
- *   - eight instances of four arrays, and array 2 is never written. A
- *     forwarding chip has it zero in all eight.
+ *   - three registers of 76 entries, which is what the block contains. An
+ *     earlier version wrote 3,222 words over 128 "ports" in eight
+ *     "instances", which was the same three registers seen through address
+ *     aliasing.
  *   - the host port written LAST in each array, not first.
  *   - the round-robin penalty applied to every port before it is cleared
  *     from any. Per-port pairs touch the same addresses with the same
@@ -68,7 +70,7 @@ static void check(int cond, const char *what)
 
 int main(void)
 {
-	unsigned i, distinct = 0, seen_arr2 = 0;
+	unsigned i, distinct = 0;
 	uint32_t culprit = 1, seen[MAX_WRITES];
 	struct fm6000 dev;
 	int rv;
@@ -80,10 +82,10 @@ int main(void)
 	check(culprit == 0, "no culprit on success");
 	check(written_out == nlog, "the reported count is the count written");
 
-	/* 8 instances x 3 arrays x 128 ports, then the round-robin word over
-	 * 76 ports twice, less the two that keep the penalty. */
-	check(nlog == 8 * 3 * 128 + 76 + 74,
-	      "3222 writes: the configuration arrays, then two round-robin passes");
+	/* Three arrays of 76, then the round-robin word over 76 twice less the
+	 * two that keep the penalty. */
+	check(nlog == 76 * 3 + 76 + 74,
+	      "378 writes: three configuration arrays and two round-robin passes");
 
 	for (i = 0; i < nlog; i++) {
 		unsigned j;
@@ -95,69 +97,43 @@ int main(void)
 		if (!dup)
 			seen[distinct++] = log[i].word;
 	}
-	check(distinct == 8 * 3 * 128 + 76,
-	      "3148 distinct addresses: only the round-robin word repeats");
+	check(distinct == 76 * 4, "304 distinct addresses");
 
-	/* Array 2 is never touched, in any instance. */
+	/* Nothing outside the three registers and the round-robin array. */
 	for (i = 0; i < nlog; i++) {
 		uint32_t w = log[i].word;
+		int ok = (w >= 0x002000u && w < 0x002000u + 76) ||
+			 (w >= 0x002080u && w < 0x002080u + 76) ||
+			 (w >= 0x002100u && w < 0x002100u + 76) ||
+			 (w >= 0x003800u && w < 0x003800u + 76);
 
-		if (w >= 0x003800u)
-			continue;
-		if (((w - 0x002000u) % 0x200u) / 0x80u == 2)
-			seen_arr2++;
-	}
-	check(seen_arr2 == 0, "array 2 is left at zero in every instance");
-
-	/* Every configuration word is one of the three legal values, and the
-	 * host port's is the one that differs. */
-	for (i = 0; i < nlog; i++) {
-		uint32_t w = log[i].word, v = log[i].val;
-		unsigned arr, port;
-
-		if (w >= 0x003800u)
-			continue;
-		arr = ((w - 0x002000u) % 0x200u) / 0x80u;
-		port = w & 0x7fu;
-		if (port != 0) {
-			check(v == 0x00ffffffu, "a front-panel word is all classes");
-			continue;
-		}
-		check(v == (arr == 1 ? 0x00fff000u : 0x00fff800u),
-		      "the host port's word differs, and differs by array");
+		check(ok, "every write lands inside a register the block has");
 	}
 
-	/* The host port comes last in each array: the write before the next
-	 * array starts. */
+	/* The host port's two configuration words differ, and CFG_3 is zero. */
 	{
-		unsigned arrays_seen = 0;
+		unsigned saw1 = 0, saw2 = 0, saw3 = 0;
 
-		for (i = 0; i + 1 < nlog; i++) {
-			uint32_t w = log[i].word, nx = log[i + 1].word;
+		for (i = 0; i < nlog; i++) {
+			uint32_t w = log[i].word, v = log[i].val;
 
-			if (w >= 0x003800u)
-				break;
-			/* last write of an array = next write is a different array */
-			if ((w & ~0x7fu) != (nx & ~0x7fu)) {
-				check((w & 0x7fu) == 0,
-				      "the host port is the last write of its array");
-				arrays_seen++;
+			if (w == 0x002000u) { saw1 = 1; check(v == 0x00fff800u, "CFG_1 host value"); }
+			if (w == 0x002080u) { saw2 = 1; check(v == 0x00fff000u, "CFG_2 host value"); }
+			if (w >= 0x002100u && w < 0x002100u + 76) {
+				saw3 = 1;
+				check(v == 0, "CFG_3 tcInnerPriority is zero on every port");
 			}
 		}
-		/* One boundary per array: 23 between arrays, plus the last
-		 * array's end, which is where the round-robin word begins. */
-		check(arrays_seen == 8 * 3,
-		      "every array boundary was preceded by the host port");
+		check(saw1 && saw2 && saw3, "all three configuration arrays written");
 	}
 
-	/* The two round-robin passes, and who keeps the penalty. */
+	/* The two passes, and who keeps the penalty. */
 	{
-		unsigned base = 8 * 3 * 128;
-		unsigned penalised = 0, settled = 0;
+		unsigned base = 76 * 3, penalised = 0, settled = 0;
 
 		for (i = base; i < base + 76; i++) {
 			check(log[i].word == 0x003800u + (i - base),
-			      "the penalty pass runs over every switch port in order");
+			      "the penalty pass runs over every port in order");
 			check(log[i].val == 0x14ffffffu,
 			      "every port is penalised before any is settled");
 			penalised++;
@@ -167,19 +143,18 @@ int main(void)
 
 			check(log[i].val == 0x00ffffffu, "the settling pass clears it");
 			check(port != 1 && port != 3,
-			      "the internal ports are not settled: a forwarding chip "
-			      "keeps the penalty on exactly those two");
+			      "the internal ports keep the penalty, as a forwarding "
+			      "chip does");
 			settled++;
 		}
-		check(penalised == 76, "all 76 switch ports are penalised");
-		check(settled == 74, "74 are settled, leaving the two internal ports");
+		check(penalised == 76 && settled == 74, "76 penalised, 74 settled");
 	}
 
 	if (failures != 0) {
 		printf("esched: %d checks failed\n", failures);
 		return 1;
 	}
-	printf("esched: %u writes, %u addresses, structure as specified -- ok\n",
+	printf("esched: %u writes, %u addresses, documented register map -- ok\n",
 	       nlog, distinct);
 	return 0;
 }
