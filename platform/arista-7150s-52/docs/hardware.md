@@ -5081,3 +5081,49 @@ Worth checking before trusting years of "not advancing" readings. The vendor's
 `FM6000_SSCHED_RX_FOUND` is bit 21 and `TX_FOUND` is bit 30 in `regs.h`. Same
 registers, same delay, same bits. The probe is a faithful copy and the ring
 genuinely is not advancing.
+
+## The fifteen were measured on a broken boot — it is eleven, and it is two problems
+
+⚠ **The sweep that produced "114 clean, 15 failing" predates the step-5 fix.**
+It was run on a chip whose step 5 was being reset out from under it. Re-tested
+against the current boot, **both `POLICER_STATE` banks now initialise
+cleanly** — `0x138000` at 4096 × 64-bit and `0x13c000` at 1024 × 32-bit, which
+previously stormed every time.
+
+Eleven distinct regions still fail. And they are not one phenomenon.
+
+### Class 1: the MOD block is genuinely unreachable
+
+`0x150000`, `0x154000`, `0x158000`, `0x15a000`–`0x15e000`. A plain **read** of
+`0x150000` or `0x158000` takes the chip off the bus. Nothing about
+initialisation applies to a block that cannot be read.
+
+### Class 2: the MCAST tables are reachable but bounded
+
+`MCAST_DEST_TABLE` `0x240000` and `MCAST_VLAN_TABLE` `0x260000` behave quite
+differently:
+
+- a read returns `0` and the chip stays up
+- a plain CPU write is free
+- a CRM walk works and then stops working at a boundary
+
+Bisected on `0x240000` at 96-bit: counts 1, 2, 4, 8, 16 are clean; 32, 64, 128,
+256 and 4096 all reset the chip. So roughly 64 words are reachable out of a
+`0x20000`-word span — close to where the old software fill died, at
+`0x240036`.
+
+The vendor passes 4096 for this region and it works on its chip, so the upper
+part is reachable once something we are not doing has happened. But "the CRM
+cannot touch this memory" was wrong: it can touch the start of it.
+
+### Still unclassified
+
+`ESCHED_DRR_DC_INIT` `0x003c00` and `CM_QUEUE_STATE_INIT` `0x118800`.
+
+### What this changes
+
+The headline is better — 116 of 129 regions initialise, not 114 — and the
+remaining problem is at least two problems rather than one uniform wall. That
+matters because "all fifteen are egress, therefore one cause" was the reasoning
+behind the unified hypothesis, and one of the two classes has now moved for a
+reason that had nothing to do with scan chains.
