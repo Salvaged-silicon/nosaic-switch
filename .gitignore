@@ -94,3 +94,4 @@ refs/
 /datapath/fm6000/scaffold/fm6000_*.h
 /datapath/fm6000/scaffold/fm6000_[a-z]*[!.]
 
+datapath/*/*-test

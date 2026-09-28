@@ -66,6 +66,51 @@
 #define FM6000_SSCHED_RX_REPLACE_TOKEN	0x008062
 #define FM6000_SSCHED_RX_SLOW_PORT(i)	(0x008070u + (i))
 
+/* The scheduler's own freelist init triggers, each with a done bit beside it.
+ * Table 4-1 step 10 asks the boot controller to do all of this with one
+ * command and boot.c issues it, and CommandDone goes high -- but every one of
+ * these four done registers still reads 0 afterwards, measured 2026-09-28.
+ * Whether that is a real discrepancy or these simply are not the bits the
+ * command sets is not established: writing 1 to FREELIST_INIT does not stick
+ * and does not move FREELIST_INIT_DONE either, which is equally consistent
+ * with a self-clearing trigger in a block that is not being clocked. [RE] */
+#define FM6000_SSCHED_RXQ_FREELIST_INIT		0x0080f0
+#define FM6000_SSCHED_RXQ_FREELIST_INIT_DONE	0x0080f1
+#define FM6000_SSCHED_TXQ_FREELIST_INIT		0x0080f4
+#define FM6000_SSCHED_TXQ_FREELIST_INIT_DONE	0x0080f5
+#define FM6000_SSCHED_HS_FREELIST_INIT		0x0080f8
+#define FM6000_SSCHED_HS_FREELIST_INIT_DONE	0x0080f9
+#define FM6000_SSCHED_FREELIST_INIT		0x0080fc
+#define FM6000_SSCHED_FREELIST_INIT_DONE	0x0080fd
+
+/* The metering rate limiter -- the policer sweeper, which is what MRL stands
+ * for throughout this chip. [DS §5.13.5 for the two the datasheet names, RE
+ * for the addresses and the rest of the block]
+ *
+ * Worth knowing because the sweeper's own timing is quoted in segment
+ * scheduler port tokens, so this block and the ring are neighbours. Read on a
+ * booted chip 2026-09-28: MGMT_CYCLES 0x8208, SWEEP_CYCLES 8, SWEEP_PERIOD
+ * 0x50, RATE_LIMITER 0x128 -- and UNROLL_ITER 0, where the datasheet calls
+ * 4095 nominal. Nothing is concluded from that yet; no policer is configured. */
+#define FM6000_FC_MRL_MGMT_CYCLES	0x028000
+#define FM6000_FC_MRL_SWEEP_CYCLES	0x028010
+#define FM6000_FC_MRL_SWEEP_PERIOD	0x028014
+#define FM6000_FC_MRL_UNROLL_ITER	0x028015
+#define FM6000_FC_MRL_TOKEN_LIMIT	0x028018
+#define FM6000_FC_MRL_FC_TOKEN_LIMIT	0x028020
+#define FM6000_FC_MRL_ALIGN_TX_STATS	0x028021
+#define FM6000_FC_MRL_RATE_LIMITER	0x028022
+
+/* The egress scheduler's deficit round robin state, and the congestion
+ * manager's view of the egress scheduler. All three read as refused or zero
+ * until the ring circulates, which is the point -- CM_ESCHED_STATE is the
+ * first register we have that reports on the scheduler from outside the
+ * block it is stuck in. [RE] */
+#define FM6000_ESCHED_DRR_Q		0x003000
+#define FM6000_ESCHED_DRR_CFG		0x003800
+#define FM6000_ESCHED_DRR_DC_INIT	0x003c00
+#define FM6000_CM_ESCHED_STATE		0x116c00
+
 /* 80 ring slots, one byte each; five 16-bit slow-port masks. */
 #define FM6000_SSCHED_NEXT_PORT_WORDS	20
 #define FM6000_SSCHED_SLOW_PORT_WORDS	5
@@ -305,15 +350,44 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
  * SCAN_CHAIN_DATA_IN to put the core logic and the EPLs into normal operating
  * mode. [DS §4.2 Table 4-1 step 5 for the operation; RE for the addresses]
  *
- * ⚠ The prior work on this chassis concluded that this single write is NOT
- * sufficient and that a per-block scan program is what actually makes the bank
- * memories writable. The datasheet says otherwise. That conflict is unresolved
- * and is the first experiment this port should run -- see the board's
- * docs/todo.md, M2. */
+ * The five-register window is one shift-register port, not five independent
+ * registers. Every access is a pair: select a chain in SCAN_SELECT, write one
+ * 32-bit word into whichever data-in register that chain expects, then read
+ * SCAN_STATUS to see the shift retire. See mrl.c for the sequence.
+ *
+ * The conflict this block used to record -- datasheet says one write, prior
+ * work says a several-thousand-step scan program -- is resolved: they are two
+ * different operations. Step 5 really is one write. The scan program is a
+ * separate erratum workaround, applied after the boot commands and gated on a
+ * chip-revision check, not part of Table 4-1 at all.
+ *
+ * ⚠ We do not write SCAN_SELECT before the step-5 write, so that write lands
+ * on whichever chain the reset default selects. That is a gap, not a decision:
+ * the vendor sequence never touches a data-in register without setting the
+ * selector in the same breath. Which selector step 5 wants is not documented
+ * and has not been measured here, so it is not guessed.
+ */
+#define FM6000_SCAN_CONTROL		0x01c039	/* [RE] chain selector, [4:0] */
 #define FM6000_SCAN_CONFIG_DATA_IN	0x01c03a	/* [OURS] warm 0xffffffff */
 #define FM6000_SCAN_CHAIN_DATA_IN	0x01c03b	/* [OURS] warm 0xffffffff */
+#define FM6000_SCAN_SPARE		0x01c03c	/* [RE] in the window, never accessed */
+#define FM6000_SCAN_STATUS		0x01c03d	/* [RE] shift status, [9:8] */
 #define FM6000_SCAN_FIRST		0x01c039	/* [RE] the window is */
 #define FM6000_SCAN_LAST		0x01c03d	/* [RE] 0x1c039..0x1c03d */
+
+/* SCAN_STATUS[9:8] after a shift. The vendor sequence treats 01b as "the word
+ * retired" and anything else as an error, re-reading once before giving up.
+ * The other three encodings have never been observed, so they are not named.
+ * [RE] */
+#define FM6000_SCAN_STATUS_MASK		0x00000300
+#define FM6000_SCAN_STATUS_RETIRED	0x00000100
+
+/* Chain selectors seen in use. These two are the only ones the vendor erratum
+ * sequence ever selects; the field is five bits wide, so there are thirty more
+ * that nothing here has touched. The names describe what each one is shifted
+ * full of, which is all we know about them. [RE] */
+#define FM6000_SCAN_CHAIN_CORE		0x10
+#define FM6000_SCAN_CHAIN_BANKS		0x14
 
 #define FM6000_SWEEPER		0x01c048	/* [OURS] read 0x0008bb2c warm, as predicted */
 

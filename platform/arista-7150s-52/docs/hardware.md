@@ -4187,3 +4187,193 @@ The port grouping in every one of these tables is the same question — is this
 a front-panel port, is it the host port — so it is asked of `portmap.h` once
 rather than written out as ranges. A board with a different map gets the
 right answer without anybody editing a table.
+
+## The scan chain and the MRL register fix
+
+Recovered 2026-09-28 by static analysis of `fm6000MrlRegisterFix` in the
+vendor SDK. Nothing from the vendor binary is copied into NOSaic; what is
+recorded here is how the hardware is addressed, which is fact, and the code in
+`datapath/fm6000/mrl.c` is our own.
+
+### This is not Table 4-1
+
+The two accounts that were in conflict — the datasheet says step 5 is a single
+write of `0xFFFFFFFF` to `SCAN_CHAIN_DATA_IN`, the prior investigation says a
+several-thousand-step scan program is needed — are both correct. They describe
+different operations:
+
+- **Table 4-1 step 5** is one write, and **step 9** ("Apply Bank Memory
+  Repairs") is a `BOOT_CTRL` command the boot controller executes by itself.
+  `boot.c` does both, and has since 2026-09-25.
+- **The scan program** is an erratum workaround applied afterwards, by the CPU,
+  gated on a chip-revision equality test — the vendor skips it on every
+  revision but one. It is not in the datasheet because it is not part of the
+  documented boot.
+
+### The register window
+
+The five registers at `0x1c039`–`0x1c03d` are one shift-register port, not five
+independent registers:
+
+| Address   | Name                    | Role |
+|-----------|-------------------------|------|
+| `0x1c039` | `SCAN_SELECT`           | chain selector, `[4:0]` |
+| `0x1c03a` | `SCAN_CONFIG_DATA_IN`   | engine command port |
+| `0x1c03b` | `SCAN_CHAIN_DATA_IN`    | chain data port |
+| `0x1c03c` | —                       | in the window, never accessed |
+| `0x1c03d` | `SCAN_STATUS`           | shift status, `[9:8]` |
+
+Every shift is: write the selector, write one 32-bit word to whichever data
+port the chain wants, read the status. `[9:8] == 01b` means the word retired.
+The selector is rewritten for *every* word even when unchanged — on a
+shift-register port that write may be what clocks the previous word through, so
+it must not be hoisted out of a loop. Anything but `01b` is re-read once before
+being called an error; that re-read is part of the protocol, not a retry loop.
+
+Only two selectors are ever used: `0x10` (core) and `0x14` (banks). The field
+is five bits wide, so thirty more exist that nothing has touched.
+
+### The sequence
+
+6287 shifts, plus a stop word after the loop:
+
+| Part | Shifts | Port | Chain |
+|------|--------|------|-------|
+| prologue | 35 | config | core |
+| bank chain | 5800 | data | banks |
+| core chain | 203 | data | core |
+| tail | 249 | mixed | core |
+| stop | 1 | config | core |
+
+The prologue is 21 zero words with the engine stopped, then `START`, then three
+parameters, then ten pump words numbered 0–9. The tail is three groups of sixty
+pumps each followed by an end marker, then a fourth group of sixty-six with no
+marker. The end marker is `0xfffffff8` — the same all-ones word step 5 writes,
+with the low three bits clear; what those three bits mean is not known.
+
+Engine commands appear to encode an opcode in `[31:24]` and an operand in
+`[7:0]`: `0x80` start/stop, `0x84`/`0x85`/`0x86` three parameters set once,
+`0xbf` advance. That split is inferred from the bit pattern and from the fact
+that only those six opcodes ever appear. It is not documented.
+
+### What we do not carry
+
+The 5800 + 203 words of chain payload are third-party data and NOSaic does not
+ship them. `fm_mrl_apply()` shifts a payload the caller supplies and the caller
+that supplies nothing shifts zeros, which `mrl_test.c` enforces.
+
+That is a usable experiment rather than a stub. For the record, because it
+bears on whether the payload could ever be *derived* rather than copied: it is
+not dense data. Of 6003 words, 185 are non-zero, every non-zero value is a
+five-bit field at bit 15, and they fall into four clusters that are each
+internally periodic with a period of 25 words. Two of the four clusters are
+rotations of the other two. Whatever the values mean — and we do not know —
+the payload carries on the order of a hundred numbers, not fifty kilobytes.
+
+### What running it with zeros actually did
+
+Measured on the lab 7150S on 2026-09-28, twice, with a cold boot in between:
+
+| | result |
+|---|---|
+| `--ssched` | ring initialises, does not circulate, **chip answering** |
+| `--mrl` | all 6288 shifts retire, **chip answering** |
+| `--ssched` | *the same command* takes the **chip off the bus** |
+
+Two things follow.
+
+**The sequence reaches something the scheduler depends on.** That coupling was
+the whole reason for chasing this and it had never been demonstrated; it is now
+measured. Every shift retiring (`SCAN_STATUS[9:8] == 01b`, 6288 times) also
+says the protocol decode above is right — a wrong selector or a wrong data port
+would not retire.
+
+**The payload is load-bearing, and a zero payload is destructive.** Shifting
+zeros evidently overwrites configuration that something the scheduler needs was
+relying on. The precise mechanism is *not* established, and an earlier guess
+here — that step 9's fuse-derived bank repairs were being overwritten — is
+probably wrong: MRL on this chip is the **metering rate limiter**, the policer
+sweeper, not memory repair. The SDK's own register names say so
+(`FC_MRL_SWEEP_CYCLES`, `FC_MRL_UNROLL_ITER`, `FC_MRL_RATE_LIMITER`) and so
+does the datasheet, which uses MRL only for the policer sweeper (§5.13.5).
+
+So `fm6000MrlRegisterFix` is a scan-chain patch of the rate-limiter block's
+registers, and it is *not* a missing bank-repair step. That is worth saying
+plainly because it was the reason for chasing it. What survives is the measured
+coupling: something on these scan chains is load-bearing for the ring.
+
+Recovery is a reset pulse (`nosaic platform release-asic`) and a full `--boot`.
+`fm6000-probe --mrl` therefore refuses to run without `i-mean-it`.
+
+**Where this leaves it.** Not on running the sequence empty, and probably not
+on this sequence at all — a policer erratum patch is unlikely to be what makes
+a segment scheduler circulate. The sequence is implemented and documented so
+that it is available and so that nobody has to decode it twice, but the
+scheduler lead has moved on; see the register map below.
+
+## The register map, and how to regenerate it
+
+The vendor SDK carries a table of 720 entries, 56 bytes each, at file offset
+`0x3ac790` in `libFocalpointSDK.so` (EOS 4.16.8M). Word 0 of each entry is a
+pointer to the register's name and **word 2 is its word address**. 703 of the
+entries are `FM6000_*` registers spanning `0x00000`–`0x3fc400`.
+
+This is a register map — names and addresses — of the same kind the datasheet
+publishes for the blocks it covers. It is not code and it is not captured
+state, so it is used here the way the datasheet is: to find and name registers.
+It is **not** committed to the tree. Regenerate it with:
+
+```python
+# .rodata is file 0x313040 -> vaddr 0x513040, so vaddr = offset + 0x200000
+import struct
+d = open("libFocalpointSDK.so", "rb").read()
+def name(va):
+    off = va - 0x200000
+    return d[off:d.index(b"\0", off)].decode()
+for i in range(720):
+    w = struct.unpack_from("<14I", d, 0x3ac790 + i * 0x38)
+    print("%08x  %s" % (w[2], name(w[0])))
+```
+
+### Why it can be trusted
+
+Every address this port had already established the hard way, on live hardware,
+appears in the table and matches — ten for ten:
+
+| Address | We measured | Table says |
+|---------|-------------|------------|
+| `0x00009` | `SOFT_RESET` | `FM6000_SOFT_RESET` |
+| `0x0f000` | `SBUS_CFG` | `FM6000_SBUS_CFG` |
+| `0x0f001` | `SBUS_COMMAND` | `FM6000_SBUS_COMMAND` |
+| `0x1c022` | `BOOT_CTRL` | `FM6000_BOOT_CTRL` |
+| `0x1c039` | scan selector | `FM6000_SCAN_CONTROL` |
+| `0x1c03a` | `SCAN_CONFIG_DATA_IN` | same |
+| `0x1c03b` | `SCAN_CHAIN_DATA_IN` | same |
+| `0x1c03d` | scan status | `FM6000_SCAN_STATUS` |
+| `0x1c046` | `PLL_STATUS` | `FM6000_PLL_STAT` |
+| `0x1c048` | `SWEEPER` | `FM6000_SWEEPER_CFG` |
+
+It also confirms the two corrections this port made against its own earlier
+guesses: `ESCHED_CFG_1/2/3` really are at `0x2000`/`0x2080`/`0x2100`, and every
+`SSCHED` address in `regs.h` is right.
+
+### What it gives us that we did not have
+
+- `SSCHED_{RXQ,TXQ,HS,}_FREELIST_INIT` and a `_DONE` beside each, `0x80f0`–`0x80fd`
+- `ESCHED_DRR_Q` `0x3000`, `ESCHED_DRR_CFG` `0x3800`, `ESCHED_DRR_DC_INIT` `0x3c00`
+- `CM_ESCHED_STATE` `0x116c00` — the first register we have that reports on the
+  egress scheduler from *outside* the block that is stuck
+- the whole `FC_MRL_*` block, `0x28000`–`0x28022`
+
+### The freelist discrepancy
+
+Measured on a chip that has completed Table 4-1: **all four freelist `_DONE`
+registers read 0**, although step 10's `BOOT_CTRL` command reported
+`CommandDone`. Writing 1 to `SSCHED_FREELIST_INIT` does not stick and does not
+move `_DONE` either.
+
+That is not yet a finding. A self-clearing trigger in a block that is not being
+clocked would read exactly like this, and so would a done bit that lives
+somewhere other than bit 0. It is written down because it is the first concrete
+asymmetry between "the boot controller says it did it" and "the scheduler says
+it happened", and the ring not circulating is precisely a symptom of that shape.

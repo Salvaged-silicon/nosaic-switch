@@ -28,6 +28,7 @@
 #include "saf.h"
 #include "esched.h"
 #include "ssched.h"
+#include "mrl.h"
 #include "cmwm.h"
 #include "cmrest.h"
 #include "parser.h"
@@ -54,9 +55,15 @@ static void usage(void)
 "  --bist [config]       configure the memory controllers and run the BIST\n"
 "                        march. 'config' stops after the controllers. WRITES,\n"
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
+"  --mrl i-mean-it       shift the vendor scan-chain sequence with a zero\n"
+"                        payload. ⚠ DESTRUCTIVE: it appears to overwrite the\n"
+"                        bank repairs step 9 installed, and the damage only\n"
+"                        shows up on the next scheduler init. See mrl.h.\n"
 "  --try-pair EPL SBUS   confirm or refute one EPL-to-SBus pairing\n"
 "  --saf                 write the store-and-forward matrix (168 writes)\n"
 "  --esched              configure the egress scheduler\n"
+"  --ssched [sync]       initialise the scheduler ring and say whether it\n"
+"                        circulates. 'sync' sets Sync on the mgmt token.\n"
 "  --sweep-pairs         find every EPL's SBus address by trying them\n"
 "  --spico N             is the SPICO running? post an interrupt and see\n"
 "  --dfe N               run the RX equaliser adaptation for port N\n"
@@ -695,6 +702,35 @@ int main(int argc, char **argv)
 			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			printf("\n%s\n", rv == FM_OK ? "ok" : rvstr(rv));
 			rc = rv == FM_OK ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--mrl") == 0) {
+		struct fm_mrl_report mrep;
+		int confirmed = (i + 1 < argc &&
+				 strcmp(argv[i + 1], "i-mean-it") == 0);
+
+		if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			rc = 1;
+		} else {
+			printf("⚠ THIS IS DESTRUCTIVE AND THE DAMAGE IS NOT VISIBLE HERE.\n\n"
+			       "NOSaic does not carry the vendor's chain data, so this\n"
+			       "shifts zeros. Measured on this board: every shift retires\n"
+			       "and the chip still answers, and then the NEXT scheduler ring\n"
+			       "init takes it off the bus -- an init that was clean before.\n"
+			       "Step 9 has already installed the real bank repairs and this\n"
+			       "appears to overwrite them. Recovery needs a reset pulse\n"
+			       "(nosaic platform release-asic) and a full --boot.\n\n"
+			       "Run it as `--mrl i-mean-it` if that is what you want.\n");
+			if (!confirmed) {
+				rc = 1;
+			} else {
+				rv = fm_mrl_apply(&dev, NULL, &mrep);
+				fm_mrl_print(&mrep, rv);
+				printf("  chip                    %s\n",
+				       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+				printf("\n  ⚠ the chip answering here does NOT mean it is well.\n");
+				rc = rv == FM_OK ? 0 : 2;
+			}
 		}
 	} else if (strcmp(argv[i], "--try-pair") == 0 && i + 2 < argc) {
 		/*

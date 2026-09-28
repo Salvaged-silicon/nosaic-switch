@@ -488,9 +488,51 @@ hang rather than an error.
 - [ ] does that alone make the bank memories safe to touch? This is the
       experiment that decides whether M2 is a day or a month, and it has not
       been run in this order
-- [ ] only if it does not: work out what the documented minimum leaves out. The
-      prior investigation says a per-block scan program is needed and the
-      datasheet says one write is. Find out which, and write down why
+- [x] **settled, 2026-09-28: both are right, they are different operations.**
+      The datasheet's step 5 really is one write. The "per-block scan program"
+      the prior investigation saw is the vendor's `fm6000MrlRegisterFix`, a
+      separate erratum workaround that runs *after* the boot commands and is
+      gated on a chip-revision check — it is not part of Table 4-1 at all. The
+      sequence is decoded and implemented in `datapath/fm6000/mrl.c`; see
+      [hardware.md](hardware.md#the-scan-chain-and-the-mrl-register-fix)
+- [x] **run it with a zero payload, 2026-09-28 — done, and the answer is that
+      the payload is what we are missing.** All 6288 shifts retire and the chip
+      still answers, and then the *next* `--ssched` takes it off the bus, an
+      init that was clean before. Reproduced twice across a cold boot. So the
+      sequence does reach what the scheduler depends on, and zeros move it the
+      wrong way — step 9 has already installed the real repairs and this looks
+      like it overwrites them. `--mrl` now requires `i-mean-it`. See
+      [hardware.md](hardware.md#what-running-it-with-zeros-actually-did)
+- [x] **and then MRL turned out to be the wrong tree, 2026-09-28.** MRL on
+      this chip is the **metering rate limiter** — the policer sweeper — not
+      memory repair. The SDK's own names say so (`FC_MRL_SWEEP_CYCLES`,
+      `FC_MRL_UNROLL_ITER`, `FC_MRL_RATE_LIMITER`) and so does the datasheet,
+      which uses MRL only in §5.13.5. So `fm6000MrlRegisterFix` is a policer
+      erratum patch, not a missing boot step, and it is unlikely to be what
+      makes a segment scheduler circulate. It is implemented and documented so
+      nobody decodes it twice; the lead has moved on
+- [x] **the whole register map is recovered and validated, 2026-09-28** — 703
+      `FM6000_*` names and word addresses out of a 720-entry table in the SDK.
+      Every address this port had established on live hardware appears in it
+      and matches, ten for ten. Not committed; regenerate with the snippet in
+      [hardware.md](hardware.md#the-register-map-and-how-to-regenerate-it)
+- [ ] **the freelist discrepancy — the best scheduler lead we have.** All four
+      `SSCHED_*_FREELIST_INIT_DONE` registers (`0x80f1`, `0x80f5`, `0x80f9`,
+      `0x80fd`) read 0 on a chip that completed Table 4-1 with step 10 reporting
+      `CommandDone`. Writing 1 to `SSCHED_FREELIST_INIT` neither sticks nor
+      moves `_DONE`. Not yet a finding — a self-clearing trigger in an unclocked
+      block reads the same — but it is the first asymmetry between what the boot
+      controller claims and what the scheduler shows
+- [ ] read `CM_ESCHED_STATE` (`0x116c00`) around a ring init. It reads 0 now,
+      and it is the only register we have that watches the egress scheduler
+      from outside the block that is stuck
+- [ ] `FC_MRL_UNROLL_ITER` reads 0 where the datasheet calls 4095 nominal.
+      Probably just means no policer is configured; worth one look
+- [ ] one thing our step 5 does *not* do: write `SCAN_SELECT` (`0x1c039`)
+      before the data write. The vendor never touches a data-in register
+      without setting the selector first, so our one write lands on whichever
+      chain the reset default selects. Which selector step 5 wants is not
+      documented and is not guessed in the code
 
 ## M3 — a documented cold init
 
