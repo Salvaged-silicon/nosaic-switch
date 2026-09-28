@@ -3747,7 +3747,38 @@ since the read and write spaces differ.
 `0x3d`, `0x3e` and `0x41` — decimal 11, 61, 62 and 65, which are our
 polarity and transmit-equaliser steps. Nothing missing, and TX-side anyway.
 
-### What that leaves, and it is uncomfortable
+### What that leaves — and NOT what I first said
+
+⚠ **The paragraph that stood here claimed the SPICO firmware question had
+reopened, and that was wrong.** It is retained below only as the reasoning,
+because the correction matters more than the claim.
+
+The prior work on this chassis did not settle the SPICO question by
+inference. It settled it by **moving `fm6000_spico_code.bin` aside and cold
+booting**, and measuring:
+
+| port | media | PORT_STATUS / LANE_STATUS | outcome |
+|---|---|---|---|
+| et1 | SFP fibre, 10GBASE-SR | `000008c0` / **`00000940`** | **clean lock, forwards** |
+| et2 | DAC copper, 10GBASE-CR | `00000815` / `00000000` | no lock |
+
+et1 carried traffic end to end with **zero Intel code present** — 5/5 pings
+from the peer, OSPF adjacency up, 14 routes programmed. A fibre-only build
+needs no Intel firmware, which is exactly what makes this board
+distributable.
+
+So the receiver failure is **not** the missing DFE step, and the cage we are
+trying to light is fibre. What it is, is a difference between our
+implementation and one that demonstrably worked on this same chassis with no
+firmware — which is a far better place to be than waiting on a blob.
+
+Two measurements from that same test worth carrying, both taken on a
+no-firmware box: **reg `0x0f` reads `0x3f` and reg `0x14` reads `0x14` on
+both a locking and a non-locking lane.** Our lane reads the same. So neither
+PLL lock nor signal detect distinguishes a working lane from ours, which
+retires them as diagnostics for the third time.
+
+### The reasoning that was wrong, kept as reasoning
 
 With KR training added, **every step of the vendor's lane enable is now
 implemented except one**: steps 17–18, the DFE tuning. And that one is not a
@@ -3756,16 +3787,11 @@ micro-controller**, which answers only when firmware is loaded into it.
 
 The lane still does not lock.
 
-So the conclusion that has been carried since the SPICO question was
-"settled" — *SerDes firmware is needed only for copper, fibre-only needs no
-proprietary files* — is now in doubt. It was reached by bisecting a
-bring-up that had other steps missing. Everything else is present now, and
-the receiver still does not recover a signal, which points at the one
-remaining step needing firmware this project cannot ship.
-
-⚠ That is not proven. Ruling it in or out is the next thing worth doing,
-because it is the question that decides whether images for this board can be
-published at all — and it is worth more than any further register work.
+The inference was: everything but the DFE is implemented, the DFE needs
+SPICO, the lane does not lock, therefore the lane may need SPICO. It is
+sound reasoning from a false premise — that the firmware question had been
+settled by bisect. It was settled by removing the file, and the answer was
+measured, not argued.
 
 ⚠ None of the SDK analysis made the lane lock. That is the point of writing
 it down: steps 3–6 and step 2 are now eliminated as the cause rather than

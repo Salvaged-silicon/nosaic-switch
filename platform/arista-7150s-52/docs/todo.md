@@ -590,7 +590,19 @@ has a reason, in code, parameterised by the board.
       required first; this rules out the cheap path.
 - [x] **port 1 transmits** -- `PORT_STATUS 0x815`, SerXmit set, under our own
       lane-enable in `datapath/fm6000/serdes.c`.
-- [ ] **the receiver — and the gap is now named.** The lane bring-up is the
+- [ ] **the receiver. ⚠ It is NOT the SerDes firmware — that was measured,
+      not argued.** The prior work moved `fm6000_spico_code.bin` aside and
+      cold-booted: the **fibre** port locked (`PORT_STATUS 0x8c0`,
+      `LANE_STATUS 0x940`) and carried traffic end to end with zero Intel
+      code present; only the DAC copper port failed. So a fibre lane comes
+      up with no firmware, this board's cages are fibre, and the missing DFE
+      step is not the cause. Do not re-derive this: the file-removal test is
+      the evidence.
+      What that leaves is a difference between our implementation and one
+      that demonstrably worked on this chassis without firmware — a far
+      better position than waiting on a blob, and the place to look is the
+      steps our port took from the *later* prior-art generation.
+- [ ] **the receiver — the gap as it was named before.** The lane bring-up is the
       SDK's 18-step `fm6000EnableSerDes`, and the prior work's own header
       records that it could not decode **steps 3-6** (regs `0x00`, `0x1d`,
       `0x36`, `0x3b` — "values produced by arithmetic in the SDK"), nor
