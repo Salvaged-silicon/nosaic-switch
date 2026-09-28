@@ -69,10 +69,13 @@ strip: nosd-fm6000 fm6000-probe
 # Tests run on the build host, not the switch. Everything here that can be
 # checked without a chip should be, because the alternative is checking it on
 # a switch that goes off the bus when it disagrees with you.
-TESTS = esched-test
+TESTS = esched-test parser-test
 
 esched-test: esched_test.c esched.c esched.h portmap.h pci.h regs.h
 	$(CC) $(CFLAGS) -o $@ esched_test.c esched.c
+
+parser-test: parser_test.c parser.c parser.h portmap.h pci.h regs.h
+	$(CC) $(CFLAGS) -o $@ parser_test.c parser.c
 
 test: $(TESTS)
 	@for t in $(TESTS); do ./$$t || exit 1; done

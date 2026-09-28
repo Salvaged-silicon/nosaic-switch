@@ -3534,6 +3534,43 @@ an untouched register, so a block that discarded every write would have
 passed. A plain front-panel port's first word is `0x0010000f`, which nothing
 produces by accident.
 
+## The GLORT assignment, settled 2026-09-28
+
+The forwarding path does not address ports by their physical number; it uses
+a GLORT. Nothing in NOSaic had one, which blocked the parser's per-port
+seeds and everything downstream of them — `LBS_CAM`, the L3AR slices — and
+was recorded as "a forwarding decision that belongs with the forwarding
+bring-up".
+
+It is simpler than that. **A port's GLORT is its logical port number:** a
+front-panel port's panel number, 1 to 52; the two internal ports continuing
+as 53 and 54; the host port 0.
+
+Two independent things say so. `portmap.h` has recorded since the port map
+was recovered that the vendor's agent log numbers the two internal ports
+"53 and 54 in its own logical space" — and that logical space turns out to
+be the GLORT space. And a forwarding chip's parser seeds carry exactly this
+assignment: checked on all 52 front-panel ports, **51 match exactly** and
+the 52nd matches in its GLORT and its low half, differing only in a field
+that holds link state.
+
+So NOSaic uses it because it is the right answer, reached twice, rather than
+because it is what was there. `fm6000_glort_of()` in `portmap.h` is the one
+place it is written down.
+
+The seed layout is
+
+```
+word 0   flags << 16 | 0x100 | glort      (the low half is zero on an
+word 1   glort << 16 | 1                   internal port)
+```
+
+with flags `0x0001` on a port that has not come up. `parser.c` now writes
+the whole 304-word array — a seed for the 55 ports that carry traffic, zero
+for the 21 that do not, zero in the unused second entry everywhere — and it
+matches a forwarding chip on **303 of 304 words**. The one difference is
+port 40's flags field, which holds link state and is not a seed.
+
 ### The egress scheduler, checked against a chip that forwards
 
 The block cannot be written on our switch, so `esched.c` could not be tested

@@ -65,4 +65,43 @@ static const unsigned char fm6000_alta_of[FM6000_FRONT_PORTS + 1] = {
 #define FM6000_ALTA_CPU      1	/* store-and-forward */
 #define FM6000_ALTA_INTERNAL 3
 
+/*
+ * A port's GLORT -- its logical port number.
+ *
+ * The forwarding path does not address ports by their physical number. It
+ * uses a GLORT, and on this board the assignment is the obvious one: a
+ * front-panel port's GLORT is its panel number, 1 to 52, and the two
+ * internal ports continue that numbering as 53 and 54. The host port is 0.
+ *
+ * That is not a guess and not a transcription. It is what the agent log
+ * already told us -- it numbers the two internal ports 53 and 54 "in its own
+ * logical space", and that logical space turns out to be the GLORT space --
+ * and a chip that is forwarding carries exactly this assignment in its
+ * parser seeds, on 51 of 52 front-panel ports exactly and on the 52nd in
+ * everything but a field that holds link state.
+ *
+ * So NOSaic uses it because it is the right answer, arrived at twice, and
+ * not because it is what was there.
+ */
+#define FM6000_GLORT_HOST	0
+#define FM6000_GLORT_INTERNAL	53	/* physical 3 */
+#define FM6000_GLORT_CPU	54	/* physical 1 */
+
+/* 0 for a port that carries no traffic and is given no GLORT. */
+static inline unsigned fm6000_glort_of(unsigned alta)
+{
+	unsigned fp;
+
+	if (alta == FM6000_ALTA_HOST)
+		return FM6000_GLORT_HOST;
+	if (alta == FM6000_ALTA_CPU)
+		return FM6000_GLORT_CPU;
+	if (alta == FM6000_ALTA_INTERNAL)
+		return FM6000_GLORT_INTERNAL;
+	for (fp = 1; fp <= FM6000_FRONT_PORTS; fp++)
+		if (fm6000_alta_of[fp] == alta)
+			return fp;
+	return 0;
+}
+
 #endif /* NOSAIC_FM6000_PORTMAP_H */

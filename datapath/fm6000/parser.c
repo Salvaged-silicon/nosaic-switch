@@ -11,22 +11,23 @@
  * [63:48], configured flags in [47:16], and 0x100 | GLORT in [15:0]. Entry 1
  * is unused and is zero on every port.
  *
- * ⚠ WHAT THIS FUNCTION DOES NOT DO, AND WHY THAT IS NOT AN OVERSIGHT.
+ * Entry 0 carries the port's GLORT -- its logical port number, which is its
+ * panel number for a front-panel port and 53 or 54 for the two internal
+ * ones. See portmap.h for why that assignment is ours rather than borrowed.
+ * The layout is
  *
- * It writes only zeros: entry 1 on all 76 ports, and entry 0 on the 21 ports
- * that carry no traffic. It does not seed entry 0 for the ports that do.
+ *     word 0   flags << 16 | 0x100 | glort     (0x100|glort is zero on an
+ *                                               internal port)
+ *     word 1   glort << 16 | 1
  *
- * That is the whole of what the reference block covers. The live seeds are
- * not write-once -- they are accumulated as ports come up -- so the prior
- * work on this chassis left them in its capture replay rather than authoring
- * them, and there is nothing there to port. Writing them means choosing this
- * switch's GLORT assignment, which is a forwarding decision and belongs with
- * the forwarding bring-up, not here. Until then a port's seed stays whatever
- * the boot left it.
+ * with flags 0x0001 on a port that has not come up. A chip that is
+ * forwarding carries something else there on a port whose link is up, which
+ * is link state rather than seed, so it is not written here.
  *
- * Clearing is still worth doing on its own: it guarantees that no port which
- * is not carrying traffic, and no second entry anywhere, holds a stale or
- * uninitialised seed that the parser would act on.
+ * A port that carries no traffic is given zero, and so is the unused second
+ * entry of every port. That is not tidiness: it guarantees no port which is
+ * not forwarding, and no second entry anywhere, holds a stale seed the
+ * parser would act on.
  *
  * PROVENANCE. Ported from EdgeNOS's fm6000_parserfields.c -- our own prior
  * work on this chassis -- and relicensed. The address set is regenerated from
@@ -55,23 +56,26 @@ static int parser_carries_traffic(unsigned port)
 	return 0;
 }
 
-static int clear_entry(struct fm6000 *d, unsigned port, unsigned entry,
-		       unsigned *n)
+/* A port that has not come up. Link state goes in the same field. */
+#define PARSER_FLAGS_DOWN	0x0001u
+
+static int write_entry(struct fm6000 *d, unsigned port, unsigned entry,
+		       uint32_t w0, uint32_t w1, unsigned *n)
 {
-	unsigned w;
+	uint32_t base = PARSER_INIT_FIELDS + port * PARSER_PORT_STRIDE +
+			entry * PARSER_ENTRY_STRIDE;
 	int rv;
 
-	for (w = 0; w < PARSER_ENTRY_STRIDE; w++) {
-		rv = fm_wr(d, PARSER_INIT_FIELDS + port * PARSER_PORT_STRIDE +
-			      entry * PARSER_ENTRY_STRIDE + w, 0);
-		if (rv != FM_OK)
-			return rv;
-		(*n)++;
-	}
+	if ((rv = fm_wr(d, base, w0)) != FM_OK)
+		return rv;
+	(*n)++;
+	if ((rv = fm_wr(d, base + 1, w1)) != FM_OK)
+		return rv;
+	(*n)++;
 	return FM_OK;
 }
 
-int fm_parser_fields_clear(struct fm6000 *d, unsigned *written)
+int fm_parser_fields_init(struct fm6000 *d, unsigned *written)
 {
 	unsigned port, n = 0;
 	int rv;
@@ -79,15 +83,33 @@ int fm_parser_fields_clear(struct fm6000 *d, unsigned *written)
 	if (written != NULL)
 		*written = 0;
 
-	/* Entry 0, but only where no traffic will be parsed. */
-	for (port = 0; port < PARSER_PORTS; port++)
-		if (!parser_carries_traffic(port))
-			if ((rv = clear_entry(d, port, 0, &n)) != FM_OK)
-				return rv;
+	/*
+	 * Entry 0: a seed for the ports that carry traffic, zero for the rest.
+	 *
+	 * The host port and the two internal ports have a GLORT but no
+	 * 0x100|glort in the low half -- only the front panel does.
+	 */
+	for (port = 0; port < PARSER_PORTS; port++) {
+		uint32_t w0 = 0, w1 = 0;
 
-	/* Entry 1, everywhere: it is unused on every port. */
+		if (parser_carries_traffic(port)) {
+			unsigned glort = fm6000_glort_of(port);
+			unsigned front = port != FM6000_ALTA_HOST &&
+					 port != FM6000_ALTA_CPU &&
+					 port != FM6000_ALTA_INTERNAL;
+
+			w0 = PARSER_FLAGS_DOWN << 16;
+			if (front)
+				w0 |= 0x100u | glort;
+			w1 = ((uint32_t)glort << 16) | 1u;
+		}
+		if ((rv = write_entry(d, port, 0, w0, w1, &n)) != FM_OK)
+			return rv;
+	}
+
+	/* Entry 1 is unused on every port. */
 	for (port = 0; port < PARSER_PORTS; port++)
-		if ((rv = clear_entry(d, port, 1, &n)) != FM_OK)
+		if ((rv = write_entry(d, port, 1, 0, 0, &n)) != FM_OK)
 			return rv;
 
 	if (written != NULL)

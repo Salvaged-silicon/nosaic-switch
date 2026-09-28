@@ -5,11 +5,10 @@
 struct fm6000;
 
 /*
- * Clear the parser's per-port seed for every port that does not carry
- * traffic, and the unused second entry for every port.
- *
- * ⚠ THIS DOES NOT SEED THE PORTS THAT DO CARRY TRAFFIC. See parser.c.
+ * Write the parser's per-port seed: a GLORT for every port that carries
+ * traffic, zero for every port that does not, and zero in the unused second
+ * entry everywhere.
  */
-int fm_parser_fields_clear(struct fm6000 *d, unsigned *written);
+int fm_parser_fields_init(struct fm6000 *d, unsigned *written);
 
 #endif /* NOSAIC_FM6000_PARSER_H */
