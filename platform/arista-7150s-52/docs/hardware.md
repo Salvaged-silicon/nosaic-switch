@@ -3623,8 +3623,42 @@ from a base that may not be what it thinks.**
 Writing the working lane's 35 differing values directly does not bring the
 lane up either, which is consistent with the same thing.
 
-That is where the receiver stands: the failure is not a value we can
-transplant, on either side of the SBus.
+Reading three times in a row gives `0x00` every time, so it is not a
+one-transaction lag either. **The SBus read and write paths address
+different register sets** — which the prior work on this chassis had already
+written down: *"readback proves nothing on this bus; the acceptance test is
+behavioural, PORT_STATUS bit 11."* A read dump is a symptom comparison and
+never a recipe.
+
+That also retires the alarm I raised about `rmw()`. Reads give the current
+state of the read space; they simply do not confirm a write. The
+read-modify-writes are not computing from fiction.
+
+### So what is actually missing, and it is not a mystery
+
+The lane bring-up is the SDK's 18-step `fm6000EnableSerDes`. The prior work
+recovered it by disassembly and **says in its own header which steps it
+could not decode**:
+
+| step | what | state |
+|---|---|---|
+| 2 | KrTraining off | not decoded |
+| **3–6** | **regs `0x00`, `0x1d`, `0x36`, `0x3b`** | **"values produced by arithmetic in the SDK that has not been decoded"** |
+| 14 | SetTxConfig | not decoded |
+| 17–18 | DFE tuning | a SPICO mailbox, not a hardware engine |
+
+Our `serdes.c` writes steps 3–6 anyway, with values chosen here. Two of them
+disagree with a working lane's read-space state — reg `0x1d` reads `0x08`
+against `0x01`, reg `0x17` reads `0xcf` against `0xc0` — and since writes do
+not read back, we cannot tell whether that is the wrong value or merely a
+different view.
+
+**That is the receiver wall stated properly: it is not a register we have
+failed to find, it is arithmetic inside the vendor SDK that nobody has
+decoded.** It is the same class of blocker as the scan-chain load data
+behind the scheduler — and unlike that one, this arithmetic is a
+computation over known inputs (rate, reference divider, lane), so it is the
+more tractable of the two.
 
 ### The SBus device map: two numbering spaces, and a test that tells them apart
 

@@ -590,7 +590,21 @@ has a reason, in code, parameterised by the board.
       required first; this rules out the cheap path.
 - [x] **port 1 transmits** -- `PORT_STATUS 0x815`, SerXmit set, under our own
       lane-enable in `datapath/fm6000/serdes.c`.
-- [ ] **the receiver.** The lane never locks: `+0x38` stays `0x00000000`
+- [ ] **the receiver — and the gap is now named.** The lane bring-up is the
+      SDK's 18-step `fm6000EnableSerDes`, and the prior work's own header
+      records that it could not decode **steps 3-6** (regs `0x00`, `0x1d`,
+      `0x36`, `0x3b` — "values produced by arithmetic in the SDK"), nor
+      steps 2, 14 and 17-18. `serdes.c` writes steps 3-6 with values chosen
+      here, two of which disagree with a working lane. So the task is to
+      **decode that arithmetic**, which is a computation over known inputs
+      (rate, reference divider, lane) — not to hunt for another register.
+      ⚠ Do not try to settle it by reading: **the SBus read and write paths
+      are different register sets.** Reg 31 written `0x29` reads `0x00`,
+      stably, on repeated reads. The acceptance test is behavioural —
+      `PORT_STATUS` bit 11 for the transmitter, `LANE_STATUS 0x940` for the
+      receiver. Transplanting a working lane's values does not work, and has
+      been tried on both sides of the SBus.
+- [ ] **the receiver, symptoms.** The lane never locks: `+0x38` stays `0x00000000`
       against `0x940` on a lane that has, and `PORT_STATUS` is `0x815`
       against a forwarding lane's `0x8c0` — SerXmit set, RxLinkUp and
       HeartbeatOk clear. Ruled out: RX polarity, the threshold across its
