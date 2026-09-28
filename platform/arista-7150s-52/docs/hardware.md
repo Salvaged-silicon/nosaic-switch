@@ -4843,3 +4843,45 @@ being out of soft reset is what lets the write retire, which would mean Table
 the reset count.
 
 It does not start the ring.
+
+## The unified hypothesis: the bank scan chain is what we are missing
+
+Three findings from this session fit together, and the fit is worth stating
+even though it is inference.
+
+1. The MRL scan program shifts **5800 words into scan chain `0x14`** and 203
+   into chain `0x10`. Chain `0x14` is the one this port named `BANKS` — the
+   program's bulk payload goes into a chain that configures memories.
+2. **Fifteen memories reject even a hardware CRM walk**, and all fifteen are
+   egress-path. Nothing else about them explains it: not `SOFT_RESET`, not
+   freelist sizing, not memory-init order, not BIST configuration or march.
+3. **`ESCHED_DRR_DC_INIT` is one of the fifteen.** The egress scheduler's own
+   initialiser is among the memories we cannot reach — and the ring will not
+   circulate.
+
+Read together: the bank scan chain configures those memories, the MRL program
+is what loads it, and without it the egress memories stay unreachable — one of
+which is the scheduler's own. That would make the ring not a scheduler problem
+at all, but the most visible symptom of the memories behind it.
+
+### What makes it hard to dismiss
+
+`fm6000PrebootSwitch` always runs one of the two scan programs. The API
+attribute at `0x3c83a8` chooses between `fm6000MrlRegisterFix` (6287 entries)
+and `fm6000MrlRegisterFixVersion2` (**12532** entries, its own table) — it does
+not choose whether. There is no supported vendor configuration in which the
+chip boots without a multi-thousand-word scan program running before step 5.
+
+### What would settle it
+
+Nothing we can run today. The zero-payload sequence is destructive after the
+boot, and in the vendor's pre-boot position it is still zeros — it cannot put
+the chain into the state real data would.
+
+The honest position: **the boot as the vendor performs it is not reproducible
+without the chain data**, and the ring may be downstream of exactly that. The
+route that stays open is the derivability question parked earlier — of 6003
+payload words only 185 are non-zero, every one a five-bit field at bit 15, in
+four clusters each periodic with period 25, two of which are rotations of the
+other two. That is on the order of a hundred numbers, and if their meaning can
+be worked out they can be generated rather than copied.
