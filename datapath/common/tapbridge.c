@@ -1125,6 +1125,37 @@ static int tap_vlan_setup(int unit, struct tap *t, int vid)
  * default. Entries this datapath installs (MLAG's synced MACs) are static
  * and do not age.
  */
+/* mac aging, in seconds; 0 is never. Set by nosaic_tap_aging_set, and put
+ * into the chip by nosaic_tap_prepare at start. */
+static int age_s = 300;
+
+int nosaic_tap_aging_set(int unit, int seconds, char *err, size_t n)
+{
+	int rv;
+
+	if (seconds != 0 && (seconds < 10 || seconds > 1000000)) {
+		if (err != NULL)
+			snprintf(err, n, "mac aging %d s: must be 10 to 1000000, or 0 for never", seconds);
+		return -1;
+	}
+	/* 0 is the SDK's "aging off", which is what never means here. */
+	rv = bcm_l2_age_timer_set(unit, seconds);
+	if (rv != BCM_E_NONE) {
+		if (err != NULL)
+			snprintf(err, n, "mac aging %d s: the chip refused it (%d)", seconds, rv);
+		return -1;
+	}
+	age_s = seconds;
+	printf("tap: mac aging %d s\n", seconds);
+	fflush(stdout);
+	return 0;
+}
+
+int nosaic_tap_aging_get(void)
+{
+	return age_s;
+}
+
 void nosaic_tap_prepare(int unit)
 {
 	bcm_port_config_t cfg;
@@ -1137,12 +1168,12 @@ void nosaic_tap_prepare(int unit)
 				"(bcm_vlan_port_remove: %d); two links to one neighbour will "
 				"loop until then\n", rv);
 	}
-	rv = bcm_l2_age_timer_set(unit, 300);
+	rv = bcm_l2_age_timer_set(unit, age_s);
 	if (rv != BCM_E_NONE)
-		fprintf(stderr, "tap: bcm_l2_age_timer_set(300): %d; learned MACs will "
-			"never age\n", rv);
+		fprintf(stderr, "tap: bcm_l2_age_timer_set(%d): %d; learned MACs will "
+			"never age\n", age_s, rv);
 	else
-		printf("tap: every port out of VLAN 1 before enabling; L2 aging 300 s\n");
+		printf("tap: every port out of VLAN 1 before enabling; L2 aging %d s\n", age_s);
 	fflush(stdout);
 }
 

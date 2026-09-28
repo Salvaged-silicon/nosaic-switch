@@ -397,6 +397,11 @@ static int handle_lag(FILE *out, const char *req)
 	} else if (strcmp(op, "stp") == 0) {
 		nosaic_rstp_query(out);
 		return 1;
+	} else if (strcmp(op, "mac.aging.set") == 0) {
+		rv = nosaic_tap_aging_set(query_unit, req_int(req, "seconds", 300), err, sizeof(err));
+	} else if (strcmp(op, "mac.aging") == 0) {
+		fprintf(out, "{\"ok\":true,\"result\":{\"seconds\":%d}}\n", nosaic_tap_aging_get());
+		return 1;
 	} else if (strcmp(op, "stp.set") == 0) {
 		rv = nosaic_rstp_set(strstr(req, "\"enabled\":true") != NULL,
 				     req_int(req, "priority", 32768), req_int(req, "hello_time", 0),
@@ -742,7 +747,7 @@ static void handle(FILE *out, const char *req)
 		 * is not served, and the capability is about the call.
 		 */
 		fprintf(out,
-			"{\"ok\":true,\"result\":{\"Contract\":\"1.11\","
+			"{\"ok\":true,\"result\":{\"Contract\":\"1.12\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
 			"\"MaxVLANs\":4094,\"SVIs\":true,\"L2Learning\":false,\"L3\":true,"
 			"\"MaxV4\":%d,\"ECMP\":%s,\"MaxECMP\":%d,"
@@ -750,7 +755,7 @@ static void handle(FILE *out, const char *req)
 			"\"ACL6\":%s,\"ACL6Entries\":%d,"
 			"\"LAGs\":%s,\"MaxLAGs\":%d,\"MaxLAGMembers\":%d,"
 			"\"LACP\":%s,\"STP\":%s,\"MLAG\":%s,\"VirtualGateway\":%s,"
-			"\"VirtualGateway6\":%s}}\n",
+			"\"VirtualGateway6\":%s,\"MACAging\":true}}\n",
 			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
 			maxecmp > 1 ? "true" : "false", maxecmp,
 			acl.v4 ? "true" : "false", acl.v4_total,

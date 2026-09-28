@@ -48,6 +48,7 @@ func DefaultCaps() switchapi.Capabilities {
 		MLAG:            true,
 		VirtualGateway:  true,
 		VirtualGateway6: true,
+		MACAging:        true,
 		L2Learning:      true,
 		L3:              true,
 		IPv6:            true,
@@ -88,6 +89,7 @@ type Switch struct {
 	lacpPri int
 	vmac    string
 	gws     map[switchapi.VirtualGateway]bool
+	aging   *int // nil: the default
 }
 
 // New builds a simulated switch.

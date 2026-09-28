@@ -115,6 +115,8 @@ const (
 	OpSetMLAG       = "mlag.set"
 	OpSetLAGOptions = "lag.options"
 	OpSetLACPPrio   = "lacp.priority"
+	OpSetMACAging   = "mac.aging.set"
+	OpMACAging      = "mac.aging"
 	OpSetLAGMLAG    = "lag.mlag"
 	OpMLAG          = "mlag"
 	OpSetVirtualMAC = "gateway.mac"
@@ -262,4 +264,9 @@ type ACLList struct {
 	Total6     int        `json:"Total6"`
 	Free6      int        `json:"Free6"`
 	Rules      []ACLEntry `json:"Rules"`
+}
+
+// MACAgingArgs sets, and reports, the MAC aging time in seconds.
+type MACAgingArgs struct {
+	Seconds int `json:"seconds"`
 }

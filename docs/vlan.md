@@ -147,6 +147,21 @@ states what should exist and never deletes. `nosaic vlan del`,
 to the addresses and routes they belong with. The two are different on
 purpose for now, and one of them should probably move.
 
+## MAC aging
+
+    nosaic mac aging 600        # in network.conf: mac aging 600
+    nosaic show mac
+
+A learned MAC address is forgotten after this many seconds without a frame
+from it: 10 to 1000000, or 0 for never. The default is 300, 802.1D's.
+Addresses the switch installs itself, such as MLAG's synced MACs, are static
+and do not age. switchapi 1.12.
+
+The chip datapaths set it before any port is enabled, and again whenever it
+changes. On the virtual board it is the Linux bridge's `ageing_time`. The
+kernel has no "never", since 0 there turns learning off, so never is given
+to it as 1000000 s.
+
 ## The virtual board
 
 `internal/nosd/virt` implements the same contract with a Linux bridge that has

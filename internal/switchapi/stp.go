@@ -187,3 +187,15 @@ func ValidMLAGTimes(c MLAGConfig) error {
 	}
 	return nil
 }
+
+// DefaultMACAging is 802.1D's default age for a learned MAC address.
+const DefaultMACAging = 300
+
+// ValidMACAging checks a MAC aging time: 0 (never), or 10 to 1000000 seconds,
+// 802.1D-2004's range.
+func ValidMACAging(s int) error {
+	if s != 0 && (s < 10 || s > 1000000) {
+		return fmt.Errorf("mac aging %d s: must be 10 to 1000000, or 0 for never", s)
+	}
+	return nil
+}

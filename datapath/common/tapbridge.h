@@ -64,6 +64,11 @@ int nosaic_tap_start(int unit, const struct tap_spec *specs, int n);
  */
 void nosaic_tap_prepare(int unit);
 
+/* The MAC aging time, switchapi's SetMACAging: 0 (never) or 10-1000000 s.
+ * 0, or -1 with a reason in err. */
+int nosaic_tap_aging_set(int unit, int seconds, char *err, size_t errlen);
+int nosaic_tap_aging_get(void);
+
 /* How many taps exist, and what each one is.
  *
  * The chip has to be programmed to match the interface: same MAC, same VLAN,

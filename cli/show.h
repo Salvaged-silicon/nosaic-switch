@@ -40,6 +40,8 @@ int nosaic_switchport_cmd(int argc, char **argv);
 int nosaic_show_vlans(void);
 int nosaic_lag_cmd(int argc, char **argv);
 int nosaic_lacp_cmd(int argc, char **argv);
+int nosaic_mac_cmd(int argc, char **argv);
+int nosaic_show_mac(void);
 int nosaic_show_lags(void);
 int nosaic_stp_cmd(int argc, char **argv);
 int nosaic_show_stp(void);

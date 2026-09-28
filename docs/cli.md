@@ -21,6 +21,8 @@ as `admin` and use `doas nosaic ...`; `sudo` is a shim onto it.
 | `show stp` | the spanning tree: bridge, root, and each port's role and state | ✅ | ✅ |
 | `show mlag` | the MLAG pair: role, peer, heartbeat, and each MLAG interface | ✅ | ✅ |
 | `show gateways` | the virtual gateways and their MAC | ✅ | ✅ |
+| `show mac` | the MAC aging time | ✅ | ✅ |
+| `mac aging <seconds>` | how long a learned MAC lives unseen: 10 to 1000000, 0 for never, 300 by default; `mac aging <s>` in network.conf too | ✅ | ✅ |
 | `show acl` | access-list rules and their hit counts | ✅ | ✅ |
 | `show caps` | what this datapath can do, and the contract version | ✅ | ✅ |
 | `show dma` | the SDK's DMA pool, by allocation name | ✅ | ✅ |
