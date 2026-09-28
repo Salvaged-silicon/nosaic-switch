@@ -180,9 +180,60 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 		return rv;
 	if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_2, 0x00000000u)) != FM_OK)
 		return rv;
-	if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_3, 0x0030a2c3u)) != FM_OK)
-		return rv;
-	if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_4, 0x00002000u)) != FM_OK)
+	/*
+	 * Word 3 is DERIVED, not captured.
+	 *
+	 * This used to write 0x0030a2c3, a value taken off a running switch,
+	 * and writing it put this chip into a permanent self-reset storm. The
+	 * vendor does not write a constant here: fmPlatformSwitchPreInitialize,
+	 * gated on the api.fm6000.mrlPatch attribute which defaults on, reads
+	 * the register, keeps its low sixteen bits and ORs in 0x300000.
+	 *
+	 * On this chip word 3 reads 0 after Table 4-1, so the vendor's own
+	 * formula gives 0x300000 -- and the captured 0xa2c3 in the low half
+	 * came from a chip state we never create. Doing the read-modify-write
+	 * is both correct and measured safe. [RE]
+	 */
+	{
+		uint32_t w3 = 0;
+
+		if ((rv = fm_rd(d, FM6000_SWEEPER_CFG_3, &w3)) != FM_OK)
+			return rv;
+		w3 = (w3 & 0xffffu) | 0x300000u;
+		if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_3, w3)) != FM_OK)
+			return rv;
+	}
+
+	/*
+	 * The other half of the same patch: FC_MRL_FC_TOKEN_LIMIT, low ten
+	 * bits set to 0x190 and bit 30 set, again read-modify-write. Nothing
+	 * here wrote this register at all before. [RE]
+	 */
+	{
+		uint32_t tl = 0;
+
+		if ((rv = fm_rd(d, FM6000_FC_MRL_FC_TOKEN_LIMIT, &tl)) != FM_OK)
+			return rv;
+		tl = (tl & ~0x3ffu) | 0x190u | (1u << 30);
+		if ((rv = fm_wr(d, FM6000_FC_MRL_FC_TOKEN_LIMIT, tl)) != FM_OK)
+			return rv;
+	}
+
+	/*
+	 * ⚠ WORD 4 IS LEFT AT ZERO, DELIBERATELY.
+	 *
+	 * Writing the captured 0x00002000 here still puts the chip into a
+	 * permanent self-reset storm, measured alone from a fresh boot, and
+	 * writing 0 is free. It is the last sweeper trigger left after the
+	 * step-5 fix cured word 3.
+	 *
+	 * Bit 13 of word 4 most likely arms the L2 lookup sweeper, which walks
+	 * the MAC table -- but CRM-initialising the MAC table first does not
+	 * make it safe, measured. So what it wants is not known, and a
+	 * register whose value we cannot justify is better left alone than
+	 * written from a capture. That is what caused word 3.
+	 */
+	if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_4, 0u)) != FM_OK)
 		return rv;
 	if (!fm_alive(d))
 		return FM_EOFFBUS;

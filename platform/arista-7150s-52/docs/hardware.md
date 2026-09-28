@@ -4954,3 +4954,52 @@ one and 3 in the other.
 That matters for the derivability question: the program is overwhelmingly fixed
 structure, not bulk per-die data. It does not tell us what the values *mean*,
 which is still what stands between us and generating them.
+
+## The sweeper storm is gone: derive the value, do not capture it
+
+Two things came together here.
+
+**`fmPlatformSwitchPreInitialize` does not write a constant.** Gated on the
+`api.fm6000.mrlPatch` attribute, which defaults on, it read-modify-writes:
+
+```
+v = read(0x1c04b);  v = (v & 0xffff) | 0x300000;        write(0x1c04b, v)
+v = read(0x28020);  v = (v & ~0x3ff) | 0x190 | 1<<30;   write(0x28020, v)
+```
+
+`ssched.c` wrote a captured `0x0030a2c3` to the first of those. On a chip where
+`0x1c04b` already held `0xa2c3` the vendor's formula produces exactly that — so
+the captured value was another chip's *result*, not an input. Ours reads **0**
+after Table 4-1, so the correct value here is `0x300000`. The second register,
+`FC_MRL_FC_TOKEN_LIMIT`, this port never wrote at all.
+
+**And the step-5 fix cured word 3 independently.** Before it, writing anything
+to `SWEEPER_CFG` word 3 started a permanent storm. After it, both the captured
+value and the derived one are free. So the storm was never really about the
+value — it was a chip whose step 5 had been reset out from under it.
+
+### Result
+
+The full ring init, with the sweeper armed and no `nosweep`, now runs with
+**zero self-resets**. That path cost 315 in one measurement and 507 in another.
+`FATAL_COUNT` stays at 3 — the three the boot still spends on step 5 — and the
+registers land as the vendor computes them: `SWEEPER_CFG` word 3 at `0x300000`,
+`FC_MRL_FC_TOKEN_LIMIT` at `0x40000190`.
+
+The ring still does not circulate.
+
+### Word 4 is left at zero, deliberately
+
+The captured `0x00002000` for `SWEEPER_CFG` word 4 still storms, measured alone
+from a fresh boot, and writing 0 is free. Bit 13 most likely arms the L2 lookup
+sweeper — but CRM-initialising the MAC table first does not make it safe, so
+what it wants is not known. A register whose value we cannot justify is better
+left alone than written from a capture. That is exactly what word 3 was.
+
+### And a correction to the unified hypothesis
+
+The previous section argues the ring may be blocked on the MRL chain data. That
+is weaker than it was written. The attribute selecting between the two scan
+programs is `api.FM6000.enableBemPerfTuning` — a **performance tuning** switch,
+which is not the shape of something a scheduler cannot run without. The
+hypothesis is not dead, but it should not be leaned on.
