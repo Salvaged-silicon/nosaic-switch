@@ -3571,6 +3571,32 @@ for the 21 that do not, zero in the unused second entry everywhere — and it
 matches a forwarding chip on **303 of 304 words**. The one difference is
 port 40's flags field, which holds link state and is not a seed.
 
+### Loopback suppression, the first block written from the GLORT rule
+
+A frame flooded to a VLAN must not go back out of the port it arrived on.
+The chip decides that per port, by matching the frame's source GLORT against
+one word at `0x014000 + port`, packed as its own complement so the match is
+exact:
+
+```
+entry = glort << 16 | (~glort & 0xffff)
+```
+
+`lbs.c` computes all 55 entries from this board's port map and the GLORT
+assignment. **Nothing in it is transcribed** — and checking it against the
+reference table afterwards gives 55 of 55 identical, the host port included.
+
+⚠ **The host port matches a GLORT no frame carries, not its own.** Its GLORT
+is 0, and an entry matching 0 would match every frame whose source GLORT is
+unset — quietly suppressing flooding to the CPU. It is given `0xff00`, which
+is outside the assignment. That is the rule, not an exception to it, and the
+reference table agrees.
+
+⚠ **`LBS_PROFILE_TABLE` at `0x014080` is not written.** Twelve entries
+holding 0 or 2 in a pattern nothing here explains. Writing twelve values
+because a reference has them is the thing this port does not do; it waits
+until someone can say what a profile is.
+
 ### The egress scheduler, checked against a chip that forwards
 
 The block cannot be written on our switch, so `esched.c` could not be tested

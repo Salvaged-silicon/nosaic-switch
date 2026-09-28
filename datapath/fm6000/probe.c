@@ -31,6 +31,7 @@
 #include "cmwm.h"
 #include "cmrest.h"
 #include "parser.h"
+#include "lbs.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -792,6 +793,14 @@ sweep_done:
 			printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
 		}
+	} else if (strcmp(argv[i], "--lbs") == 0) {
+		unsigned n = 0;
+
+		rv = fm_lbs_init(&dev, &n);
+		printf("loopback suppression: %u ports, %s\n", n,
+		       rv == FM_OK ? "ok" : rvstr(rv));
+		printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+		rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
 	} else if (strcmp(argv[i], "--parser") == 0) {
 		unsigned n = 0;
 
