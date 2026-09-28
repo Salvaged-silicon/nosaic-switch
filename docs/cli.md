@@ -22,6 +22,8 @@ as `admin` and use `doas nosaic ...`; `sudo` is a shim onto it.
 | `show mlag` | the MLAG pair: role, peer, heartbeat, and each MLAG interface | ✅ | ✅ |
 | `show gateways` | the virtual gateways and their MAC | ✅ | ✅ |
 | `show mac` | the MAC aging time | ✅ | ✅ |
+| `switchport <port> tunnel <svid>` | a QinQ customer port of service VLAN svid | ✅ | ✅ |
+| `switchport <port> trunk <vids> [native <v>] tpid <0x..>` | a trunk with a QinQ outer tag ethertype (0x88a8) | ✅ | ✅ |
 | `mac aging <seconds>` | how long a learned MAC lives unseen: 10 to 1000000, 0 for never, 300 by default; `mac aging <s>` in network.conf too | ✅ | ✅ |
 | `show acl` | access-list rules and their hit counts | ✅ | ✅ |
 | `show caps` | what this datapath can do, and the contract version | ✅ | ✅ |

@@ -66,11 +66,36 @@ func sviCmd(c *nosdclient.Client, args []string) error {
 // name. That is what lets a configuration be applied over and over, which is
 // how this system applies everything.
 func switchportCmd(c *nosdclient.Client, args []string) error {
-	usage := fmt.Errorf("usage: nosaic switchport <port> access <vid> | trunk <vid,...> [native <vid>] | none")
+	usage := fmt.Errorf("usage: nosaic switchport <port> access <vid> | trunk <vid,...> [native <vid>] [tpid <0x..>] | tunnel <svid> | none")
 	if len(args) < 2 {
 		return usage
 	}
 	port := args[0]
+
+	// A tunnel (QinQ customer) port: one statement, one membership.
+	if args[1] == "tunnel" {
+		if len(args) != 3 {
+			return usage
+		}
+		vid, err := parseVID(args[2])
+		if err != nil {
+			return err
+		}
+		return c.SetPortTunnel(port, vid)
+	}
+	// A trunk's outer TPID, if given: the last two words of the line.
+	tpid := 0
+	if args[1] == "trunk" && len(args) >= 5 && args[len(args)-2] == "tpid" {
+		t, err := strconv.ParseInt(args[len(args)-1], 0, 32)
+		if err != nil {
+			return fmt.Errorf("tpid %q is not a number (0x88a8, say)", args[len(args)-1])
+		}
+		tpid = int(t)
+		if err := switchapi.ValidTPID(tpid); err != nil {
+			return err
+		}
+		args = args[:len(args)-2]
+	}
 	want := map[int]bool{} // vid -> tagged
 	switch args[1] {
 	case "access":
@@ -135,6 +160,12 @@ func switchportCmd(c *nosdclient.Client, args []string) error {
 			return err
 		}
 	}
+	// The whole statement: a trunk line without a tpid puts it back to
+	// 0x8100. Only asked of a datapath that has QinQ, so a switch without
+	// it still takes an ordinary trunk.
+	if tpid != 0 || (args[1] == "trunk" && c.Capabilities().QinQ) {
+		return c.SetPortTPID(port, tpid)
+	}
 	return nil
 }
 
@@ -147,21 +178,30 @@ func showVLANs(c *nosdclient.Client, w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "no vlans; add one with: nosaic vlan add <vid>")
 		return nil
 	}
-	fmt.Fprintln(w, "VLAN\tSVI\tUNTAGGED\tTAGGED")
+	fmt.Fprintln(w, "VLAN\tSVI\tUNTAGGED\tTAGGED\tTUNNEL")
 	for _, v := range vl {
-		var untagged, tagged []string
+		var untagged, tagged, tunnel []string
 		for _, m := range v.Members {
-			if m.Tagged {
-				tagged = append(tagged, m.Port)
-			} else {
-				untagged = append(untagged, m.Port)
+			name := m.Port
+			// A port whose outer tag is not 802.1Q's says so.
+			if m.TPID != 0 && m.TPID != switchapi.DefaultTPID {
+				name = fmt.Sprintf("%s(0x%04x)", m.Port, m.TPID)
+			}
+			switch {
+			case m.Tunnel:
+				tunnel = append(tunnel, m.Port)
+			case m.Tagged:
+				tagged = append(tagged, name)
+			default:
+				untagged = append(untagged, name)
 			}
 		}
 		svi := "-"
 		if v.SVI {
 			svi = switchapi.SVIName(v.VID)
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", v.VID, svi, dashIfEmpty(untagged), dashIfEmpty(tagged))
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", v.VID, svi, dashIfEmpty(untagged), dashIfEmpty(tagged),
+			dashIfEmpty(tunnel))
 	}
 	return nil
 }

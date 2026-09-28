@@ -49,6 +49,7 @@ func DefaultCaps() switchapi.Capabilities {
 		VirtualGateway:  true,
 		VirtualGateway6: true,
 		MACAging:        true,
+		QinQ:            true,
 		L2Learning:      true,
 		L3:              true,
 		IPv6:            true,
@@ -70,6 +71,8 @@ type port struct {
 	mtu     int
 	vlans   map[int]bool
 	addrs   map[netip.Prefix]bool
+	tunnel  int // the service VLAN it is a customer port of, 0 if none
+	tpid    int // outer tag ethertype, 0 for the default
 }
 
 // Switch is an in-memory switchapi.Switch.
@@ -270,6 +273,9 @@ func (s *Switch) SetPortVLAN(name string, vid int, tagged bool) error {
 	if !s.vlans[vid] {
 		return fmt.Errorf("vlan %d does not exist", vid)
 	}
+	if p.tunnel != 0 {
+		return fmt.Errorf("%s is a tunnel port of vlan %d; that is its only membership", name, p.tunnel)
+	}
 	// One native VLAN per port: an untagged membership replaces the last.
 	if !tagged {
 		for v, t := range p.vlans {
@@ -293,6 +299,12 @@ func (s *Switch) DelPortVLAN(name string, vid int) error {
 		return err
 	}
 	delete(p.vlans, vid)
+	if p.tunnel == vid {
+		p.tunnel = 0
+	}
+	if len(p.vlans) == 0 {
+		p.tpid = 0 // routed again: back to 802.1Q's tag, as the chip does
+	}
 	return nil
 }
 
@@ -308,7 +320,8 @@ func (s *Switch) VLANs() ([]switchapi.VLAN, error) {
 		_, v.SVI = s.svis[vid]
 		for _, p := range s.switchable() {
 			if tagged, ok := p.vlans[vid]; ok {
-				v.Members = append(v.Members, switchapi.VLANMember{Port: p.name, Tagged: tagged})
+				v.Members = append(v.Members, switchapi.VLANMember{Port: p.name, Tagged: tagged,
+					Tunnel: p.tunnel == vid, TPID: tpidOr(p.tpid)})
 			}
 		}
 		out = append(out, v)

@@ -139,6 +139,7 @@ int nosaic_show_caps(void)
 	put(&t, r++, 1, !nosaic_jbool(resp, "VirtualGateway", 0) ? "no" :
 	    nosaic_jbool(resp, "VirtualGateway6", 0) ? "yes, ipv4 and ipv6" : "yes, ipv4");
 	put(&t, r, 0, "mac aging"); put(&t, r++, 1, nosaic_jbool(resp, "MACAging", 0) ? "yes" : "no");
+	put(&t, r, 0, "qinq"); put(&t, r++, 1, nosaic_jbool(resp, "QinQ", 0) ? "yes" : "no");
 	emit(&t);
 	free(resp);
 	return 0;
