@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // initScript is the first userspace the machine runs.
@@ -251,7 +252,19 @@ while :; do
     FLASH_OPTIONAL=no
     # A flash that is there and holds no data image will not grow one: stop
     # waiting, as this did before the loop existed.
-    if [ "$_dwaited" -ge 15 ] || { [ -n "$FLASH" ] && [ ! -f "$FLASH/nosaic-data.img" ]; }; then
+    #
+    # ⚠ UNLESS THE BOARD KEEPS ITS DATA IN A PARTITION, WHERE $FLASH IS THE ESP.
+    #
+    # On a uefi board the flash filesystem IS the EFI system partition, and an
+    # ESP never holds nosaic-data.img -- so "flash present, no data image" says
+    # nothing whatever about a data partition that is still enumerating. The
+    # Nexus 3172TQ's disk is behind USB: on one boot findfs found sda4 in 1s,
+    # on the next this early-out fired at 3s and the switch came up STATELESS,
+    # forwarding and holding OSPF with a tmpfs for /mnt/data, so nothing it was
+    # configured with would have survived the next reboot. The build sets
+    # EXPECT_DATA_PARTITION on those boards, and there the full wait applies.
+    if [ "$_dwaited" -ge 15 ] || { [ "${EXPECT_DATA_PARTITION:-no}" != yes ] \
+       && [ -n "$FLASH" ] && [ ! -f "$FLASH/nosaic-data.img" ]; }; then
         echo "NOSAIC-INITRAMFS-WARN no data partition after ${_dwaited}s; booting stateless"
         mount -t tmpfs tmpfs /mnt/data || fail "cannot mount a fallback writable layer"
         break
@@ -518,7 +531,15 @@ func buildInitramfs(o Options, work, rootfs string, embed string) (string, error
 	for _, link := range []string{"sh", "mount", "mkdir", "switch_root", "echo"} {
 		_ = os.Symlink("busybox", filepath.Join(dir, "bin", link))
 	}
-	if err := os.WriteFile(filepath.Join(dir, "init"), []byte(initScript), 0o755); err != nil {
+	// A board whose slots and data are partitions must not treat its own ESP
+	// as evidence that no data partition is coming. See the early-out in the
+	// data wait.
+	initSh := initScript
+	if o.Board != nil && o.Board.Boot == "uefi" && !o.RAMBoot {
+		initSh = strings.Replace(initSh, "\nPERSIST=no\n",
+			"\nEXPECT_DATA_PARTITION=yes\nPERSIST=no\n", 1)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "init"), []byte(initSh), 0o755); err != nil {
 		return "", err
 	}
 

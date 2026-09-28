@@ -1406,6 +1406,14 @@ type staleFinding struct {
 	// hashes to what the package recorded. It has no "by", since a digest
 	// does not say when.
 	recipeChanged bool
+
+	// predatesDigest is a finding by file time against the recipe directory,
+	// for a package too old to have recorded a digest. It warns rather than
+	// refuses: a fresh clone or a new worktree gives every recipe file a new
+	// mtime without changing a byte, so refusing here would stop builds that
+	// are perfectly current. Rebuilding the package records a digest and moves
+	// it onto the check above, which compares content and cannot false-alarm.
+	predatesDigest bool
 }
 
 // stalePackages reports selected packages that are older than the source they
@@ -1501,16 +1509,31 @@ func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr err
 		// login prompt with no management address. Nothing in the build said
 		// a word, because the package recorded no digest and its source is a
 		// url -- which used to mean no check ran at all.
+		hasLocal := rec.Source != nil && rec.Source.Local != ""
+
 		newest, name := time.Time{}, ""
+		fromRecipeDir := false
 		if recorded == "" {
-			newest, name = newestSource(filepath.Dir(recPath), nil)
+			if hasLocal {
+				// Unchanged: recipe.yml's own time, as it always was.
+				if fi, err := os.Stat(recPath); err == nil {
+					newest, name = fi.ModTime(), recPath
+				}
+			} else {
+				// New. A url recipe has no tree of ours, which used to mean no
+				// check at all -- the hole the kernel fell through. The whole
+				// recipe directory counts, because a kernel's config fragments
+				// decide what the package contains and never touch recipe.yml.
+				newest, name = newestSource(filepath.Dir(recPath), nil)
+				fromRecipeDir = !newest.IsZero()
+			}
 		}
 
 		// A url source has no tree of ours to walk. That is a reason to skip
 		// the source comparison below, and not a reason to skip the recipe
 		// comparison above -- which is what returning here unconditionally
 		// used to do.
-		if rec.Source != nil && rec.Source.Local != "" {
+		if hasLocal {
 			// Only the part of the tree this recipe actually compiles.
 			// nosd-td2p and nosd-tdp both declare `local: datapath` and differ
 			// by subdir: td2p builds td2p/ and common/, and never tdp/.
@@ -1520,7 +1543,7 @@ func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr err
 			// ignored.
 			skip := others[rec.Source.Local][subdirOf(rec)]
 			if t, n := newestSource(filepath.Join(o.Root, rec.Source.Local), skip); t.After(newest) {
-				newest, name = t, n
+				newest, name, fromRecipeDir = t, n, false
 			}
 		}
 
@@ -1528,10 +1551,11 @@ func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr err
 			continue
 		}
 		found = append(found, staleFinding{
-			pkg:    r.file,
-			recipe: r.Name,
-			source: rel(o.Root, name),
-			by:     newest.Sub(pkg.ModTime()).Round(time.Second),
+			pkg:            r.file,
+			recipe:         r.Name,
+			source:         rel(o.Root, name),
+			by:             newest.Sub(pkg.ModTime()).Round(time.Second),
+			predatesDigest: fromRecipeDir,
 		})
 	}
 	return found, nil
@@ -1545,10 +1569,34 @@ func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr err
 // image being built -- but it must not be silent either, or the check quietly
 // stops checking and the staleness it exists to catch comes back unannounced.
 func reportStale(o Options, refs []pkgRef) error {
-	found, err := stalePackages(o, refs)
+	all, err := stalePackages(o, refs)
 	if err != nil {
 		fmt.Fprintf(o.Log, "    (could not check packages against their source: %v)\n", err)
 		return nil
+	}
+
+	// A package too old to have recorded a digest is compared by file time
+	// against its recipe directory, and file times do not survive a clone: a
+	// new worktree makes every recipe newer than every package without one
+	// byte having changed. So this says so and lets the build run, where a
+	// content mismatch stops it. Rebuilding the package records a digest and
+	// moves it onto the check that cannot false-alarm.
+	var found []staleFinding
+	var predating []staleFinding
+	for _, f := range all {
+		if f.predatesDigest {
+			predating = append(predating, f)
+			continue
+		}
+		found = append(found, f)
+	}
+	if len(predating) > 0 {
+		fmt.Fprintf(o.Log, "    %d package(s) predate recipe digests and may be stale "+
+			"-- file times only, so a fresh worktree looks like this:\n", len(predating))
+		for _, f := range predating {
+			fmt.Fprintf(o.Log, "      %s: %s is %s newer (make pkg PKG=%s ARCH=%s to know)\n",
+				f.pkg, f.source, f.by, f.recipe, o.Arch.ID)
+		}
 	}
 	if len(found) == 0 {
 		return nil

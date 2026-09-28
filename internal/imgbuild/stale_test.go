@@ -349,7 +349,20 @@ func TestADigestlessUpstreamPackageChecksItsRecipeDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := reportStale(o, refs); err == nil {
-		t.Error("a config fragment added since the package was built did not stop the build")
+	// It warns rather than refusing. File times do not survive a clone -- a new
+	// worktree makes every recipe newer than every package without a byte
+	// changing -- so a refusal here would stop builds that are perfectly
+	// current. Rebuilding the package records a digest, and a digest mismatch
+	// does stop the build, because it compares content.
+	log := o.Log.(*bytes.Buffer)
+	if err := reportStale(o, refs); err != nil {
+		t.Fatalf("a package predating digests refused the build: %v", err)
+	}
+	got := log.String()
+	if !strings.Contains(got, "predate recipe digests") {
+		t.Errorf("no warning that the package predates digests: %q", got)
+	}
+	if !strings.Contains(got, "x86_64.fragment") {
+		t.Errorf("the warning does not name the fragment that changed: %q", got)
 	}
 }
