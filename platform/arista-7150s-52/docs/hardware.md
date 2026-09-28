@@ -4885,3 +4885,72 @@ payload words only 185 are non-zero, every one a five-bit field at bit 15, in
 four clusters each periodic with period 25, two of which are rotations of the
 other two. That is on the order of a hundred numbers, and if their meaning can
 be worked out they can be generated rather than copied.
+
+## What the vendor writes during bring-up that this port never does
+
+Produced by extracting every register address the SDK writes as an immediate
+(367 of them) and subtracting every address named anywhere in
+`datapath/fm6000`. The raw difference is 251 entries, but most are forwarding
+tables we have no feature for yet, and some are false positives — the
+extraction catches the first argument of any call, so constants like `0xc350`
+(the 50 ms delay) and `0xf4240` appear as if they were addresses. What follows
+is the filtered, credible remainder.
+
+**Interrupt and status plumbing** — none of it needed to forward, all of it
+needed before anything is trustworthy:
+`INTERRUPT_MASK_PCIE` `0x1c002`, `GLOBAL_EPL_INT_DETECT` `0x1c004`,
+`SW_IP`/`SW_IM` `0x1c01c`/`0x1c01d`, `SW_TEST_AND_SET` `0x1c01e`,
+`CM_INTERRUPT_DETECT` `0x22100`, `SRBM_IP` `0x1d70e`.
+
+**Congestion and rate limiting**: `CM_GLOBAL_USAGE` `0x110200`,
+`CM_PAUSE_PACING_CFG` `0x116600`, `CM_PORT_TXMP_IP_WM` `0x20800`,
+`CM_PORT_TXMP_SAMPLING_PERIOD` `0x21000`, `ERL_CFG` `0x117000`,
+`ERL_CFG_IFG` `0x117800`, `FRAME_TIME_OUT` `0x1c01f`.
+
+**The L2 lookup sweeper block**, `0xd000`–`0xd408` — timer config, CAM, FIFO
+and its head/tail, write command and data. Untouched here, and it is one of
+the engines `SWEEPER_CFG` arms.
+
+**The MAC table's configuration**, `L2L_MAC_TABLE_CFG` `0x30000`, plus the
+VID/lock tables.
+
+**Buffer manager sizing**: `BM_TXQ_HS_SEGMENTS` `0x1d085`, `BM_RXQ_PAGES`
+`0x1d086`, `BM_MODEL_INFO` `0x1d087`, `BM_VRM` `0x1d089`. The vendor writes
+these; on our chip they are already populated from the fusebox, so this is a
+difference in method rather than in outcome.
+
+**Test and debug control**: `RO_CFG` `0x1c052`, `TESTCTRL_*` `0x1c054`–`0x1c058`.
+
+**The PCIe block** `0x1400`–`0x1435`, which is packet DMA and belongs to M5.
+
+### And one hypothesis this killed
+
+`PLL_CTRL` `0x1c042` is in that list, and Table 4-1 step 6 says "initialize PLL
+and wait for lock" while `boot.c` only waits. A fabric running on the wrong
+clock would explain the ring, the timeouts and the unreachable memories all at
+once, so it was worth checking.
+
+It is not that. `PLL_CTRL` reads `0x20841436` on a chip that has had nothing
+but a reset pulse — populated from the fusebox — and `PLL_STAT` goes from `3`
+to `0xf` across our boot, all four lock bits. `DLL_CTRL` is likewise
+pre-populated at `0x08011b05`. The clock is fine.
+
+## The two MRL tables, compared
+
+The SDK ships two scan programs and `fm6000PrebootSwitch` picks between them by
+API attribute. Comparing them is the closest thing to a controlled experiment
+available without hardware:
+
+| | entries | chain `0x14` words | CFG words | non-zero payload |
+|---|---|---|---|---|
+| `fm6000MrlRegisterFix` | 6287 | 5800 | 281 | 449 |
+| `...Version2` | 12533 | 11600 | 521 | 901 |
+
+Version2 is almost exactly double, and over their common 6287 entries **only 32
+differ — half a percent**. They are the same program with a handful of
+per-variant values, the first divergence being one five-bit field holding 11 in
+one and 3 in the other.
+
+That matters for the derivability question: the program is overwhelmingly fixed
+structure, not bulk per-die data. It does not tell us what the values *mean*,
+which is still what stands between us and generating them.

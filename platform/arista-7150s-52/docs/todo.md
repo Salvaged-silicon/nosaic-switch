@@ -34,6 +34,60 @@ Knowledge is not an artifact. Reading Intel's datasheet and implementing what it
 documents is how every driver is written; a datasheet is fetched rather than
 committed, as on every other board.
 
+## STATUS — 2026-09-28
+
+Read this before the checklist below, which has grown organically and whose
+milestone headings no longer track reality (M1 is marked done and still carries
+open sub-items that were superseded rather than ticked).
+
+### Working, verified on hardware
+
+- **The box runs NOSaic.** Installed on flash, RAM-boot via Aboot, ssh, `nosd`
+  supervised by s6. Recovery is a `release-asic` pulse plus a `nosd` restart.
+- **The chip is reachable cold**, over the SCD's BAR1 local bus, without PCIe.
+- **Table 4-1 runs end to end.** `BOOT_CTRL` ends at `0x313`, bit for bit what
+  a forwarding EOS chip reads; `SOFT_RESET` at 0.
+- **Self-resets are visible and mostly gone.** `FATAL_COUNT` diagnostics; the
+  boot went from 8 self-resets to 3 by stopping the scan engine first, and
+  step 5 now actually takes effect instead of being reset out from under itself.
+- **114 of 129 memories initialise**, in hardware via the CRM, with zero
+  self-resets.
+- **The BIST controllers are configured** — 34 writes the vendor does and this
+  port never did.
+- **The register map is recovered and validated**: 703 names and addresses,
+  ten for ten against everything measured independently.
+- **Board-level pieces**: port map, cage presence and EEPROM for 52 cages, SFP
+  laser enable, thermal sensors, the SCD register map.
+- **The SPICO question is settled** — fibre needs no Intel firmware.
+- **Datapath blocks written and checked against a forwarding chip**: parser
+  (303/304), loopback suppression (55/55), CM restore (701/701), watermarks,
+  store-and-forward, egress scheduler config, and a ring init now byte-faithful
+  to the vendor's.
+
+### Not working
+
+- **The segment scheduler ring does not circulate.** Programmed correctly,
+  validated by the vendor's own method, never advances.
+- **Fifteen egress-path memories reject even a hardware CRM walk** — the MOD
+  block, both MCAST tables, both POLICER_STATE banks, `CM_QUEUE_STATE_INIT`
+  and `ESCHED_DRR_DC_INIT`.
+- **The ESCHED block is unreadable**; touching it resets the chip.
+- **No port receives.** The RX lane never locks. This is a *separate* problem
+  from the scheduler and has its own history.
+- **Nothing forwards.**
+
+### The one thing that would unblock the most
+
+The MRL scan program's payload. It shifts 5800 words into the bank scan chain
+before step 5, this port cannot reproduce it, and the fifteen unreachable
+memories — one of which is the egress scheduler's own initialiser — are the
+obvious downstream effect. See
+[hardware.md](hardware.md#the-unified-hypothesis-the-bank-scan-chain-is-what-we-are-missing).
+
+Either that payload is derivable — 185 non-zero words, a five-bit field at bit
+15, four clusters of period 25, two being rotations — or this board does not
+boot on redistributable software. That is the question worth the next session.
+
 ## M0 — the box boots NOSaic
 
 - [x] **flash space.** 511 MB free as of 2026-09-22, up from 59 MB: twenty-five
@@ -909,15 +963,16 @@ invented: it is the order the vendor sequence's own splice points imply.
 
 ## M4 — a port comes up
 
-- [ ] the port map: front panel 1..52 → EPL instance → serdes lane, measured on
-      the bench one cage at a time. Nothing else can be right before this is
-- [ ] `EPL_CFG_B` PCS select set to 10GBASE-R and one cage links to a known-good
-      far end
-- [ ] SFP laser enable through the SCD, and cage presence/EEPROM
-- [ ] **settle the SPICO question early** — is SerDes microcontroller code a
-      separate vendor firmware file, embedded in the proprietary SDK, or not
-      needed on this part? It decides whether images for this board can be
-      published, so it invalidates licensing decisions if left late
+- [x] **the port map is measured and in `portmap.h`** — front panel 1..52 to
+      EPL instance to serdes lane, one cage at a time on the bench
+- [x] `EPL_CFG_B` PCS select set to 10GBASE-R; et1 on fibre reaches clean lock
+      against a known-good far end
+- [x] SFP laser enable through the SCD, and cage presence/EEPROM for all 52
+      cages — presence decode correlated 52/52 against the EEPROMs
+- [x] **the SPICO question is settled, and by measurement**: the firmware file
+      was moved aside and the chip cold booted, and fibre et1 still locked and
+      carried traffic. A fibre build needs no Intel firmware, which is what
+      makes this board distributable
 
 ## M5 — packets reach the CPU
 
