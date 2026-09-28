@@ -1,5 +1,37 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Bringing one SerDes lane up. See serdes.h for provenance and caveats. */
+
+/*
+ * The two rate constants, and where they come from.
+ *
+ * These used to be bare numbers with no justification: 0x1b into register
+ * 0's bits [6:1], 0x40 into registers 54 and 59. The prior work on this
+ * chassis had recorded that the SDK computes them and that the computation
+ * "has not been decoded", so anything here was a guess that happened to be
+ * copied from a lane that worked.
+ *
+ * It is decoded now, and it is not arithmetic -- it is a four-entry table
+ * chosen by the port's line rate in Mb/s:
+ *
+ *      rate <= 1250    0x13   0x63
+ *      rate <= 3125    0x01   0x06
+ *      rate <= 6250    0x01   0x09
+ *      otherwise       0x1b   0x40
+ *
+ * Those thresholds are the SerDes rates the datasheet lists in §6.5 -- 1.25,
+ * 3.125, 6.25 and 10.3125 GbE -- so the last entry is the 10G one, and it is
+ * what this board needs on every front-panel port.
+ *
+ * So the values were right. What was missing was any reason to believe them,
+ * and a name: the first is a divider selector, the second a width, and both
+ * follow from the rate rather than from the lane.
+ *
+ * [Facts recovered from fm6000EnableSerDes by static analysis; the code here
+ * is ours and the table is a fact about the part, the same standing as a
+ * register address.]
+ */
+#define FM_SERDES_RATE_DIV	0x1bu	/* register 0, bits [6:1] */
+#define FM_SERDES_RATE_WIDTH	0x40u	/* registers 54 and 59, bits [6:0] */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -184,10 +216,11 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 	 * reg 0 carries the rate code and the enable bit, and 54 and 59 the
 	 * 10G divider.
 	 */
-	if ((rv = rmw(d, dev, 0, ~0x7fu, (0x1bu << 1) | 1u, 0)) == FM_OK &&
+	if ((rv = rmw(d, dev, 0, ~0x7fu,
+		      ((uint32_t)FM_SERDES_RATE_DIV << 1) | 1u, 0)) == FM_OK &&
 	    (rv = fm_sbus_write(d, dev, 29, 0)) == FM_OK &&
-	    (rv = rmw(d, dev, 54, ~0x7fu, 0x40u, 0)) == FM_OK &&
-	    (rv = rmw(d, dev, 59, ~0x7fu, 0x40u, 0)) == FM_OK)
+	    (rv = rmw(d, dev, 54, ~0x7fu, FM_SERDES_RATE_WIDTH, 0)) == FM_OK &&
+	    (rv = rmw(d, dev, 59, ~0x7fu, FM_SERDES_RATE_WIDTH, 0)) == FM_OK)
 		rv = rmw(d, dev, 23, ~0x1fu, 0x10u, 0);
 	set(rep, FM_LANE_RATE, rv,
 	    "regs 0, 29, 54, 59, 23: 10G rate select and lane enable", NULL);

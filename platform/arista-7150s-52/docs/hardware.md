@@ -3691,6 +3691,54 @@ serdes ↔ EPL is a permutation rather than arithmetic. EPL 14 lane 0 is
 serdes 68 — measured here, and stated outright in the golden dump's own
 header — where `(14-1)*4 + 0` would be 52.
 
+### Static analysis of the SDK: the "undecoded arithmetic" is a table
+
+*2026-09-28.* `libFocalpointSDK.so` is a 32-bit ELF **with full symbols** —
+987 `fm6000` functions, including every step the prior work could not
+decode. `fm6000EnableSerDes` is at `0x48131e`, exactly where that work said.
+
+**The SBus addressing**, which also settles the memory-mapped windows:
+
+```
+addr = (serdes_index << 8) + 0xB05RR     Ethernet
+addr = (serdes_index << 8) + 0xD11RR     PCIe
+```
+
+with `RR` the register number — so `0xB0500`/`0xD1100` are bases and the
+index is the SerDes number, not the SBus device id.
+
+**The eleven registers it touches**, in order: `0x22`, `0x00`, `0x1d`,
+`0x36`, `0x3b`, `0x17`, `0x22` again, `0x06`, `0x03`, `0x1f`, `0x26`,
+`0x0d` — each a read-modify-write except `0x1d`, which is a plain write.
+That matches the shape of our implementation.
+
+**And steps 3–6 are not arithmetic.** They are a four-entry table selected by
+the port's line rate in Mb/s:
+
+| rate | reg `0x00` bits [6:1] | regs `0x36`, `0x3b` |
+|---|---|---|
+| ≤ 1250 | `0x13` | `0x63` |
+| ≤ 3125 | `0x01` | `0x06` |
+| ≤ 6250 | `0x01` | `0x09` |
+| otherwise | **`0x1b`** | **`0x40`** |
+
+Those thresholds are the SerDes rates of §6.5 — 1.25, 3.125, 6.25 and
+10.3125 GbE — so the last row is 10G, and **it is exactly what our code was
+already writing.** Register `0x00` gets that value in bits [6:1] with bit 0
+set, which is precisely `(0x1b << 1) | 1`; `0x1d` gets a plain zero. So the
+values were right and what was missing was any reason to believe them.
+`serdes.c` now names them `FM_SERDES_RATE_DIV` and `FM_SERDES_RATE_WIDTH`
+and says where they come from.
+
+**One supposed missing step does not exist.** `fm6000SetSerDesRxDataGate` is
+a **stub** — it stores its argument and returns 0. Nothing to implement, and
+one fewer candidate for the receiver. `SetSerDesKrTraining`, `SetTxConfig`
+and `StartSerDesDfeTuning` are real functions and remain unimplemented.
+
+⚠ None of this made the lane lock. That is the point of writing it down:
+steps 3–6 are now eliminated as the cause rather than suspected, which is
+worth more than another value to try.
+
 ### So what is actually missing, and it is not a mystery
 
 The lane bring-up is the SDK's 18-step `fm6000EnableSerDes`. The prior work
