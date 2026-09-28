@@ -43,6 +43,10 @@ type Response struct {
 	Error       string          `json:"error,omitempty"`
 	Unsupported bool            `json:"unsupported,omitempty"`
 	Result      json.RawMessage `json:"result,omitempty"`
+	// Partial marks a result the datapath could only partly read -- the
+	// chip's forwarding table, when its traversal stopped early -- so an
+	// absence in it is not conclusive.
+	Partial bool `json:"partial,omitempty"`
 }
 
 // ErrorResponse builds a failure response, preserving whether the cause was an

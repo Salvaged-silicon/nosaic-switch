@@ -29,7 +29,7 @@ as `admin` and use `doas nosaic ...`; `sudo` is a shim onto it.
 | `route add <prefix> via <ip> dev <port> [...]` | a static route; repeat `via` for ECMP | ✅ | — |
 | `route del <prefix>` | | ✅ | — |
 | `verify contract` | the switchapi conformance suite against this datapath | ✅ | — |
-| `verify ports` / `verify routes` | Linux against the chip, side by side | — | ✅ |
+| `verify ports` / `verify routes` | Linux against the chip, side by side | ✅ | ✅ |
 
 `interface <port> up|down` goes through the contract call `port.admin`, which
 the Broadcom datapaths serve since switchapi 1.3. It enables or disables the

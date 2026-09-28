@@ -83,6 +83,8 @@ on a running switch
   gateway add|del <svi> <address/len> | gateway mac <mac>
                                a virtual gateway both of a pair answer for
   verify contract              run the switchapi conformance suite on this datapath
+  verify ports                 what Linux believes against what the chip holds, per port
+  verify routes                the kernel's routing table against the chip's forwarding table
   config show [pattern] | get <name> | set <name> <value> | unset <name> | files
   upgrade status | install <img> [--slot a|b] | commit | confirm
   platform <command>           the board itself; "nosaic platform" lists them
@@ -1449,13 +1451,10 @@ func configCmd(args []string) error {
 	return fmt.Errorf("unknown config command %q", sub)
 }
 
-// verifyCmd compares what the datapath holds with what Linux believes.
-//
-// The full comparison lives in the C CLI today, which is the one that runs on
-// the board where it was needed. This exists so the verb means the same thing
-// on both, and so the gap is stated rather than discovered: a command that is
-// missing on one switch and present on another is the divergence the single
-// CLI exists to prevent.
+// verifyCmd compares what the datapath holds with what Linux believes (ports,
+// routes; verify.go), or runs the contract's conformance suite. The port and
+// route comparisons are the C CLI's, with the same verdicts, so the answer
+// does not depend on which switch it is asked on.
 func verifyCmd(args []string) error {
 	what := ""
 	if len(args) > 0 {
@@ -1463,8 +1462,15 @@ func verifyCmd(args []string) error {
 	}
 	switch what {
 	case "ports", "routes":
-		return fmt.Errorf("`verify %s` is implemented in the C CLI and not yet "+
-			"here; `nosaic show %s` reports the datapath's own view", what, what)
+		c, err := nosdclient.Dial(os.Getenv("NOSD_SOCKET"))
+		if err != nil {
+			return err
+		}
+		defer c.Close()
+		if what == "ports" {
+			return verifyPorts(c)
+		}
+		return verifyRoutes(c)
 	case "contract":
 		c, err := nosdclient.Dial(os.Getenv("NOSD_SOCKET"))
 		if err != nil {

@@ -501,3 +501,57 @@ func (c *Client) SetACL(r switchapi.ACLRule) error {
 func (c *Client) DelACL(seq int) error {
 	return c.call(proto.OpDelACL, proto.ACLDelArgs{Seq: seq}, nil)
 }
+
+// ASICPort is one port as the chip holds it, read back rather than
+// remembered: the diagnostic behind `nosaic verify ports`. Not part of the
+// switchapi contract -- it is about a chip's tables -- so the virtual
+// platform refuses it.
+type ASICPort struct {
+	Name      string `json:"name"`
+	Port      int    `json:"port"`
+	Link      int    `json:"link"`      // 1 up, 0 down, -1 unknown
+	Enabled   int    `json:"enabled"`   // likewise
+	PVID      int    `json:"pvid"`      // the VLAN an untagged frame joins
+	WantVLAN  int    `json:"want_vlan"` // the routed service VLAN the daemon gave it
+	STP       int    `json:"stp"`       // BCM_STG_STP_*: 4 is forwarding
+	CPUMember int    `json:"cpu_member"`
+	FrameMax  int    `json:"frame_max"`
+	Speed     int    `json:"speed"`
+	Switched  int    `json:"switched"` // in a user VLAN, not routed
+	LAG       string `json:"lag"`      // the LAG it is a member of, if any
+	MAC       string `json:"mac"`
+}
+
+// ASICPorts reads every port back from the chip.
+func (c *Client) ASICPorts() ([]ASICPort, error) {
+	var ps []ASICPort
+	return ps, c.call("asic.ports", nil, &ps)
+}
+
+// ASICRoute is one IPv4 entry of the chip's forwarding table.
+type ASICRoute struct {
+	Prefix string `json:"prefix"`
+	Intf   int    `json:"intf"`
+	ECMP   int    `json:"ecmp"`
+}
+
+// ASICRoutes reads the chip's IPv4 forwarding table back. partial says the
+// traversal stopped early, so a route missing from it may still be there.
+func (c *Client) ASICRoutes() (routes []ASICRoute, partial bool, err error) {
+	if err := c.enc.Encode(proto.Request{Op: "l3.routes"}); err != nil {
+		return nil, false, err
+	}
+	var resp proto.Response
+	if err := c.dec.Decode(&resp); err != nil {
+		return nil, false, err
+	}
+	if err := resp.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(resp.Result) > 0 {
+		if err := json.Unmarshal(resp.Result, &routes); err != nil {
+			return nil, false, err
+		}
+	}
+	return routes, resp.Partial, nil
+}
