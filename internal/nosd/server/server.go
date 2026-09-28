@@ -243,6 +243,20 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return done(s.sw.SetLACPSystemPriority(a.Priority))
 
+	case proto.OpSetMACAging:
+		var a proto.MACAgingArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetMACAging(a.Seconds))
+
+	case proto.OpMACAging:
+		sec, err := s.sw.MACAging()
+		if err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return ok(proto.MACAgingArgs{Seconds: sec})
+
 	case proto.OpSetLAGMLAG:
 		var a proto.LAGMLAGArgs
 		if err := json.Unmarshal(req.Args, &a); err != nil {

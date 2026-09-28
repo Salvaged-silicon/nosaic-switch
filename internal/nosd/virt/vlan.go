@@ -65,6 +65,9 @@ func (s *Switch) ensureBridge() error {
 	if _, err := ipCmd("link", "set", bridgeName, "address", routerMAC); err != nil {
 		return err
 	}
+	if err := s.applyAging(); err != nil { // a setting made before the bridge was
+		return err
+	}
 	_, err := ipCmd("link", "set", bridgeName, "up")
 	return err
 }

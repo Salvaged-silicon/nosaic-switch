@@ -57,7 +57,7 @@ building (on a build host)
   docs index                   regenerate the board index
 
 on a running switch
-  show ports | routes | vlans | lags | stp | mlag | gateways | acl | caps
+  show ports | routes | vlans | lags | stp | mac | mlag | gateways | acl | caps
                                what the datapath is doing
   interface <name> up|down     administrative state
   interface <name> mtu <n>     set the MTU
@@ -82,6 +82,7 @@ on a running switch
                                one of an MLAG pair; see docs/mlag.md
   gateway add|del <svi> <address/len> | gateway mac <mac>
                                a virtual gateway both of a pair answer for
+  mac aging <seconds>          how long a learned MAC lives unseen; 0 is never (default 300)
   verify contract              run the switchapi conformance suite on this datapath
   verify ports                 what Linux believes against what the chip holds, per port
   verify routes                the kernel's routing table against the chip's forwarding table
@@ -205,7 +206,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway":
+	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway", "mac":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -770,7 +771,7 @@ func switchCmd(args []string) error {
 	switch args[0] {
 	case "show":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: nosaic show <ports|routes|vlans|lags|stp|mlag|gateways|acl|caps>")
+			return fmt.Errorf("usage: nosaic show <ports|routes|vlans|lags|stp|mac|mlag|gateways|acl|caps>")
 		}
 		return showCmd(c, args[1], args[2:])
 
@@ -817,6 +818,8 @@ func switchCmd(args []string) error {
 		return lacpCmd(c, args[1:])
 	case "stp":
 		return stpCmd(c, args[1:])
+	case "mac":
+		return macCmd(c, args[1:])
 	case "mlag":
 		return mlagCmd(c, args[1:])
 	case "gateway":
@@ -852,6 +855,7 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 		fmt.Fprintf(w, "virtual gateway\t%v\n", map[[2]bool]string{
 			{false, false}: "false", {true, false}: "true, ipv4", {true, true}: "true, ipv4 and ipv6",
 			{false, true}: "false"}[[2]bool{caps.VirtualGateway, caps.VirtualGateway6}])
+		fmt.Fprintf(w, "mac aging\t%v\n", caps.MACAging)
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
 		if caps.ACL {
 			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)
@@ -1076,6 +1080,9 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 
 	case "stp":
 		return showSTP(c, w)
+
+	case "mac":
+		return showMAC(c, w)
 
 	case "mlag":
 		return showMLAG(c, w)

@@ -72,6 +72,7 @@ func Check(sw Switch) []error {
 		probs = append(probs, checkMLAG(sw, caps, p0, ports[1].Name)...)
 	}
 	probs = append(probs, checkSTP(sw, caps, p0)...)
+	probs = append(probs, checkMACAging(sw, caps)...)
 	probs = append(probs, checkGateway(sw, caps)...)
 	probs = append(probs, checkL3(sw, caps, p0)...)
 
@@ -836,6 +837,29 @@ func checkGateway(sw Switch, caps Capabilities) []error {
 		} else if _, ok := has(); ok {
 			bad("vlan302's gateway outlived vlan302")
 		}
+	}
+	return probs
+}
+
+// checkMACAging: the age reads back, "never" is accepted, nonsense is refused,
+// and it is left at the default.
+func checkMACAging(sw Switch, caps Capabilities) []error {
+	err := sw.SetMACAging(DefaultMACAging)
+	if probs := wantSupport(caps.MACAging, err, "SetMACAging", "Capabilities.MACAging"); len(probs) > 0 || !caps.MACAging {
+		return probs
+	}
+	var probs []error
+	bad := func(f string, a ...any) { probs = append(probs, fmt.Errorf(f, a...)) }
+	defer func() { _ = sw.SetMACAging(DefaultMACAging) }()
+	for _, s := range []int{120, 0} {
+		if err := sw.SetMACAging(s); err != nil {
+			bad("SetMACAging(%d): %v", s, err)
+		} else if got, err := sw.MACAging(); err != nil || got != s {
+			bad("MACAging reads back %d (%v), set %d", got, err, s)
+		}
+	}
+	if err := sw.SetMACAging(5); err == nil {
+		bad("SetMACAging accepted 5 s, below 802.1D's 10")
 	}
 	return probs
 }

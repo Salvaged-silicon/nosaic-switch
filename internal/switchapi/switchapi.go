@@ -96,7 +96,10 @@ import (
 //
 // 1.11 added IPv6 virtual gateways, gated by Capabilities.VirtualGateway6:
 // neighbour discovery answered with the virtual MAC, as ARP is for IPv4.
-const Version = "1.11"
+//
+// 1.12 made MAC aging a setting: SetMACAging and MACAging, gated by
+// Capabilities.MACAging. 300 s, 802.1D's default, unless set.
+const Version = "1.12"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -147,6 +150,9 @@ type Capabilities struct {
 	VirtualGateway bool
 	// VirtualGateway6 is the same for IPv6 addresses.
 	VirtualGateway6 bool
+
+	// MACAging is a settable age for learned MAC addresses.
+	MACAging bool
 
 	L2Learning bool
 	MaxFDB     int
@@ -515,6 +521,13 @@ type Switch interface {
 	SetLAGOptions(name string, o LAGOptions) error
 	SetLACPSystemPriority(p int) error
 	SetLAGMembers(name string, ports []string) error
+
+	// SetMACAging sets how long a learned MAC address stays without being
+	// seen again: 10 to 1000000 seconds, or 0 for never. MACAging reads it
+	// back. Addresses the switch installs itself (MLAG's synced ones) are
+	// static and do not age.
+	SetMACAging(seconds int) error
+	MACAging() (int, error)
 	DelLAG(name string) error
 	LAGs() ([]LAG, error)
 

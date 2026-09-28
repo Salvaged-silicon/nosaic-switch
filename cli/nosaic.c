@@ -59,6 +59,7 @@ static const char usage[] =
 "  lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow]\n"
 "      [mode active|passive] [port-priority <n>] | none\n"
 "  lacp system-priority <n> the switch's LACP system priority\n"
+"  mac aging <seconds>     how long a learned MAC lives unseen; 0 is never\n"
 "                          a LAG's whole membership; none removes it\n"
 "  stp on [priority <n>] [hello <s>] [forward-delay <s>] [max-age <s>] | off\n"
 "                          rapid spanning tree over the switched ports\n"
@@ -423,6 +424,8 @@ int main(int argc, char **argv)
 			return nosaic_show_lags();
 		if (argc > 2 && strcmp(argv[2], "stp") == 0)
 			return nosaic_show_stp();
+		if (argc > 2 && strcmp(argv[2], "mac") == 0)
+			return nosaic_show_mac();
 		if (argc > 2 && strcmp(argv[2], "mlag") == 0)
 			return nosaic_show_mlag();
 		if (argc > 2 && strcmp(argv[2], "gateways") == 0)
@@ -442,6 +445,8 @@ int main(int argc, char **argv)
 		return nosaic_lag_cmd(argc, argv);
 	if (strcmp(argv[1], "lacp") == 0)
 		return nosaic_lacp_cmd(argc, argv);
+	if (strcmp(argv[1], "mac") == 0)
+		return nosaic_mac_cmd(argc, argv);
 	if (strcmp(argv[1], "stp") == 0)
 		return nosaic_stp_cmd(argc, argv);
 	if (strcmp(argv[1], "mlag") == 0)

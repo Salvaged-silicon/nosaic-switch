@@ -555,3 +555,12 @@ func (c *Client) ASICRoutes() (routes []ASICRoute, partial bool, err error) {
 	}
 	return routes, resp.Partial, nil
 }
+
+func (c *Client) SetMACAging(seconds int) error {
+	return c.call(proto.OpSetMACAging, proto.MACAgingArgs{Seconds: seconds}, nil)
+}
+
+func (c *Client) MACAging() (int, error) {
+	var a proto.MACAgingArgs
+	return a.Seconds, c.call(proto.OpMACAging, nil, &a)
+}

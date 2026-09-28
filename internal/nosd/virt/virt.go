@@ -50,6 +50,8 @@ type Switch struct {
 	// it joins the bridge. The only virt state not read back from the kernel:
 	// a port's cost lives on it only while it is a bridge port.
 	stpPorts stpPortCfg
+	// aging is the MAC aging time as set, in seconds; nil for the default.
+	aging *int
 	// listening is when each bridge port was first seen in listening, for
 	// telling root guard's hold from a port coming up (STP).
 	listening map[string]time.Time
@@ -93,6 +95,7 @@ func (s *Switch) Capabilities() switchapi.Capabilities {
 		MaxLAGMembers: 16 * b2i(s.lags),
 		LACP:          s.lags,
 		STP:           s.vlans,
+		MACAging:      s.vlans,
 		L2Learning:    false,
 		L3:            true,
 		IPv6:          true,

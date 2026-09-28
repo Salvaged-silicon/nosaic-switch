@@ -341,6 +341,43 @@ int nosaic_lacp_cmd(int argc, char **argv)
 	return ask(req);
 }
 
+/* nosaic mac aging <seconds>: 0 is never, 10-1000000 otherwise. */
+int nosaic_mac_cmd(int argc, char **argv)
+{
+	char req[128];
+
+	if (argc != 4 || strcmp(argv[2], "aging") != 0) {
+		fprintf(stderr, "usage: nosaic mac aging <seconds>\n");
+		return 2;
+	}
+	snprintf(req, sizeof(req), "{\"op\":\"mac.aging.set\",\"args\":{\"seconds\":%d}}",
+		 atoi(argv[3]));
+	return ask(req);
+}
+
+int nosaic_show_mac(void)
+{
+	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"mac.aging\"}");
+	int s;
+
+	if (resp == NULL) {
+		nosaic_query_explain(NOSAIC_QUERY_SOCKET);
+		return 1;
+	}
+	if (strstr(resp, "\"ok\":true") == NULL) {
+		fprintf(stderr, "nosaic: %s", resp);
+		free(resp);
+		return 1;
+	}
+	s = nosaic_jint(resp, "seconds", -1);
+	if (s == 0)
+		printf("%-14snever\n", "aging");
+	else
+		printf("%-14s%d s\n", "aging", s);
+	free(resp);
+	return 0;
+}
+
 int nosaic_show_lags(void)
 {
 	char *resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, "{\"op\":\"lags\"}");
