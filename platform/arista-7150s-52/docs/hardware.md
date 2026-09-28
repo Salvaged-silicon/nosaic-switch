@@ -3735,9 +3735,41 @@ a **stub** — it stores its argument and returns 0. Nothing to implement, and
 one fewer candidate for the receiver. `SetSerDesKrTraining`, `SetTxConfig`
 and `StartSerDesDfeTuning` are real functions and remain unimplemented.
 
-⚠ None of this made the lane lock. That is the point of writing it down:
-steps 3–6 are now eliminated as the cause rather than suspected, which is
-worth more than another value to try.
+**Step 2, KR training, is now implemented.** `fm6000SetSerDesKrTraining` is
+one register: `0x5a`, clear bit 1 and set bit 0. The vendor's lane enable
+calls it with the "off" argument, after the receive datapath is held down
+and before the rate is selected, and that is where `serdes.c` now does it.
+KR training is the backplane-copper negotiation and this board is SFP+
+fibre, so it has to be off — and the default is not knowable by reading,
+since the read and write spaces differ.
+
+**Step 14, SetTxConfig, we already had.** It writes registers `0x0b`,
+`0x3d`, `0x3e` and `0x41` — decimal 11, 61, 62 and 65, which are our
+polarity and transmit-equaliser steps. Nothing missing, and TX-side anyway.
+
+### What that leaves, and it is uncomfortable
+
+With KR training added, **every step of the vendor's lane enable is now
+implemented except one**: steps 17–18, the DFE tuning. And that one is not a
+hardware engine — the prior work established it is a **mailbox to the SPICO
+micro-controller**, which answers only when firmware is loaded into it.
+
+The lane still does not lock.
+
+So the conclusion that has been carried since the SPICO question was
+"settled" — *SerDes firmware is needed only for copper, fibre-only needs no
+proprietary files* — is now in doubt. It was reached by bisecting a
+bring-up that had other steps missing. Everything else is present now, and
+the receiver still does not recover a signal, which points at the one
+remaining step needing firmware this project cannot ship.
+
+⚠ That is not proven. Ruling it in or out is the next thing worth doing,
+because it is the question that decides whether images for this board can be
+published at all — and it is worth more than any further register work.
+
+⚠ None of the SDK analysis made the lane lock. That is the point of writing
+it down: steps 3–6 and step 2 are now eliminated as the cause rather than
+suspected, which is worth more than another value to try.
 
 ### So what is actually missing, and it is not a mystery
 

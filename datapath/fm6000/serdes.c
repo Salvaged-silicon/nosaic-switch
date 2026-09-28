@@ -211,6 +211,28 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 		return rv;
 
 	/*
+	 * Turn KR training off.
+	 *
+	 * This is the step the prior work on this chassis listed as "not
+	 * decoded" and skipped. It is one register: 0x5a, clear bit 1 and set
+	 * bit 0, and the vendor's own lane enable does it here -- after the
+	 * receive datapath is held down and before the rate is selected.
+	 *
+	 * KR training is the backplane-copper negotiation. This board is SFP+
+	 * fibre, so it has to be off, and the default is not knowable by
+	 * reading: the SerDes read and write spaces are different, so reg 0x5a
+	 * matching a working lane on a read says nothing about what the write
+	 * space holds.
+	 *
+	 * [Operation recovered from fm6000SetSerDesKrTraining by static
+	 * analysis. One register and two bits, which is a fact about the part.]
+	 */
+	rv = rmw(d, dev, 0x5a, ~0x2u, 0x1u, 0);
+	set(rep, FM_LANE_QUIESCE, rv, "reg 0x5a: KR training off", NULL);
+	if (rv != FM_OK)
+		return rv;
+
+	/*
 	 * Rate select and lane enable. This is the step the first attempt
 	 * skipped, and skipping it is why the PLL had nothing to lock to:
 	 * reg 0 carries the rate code and the enable bit, and 54 and 59 the
