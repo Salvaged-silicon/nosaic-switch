@@ -250,6 +250,20 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return done(s.sw.SetMACAging(a.Seconds))
 
+	case proto.OpSetPortTunnel:
+		var a proto.PortTunnelArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetPortTunnel(a.Name, a.SVID))
+
+	case proto.OpSetPortTPID:
+		var a proto.PortTPIDArgs
+		if err := json.Unmarshal(req.Args, &a); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetPortTPID(a.Name, a.TPID))
+
 	case proto.OpMACAging:
 		sec, err := s.sw.MACAging()
 		if err != nil {

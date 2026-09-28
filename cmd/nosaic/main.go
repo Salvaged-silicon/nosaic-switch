@@ -68,6 +68,8 @@ on a running switch
   vlan add|del <vid>           a VLAN; see docs/vlan.md
   switchport <port> access <vid>
   switchport <port> trunk <vid,...> [native <vid>]
+  switchport <port> trunk <vid,...> tpid 0x88a8   an 802.1ad (QinQ) provider trunk
+  switchport <port> tunnel <svid>  a QinQ customer port of service VLAN svid
   switchport <port> none       a port's whole VLAN membership; none routes again
   svi add|del <vid>            the routed interface vlan<vid>
   lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow] [mode active|passive] [port-priority <n>]
@@ -856,6 +858,7 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 			{false, false}: "false", {true, false}: "true, ipv4", {true, true}: "true, ipv4 and ipv6",
 			{false, true}: "false"}[[2]bool{caps.VirtualGateway, caps.VirtualGateway6}])
 		fmt.Fprintf(w, "mac aging\t%v\n", caps.MACAging)
+		fmt.Fprintf(w, "qinq\t%v\n", caps.QinQ)
 		fmt.Fprintf(w, "l3\t%v\n", caps.L3)
 		if caps.ACL {
 			fmt.Fprintf(w, "acl\tyes, %d rules\n", caps.ACLEntries)

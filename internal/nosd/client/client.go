@@ -564,3 +564,11 @@ func (c *Client) MACAging() (int, error) {
 	var a proto.MACAgingArgs
 	return a.Seconds, c.call(proto.OpMACAging, nil, &a)
 }
+
+func (c *Client) SetPortTunnel(name string, svid int) error {
+	return c.call(proto.OpSetPortTunnel, proto.PortTunnelArgs{Name: name, SVID: svid}, nil)
+}
+
+func (c *Client) SetPortTPID(name string, tpid int) error {
+	return c.call(proto.OpSetPortTPID, proto.PortTPIDArgs{Name: name, TPID: tpid}, nil)
+}

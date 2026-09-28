@@ -80,7 +80,48 @@ static struct {
 	int      switched;      /* member of how many user VLANs */
 	uint32   member_flags;  /* bcm_port_vlan_member_get, before we changed it */
 	int      saved;
+	int      tunnel;        /* QinQ: the service VLAN it is a customer port of */
+	int      tpid;          /* its outer tag's ethertype, 0 for 0x8100 */
 } pst[NIFACE];
+
+/*
+ * QinQ, in the chip's own terms (bcm_port_dtag_mode_set on this family):
+ *
+ *   DTAG_MODE_EXTERNAL  a customer port. The service VLAN's tag is always
+ *                       added on the way in, over whatever tag the frame
+ *                       carries; the customer's tag becomes the inner one.
+ *                       Leaving by a port that is an untagged member of the
+ *                       service VLAN, the outer tag comes off again.
+ *   DTAG_MODE_NONE      everything else, as before.
+ *
+ * The outer tag's ethertype is per port, bcm_port_tpid_set: 0x8100 unless a
+ * provider-facing trunk is told 0x88a8.
+ */
+static void dtag(const bcm_pbmp_t *pbm, int mode)
+{
+	bcm_port_t port;
+
+	BCM_PBMP_ITER(*pbm, port) {
+		int rv = bcm_port_dtag_mode_set(vlan_unit, port, mode);
+
+		if (rv != BCM_E_NONE)
+			fprintf(stderr, "vlan: port %d: double-tag mode %d: %s\n",
+				port, mode, bcm_errmsg(rv));
+	}
+}
+
+static void tpid(const bcm_pbmp_t *pbm, int t)
+{
+	bcm_port_t port;
+
+	BCM_PBMP_ITER(*pbm, port) {
+		int rv = bcm_port_tpid_set(vlan_unit, port, (uint16)(t ? t : 0x8100));
+
+		if (rv != BCM_E_NONE)
+			fprintf(stderr, "vlan: port %d: tpid 0x%04x: %s\n",
+				port, t ? t : 0x8100, bcm_errmsg(rv));
+	}
+}
 static unsigned char lagvl[NOSAIC_MAX_LAGS + 1][MAX_VID]; /* 1 untagged, 2 tagged */
 
 /* A port, or a LAG: what joins a VLAN. */
@@ -288,11 +329,27 @@ static int leave(const struct iface *f, int vid, char *err, size_t n)
 	BCM_PBMP_REMOVE(untagged[vid], f->pbm);
 	if (f->lag)
 		lagvl[f->lag][vid] = 0;
+	if (pst[f->key].tunnel == vid) {
+		dtag(&f->pbm, BCM_PORT_DTAG_MODE_NONE);
+		pst[f->key].tunnel = 0;
+		printf("vlan: %s is no longer a tunnel port\n", f->name);
+	}
 	if (pst[f->key].switched > 0)
 		pst[f->key].switched--;
 	if (pst[f->key].switched > 0)
 		return 0;
 	nosaic_rstp_iface(f->key, 0);   /* out of the spanning tree */
+
+	/*
+	 * ⚠ AND BACK TO 802.1Q'S TAG. A provider trunk's 0x88a8 left on a port
+	 * that is routed again broke that port's OSPF adjacency -- found when a
+	 * QinQ test's trunks were set back to "none" and the link between them
+	 * stayed down until the TPID was.
+	 */
+	if (pst[f->key].tpid) {
+		tpid(&f->pbm, 0);
+		pst[f->key].tpid = 0;
+	}
 
 	/*
 	 * The last one: routed again. Back into its service VLAN -- the port's
@@ -349,6 +406,13 @@ int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_
 	if (vid < 1 || vid >= MAX_VID || !user_vid[vid]) {
 		pthread_mutex_unlock(&vlan_lock);
 		say(err, n, "vlan %d does not exist%s%s", vid, NULL, 0);
+		return -1;
+	}
+	if (pst[f.key].tunnel && pst[f.key].tunnel != vid) {
+		pthread_mutex_unlock(&vlan_lock);
+		if (err != NULL)
+			snprintf(err, n, "%s is a tunnel port of vlan %d; that is its only membership",
+				 name, pst[f.key].tunnel);
 		return -1;
 	}
 	was = in_vlan(&f, vid);
@@ -435,6 +499,75 @@ int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_
 	printf("vlan: %s in vlan %d, %s\n", name, vid,
 	       tagged ? "tagged" : "untagged (native)");
 	fflush(stdout);
+	return 0;
+}
+
+/*
+ * A QinQ customer port of service VLAN svid: its only membership, untagged,
+ * and the customer double-tag mode on its ports (see dtag above).
+ */
+int nosaic_vlan_tunnel(const char *name, int svid, char *err, size_t n)
+{
+	struct iface f;
+	int v;
+
+	if (vlan_unit < 0)
+		return -2;
+	if (iface_by_name(name, &f) != 0) {
+		if (err != NULL)
+			snprintf(err, n, "no such port %s", name);
+		return -1;
+	}
+	pthread_mutex_lock(&vlan_lock);
+	if (svid < 1 || svid >= MAX_VID || !user_vid[svid]) {
+		pthread_mutex_unlock(&vlan_lock);
+		say(err, n, "vlan %d does not exist%s%s", svid, NULL, 0);
+		return -1;
+	}
+	/* Out of everything else first. */
+	for (v = 1; v < MAX_VID - 1; v++)
+		if (v != svid && user_vid[v] && in_vlan(&f, v) && leave(&f, v, err, n) != 0) {
+			pthread_mutex_unlock(&vlan_lock);
+			return -1;
+		}
+	pst[f.key].tunnel = 0;
+	pthread_mutex_unlock(&vlan_lock);
+	if (nosaic_vlan_port_set(name, svid, 0, err, n) != 0)
+		return -1;
+	pthread_mutex_lock(&vlan_lock);
+	dtag(&f.pbm, BCM_PORT_DTAG_MODE_EXTERNAL);
+	pst[f.key].tunnel = svid;
+	pthread_mutex_unlock(&vlan_lock);
+	printf("vlan: %s is a tunnel port of vlan %d\n", name, svid);
+	fflush(stdout);
+	return 0;
+}
+
+/* A port's outer tag ethertype; 0 is 0x8100. */
+int nosaic_vlan_tpid(const char *name, int t, char *err, size_t n)
+{
+	struct iface f;
+
+	if (vlan_unit < 0)
+		return -2;
+	if (t != 0 && t != 0x8100 && t != 0x88a8 && t != 0x9100 && t != 0x9200) {
+		if (err != NULL)
+			snprintf(err, n, "tpid 0x%04x: must be 0x8100, 0x88a8, 0x9100 or 0x9200", t);
+		return -1;
+	}
+	if (iface_by_name(name, &f) != 0) {
+		if (err != NULL)
+			snprintf(err, n, "no such port %s", name);
+		return -1;
+	}
+	pthread_mutex_lock(&vlan_lock);
+	tpid(&f.pbm, t);
+	pst[f.key].tpid = t == 0x8100 ? 0 : t;
+	pthread_mutex_unlock(&vlan_lock);
+	if (t && t != 0x8100) {
+		printf("vlan: %s outer tag 0x%04x\n", name, t);
+		fflush(stdout);
+	}
 	return 0;
 }
 
@@ -533,6 +666,10 @@ int nosaic_vlan_lag_join(int key, int port)
 		BCM_PBMP_PORT_ADD(pbm, port);
 		BCM_PBMP_CLEAR(none);
 		port_switching(port);
+		if (pst[NOSAIC_MAX_TAPS + key].tunnel)
+			dtag(&pbm, BCM_PORT_DTAG_MODE_EXTERNAL);
+		if (pst[NOSAIC_MAX_TAPS + key].tpid)
+			tpid(&pbm, pst[NOSAIC_MAX_TAPS + key].tpid);
 		for (vid = 1; vid < MAX_VID - 1; vid++) {
 			if (!lagvl[key][vid])
 				continue;
@@ -567,6 +704,10 @@ int nosaic_vlan_lag_leave(int key, int port)
 			BCM_PBMP_PORT_REMOVE(members[vid], port);
 			BCM_PBMP_PORT_REMOVE(untagged[vid], port);
 		}
+		if (pst[NOSAIC_MAX_TAPS + key].tunnel)
+			dtag(&pbm, BCM_PORT_DTAG_MODE_NONE);
+		if (pst[NOSAIC_MAX_TAPS + key].tpid)
+			tpid(&pbm, 0);
 		bcm_l2_addr_delete_by_port(vlan_unit, -1, port, 0);
 	}
 	pthread_mutex_unlock(&vlan_lock);
@@ -689,17 +830,21 @@ void nosaic_vlan_query(FILE *out)
 			    name == NULL || !BCM_PBMP_MEMBER(members[vid], port) ||
 			    nosaic_lag_of_port(port) != 0)
 				continue;       /* a LAG member is listed as its LAG */
-			fprintf(out, "%s{\"Port\":\"%s\",\"Tagged\":%s}",
+			fprintf(out, "%s{\"Port\":\"%s\",\"Tagged\":%s,\"Tunnel\":%s,\"TPID\":%d}",
 				firstm ? "" : ",", name,
-				BCM_PBMP_MEMBER(untagged[vid], port) ? "false" : "true");
+				BCM_PBMP_MEMBER(untagged[vid], port) ? "false" : "true",
+				pst[i].tunnel == vid ? "true" : "false",
+				pst[i].tpid ? pst[i].tpid : 0x8100);
 			firstm = 0;
 		}
 		for (i = 1; i <= NOSAIC_MAX_LAGS; i++) {
 			if (!lagvl[i][vid])
 				continue;
-			fprintf(out, "%s{\"Port\":\"%s\",\"Tagged\":%s}",
+			fprintf(out, "%s{\"Port\":\"%s\",\"Tagged\":%s,\"Tunnel\":%s,\"TPID\":%d}",
 				firstm ? "" : ",", nosaic_lag_name(i),
-				lagvl[i][vid] == 2 ? "true" : "false");
+				lagvl[i][vid] == 2 ? "true" : "false",
+				pst[NOSAIC_MAX_TAPS + i].tunnel == vid ? "true" : "false",
+				pst[NOSAIC_MAX_TAPS + i].tpid ? pst[NOSAIC_MAX_TAPS + i].tpid : 0x8100);
 			firstm = 0;
 		}
 		fprintf(out, "]}");

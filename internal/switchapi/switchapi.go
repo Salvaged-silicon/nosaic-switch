@@ -99,7 +99,12 @@ import (
 //
 // 1.12 made MAC aging a setting: SetMACAging and MACAging, gated by
 // Capabilities.MACAging. 300 s, 802.1D's default, unless set.
-const Version = "1.12"
+//
+// 1.13 added QinQ (802.1ad provider bridging), gated by Capabilities.QinQ:
+// SetPortTunnel makes a port a customer port of a service VLAN, and
+// SetPortTPID sets the outer tag's ethertype on a provider-facing port.
+// VLANMember reports both.
+const Version = "1.13"
 
 // ErrUnsupported is returned for an operation this hardware cannot perform.
 // Callers should report it, never work around it silently.
@@ -153,6 +158,10 @@ type Capabilities struct {
 
 	// MACAging is a settable age for learned MAC addresses.
 	MACAging bool
+
+	// QinQ is 802.1ad provider bridging: customer ports that carry every
+	// frame under a service VLAN's outer tag, and a per-port outer TPID.
+	QinQ bool
 
 	L2Learning bool
 	MaxFDB     int
@@ -246,6 +255,14 @@ type VLAN struct {
 type VLANMember struct {
 	Port   string
 	Tagged bool
+	// Tunnel is a customer port of this service VLAN (QinQ): every frame it
+	// receives, tagged or not, is carried in this VLAN under an outer tag,
+	// its own tag kept inside, and the outer tag comes off on the way back.
+	Tunnel bool
+	// TPID is the ethertype of the port's outer tag: 0x8100 unless set,
+	// 0x88a8 for 802.1ad. A provider-facing trunk carrying service VLANs
+	// usually wants 0x88a8.
+	TPID int
 }
 
 // SVIName is the interface a routed VLAN appears as. One spelling for every
@@ -528,6 +545,15 @@ type Switch interface {
 	// static and do not age.
 	SetMACAging(seconds int) error
 	MACAging() (int, error)
+
+	// QinQ. SetPortTunnel makes a port or LAG a customer port of service
+	// VLAN svid, which must exist: its only membership, untagged, with
+	// every frame it receives put under svid's tag, its own tag kept as
+	// the inner one. DelPortVLAN ends it, as it ends any membership.
+	// SetPortTPID sets the ethertype of a port's outer tag (ValidTPID), 0
+	// for 0x8100.
+	SetPortTunnel(name string, svid int) error
+	SetPortTPID(name string, tpid int) error
 	DelLAG(name string) error
 	LAGs() ([]LAG, error)
 
