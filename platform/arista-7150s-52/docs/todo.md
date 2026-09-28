@@ -516,13 +516,18 @@ hang rather than an error.
       Every address this port had established on live hardware appears in it
       and matches, ten for ten. Not committed; regenerate with the snippet in
       [hardware.md](hardware.md#the-register-map-and-how-to-regenerate-it)
-- [ ] **the freelist discrepancy — the best scheduler lead we have.** All four
-      `SSCHED_*_FREELIST_INIT_DONE` registers (`0x80f1`, `0x80f5`, `0x80f9`,
-      `0x80fd`) read 0 on a chip that completed Table 4-1 with step 10 reporting
-      `CommandDone`. Writing 1 to `SSCHED_FREELIST_INIT` neither sticks nor
-      moves `_DONE`. Not yet a finding — a self-clearing trigger in an unclocked
-      block reads the same — but it is the first asymmetry between what the boot
-      controller claims and what the scheduler shows
+- [x] **~~the freelist discrepancy~~ — WITHDRAWN, it was my own misreading.**
+      `SSCHED_*_FREELIST_INIT` is a data-push port and `*_INIT_DONE` a write-1
+      strobe, not status bits: the SDK's freelist loader writes one entry at a
+      time to `0x80fc` then writes 1 to `0x80fd`. Reading them proves nothing,
+      so there was never an asymmetry to explain. Same mistake this port made
+      with the TXMP tables and with `RX/TX_INIT_TOKEN`
+- [x] the BM block **is** populated after Table 4-1, presumably from the
+      fusebox: `BM_TXQ_HS_SEGMENTS` `0x3ff7`, `BM_RXQ_PAGES` `0x3fe`,
+      `BM_MODEL_INFO` `0x002abff7`. So freelist *geometry* is not the gap.
+      `fm6000FreelistPointerInit` is the vendor's production path and writes
+      exactly those three; the file-driven loader is a debug path gated on the
+      `api.FM6000.debug.freelist` attribute
 - [x] **THE CHIP HAS BEEN RESETTING ITSELF, 2026-09-28.** `FATAL_COUNT`
       (`0x8`) counts watchdog self-resets; a CRM access timeout writes
       `FATAL_CODE` and the watchdog puts the management module and core fabric

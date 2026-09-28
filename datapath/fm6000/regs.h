@@ -66,14 +66,25 @@
 #define FM6000_SSCHED_RX_REPLACE_TOKEN	0x008062
 #define FM6000_SSCHED_RX_SLOW_PORT(i)	(0x008070u + (i))
 
-/* The scheduler's own freelist init triggers, each with a done bit beside it.
- * Table 4-1 step 10 asks the boot controller to do all of this with one
- * command and boot.c issues it, and CommandDone goes high -- but every one of
- * these four done registers still reads 0 afterwards, measured 2026-09-28.
- * Whether that is a real discrepancy or these simply are not the bits the
- * command sets is not established: writing 1 to FREELIST_INIT does not stick
- * and does not move FREELIST_INIT_DONE either, which is equally consistent
- * with a self-clearing trigger in a block that is not being clocked. [RE] */
+/*
+ * The scheduler's freelist initialisation ports.
+ *
+ * ⚠ THESE ARE NOT STATUS REGISTERS AND READING THEM MEANS NOTHING. The vendor
+ * uses them as a pair: FREELIST_INIT is a DATA-PUSH port, written once per
+ * entry with the entry itself, and FREELIST_INIT_DONE is a write-1 STROBE that
+ * says the list is complete. Neither reads back. [RE, from the SDK's own
+ * freelist loader: a loop of writes to 0x80fc followed by one write of 1 to
+ * 0x80fd.]
+ *
+ * An earlier note here said that all four "done" registers reading 0 was the
+ * first concrete asymmetry between what the boot controller claims and what
+ * the scheduler shows. That was wrong -- it was reading write-side ports as
+ * status, the same mistake this port already made once with the TXMP tables
+ * and once with RX/TX_INIT_TOKEN. There is no asymmetry to explain.
+ *
+ * Table 4-1 step 10 asks the boot controller to do this with one command and
+ * boot.c issues it. Whether that leaves the freelists populated is still not
+ * established -- but it cannot be established by reading these. [RE] */
 #define FM6000_SSCHED_RXQ_FREELIST_INIT		0x0080f0
 #define FM6000_SSCHED_RXQ_FREELIST_INIT_DONE	0x0080f1
 #define FM6000_SSCHED_TXQ_FREELIST_INIT		0x0080f4

@@ -4365,18 +4365,27 @@ guesses: `ESCHED_CFG_1/2/3` really are at `0x2000`/`0x2080`/`0x2100`, and every
   egress scheduler from *outside* the block that is stuck
 - the whole `FC_MRL_*` block, `0x28000`–`0x28022`
 
-### The freelist discrepancy
+### ~~The freelist discrepancy~~ — withdrawn, it was a misreading
 
-Measured on a chip that has completed Table 4-1: **all four freelist `_DONE`
-registers read 0**, although step 10's `BOOT_CTRL` command reported
-`CommandDone`. Writing 1 to `SSCHED_FREELIST_INIT` does not stick and does not
-move `_DONE` either.
+This section previously reported that all four freelist `_DONE` registers read
+0 on a chip that had completed Table 4-1, and called it the first concrete
+asymmetry between what the boot controller claims and what the scheduler shows.
 
-That is not yet a finding. A self-clearing trigger in a block that is not being
-clocked would read exactly like this, and so would a done bit that lives
-somewhere other than bit 0. It is written down because it is the first concrete
-asymmetry between "the boot controller says it did it" and "the scheduler says
-it happened", and the ring not circulating is precisely a symptom of that shape.
+That was wrong. `SSCHED_*_FREELIST_INIT` is a **data-push port** and
+`*_INIT_DONE` a **write-1 strobe**: the vendor's freelist loader writes one
+entry at a time into `0x80fc` and then writes `1` to `0x80fd`. Neither reads
+back, so reading them proves nothing and there was never an asymmetry.
+
+This is the third time this port has read a write-side port as status — the
+TXMP tables and `RX/TX_INIT_TOKEN` were the first two. On this chip, a register
+that reads 0 after being written is the normal case, not the interesting one.
+
+What *is* established: the BM block is populated after Table 4-1, presumably
+from the fusebox — `BM_TXQ_HS_SEGMENTS` `0x3ff7`, `BM_RXQ_PAGES` `0x3fe`,
+`BM_MODEL_INFO` `0x002abff7`. Those three are exactly what the vendor's
+production `fm6000FreelistPointerInit` writes, so freelist *geometry* is not
+the missing piece. (The file-driven freelist loader in the SDK is a debug path
+gated on the `api.FM6000.debug.freelist` attribute, not the boot path.)
 
 ## The chip has been resetting itself the whole time
 
