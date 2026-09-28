@@ -226,6 +226,29 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 * experiment that settles it is: run this sequence in this order and see
 	 * whether step 9 then makes the bank memories safe. Nobody has.
 	 */
+	/*
+	 * ⚠ QUIESCE THE SCAN ENGINE FIRST. The datasheet describes step 5 as a
+	 * single write and this port did exactly that -- and measured eight
+	 * watchdog self-resets under it, every time, all eight of the boot's
+	 * total. The vendor's own pre-boot writes three words to
+	 * SCAN_CONFIG_DATA_IN immediately before the step-5 write, the last of
+	 * which is the scan engine's stop command (opcode 0x80, operand 0x40 --
+	 * the same word mrl.c ends its sequence with).
+	 *
+	 * Reading that as "the engine is left running by reset and writing the
+	 * chain while it runs is what faults" is inference, not documentation.
+	 * What is measured is the reset count either side of this. [RE]
+	 */
+	rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88800000u);
+	if (rv == FM_OK)
+		rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88008000u);
+	if (rv == FM_OK)
+		rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x80000040u);
+	if (rv != FM_OK) {
+		set(d, rep, FM_STEP_SCAN_CHAIN, rv, "quiescing the scan engine failed");
+		return rv;
+	}
+
 	rv = fm_wr(d, FM6000_SCAN_CHAIN_DATA_IN, 0xffffffff);
 	if (rv != FM_OK) {
 		set(d, rep, FM_STEP_SCAN_CHAIN, rv, "write to SCAN_CHAIN_DATA_IN failed");

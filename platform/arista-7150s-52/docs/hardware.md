@@ -4774,3 +4774,41 @@ means the ring should come up very early, on a chip that has had little more
 than Table 4-1.
 
 Since the builder is now faithful, the difference is upstream of it.
+
+## Step 5 needs the scan engine stopped first — 8 self-resets down to 3
+
+The datasheet describes Table 4-1 step 5 as a single write of `0xFFFFFFFF` to
+`SCAN_CHAIN_DATA_IN`, and this port did exactly that. It cost **eight** watchdog
+self-resets, every time — all eight of the boot's total.
+
+The vendor's `fm6000PrebootSwitch` writes three words to
+`SCAN_CONFIG_DATA_IN` immediately before that write:
+
+```
+0x1c03a <- 0x88800000
+0x1c03a <- 0x88008000
+0x1c03a <- 0x80000040      opcode 0x80 operand 0x40 -- the scan engine's stop
+0x1c03b <- 0xffffffff      then step 5
+```
+
+Doing the same takes the boot from **8 self-resets to 3**. Isolated from a bare
+reset pulse: the three config writes are free, and the chain write alone
+accounts for the remaining three.
+
+Reading that as "reset leaves the scan engine running and writing the chain
+underneath it faults" is inference. What is measured is the count either side.
+
+### Correction: the MRL fix runs BEFORE step 5, not after
+
+This document and `mrl.h` both said `fm6000MrlRegisterFix` was applied after
+the boot commands. That is wrong. `fm6000PrebootSwitch` calls, in order:
+
+1. `fm6000BistMemoryInit` — the per-memory BIST controller setup
+2. `fm6000MrlRegisterFix`, or `MrlRegisterFixVersion2`, chosen by an API
+   attribute
+3. the three `SCAN_CONFIG_DATA_IN` quiesce words
+4. Table 4-1 step 5's chain write
+
+So both the BIST setup and the scan program belong in the pre-boot, ahead of
+step 5 — and this port does neither there. The remaining three self-resets are
+the obvious place that shows.

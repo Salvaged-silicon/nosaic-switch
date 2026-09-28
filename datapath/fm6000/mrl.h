@@ -9,11 +9,17 @@ struct fm6000;
 /*
  * The scan-chain sequence the vendor calls the "MRL register fix".
  *
- * This is NOT Table 4-1. Table 4-1 step 9 asks the boot controller to apply
- * bank memory repairs and that is a single hardware command, which boot.c
- * already issues. This is a separate erratum workaround the vendor applies
- * afterwards, by hand, one 32-bit word at a time through the five-register
- * scan window at 0x1c039..0x1c03d.
+ * This is NOT Table 4-1 step 9. That step asks the boot controller to apply
+ * bank memory repairs with a single hardware command, which boot.c issues.
+ * This is a separate sequence the vendor drives by hand, one 32-bit word at a
+ * time, through the five-register scan window at 0x1c039..0x1c03d.
+ *
+ * ⚠ WHERE IT RUNS, CORRECTED. An earlier version of this comment said it runs
+ * after the boot commands. It does not: fm6000PrebootSwitch calls
+ * fm6000BistMemoryInit, then this (or MrlRegisterFixVersion2, chosen by an API
+ * attribute), then writes three words to SCAN_CONFIG_DATA_IN to stop the scan
+ * engine, and only then does Table 4-1 step 5's write of 0xffffffff to
+ * SCAN_CHAIN_DATA_IN. So it belongs BEFORE step 5, in the pre-boot.
  *
  * WHY IT IS HERE. The scheduler ring initialises byte-for-byte correctly and
  * still will not circulate. The bank memories the ring walks are exactly what
