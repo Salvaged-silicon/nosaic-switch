@@ -3427,6 +3427,65 @@ most comfortable remaining explanation.
 port number and reads the register back, and for port 0 a ring that never
 ran and a ring that answered are both `0`.
 
+### What EOS actually calls, and the boot order it produces
+
+*2026-09-28.* The agent was extracted from the EOS image
+(`usr/lib/libFocalPointV2Agent.so`) and its undefined symbols intersected
+with the SDK's exports. **EOS calls 286 of the SDK's 2,176 functions**, and
+the bring-up part of that is tiny:
+
+```
+fmInitialize → fmPlatformHwAccessInitialize → fmPlatformConfigure
+             → fmSetSwitchState        (the entire boot)
+             → fmSetPortState          (per port, the lane enable)
+             + fmPlatformSetRingMode, and the port-mapping calls
+```
+
+Everything else in the 286 is ACL, VLAN, LAG, mirror, multicast, FFU and
+counter plumbing — the forwarding API, not bring-up.
+
+**And the platform layer is almost entirely the SDK's own.** The agent
+registers exactly three platform callbacks — `fmPlatformGetPortCapabilities`,
+`fmPlatformMapLogicalPortToPhysical`, `fmPlatformMapPhysicalPortToLogical`.
+Everything else, including `fmPlatformSetRingMode` and
+`fmPlatformGetSchedulerConfig`, runs the SDK's default. **There is no hidden
+Arista bring-up logic**: the sequence we are trying to reproduce is the
+SDK's, and that is worth knowing before spending time looking for board
+magic that is not there.
+
+The boot `fmSetSwitchState` produces:
+
+```
+fmPlatformRelease
+fm6000PrebootSwitch     ← fm6000BistMemoryInit, then fm6000MrlRegisterFix
+fmDelay
+fm6000InitSBus
+[the scheduler ring init]   ← calls fmPlatformGetSchedulerConfig
+fm6000ValidateSchedulerToken
+fm6000InitRegisterCache
+fmPlatformLoadMicrocode / ValidateMicrocode
+fm6000LoadSpicoCode
+[port setup]
+```
+
+⚠ **This puts the MRL scan-chain fix inside the pre-boot, before the SBus is
+started and long before the scheduler ring is programmed.** It is not an
+optional repair step that happens somewhere later; it is the second thing
+the switch does. `fm6000MrlRegisterFix` drives exactly `0x1c039`–`0x1c03d`,
+as the prior work found, and there are two versions of it selected by an API
+attribute.
+
+So the scheduler wall and the MRL are almost certainly the same problem: the
+ring is programmed into memories whose configuration has never been shifted
+in. That is consistent with everything measured — a ring that accepts its
+tokens, reports them back, and never advances.
+
+The scheduler ring itself is built from a **text API attribute**, with modes
+the SDK logs as `FMODE_NONE` and `FMODE_MANUAL`, and a string reading
+"Automatic scheduler initialization should not happen". So the ring content
+is configuration rather than silicon, which is why ours matches golden
+byte for byte and still does not run.
+
 ### Circulation is not reachable by setting registers at all
 
 *2026-09-27.* The obvious remaining theory was that some register we do not
