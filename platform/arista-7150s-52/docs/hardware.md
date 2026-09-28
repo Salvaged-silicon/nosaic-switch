@@ -4628,3 +4628,54 @@ The SDK calls `MemoryInitCRM` once, from its top-level init, **before**
 `FC_MRL_RATE_LIMITER` `0x28022` and `FC_MRL_FC_TOKEN_LIMIT` `0x28020`. So the
 memory init comes early and the sweepers are armed over already-initialised
 tables — which is the opposite of the order this port has been using.
+
+## The definitive result: 114 of 129 memories initialise, and the 15 that do not are all egress
+
+Every one of the 129 regions was run **alone, from a fresh boot**, with
+`FATAL_COUNT` checked after each — 129 boots, so that a region is judged on its
+own and not on the wreckage of the one before. 114 clean, 15 failing.
+
+The 15 that hard-reset the chip:
+
+| address | register |
+|---|---|
+| `0x003c00` | `ESCHED_DRR_DC_INIT` |
+| `0x118800` | `CM_QUEUE_STATE_INIT` (listed twice by the vendor) |
+| `0x138000` | `POLICER_STATE_4K` |
+| `0x13c000` | `POLICER_STATE_1K` |
+| `0x150000` | `MOD_L2_VLAN1_TX_TAGGED` |
+| `0x154000` | `MOD_L2_VLAN2_TX_TAGGED` |
+| `0x158000` | `MOD_CAM` |
+| `0x15a000` | `MOD_MAP_IDX12A` |
+| `0x15b000`–`0x15e000` | `MOD_MAP_DATA_W16A`–`W16D` |
+| `0x240000` | `MCAST_DEST_TABLE` |
+| `0x260000` | `MCAST_VLAN_TABLE` |
+
+That list is not arbitrary. **Every one of them is on the egress side**: the
+modification block, the multicast tables, the congestion manager's queue state,
+the policer state, and the egress scheduler's own DRR initialiser. Everything
+ingress — parser, mapper, FFU, L2AR, L3AR, the MAC table, the policer *config*
+banks, stats — initialises without a murmur.
+
+### What it buys, and what it does not
+
+Running the 114 as one batch: **114 initialised, 0 failed, `FATAL_COUNT`
+unchanged**. That is a complete, clean memory initialisation of everything
+reachable, on a chip that never resets itself once. It is a far better starting
+point than this port has ever had.
+
+It does not start the ring. `--ssched nosweep` still reports programmed but not
+advancing.
+
+And it does not make the sweeper safe: with all 114 initialised, arming
+`SWEEPER_CFG` word 3 still storms. That is consistent rather than
+disappointing — the policer sweeper walks `POLICER_STATE`, and `POLICER_STATE`
+is one of the fifteen we cannot initialise. The chain closes on itself.
+
+### So the question is now one question
+
+Why do fifteen egress-path memories reject even a hardware CRM walk, when a
+hundred and fourteen others accept one? Every remaining symptom — the ring not
+circulating, the sweeper storming, `ESCHED` unreadable, `CM_ESCHED_STATE` at
+zero — hangs off that. It is a much smaller and much better-posed question than
+the one this started with.

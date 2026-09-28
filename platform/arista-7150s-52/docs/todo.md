@@ -562,7 +562,18 @@ hang rather than an error.
 - [x] **we were initialising 1 memory region of 128.** The vendor CRM-initialises
       128 named regions before anything else runs; step 12 here does `STATS`
       alone, by hand, and with 0 rather than the `0xffffffff` the vendor uses
-- [ ] **three regions still fault even under the CRM**: `POLICER_STATE_4K`
+- [x] **the full sweep is done: 114 of 129 initialise, 15 do not** — each run
+      alone from a fresh boot. All fifteen are egress-path: `MOD_*`, both MCAST
+      tables, `POLICER_STATE_*`, `CM_QUEUE_STATE_INIT`, `ESCHED_DRR_DC_INIT`
+- [x] **the 114 run as one batch with zero self-resets**, leaving a fully
+      initialised, completely stable chip. It does not start the ring, and it
+      does not make the sweeper safe -- the policer sweeper walks
+      `POLICER_STATE`, which is one of the fifteen
+- [ ] ⇒ **THE question now: why do fifteen egress-path memories reject a
+      hardware CRM walk when 114 others accept one?** The ring not circulating,
+      the sweeper storming, `ESCHED` unreadable and `CM_ESCHED_STATE` at zero
+      all hang off this one thing
+- [ ] superseded, kept for the record -- three regions fault even under the CRM: `POLICER_STATE_4K`
       `0x138000`, `MCAST_DEST_TABLE` `0x240000`, `MCAST_VLAN_TABLE` `0x260000`.
       The pattern is that config banks initialise and *state* banks do not,
       which points at those blocks needing to be enabled or clocked first
