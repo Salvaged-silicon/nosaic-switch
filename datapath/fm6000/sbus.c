@@ -132,6 +132,17 @@ int fm_sbus_device_reset(struct fm6000 *d, uint8_t dev)
  * physical, not numerical -- EPL[1] then EPL[3] then EPL[5] -- so there is no
  * arithmetic that produces this and it has to be a table.
  *
+ * ⚠ THE EPL NUMBERS HERE ARE THE DATASHEET'S, NOT THE BOARD'S. The FDL
+ * numbers EPLs in the register-block space and this table is indexed in the
+ * datasheet's, and the two orderings are not the same: the board's "EPL 14"
+ * takes SBus 0x49, which this table calls EPL[24]. Measured -- see
+ * fm_port_sbus_dev() in serdes.c, where using this table with an FDL EPL
+ * number was tried and left the transmitter dark.
+ *
+ * So this is the right answer to "where is datasheet EPL[n] on the ring"
+ * and the wrong answer to "which SerDes belongs to this port". For the
+ * second, ask the port table.
+ *
  * ⚠ DATASHEET ERRATUM AT SBUS 17. Table 9-4 prints EPL[6] twice, at SBus 17
  * and at SBus 85, and never prints EPL[7]. Every other EPL from 1 to 24
  * appears exactly once, and the one gap is 7, sitting where the first EPL[6]

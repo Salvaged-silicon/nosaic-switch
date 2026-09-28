@@ -3579,6 +3579,36 @@ detect is both optional as a link condition and, as this port already
 established, reads the same on a forwarding lane as on a dark one. The
 diagnosis rests on an indicator that carries no information.
 
+### The SBus device map: two numbering spaces, and a test that tells them apart
+
+Datasheet §9.4.3 Table 9-4 gives each EPL four consecutive SBus addresses,
+and `sbus.c` transcribes it. The port table in `serdes.c` carries its own
+device per port, and the two **disagree**: the port table gives EPL 14
+lane 0 the device `0x49`, which Table 9-4 assigns to EPL[24]; it puts
+EPL[14] at `0x29`.
+
+That looks like an obvious bug with an obvious fix — derive the device from
+`fm_sbus_epl_base()` and have one source of truth. I made that change. It
+is wrong.
+
+**Configuring SerDes `0x49` makes EPL 14 lane 0 assert SerXmit
+(`PORT_STATUS 0x815`); configuring `0x29` leaves it clear (`0x015`).** The
+transmitter only comes up when the right SerDes is configured, so the port
+table's value is correct and the two numbers live in different spaces: the
+EPL register blocks are indexed in one order, the SBus ring is wired in
+another — the datasheet says so itself, *"the order on the ring is physical,
+not numerical"* — and the board's FDL numbers EPLs in the register space.
+
+Worth recording for two reasons. The note that had justified `0x49` said it
+was "confirmed on hardware" because lanes are consecutive within an EPL —
+which is true of both candidates and confirms nothing. And the tidy-up is
+attractive enough that somebody will try it again; the comment on
+`fm_port_sbus_dev()` now says what happens when they do.
+
+So the answer to "where is datasheet EPL[n] on the ring" and the answer to
+"which SerDes belongs to this port" are different questions, and only the
+second one matters to a port coming up.
+
 ### What the datasheet did not settle
 
 The EPL register map is not in it, so the per-lane configuration still has

@@ -50,6 +50,36 @@ const struct fm_port *fm_port_lookup(int port)
 	return NULL;
 }
 
+/*
+ * The SBus device for a port's SerDes: the table's own value, not a lookup.
+ *
+ * ⚠ DO NOT "FIX" THIS BY DERIVING IT FROM fm_sbus_epl_base(). I did, and it
+ * is wrong, and the way it is wrong is instructive.
+ *
+ * The port table gives EPL 14 lane 0 the SBus device 0x49. In the
+ * datasheet's Table 9-4, 0x49 belongs to EPL[24] and EPL[14] sits at 0x29 --
+ * so the table appears to contradict our own transcription, and deriving
+ * the device from the EPL number looks like an obvious tidy-up.
+ *
+ * It is not, because the two numbers are in different spaces. The EPL
+ * register blocks are indexed in one order and the SBus ring is wired in
+ * another -- the datasheet says as much, "the order on the ring is
+ * physical, not numerical" -- and the board's FDL numbers EPLs in the
+ * register space. Both values in a row are right; neither derives from the
+ * other.
+ *
+ * Measured, with a test that can tell the candidates apart: configuring
+ * SerDes 0x49 makes EPL 14 lane 0 assert SerXmit (PORT_STATUS 0x815);
+ * configuring 0x29 leaves it clear (0x015). The earlier note claimed these
+ * ids were "confirmed on hardware" on the grounds that lanes are
+ * consecutive within an EPL -- which is true of both candidates and
+ * confirms nothing. SerXmit is the discriminating observation.
+ */
+static uint8_t fm_port_sbus_dev(const struct fm_port *p)
+{
+	return (uint8_t)p->dev;
+}
+
 int fm_lane_status(struct fm6000 *d, const struct fm_port *p, uint32_t *out)
 {
 	return fm_rd(d, FM6000_EPL_LANE(p->epl, p->lane), out);
@@ -116,7 +146,7 @@ static int wait_bits(struct fm6000 *d, uint8_t dev, uint8_t reg, uint32_t bits)
 int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 		   struct fm_lane_report *rep)
 {
-	uint8_t dev = (uint8_t)p->dev;
+	uint8_t dev = fm_port_sbus_dev(p);
 	uint32_t eb = FM6000_EPL_LANE(p->epl, 0);
 	int rv;
 
@@ -351,7 +381,7 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 
 int fm_lane_dfe(struct fm6000 *d, const struct fm_port *p, uint32_t *out)
 {
-	uint8_t dev = (uint8_t)p->dev;
+	uint8_t dev = fm_port_sbus_dev(p);
 	uint32_t v = 0;
 	unsigned i;
 	int rv;
