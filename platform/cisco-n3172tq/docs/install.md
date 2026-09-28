@@ -482,28 +482,47 @@ and step 5 is not optional.
 
 4. Confirm it boots. See [First boot](#first-boot).
 
-5. Make it permanent. The shell's boot order is what gets you here, so leave
-   the shell ahead of the vendor loader:
+5. ⚠ **You cannot make it permanent on this firmware. Tested 2026-09-28.**
 
-   ```
-   Shell> bcfg boot dump -v
-   Shell> bcfg boot mv 02 00
-   ```
+   Three separate things were tried and none of them works:
 
-   That moves `Boot0002` (the shell) to the front, so every boot reaches the
-   shell, the shell runs `startup.nsh` off our partition, and the script
-   launches the kernel. It costs the shell's few-second delay on every boot.
+   * **`bcfg` does not exist here.** This is EFI Shell 2.30 reporting
+     `Current running mode 1.1.2`, and it answers
+     `'bcfg' is not recognized as an internal or external command`.
+   * **The UEFI boot order is ignored.** The entries are `Boot0000` EFI
+     Payload (the vendor loader), `Boot0001` EFI Internal Shell, `Boot0002`
+     EFI USB Device, `Boot0003` EFI Network — note the shell is **0001**, not
+     the `0002` an earlier draft of this page guessed. `BootOrder` was
+     rewritten to `0001,0000,0002,0003` through `efivarfs` from the running
+     switch, and the very next power cycle went to the vendor loader anyway.
+     The BIOS boots the EFI Payload unless a key is pressed; `BootOrder` does
+     not enter into it.
+   * **The loader cannot boot us either.** Its `boot` does take a local
+     `[<device>:][<partition>:]<path>`, but `dir` lists an empty `bootflash:`
+     on our layout -- it cannot read a GPT disk whose first partition is
+     FAT16 and whose slots are squashfs. And its `set` only stores an IP and
+     a gateway, so there is no boot variable to point anywhere.
 
-   ⚠ **Do not use `bcfg boot add` to point straight at `\EFI\BOOT\BOOTX64.EFI`
-   instead.** It works, in that the kernel starts — and the entry carries no
-   optional data, so the kernel gets no command line: no `console=`, no
+   So **every boot needs the TAB menu and `[2]`**, which takes about five
+   seconds of attention during POST and cannot be automated from the switch.
+   Plan around it: this board does not come back by itself after a power cut.
+
+   A `nosaic platform` verb that drives the menu over the console, or a BIOS
+   image with a different default, are the only routes left; both are in
+   [todo.md](todo.md).
+
+   ⚠ **And if you ever do get a boot entry honoured, do not point it straight
+   at `\EFI\BOOT\BOOTX64.EFI`.** The kernel would start, but the entry
+   carries no optional data, so it gets no command line: no `console=`, no
    `initrd=`. On a 9600 serial console that is a completely silent boot of a
-   kernel with no root filesystem. The shell exists in this path precisely
-   because it passes arguments.
+   kernel with no root filesystem. `startup.nsh` exists in this path precisely
+   because it passes arguments. An entry worth adding is one whose optional
+   data carries the command line as UCS-2 — `CONFIG_EFIVAR_FS` is built in, and
+   `efivarfs` has to be mounted by hand (`mount -t efivarfs efivarfs
+   /sys/firmware/efi/efivars`), since nothing mounts it at boot.
 
-   The tidy version of step 5 — a real boot entry whose optional data carries
-   the command line as UCS-2, written with `efibootmgr` from the running switch
-   — is in [todo.md](todo.md). `CONFIG_EFIVAR_FS` is built in for it.
+   None of that helps today: this firmware ignored `BootOrder` outright, so an
+   entry it does not consult is an entry that does not run.
 
 ## First boot
 
