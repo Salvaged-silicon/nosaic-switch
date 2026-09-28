@@ -213,10 +213,29 @@ Ordered so each step's failure is diagnosable with the one before it working.
       also how the bootflash was identified: sda3 is the 1565 MB ext3 partition
       and it holds the vendor image.
 
-      ⚠ **What is still untested is the way back**, and that is the half that
-      matters. Netbooting that image and running `install all` has never been
-      done, so "we have the file" is not yet "we can undo this". Do that before
-      the first install, not after it goes wrong.
+      **The way back is now exercised, 2026-09-28, and it works.** Done before
+      any install and without writing to the disk:
+
+      | step | result |
+      |---|---|
+      | `loader> boot tftp://10.22.1.5/n3100-compact.7.0.3.I7.9.bin` | all 451 MB fetched, `Booting kickstart image` |
+      | NX-OS reaches a login prompt | ~5 minutes from power-on |
+      | `show version` | `NXOS image file is:` **empty** -- running from the network, nothing read from disk |
+      | `dir bootflash:` | the vendor image present, `1088667648 bytes free` |
+      | `show boot` | `NXOS variable = bootflash:/n3100-compact.7.0.3.I7.9.bin`, intact |
+      | `mgmt0` | up at 10.10.39.2, pings the TFTP server |
+      | `copy tftp://... bootflash:` | **89 MB written**, then aborted and deleted; free space returned to `1088667648` exactly |
+
+      That last row is the one that matters for a real restore: a netbooted
+      NX-OS can write to bootflash. The copy was stopped early on purpose --
+      TFTP runs at about 5 MB/min here, so the full 451 MB would take ninety
+      minutes to re-prove what the first 89 MB already showed.
+
+      ⚠ **Two things remain untested, and neither can be tested until the disk
+      is actually wiped**: `install all` itself, and restoring onto an empty
+      bootflash rather than one that already holds the image. What is proven
+      is that the box can be brought up with no working disk and can write to
+      the disk from there, which is the part that would otherwise be a guess.
 
 - [x] **The installer builds, and the image it produces is verified complete.**
       `make image BOARD=cisco-n3172tq` emits
