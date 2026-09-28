@@ -35,9 +35,38 @@ int fm_sbus_start(struct fm6000 *d)
 	rv = fm_rd(d, FM6000_SBUS_CFG, &v);
 	if (rv != FM_OK)
 		return rv;
-	if (v == 0)
+	if (v != 0) {
+		rv = fm_wr(d, FM6000_SBUS_CFG, 0);
+		if (rv != FM_OK)
+			return rv;
+	}
+
+	/*
+	 * And the SerDes micro-controller out of reset -- here, not in the
+	 * boot.
+	 *
+	 * Table 4-1 step 7 says to take SPICO out of reset along with the
+	 * other modules, and SOFT_RESET does not do it: SBUS_SPICO has its own
+	 * Reset bit and it still reads 1 after the documented boot.
+	 *
+	 * ⚠ BUT CLEARING IT DURING STEP 7 TAKES THE CHIP OFF THE BUS. Measured
+	 * twice, reproducibly, from a verified-recovered chip each time. Doing
+	 * it here -- after the SBus controller itself is out of reset -- is
+	 * survivable, which is the order the dependency implies anyway: SPICO
+	 * sits on the bus this function has just started.
+	 *
+	 * Reset cleared, Enable left alone. §9.4.1's middle state, "out of
+	 * reset but the micro-processor is not running", is the only one in
+	 * which code can be downloaded, and enabling a micro-controller with
+	 * no code in it is not something to do because a chip that has
+	 * firmware reads Enable set.
+	 */
+	rv = fm_rd(d, FM6000_SBUS_SPICO, &v);
+	if (rv != FM_OK)
+		return rv;
+	if ((v & FM6000_SBUS_SPICO_RESET) == 0)
 		return FM_OK;
-	return fm_wr(d, FM6000_SBUS_CFG, 0);
+	return fm_wr(d, FM6000_SBUS_SPICO, v & ~(uint32_t)FM6000_SBUS_SPICO_RESET);
 }
 
 int fm_sbus_txn(struct fm6000 *d, uint8_t op, uint8_t dev, uint8_t reg,

@@ -218,6 +218,26 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
  * SBUS_CFG's bit 0 holds the controller in reset; see fm_sbus_start() for why
  * that is not obvious from the datasheet's wording.
  */
+/*
+ * SBUS_SPICO, JSS + 0x04: the SerDes micro-controller's own reset.
+ *
+ * ⚠ SOFT_RESET IS NOT THE WHOLE OF STEP 7. Table 4-1 step 7 says "take all
+ * modules out of reset (EPL, PCIe, MSB, SPICO/SBUS)", and driving SOFT_RESET
+ * to zero does not clear this bit: after the documented boot it still reads
+ * 1, which by §9.4.1 is "SPICO controller is in reset and all internal
+ * circuits reset to their default state".
+ *
+ * Reset is cleared here and Enable is left alone. §9.4.1's three states are
+ * Reset, Disabled (out of reset, not running, and the only state in which
+ * code can be downloaded) and Enabled. Disabled is what step 7 asks for, and
+ * enabling a micro-controller that has had no code loaded is not something
+ * to do because a forwarding chip happens to read Enable set -- that chip
+ * has firmware in it.
+ */
+#define FM6000_SBUS_SPICO		0x00f004
+#define FM6000_SBUS_SPICO_RESET		(1u << 0)
+#define FM6000_SBUS_SPICO_ENABLE	(1u << 1)
+
 #define FM6000_SBUS_CFG			0x00f000
 #define FM6000_SBUS_COMMAND		0x00f001
 #define FM6000_SBUS_REQUEST		0x00f002

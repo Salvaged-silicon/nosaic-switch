@@ -3634,6 +3634,37 @@ That also retires the alarm I raised about `rmw()`. Reads give the current
 state of the read space; they simply do not confirm a write. The
 read-modify-writes are not computing from fiction.
 
+### Step 7 was never finished: SPICO stays in reset
+
+There is a **vendor register header** in the reverse-engineering tree,
+`reference/fm6000-sdk/fm6000_api_regs_int.h` — 9,500 lines of named
+registers and bit positions. It is facts about the silicon, and it is far
+better than disassembling the SDK for the same information.
+
+It confirms our SBus command layout exactly (`Register[7:0]`,
+`Address[15:8]`, `Op[16:]`) and names `FM6000_SBUS_SPICO` at JSS + 0x04 —
+which is `0x0f004`, one of the two registers a forwarding chip has set that
+we never wrote. Its bits: 0 Reset, 1 Enable, 2 Interrupt.
+
+**After our documented boot it reads `0x1` — the SerDes micro-controller is
+held in reset.** Table 4-1 step 7 says "take all modules out of reset (EPL,
+PCIe, MSB, SPICO/SBUS)", and driving `SOFT_RESET` to zero does not do it:
+this is a separate bit in a separate register. Step 7 was half implemented
+and nobody noticed, because nothing we do afterwards needs SPICO.
+
+⚠ **Clearing it during step 7 takes the chip off the bus.** Measured twice,
+reproducibly, from a verified-recovered chip each time. It is survivable in
+`fm_sbus_start()`, after the SBus controller itself is out of reset — which
+is the order the dependency implies anyway, since SPICO sits on the bus that
+function has just started. That is where it now happens, and
+`SBUS_SPICO` reads `0x00000000` afterwards: out of reset, not running,
+§9.4.1's middle state and the only one in which code can be downloaded.
+
+Enable is left alone. A forwarding chip reads it set, and that chip has
+firmware in it; enabling a micro-controller with no code is not something to
+do because a working chip's register says so. Setting it by hand changes
+nothing on the receiver, which is the expected result and was checked.
+
 ### So what is actually missing, and it is not a mystery
 
 The lane bring-up is the SDK's 18-step `fm6000EnableSerDes`. The prior work
