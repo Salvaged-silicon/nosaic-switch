@@ -10,12 +10,16 @@
 # too slow.
 name: frr
 version: "10.2"
-summary: Routing daemon suite (zebra, ospfd, bgpd)
+summary: Routing daemon suite (zebra, ospfd, ospf6d, isisd, bgpd)
 
 license: GPL-2.0-or-later
 redistributable: true
 
-depends: [glibc, json-c, libyang, readline, ncurses, libcap, protobuf-c]
+# libxcrypt: libfrr calls crypt() (vty passwords), and glibc 2.42 no longer
+# ships libcrypt. Without it the link fails with "undefined reference to
+# crypt"; earlier packages linked only because a libcrypt happened to be in the
+# build's sysroot.
+depends: [glibc, json-c, libyang, readline, ncurses, libcap, protobuf-c, libxcrypt]
 
 # zebra and ospfd drop to this account after binding their sockets, keeping
 # only the capabilities they need to write routes. Fixed numbers, because a
@@ -148,5 +152,15 @@ services:
   # which is deliberately not programmed into the chip.
   - name: ospf6d
     exec: /usr/lib/frr/ospf6d -A ::1 -f /etc/frr/frr.conf
+    after: [zebra]
+    restart: always
+
+  # IS-IS, for IPv4 and IPv6 both. Configured in frr.conf like OSPF; with no
+  # "router isis" there it runs idle. The datapath needs nothing for it: its
+  # PDUs are LLC frames to IS-IS's multicast MACs, which every Broadcom
+  # datapath here already delivers to the tap -- adjacencies formed between
+  # the 7050SX2, the 7050TX-64 and the AS5610 without a change (docs/isis.md).
+  - name: isisd
+    exec: /usr/lib/frr/isisd -A 127.0.0.1 -f /etc/frr/frr.conf
     after: [zebra]
     restart: always

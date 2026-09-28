@@ -79,6 +79,7 @@ Tridents 2 and 2+, and never to the AS5610's Trident+, which predates it.
 | Virtual gateway, IPv4 | ✅ | ✅ | ✅ | ✗ refused |
 | Virtual gateway, IPv6 | ✅ | ✅ | 🔧 | ✗ refused |
 | Access lists, IPv4 and IPv6 | ✅ | ✅ | ✅ | host nftables |
+| IS-IS (FRR isisd) | ✅ | ✅ | ✅ | 🔧 |
 | Management VRF | ✅ | ✅ | ✅ | not used |
 
 ✅ proven on the hardware with traffic · 🔧 built and in the daemon, not yet
