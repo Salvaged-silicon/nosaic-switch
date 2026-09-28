@@ -817,12 +817,14 @@ sweep_done:
 		printf("congestion watermarks: %u words, %s\n", rep.written,
 		       rv == FM_OK ? "accepted" : rvstr(rv));
 		if (rv == FM_OK)
-			printf("  %u of %u tables verified%s%s\n",
-			       rep.verified, rep.tables,
-			       rep.first_bad != NULL ? "; first not to take: " : "",
+			printf("  %u of %u tables verified; %u are write-only and "
+			       "cannot be checked%s%s\n",
+			       rep.verified, rep.readable,
+			       rep.tables - rep.readable,
+			       rep.first_bad != NULL ? "; first mismatch: " : "",
 			       rep.first_bad != NULL ? rep.first_bad : "");
 		printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
-		rc = (rv == FM_OK && rep.verified == rep.tables) ? 0 : 2;
+		rc = (rv == FM_OK && rep.verified == rep.readable) ? 0 : 2;
 	} else if (strcmp(argv[i], "--ssched") == 0) {
 		unsigned flags = 0;
 		int circ = 0;

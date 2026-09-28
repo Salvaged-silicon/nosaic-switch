@@ -5,19 +5,25 @@
 struct fm6000;
 
 /*
- * What actually took.
+ * What actually took, and what cannot be asked.
  *
- * ⚠ ON THIS CHIP SOME OF THESE TABLES ACCEPT A WRITE AND KEEP NOTHING. The
- * transmit-side tables discard writes outright while the receive-side tables
- * next to them store them, with no error either way -- see cmwm.c. A count of
- * words written is therefore not evidence of anything, so the caller is given
- * a verified count instead and the name of the first table that did not take.
+ * ⚠ A COUNT OF WORDS WRITTEN IS NOT EVIDENCE THAT ANYTHING LANDED, so the
+ * tables that can be read back are read back.
+ *
+ * ⚠ AND TWO OF THEM CANNOT BE. The transmit-side tables read zero however
+ * they are written -- on a chip that is forwarding traffic as much as on
+ * ours, which is what settles it. They are write-only, and an earlier
+ * version of this file read their zero as "the writes were discarded" and
+ * reported a fault on a correctly configured switch. Not being able to check
+ * something is a different answer from having checked it and found it wrong,
+ * and reporting the second when you mean the first sends people hunting.
  */
 struct fm_cmwm_report {
 	unsigned written;	/* words the chip accepted without complaint */
 	unsigned tables;	/* tables attempted */
-	unsigned verified;	/* tables that read back what we wrote */
-	const char *first_bad;	/* NULL if every table verified */
+	unsigned readable;	/* of those, how many can be read back at all */
+	unsigned verified;	/* of the readable ones, how many matched */
+	const char *first_bad;	/* NULL if every readable table matched */
 };
 
 /*

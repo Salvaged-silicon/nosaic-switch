@@ -16,6 +16,13 @@
  * under load, which a ping and an iperf across an idle lab will not catch.
  * Treat a change here as a change to forwarding behaviour, not to a constant.
  *
+ * ⚠ TWO OF THESE TABLES NEVER READ BACK. TXMP_PRIVATE and TXMP_HOG read
+ * zero whatever is written to them -- on a chip that is forwarding traffic
+ * as much as on one that is not, which is what establishes it rather than
+ * assuming it. They are write-only. This file used to read that zero as the
+ * writes having been discarded and reported a fault on a correctly
+ * configured switch.
+ *
  * ⚠ The host port here is physical 0, not the physical 1 that saf.c calls
  * the CPU port. That is not a slip -- see portmap.h, which records that the
  * chip's own tables disagree and why each one gets the port it asked for.
@@ -114,14 +121,16 @@ static void cmwm_flat(uint32_t *v, unsigned n, uint32_t val)
 struct cmwm_witness {
 	const char *name;
 	uint32_t word, want;
+	int readable;		/* 0 for a table that never reads back */
 };
 
 static void witness(struct cmwm_witness *w, const char *name,
-		    uint32_t base, uint32_t want)
+		    uint32_t base, uint32_t want, int readable)
 {
 	w->name = name;
 	w->word = base;		/* port 0, class 0 */
 	w->want = want;
+	w->readable = readable;
 }
 
 int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
@@ -134,6 +143,7 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 	if (rep != NULL) {
 		rep->written = 0;
 		rep->tables = 6;
+		rep->readable = 0;
 		rep->verified = 0;
 		rep->first_bad = NULL;
 	}
@@ -150,7 +160,7 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 	active[0] = 0x0013003au;
 	active[1] = 0x00060014u;
 	cmwm_flat(idle, CMWM_TC, CMWM_NO_LIMIT);
-	witness(&wit[0], "RXMP_PRIVATE", CMWM_RXMP_PRIVATE, active[0]);
+	witness(&wit[0], "RXMP_PRIVATE", CMWM_RXMP_PRIVATE, active[0], 1);
 	for (port = 0; port < CMWM_RX_PORTS; port++)
 		if ((rv = cmwm_port(d, CMWM_RXMP_PRIVATE, port,
 				    cmwm_active(port) ? active : idle,
@@ -160,7 +170,7 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 	/* RXMP_HOG -- the shared-pool ceiling. No port is limited here; the
 	 * private allowance above is what does the limiting. */
 	cmwm_flat(active, CMWM_PORT_STRIDE, CMWM_NO_LIMIT);
-	witness(&wit[1], "RXMP_HOG", CMWM_RXMP_HOG, CMWM_NO_LIMIT);
+	witness(&wit[1], "RXMP_HOG", CMWM_RXMP_HOG, CMWM_NO_LIMIT, 1);
 	for (port = 0; port < CMWM_RX_PORTS; port++)
 		if ((rv = cmwm_port(d, CMWM_RXMP_HOG, port, active,
 				    CMWM_PORT_STRIDE, &n)) != FM_OK)
@@ -174,8 +184,9 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 	 * front-panel port is.
 	 */
 	cmwm_flat(idle, CMWM_PORT_STRIDE, CMWM_TX_NO_LIMIT);
-	witness(&wit[2], "TXMP_PRIVATE", CMWM_TXMP_PRIVATE, 0x00008014u);
-	witness(&wit[3], "TXMP_HOG", CMWM_TXMP_HOG, 0x000000d6u);
+	/* Write-only: zero on a forwarding chip too. See cmwm.h. */
+	witness(&wit[2], "TXMP_PRIVATE", CMWM_TXMP_PRIVATE, 0x00008014u, 0);
+	witness(&wit[3], "TXMP_HOG", CMWM_TXMP_HOG, 0x000000d6u, 0);
 	for (port = 0; port < CMWM_TX_PORTS; port++) {
 		const uint32_t *v;
 		unsigned c;
@@ -240,8 +251,8 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 	 */
 	cmwm_flat(active, CMWM_TC, 0x4000c000u);
 	cmwm_flat(idle, CMWM_TC, CMWM_NO_LIMIT);
-	witness(&wit[4], "RXMP_PAUSE_ON", CMWM_RXMP_PAUSE_ON, 0x4000c000u);
-	witness(&wit[5], "RXMP_PAUSE_OFF", CMWM_RXMP_PAUSE_OFF, 0x4000c000u);
+	witness(&wit[4], "RXMP_PAUSE_ON", CMWM_RXMP_PAUSE_ON, 0x4000c000u, 1);
+	witness(&wit[5], "RXMP_PAUSE_OFF", CMWM_RXMP_PAUSE_OFF, 0x4000c000u, 1);
 	for (port = 0; port < CMWM_RX_PORTS; port++) {
 		int paused = cmwm_active(port) && port != FM6000_ALTA_INTERNAL;
 
@@ -267,6 +278,10 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 	for (i = 0; i < 6; i++) {
 		uint32_t got = 0;
 
+		if (!wit[i].readable)
+			continue;
+		if (rep != NULL)
+			rep->readable++;
 		if ((rv = fm_rd(d, wit[i].word, &got)) != FM_OK)
 			return rv;
 		if (got == wit[i].want) {

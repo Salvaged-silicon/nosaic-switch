@@ -3575,7 +3575,39 @@ and 5 at `0x5c8` (1480), 9 and 10 at `0x6590` (26000), and 11 at `0x39d0`
 and 5 differ is not derivable from here, and inventing a rule to cover
 twelve words would be worse than recording that they are not covered.
 
-### The same wall, silently: the transmit watermark tables
+### ⚠ The transmit watermark tables are NOT blocked — that was my mistake
+
+*Corrected 2026-09-28. The section that follows is kept because the
+measurements in it are real and the conclusion drawn from them was wrong.*
+
+`fm_cmwm_init()` writes 6,512 words across six tables. Four read back what
+was written; `TXMP_PRIVATE` and `TXMP_HOG` read zero. I concluded that those
+two accept writes and keep nothing, called it the scheduler wall showing up
+silently on the egress side, and wrote it into the code as a reported fault.
+
+The golden capture settles it the other way: **on a chip that is forwarding
+traffic, those two tables also read entirely zero**, while `RXMP_HOG`
+immediately beside them reads all 1,216 of its words. They are write-only.
+Reading zero from them says nothing at all, on any chip.
+
+So there is no evidence the writes fail, the CM configuration is very likely
+complete, and the wall blocks one block — the egress scheduler — not two.
+
+This is the same mistake twice in one session. I caught it for the scheduler
+freelists, wrote down that a zero read of a write-only register proves
+nothing, and then did not go back and apply it here. The reporting now
+distinguishes the two answers, because "I checked and it is wrong" and "I
+cannot check" send people to very different places:
+
+```
+congestion watermarks: 6512 words, accepted
+  4 of 4 tables verified; 2 are write-only and cannot be checked
+```
+
+What the measurements below do establish is the *behaviour* — which tables
+read back and which do not — and that part stands.
+
+### The original reading: the transmit watermark tables
 
 The egress scheduler at least fails loudly, by taking the chip off the bus.
 The congestion-management watermarks fail the other way.
@@ -3607,10 +3639,10 @@ congestion watermarks: 6512 words, accepted
   4 of 6 tables verified; first not to take: TXMP_PRIVATE
 ```
 
-The four that verify are worth having and are applied. The two that do not
-will need re-running once the ring circulates — which is now two blocks
-waiting on the same thing, and reason enough to treat that as the port's
-critical path rather than one block's problem.
+*(The conclusion that followed here — that the two tables were blocked by
+the scheduler and would need re-running once the ring circulates — is
+withdrawn. See the correction above: they are write-only, and a forwarding
+chip reads them zero as well.)*
 
 ### Congestion management, the parts that do work
 
