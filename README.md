@@ -72,7 +72,7 @@ Tridents 2 and 2+, and never to the AS5610's Trident+, which predates it.
 |---|---|---|---|---|
 | Routing, OSPF, ECMP in silicon | ✅ | ✅ | ✅ | ✅ kernel |
 | VLANs, trunks, SVIs | ✅ | ✅ | ✅ | ✅ bridge |
-| QinQ (802.1ad tunnels) | ✅ | ✅ | 🔧 | ✗ refused |
+| QinQ (802.1ad tunnels) | ✅ | ✅ | ✅ | not supported |
 | LAG, static and LACP | ✅ | ✅ | ✅ | ✅ bonds |
 | Rapid spanning tree | ✅ | ✅ | ✅ | ✅ bridge |
 | BPDU guard, root guard | ✅ | 🔧 | ✅ | ✅ bridge |

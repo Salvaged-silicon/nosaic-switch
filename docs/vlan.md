@@ -174,8 +174,7 @@ The same lines go in network.conf.
 
 In the chip it is Broadcom's double-tag mode: a customer port is
 `DTAG_MODE_EXTERNAL`, which always adds the service VLAN's tag. The outer
-TPID is per port. The virtual board refuses QinQ: a Linux bridge is 802.1Q
-or 802.1ad for all its ports at once, and cannot hold both.
+TPID is per port.
 
 Proven on 2026-09-28:
 - **Topology:** the 7050SX2 and the 7050TX-64 as the provider, S-VLAN 500
@@ -187,8 +186,17 @@ Proven on 2026-09-28:
 - **The outer tag on the wire:** with the two ends of the provider trunk set
   to different TPIDs (0x88a8 against 0x8100), 0 of 10 got through. Matched,
   at 0x8100, 0x9100 or 0x88a8, all of them did.
+- **The AS5610 (Trident+) as a provider too,** paired with the SX2 over
+  swp1-et3 at 0x88a8, with the TX and the Nexus as customers: 20 of 20 on
+  VLANs 10, 20 and native 30. A TPID mismatch on its trunk stopped traffic,
+  and a match at 0x9100 or 0x88a8 carried it.
 - ⚠ **Found and fixed:** a port set back to routed kept its provider TPID,
-  and its OSPF adjacency stayed down. Going back to routed now resets it.
+  and its OSPF adjacency stayed down. Going back to routed now resets it,
+  re-tested on the SX2, the TX and the AS5610.
+- **The virtual board does not support QinQ.** It reports `QinQ: false`, and
+  `switchport ... tunnel` or a `tpid` is refused as unsupported. A Linux
+  bridge is 802.1Q or 802.1ad for all its ports at once, so it cannot hold
+  customer ports and 802.1Q trunks side by side the way a chip does.
 
 ## MAC aging
 
