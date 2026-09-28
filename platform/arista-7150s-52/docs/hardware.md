@@ -5003,3 +5003,48 @@ is weaker than it was written. The attribute selecting between the two scan
 programs is `api.FM6000.enableBemPerfTuning` — a **performance tuning** switch,
 which is not the shape of something a scheduler cannot run without. The
 hypothesis is not dead, but it should not be leaned on.
+
+## SWEEPER_CFG is one register with fields, not five words of constants
+
+`fm6000ApplyPolicerSweeperCfg` reads five words from `0x1c048`, sets a
+bitfield, and writes them back — `fmMultiWordBitfieldSet32(buf, 0x6f, 0x60, v)`,
+bits **[111:96]**, which is word 3 bits `[15:0]`. Being `ApplyPolicerSweeperCfg`,
+that field is **PolicerPeriod** — and it is exactly the low sixteen bits the
+`mrlPatch` preserves.
+
+Across the whole SDK only two fields of this register are ever set: word 0 in
+full, and word 3's PolicerPeriod. Words 1, 2 and 4 are never written as
+immediates at all. So the right model is read-modify-write of named fields, not
+five captured constants, which is what this port had.
+
+### PolicerPeriod is not why word 4 storms
+
+Tested, since a period of zero would mean a sweeper running flat out:
+
+| word 3 | word 4 | result |
+|---|---|---|
+| `0x00300000` (period 0) | `0x00002000` | storms |
+| `0x0030a2c3` (period `0xa2c3`) | `0x00002000` | **still storms** |
+| `0x0030a2c3` | `0` | clean |
+
+So a sane period does not make word 4 safe, and the period hypothesis is
+dead. The SDK never sets bit 141 either. Word 4 stays at zero.
+
+## The ring builder writes seven registers and nothing else
+
+The vendor's builder — the whole function, not just the part compared earlier —
+writes only: `0x8060`, `0x8020`, the `0x8040`/`0x8000` visit loop, the `0x8070`
+slow-port loop, then `0x8061`/`0x8021`. No tick, no sweeper. Those live in the
+pre-boot and platform init instead. `ssched.c` bundles them into the ring init,
+which is harmless but is not the vendor's structure.
+
+### RX and TX tokens are not identical
+
+The RX token takes the port in `[6:0]` and one flag into bit 9. The TX token
+takes the same two and then computes **bit 10** from a second per-entry field
+the RX path never reads.
+
+`ssched.c` writes one token to both directions. On the golden capture every
+token has bit 10 clear, so here the two coincide and it is not wrong — but it
+is an assumption the code was making silently, and it holds only while that
+field is zero. Now commented.

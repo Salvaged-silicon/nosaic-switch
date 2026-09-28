@@ -47,6 +47,17 @@
  * and setting it on the bootstrap ring is a documented way to get a ring that
  * initialises and never advances, so the argument exists to make the zero
  * explicit rather than to be varied.
+ *
+ * ⚠ RX AND TX TOKENS ARE NOT THE SAME IN THE VENDOR'S BUILDER, and this code
+ * writes one token to both. Decoded from the SDK: the RX token takes the port
+ * in [6:0] and one flag into bit 9; the TX token takes the same two and then
+ * computes BIT 10 from a second per-entry field the RX path never reads. Our
+ * bit 10 is the Sync argument, defaulted off.
+ *
+ * On the golden capture every token has bit 10 clear, so for this ring the two
+ * happen to coincide and writing one to both is not wrong here. It is written
+ * down because "the same token to both directions" is an assumption this code
+ * makes silently, and it is only true while that field is zero. [RE]
  */
 #define SSCHED_TOKEN(port, locked, sync)             \
 	(((uint32_t)(port) & 0x7fu) |                \
