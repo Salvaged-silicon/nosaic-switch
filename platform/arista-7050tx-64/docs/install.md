@@ -7,16 +7,17 @@ console cable and nothing else.
 into slot A with a persistent data image; the procedure below is a transcript of
 what was done rather than a plan.
 
-⚠ It is still booted as a **one-shot from the Aboot prompt**. `boot-config` is
-untouched, so a power cycle returns to EOS by itself. Making NOSaic the default
-is one line and it is deliberately not done yet — see [todo.md](todo.md).
+Since 2026-09-15 it is also the **default**: `boot-config` names NOSaic, so a
+reboot or a cold power cut comes back into NOSaic with nothing typed. The EOS
+images stay on flash and Aboot still boots them by name, which is the way back.
 
 ## Before you start
 
 **This does not destroy the vendor OS, and it must not.** The EOS images on
-`/mnt/flash` are this board's way back, and `boot-config` is never modified —
-so a plain reboot returns to EOS by itself. Booting NOSaic is an explicit act at
-the Aboot prompt every time.
+`/mnt/flash` are this board's way back. Until `boot-config` is changed — the
+last step, under [Making it the default](#making-it-the-default) — a plain
+reboot returns to EOS by itself and booting NOSaic is an explicit act at the
+Aboot prompt.
 
 Check you have the vendor image before touching anything:
 
@@ -157,6 +158,20 @@ absent on a stateless boot and nothing later complains.
 To reach the Aboot prompt: reload the switch and press **Control-C** when the
 banner appears. The window is short, so start sending before you expect it.
 
+## Making it the default
+
+Once a one-shot boot has come up healthy, point Aboot at it. Keep the vendor's
+file first:
+
+```sh
+cp /mnt/flash/boot-config /mnt/flash/boot-config.eos
+echo SWI=flash:/nosaic.swi > /mnt/flash/boot-config
+sync
+```
+
+From then on a reboot or a power cut boots NOSaic unattended: measured here
+from a cold cut, ssh at 79 s and the datapath at 532 s.
+
 ## Configuring it for YOUR switch
 
 The image is built for the board MODEL and carries nothing that belongs to one
@@ -194,28 +209,31 @@ with the same MAC.
 
 ## First boot
 
-Expect a few minutes rather than seconds: the Trident2 comes out of reset and 48
-external PHYs load firmware before any copper port will link. On this board the
-PHY initialisation alone takes around five minutes under the predecessor
-project.
+Expect minutes rather than seconds: the Trident2 comes out of reset and 48
+external PHYs load firmware before any copper port will link. From a cold power
+cut the datapath was up at 532 s. A datapath restart with the PHYs still powered
+takes 180 s, because their firmware is still running and is not downloaded
+again.
 
 Log in as `admin`; there is no password until you set one with `passwd`.
 
 ## Going back to the vendor OS
 
-Nothing is required — **power cycle the switch**. `boot-config` still points at
-EOS, so it comes back on its own. That is the whole recovery story on this board
-while NOSaic is booted as a one-shot.
-
-If you are at the Aboot prompt and want it immediately:
+The vendor images are still on the FAT; only `boot-config` has stopped
+pointing at them. For one boot of EOS, from the Aboot prompt:
 
 ```
 Aboot# boot flash:/EOS-4.14.16M.swi
 ```
 
-Once an installed-to-flash NOSaic exists, this section needs rewriting — at that
-point the vendor images are still on the FAT but the boot path is no longer
-pointing at them by default.
+To make EOS the default again, put the saved file back:
+
+```sh
+cp /mnt/flash/boot-config.eos /mnt/flash/boot-config
+```
+
+If NOSaic was only ever booted as a one-shot, nothing is required: power cycle
+the switch and it comes back into EOS on its own.
 
 ## When it does not work
 

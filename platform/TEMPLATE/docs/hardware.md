@@ -69,6 +69,13 @@ must be brought up before another answers.
 How `nosd-<asic>` drives the chip, and which `switch-api` capabilities this
 board advertises — and which it does not, and why.
 
+Go through the contract feature by feature and say, for each, whether it is
+proven on this board (with what, and when), built but not run, or refused:
+access lists (IPv4, IPv6), VLANs and SVIs, LAG and LACP, rapid spanning tree,
+BPDU guard and root guard, MAC aging, MLAG, the virtual gateway (IPv4, IPv6),
+QinQ, and `nosaic verify ports` / `verify routes`. IS-IS is FRR's and needs
+nothing from the datapath, but say whether an adjacency has been seen here.
+
 ## Platform HAL
 
 Sensors, fans, PSUs, LEDs, transceiver EEPROM: where each is read, and the

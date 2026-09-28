@@ -105,6 +105,11 @@ cannot drive them.
 `asic: helix4` resolves to `nosd-helix4`, and `recipes/nosd-helix4/` and
 `datapath/helix4/` both exist. It compiles. It has never run.
 
+Built with the SDK, it links the same shared code in `datapath/common/` as the
+Trident datapaths — the tap bridge, route sync, VLANs, LAG, spanning tree,
+MLAG and the virtual gateway — so it builds against the current contract, 1.13.
+Compiling is all that says: none of those features has been run on a Helix4.
+
 ```sh
 make pkg PKG=openbcm     ARCH=armhf     # the SDK, staged not shipped
 make pkg PKG=nosd-helix4 ARCH=armhf

@@ -13,7 +13,7 @@ second in the tree rather than first — see
 | Management | RJ45, `tg3` |
 | Bootloader | Aboot 4.0.7, unsigned SWIs |
 | Console | ttyS0 @ 9600 |
-| Status | **bringup** — boots and routes over three 40G and three copper ports; 41 of 48 copper ports never cabled |
+| Status | **experimental** — installed on its own flash with A/B slots, boots itself from a cold power cut, switches and routes in silicon; 41 of 48 copper ports never cabled |
 
 - **[Hardware reference](docs/hardware.md)** — diagrams, port map, registers, quirks
 - **[Build](docs/build.md)** — building an image for it
@@ -22,8 +22,10 @@ second in the tree rather than first — see
 
 ## What works
 
-NOSaic boots this switch, drives the Trident2, and routes over all three of its
-cabled 40G links. Measured on the hardware:
+NOSaic is installed on this switch's own flash, drives the Trident2, and
+switches and routes over its three cabled 40G links and the copper ports that
+have real neighbours. Most of what is below is also the proof that the Trident2
+(`td2`) datapath does what the Trident2+ one does. Measured on the hardware:
 
 - **Boots itself from a cold power cut.** `boot-config` names NOSaic, so nothing
   needs a console or an Aboot prompt. Measured with the PDU outlet pulled and
@@ -40,16 +42,49 @@ cabled 40G links. Measured on the hardware:
   native SVI, and the SX2 routed into the tagged VLAN to this box in hardware.
   The first td2 board proven, so the Trident2 datapath does VLANs as the
   Trident2+ one does.
+- **LAG, static and LACP** ([docs/lag.md](../../docs/lag.md)), 2026-09-25/26:
+  et49/et50 as an LACP bundle to the SX2's et52/et53, and et31/et32 as one to
+  the Nexus 3172TQ, which is a LAG over this board's external-PHY copper ports.
+- **Rapid spanning tree** ([docs/stp.md](../../docs/stp.md)): a loop with the
+  Nexus over et31/et32 broken, the root moved with 398 of 400 pings through, and
+  a LAG as the forwarding root port failing over with 580 of 600.
+- **MLAG, as a peer of the 7050SX2** ([docs/mlag.md](../../docs/mlag.md)),
+  2026-09-26, with the Nexus dual-homed across the pair. And on 2026-09-27 the
+  other side of it: this box was the dual-homed device when the SX2 and the
+  AS5610 were the peers.
+- **The virtual gateway, IPv4 and IPv6** ([docs/gateway.md](../../docs/gateway.md)),
+  in that pair. With this box's datapath killed, the SX2 carried 1200 of 1200
+  pings through the gateway in each family.
+- **Access lists on the Trident2** ([docs/acl.md](../../docs/acl.md)),
+  2026-09-27. `show caps` reports 2560 IPv4 and 1024 IPv6 rules; a deny on
+  et32 took 10 of 10 of the Nexus's pings and counted them, a permit above it
+  let 10 of 10 through, and per-port denies took the OSPF adjacency on et32 and
+  the OSPFv3 one on et52 down, leaving the others Full.
+- **QinQ, as the provider** ([docs/vlan.md](../../docs/vlan.md)), 2026-09-28:
+  et49 a trunk at TPID 0x88a8 to the SX2, et32 a tunnel port to the Nexus as a
+  customer. Tagged and native customer VLANs both crossed it.
+- **IS-IS** ([docs/isis.md](../../docs/isis.md)), 2026-09-28: an adjacency on
+  et49 with the SX2, and a prefix only IS-IS knew, two IS-IS hops away, in this
+  chip. 20 of 20 pings from here were routed through the SX2 on it.
+- **`nosaic verify ports` and `verify routes` are clean**, 2026-09-28: every
+  route the kernel holds that is not directly attached is in the chip, its ECMP
+  routes marked as such, and LAG members and switched ports are recognised
+  rather than flagged.
 - **The management VRF** ([docs/vrf.md](../../docs/vrf.md)): eth0 in
   table 1001, no pin route, and all five adjacencies unaffected.
+- **A datapath restart takes 180 s, down from 374 s.** The 48 copper PHYs keep
+  their firmware while they have power, and the datapath now downloads it only
+  into a PHY that is not already running it (`phy_force_firmware_load_<n>=0`,
+  per copper port — see `config/asic.conf` for why never globally).
 - **The chip initialises.** `soc_misc_init`, `soc_mmu_init`, `bcm_attach`,
   `bcm_init` and `bcm_stat_init` all complete, 52 ports are created from the
   generated port map, and the four QSFP cages land on SDK ports 49, 53, 57 and
   61 exactly as [the port map](docs/hardware.md#port-map) says.
 - **All three 40G links forward and route.** `nosaic show ports` answers from
-  the silicon — `et49 et50 et52`, all `up 40000` at MTU 1600 — with three
-  OSPFv2 adjacencies Full, an OSPFv3 adjacency on `et52`, and 23 routes
-  programmed into the chip.
+  the silicon — `et49 et50 et52`, all `up 40000` at MTU 1600. et49/et50 go to
+  the 7050SX2's et52/et53 and et52 to the AS5610's swp52. With the Nexus on
+  et31/et32 that is five OSPF neighbours, and an OSPFv3 adjacency on `et52`.
+  et5 goes to the lab's management switch.
 - **ECMP is real**, not just configured: `l3: ecmp group of 2 -> egress 200000`,
   a shared `bcm_l3_egress_ecmp` group carrying both members of the pair, and the
   chip reports `ecmp yes, up to 1024 paths`.
@@ -72,10 +107,14 @@ cabled 40G links. Measured on the hardware:
   The write is read back (`0x4924` dark, `0x4922` lit) because
   `bcm_port_phy_set` reports success on these parts without reaching them.
 
-**It is still `bringup`, and the reasons are specific.** Forty-one of the 48
-copper ports have never been cabled, so what is claimed above is seven ports and
-not a panel. The watchdog is not armed, because arming it without a petting
-service is a timer that power-cycles the switch. `prefdl` is unread, so the
+**Not yet run here:** BPDU guard and root guard. They are built into the td2
+datapath and proven on the SX2 and the AS5610, not on this chip. MAC aging
+(`mac aging <s>`) is the shared datapath's and has not been measured here.
+
+**It is `experimental` rather than more, and the reasons are specific.**
+Forty-one of the 48 copper ports have never been cabled, so what is claimed
+above is seven ports and not a panel. The watchdog is not armed, because arming
+it without a petting service is a timer that power-cycles the switch. `prefdl` is unread, so the
 board cannot say what it is and the management MAC lives in a config file. The
 cooling band is carried from the predecessor rather than measured here, and the
 fan sits at 100% because the board idles at the top of it. Readdressing a routed

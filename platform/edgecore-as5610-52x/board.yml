@@ -56,10 +56,10 @@ device_tree: dts/as5610-52x.dts
 front_panel_init: scripts/sfp-init.sh
 
 # How long the network service waits for interfaces named in network.conf.
-# The swp ports come from the datapath daemon, and there is no nosd-tdp yet, so
-# they cannot appear at all -- the default 600 would be ten minutes of waiting
-# for something impossible, and the service transition it belongs to gives up
-# first. Raise this to the default once the datapath exists.
+# The swp ports come from the datapath daemon, nosd-tdp. This was set short
+# before that daemon existed, when they could not appear at all; it has since
+# proven long enough -- the front-panel addresses and OSPF come back after a
+# cold power cut -- so it stays.
 net_wait_secs: 60
 
 profile: minimal
@@ -73,8 +73,9 @@ kernel: ""
 #
 # experimental rather than production, and nothing in this project is called
 # production until it has run somewhere that matters for longer than a lab
-# afternoon. Still open here: ECMP, and the datapath cannot be restarted without
-# taking the front panel down with it.
+# afternoon. ECMP and a datapath restart that loses the front-panel addresses,
+# both open when this was written, are done: the network-reconcile service puts
+# the addresses back.
 status: experimental
 
 notes: >
@@ -89,8 +90,8 @@ notes: >
   ONIE and the NOS share one disk, reached over USB, and the vendor's boot
   command loads the NOS from MBR partition 5. Installing by writing a whole
   disk image would take ONIE with it and remove the way back, so the ONIE
-  backend must install into a partition. Until it does, use the TFTP netboot
-  path, which writes nothing.
+  backend installs into a partition, and has done since 2026-09-03. The TFTP
+  netboot path, which writes nothing, is still there for bring-up.
 
 # The board controller: a CPLD on the P2020's local bus at chip select 1, which
 # the device tree maps to 0xea000000. It carries the fan duty, power supply

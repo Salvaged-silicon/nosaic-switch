@@ -16,9 +16,9 @@ Proven on 2026-09-26 with traffic:
   LACP LAG.
 - **Orphan:** an Edgecore AS5610-52X on one link to the SX2 alone.
 
-The AS5610's datapath (tdp) implements MLAG too, but has not been one of a
-pair. The virtual board refuses MLAG: two Linux bonds cannot present one LACP
-system.
+The AS5610 (Trident+, tdp) has since been a peer too, paired with the SX2:
+see [A Trident+ peer](#a-trident-peer). The virtual board does not support
+MLAG: two Linux bonds cannot present one LACP system.
 
 ## Commands
 

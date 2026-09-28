@@ -138,8 +138,9 @@ releasing the switch chip from reset...
 the switch chip is on the bus.
 ```
 
-Log in as `admin`, no password. **Chip initialisation takes about six minutes**
-at this log verbosity — wait for it before concluding anything:
+Log in as `admin`, no password. **Chip initialisation takes about 50 s** on a
+datapath restart (early images took six minutes) — wait for it before
+concluding anything:
 
 ```sh
 doas s6-svstat /run/service/nosd

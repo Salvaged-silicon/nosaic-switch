@@ -298,8 +298,9 @@ back to `02:00:00:00:00:xx`, which is the same on every NOSaic switch.
 
 ## Contract
 
-switchapi 1.2 (`internal/switchapi`). Every datapath (the in-memory reference,
-virt, and the C daemons through `/run/nosd.sock`) implements:
+switchapi 1.2, with MAC aging added in 1.12 and QinQ in 1.13
+(`internal/switchapi`). Every datapath (the in-memory reference, virt, and the
+C daemons through `/run/nosd.sock`) implements:
 
 | op | call | |
 |---|---|---|
@@ -308,25 +309,27 @@ virt, and the C daemons through `/run/nosd.sock`) implements:
 | `vlan.port.del` | `DelPortVLAN(port, vid)` | the last one makes the port routed |
 | `vlans` | `VLANs()` | VID, members (tagged or not), SVI |
 | `svi.add` / `svi.del` | `AddSVI` / `DelSVI` | interface `vlan<vid>`, addresses via AddAddress |
-| `capabilities` | `Capabilities()` | `VLANs`, `MaxVLANs`, `SVIs` |
+| `mac.aging.set` / `mac.aging` | `SetMACAging` / `MACAging` | seconds, 0 for never |
+| `vlan.tunnel` | `SetPortTunnel(port, svid)` | 0 turns it off; `VLANMember.Tunnel` |
+| `port.tpid` | `SetPortTPID(port, tpid)` | outer TPID on a trunk; `VLANMember.TPID` |
+| `capabilities` | `Capabilities()` | `VLANs`, `MaxVLANs`, `SVIs`, `MACAging`, `QinQ` |
 
 `nosaic verify contract` runs the conformance suite against the live datapath
 over its socket. It checks that memberships read back, that the native-VLAN
 rule holds, that tagged beside native is a trunk, and that an SVI takes an
 address and blocks DelVLAN. It creates and removes VLANs 100 and 200 and an
 address on the first port, so it is for a switch being brought up. On the
-hardware datapaths it currently reports three failures that are not about
-VLANs: `port.admin` and `l3.addr.*` are not served by the C daemons, although
-they claim L3.
+hardware datapaths the `l3.addr.*` checks fail, which is not about VLANs: the
+C daemons claim L3 but leave addresses to Linux and do not serve those ops.
 
 ## Not done
 
-- **Only access, trunk and native.** No private VLANs, no QinQ, no voice
+- **Access, trunk, native and QinQ tunnels only.** No private VLANs, no voice
   VLAN, and no per-VLAN MTU. An SVI's MTU is whatever `iface ... mtu` or
   `ip link` sets.
-- **No spanning tree.** Every member forwards. Two switched ports looped
-  together storm, the same as they would on any switch with STP off.
-- **No MLAG or port channels.** A neighbour behind a trunk group in the L2
-  table is treated as unresolved.
-- **No `l2.fdb`.** The chip learns, but the MAC table is not served over the
-  contract, so `L2Learning` is false.
+- **No `l2.fdb`.** The chip learns, and `show mac` gives the aging time, but
+  the MAC table itself is not served over the contract, so `L2Learning` is
+  false.
+
+Spanning tree, port channels and MLAG, once on this list, have their own
+pages: [stp.md](stp.md), [lag.md](lag.md), [mlag.md](mlag.md).
