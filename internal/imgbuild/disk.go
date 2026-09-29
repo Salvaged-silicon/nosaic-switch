@@ -124,12 +124,25 @@ size=%dMiB, type=83
              type=83
 `, fitMiB, slotMiB, slotMiB)
 		} else {
+			// ⚠ type=ef, NOT 83, WHEN THE FIRMWARE IS THE BOOTLOADER.
+			//
+			// The GPT path above types its boot partition `uefi` for the same
+			// reason: UEFI enumerates EFI system partitions by type, and a FAT
+			// filesystem in a partition typed `linux` is one the firmware will
+			// not look inside. On a DOS table that type is 0xEF. Proven on the
+			// Nexus 3172TQ before the install: with the partition still typed
+			// 0x83 the EFI shell showed no `fs0:` at all; typing it 0xEF made
+			// the shell mount it and run startup.nsh.
+			dosBootType := "83"
+			if o.Board.WantsESP() {
+				dosBootType = "ef"
+			}
 			script = fmt.Sprintf(`label: dos
-size=%dMiB, type=83
+size=%dMiB, type=%s
 size=%dMiB, type=83
 size=%dMiB, type=83
              type=83
-`, bootMiB, slotMiB, slotMiB)
+`, bootMiB, dosBootType, slotMiB, slotMiB)
 		}
 	}
 
@@ -442,7 +455,11 @@ func buildESP(o Options, size int64, kernel, initramfs string) (string, error) {
 		}
 		return nil
 	}
-	for _, d := range []string{"::/EFI", "::/EFI/BOOT", "::/boot"} {
+	dirs := []string{"::/EFI", "::/EFI/BOOT", "::/boot"}
+	if o.Board.LoaderNBI {
+		dirs = append(dirs, "::/boot/grub")
+	}
+	for _, d := range dirs {
 		if err := run("mmd", "-i", img, d); err != nil {
 			return "", err
 		}
@@ -491,6 +508,37 @@ func buildESP(o Options, size int64, kernel, initramfs string) (string, error) {
 	}
 	if err := run("mcopy", "-i", img, "-o", active, "::/boot/active"); err != nil {
 		return "", err
+	}
+
+	// The vendor loader's own autoboot file, in the vendor's own format.
+	//
+	// This is what makes the box come up on its own. The loader runs on every
+	// boot whatever UEFI says, and it autoboots by reading this file; NX-OS
+	// wrote its copy to /mnt/cfg/0 and erasing the disk is what stopped the
+	// box booting by itself. `disable certificate` is the vendor's own line,
+	// and is how the signature check is turned off.
+	//
+	// ⚠ ONLY EVER FOUND ON A DOS TABLE. The loader carries exactly two paths,
+	// both complete literals with no GPT form:
+	//
+	//	(hd0,msdos1)/boot/grub/menu.lst.local
+	//	(hd0,msdos5)/boot/grub/menu.lst.local
+	//
+	// so this partition has to be the first partition of a DOS table for the
+	// file to be read at all. On a GPT disk it is ignored -- written, present,
+	// and never looked at.
+	if o.Board.LoaderNBI {
+		menu := "#\n# General configuration\n#\ndisable certificate\n" +
+			"# Menu entry for the available images\n" +
+			"title bootflash:/kickstart.nbi\n" +
+			"boot bootflash:/kickstart.nbi \n"
+		mstage := filepath.Join(dir, "menu.lst.local")
+		if err := os.WriteFile(mstage, []byte(menu), 0o644); err != nil {
+			return "", err
+		}
+		if err := run("mcopy", "-i", img, "-o", mstage, "::/boot/grub/menu.lst.local"); err != nil {
+			return "", err
+		}
 	}
 
 	fmt.Fprintf(o.Log, "    EFI system partition: %d MiB, kernel as \\EFI\\BOOT\\BOOTX64.EFI\n",

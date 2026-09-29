@@ -128,17 +128,35 @@ boot_mib: 64
 slot_mib: 512
 data_mib: 512
 
-# GPT, which is the default and is stated here only to record that it is a
-# decision rather than an inheritance. UEFI enumerates EFI system partitions
-# by GPT type GUID; the DOS-table path exists for firmware that cannot read a
-# GPT, and this firmware reads nothing else by preference.
+# ⚠ A DOS TABLE, AND THE LOADER IS THE REASON. GPT COSTS UNATTENDED BOOT.
 #
-# ⚠ It also means the vendor's MBR layout is gone after an install, and with
-# it `bootflash:`. Getting back to NX-OS is a network boot of the kickstart
-# image followed by the vendor installer rebuilding its own partitions. That
-# is the whole of docs/install.md's last section and it is not optional
-# reading.
-partition_table: gpt
+# It was GPT first, on the reasoning that UEFI enumerates EFI system
+# partitions by GPT type GUID. True, and beside the point: this firmware's
+# boot manager never consults UEFI at all -- it ignores BootOrder and does not
+# even read BootNext -- and always launches the vendor loader. The loader is
+# what decides whether this box comes up on its own.
+#
+# It decides by reading /boot/grub/menu.lst.local, and it carries exactly two
+# paths for that file, both complete literals with no GPT form:
+#
+#     (hd0,msdos1)/boot/grub/menu.lst.local
+#     (hd0,msdos5)/boot/grub/menu.lst.local
+#
+# On a GPT disk the file cannot be found wherever it is put. That was tested,
+# not assumed: written to the GPT ESP, present, ignored, and the box still
+# stopped at `loader>`. So the boot partition has to be the first partition of
+# a DOS table.
+#
+# Nothing is lost by it. The ESP still works typed 0xEF, proven on this box
+# before the install -- the EFI shell found fs0: and ran startup.nsh off a
+# FAT16 partition on a DOS table. The board gets both routes: the shell, and
+# the loader booting by itself.
+#
+# ⚠ Either way the vendor's own MBR layout is gone after an install, and with
+# it their `bootflash:`. Getting back to NX-OS is a network boot of the
+# kickstart image followed by the vendor installer rebuilding its partitions;
+# that is docs/install.md's last section and it is not optional reading.
+partition_table: dos
 
 # x86 describes itself through ACPI, so there is no device tree.
 
