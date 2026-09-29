@@ -7,10 +7,11 @@ the board to copy from — its `config/` and its `docs/todo.md` are the model fo
 this one. The 7050SX2-72Q is td2**p** and is only worth reading for the shape of
 its `walkthrough.md`, which is the one rack-to-forwarding document in the tree.
 
-Status as of 2026-09-28: **a switch, netbooted.** It boots, cools itself,
-routes with three OSPF neighbours, and has run every L2/L3 feature the lab has
-tested it for with the other NOSaic switches. What it has not done is install:
-every boot is still a netboot.
+Status as of 2026-09-29: **a switch, installed, booting unattended.** It boots
+from its own flash with nobody at the console -- across `reboot` and across a
+PDU power cycle -- cools itself, routes with three OSPF neighbours, and has run
+every L2/L3 feature the lab has tested it for with the other NOSaic switches.
+NX-OS is gone from the disk. See "Unattended boot" at the end of this page.
 
 ## What is proven on the hardware
 
@@ -212,21 +213,67 @@ Ordered so each step's failure is diagnosable with the one before it working.
       Configure both ends and this becomes the first real traffic test on
       either board.
 
-- [ ] **It is not installed.** Every boot is a netboot; a power cycle returns
-      the box to NX-OS. That is the safety property and it is deliberate, but
-      until it changes this is a demo.
+- [x] **It is installed, and it boots by itself.** Installed 2026-09-28, and
+      reinstalled from a clean `make image` on 2026-09-29 to prove the build
+      rather than the hand-made disk. The box comes up from a `reboot` in about
+      150 s and from a PDU power cycle in about 150 s, no console, no TAB, no
+      `loader>` prompt. Mechanism and the recovery path are under "Unattended
+      boot" below.
 
-      ⚠ **The install path is not the path being exercised.** Development
-      netboots through the vendor loader's NBI container; the installer writes
-      an EFI system partition and the firmware boots the kernel directly via
-      `CONFIG_EFI_STUB`. Those are two different handoffs and only the first
-      has ever run. Do not assume the install works because netboot does.
+- [ ] **Recovery is half-exercised: the image is saved, the way back is not.**
 
-- [ ] **Recovery has never been exercised.** There is exactly one copy of
-      `n3100-compact.7.0.3.I7.9.bin` on the chassis. Save it off and verify
-      its md5 *before* installing, then prove the way back by netbooting it
-      and running `install all`. Recovery that has never been run is not
-      recovery.
+      The copy is off the chassis and verified. `n3100-compact.7.0.3.I7.9.bin`
+      sits at `~/projects/cisco-firmware/nexus3172tq/` and its md5 matches the
+      one on the chassis byte for byte:
+
+          5247d2cac220b2072001baa5ff1546e6   (both, 2026-09-28)
+
+      read from `/dev/sda3` mounted read-only from a netbooted NOSaic, which is
+      also how the bootflash was identified: sda3 is the 1565 MB ext3 partition
+      and it holds the vendor image.
+
+      **The way back is now exercised, 2026-09-28, and it works.** Done before
+      any install and without writing to the disk:
+
+      | step | result |
+      |---|---|
+      | `loader> boot tftp://10.22.1.5/n3100-compact.7.0.3.I7.9.bin` | all 451 MB fetched, `Booting kickstart image` |
+      | NX-OS reaches a login prompt | ~5 minutes from power-on |
+      | `show version` | `NXOS image file is:` **empty** -- running from the network, nothing read from disk |
+      | `dir bootflash:` | the vendor image present, `1088667648 bytes free` |
+      | `show boot` | `NXOS variable = bootflash:/n3100-compact.7.0.3.I7.9.bin`, intact |
+      | `mgmt0` | up at 10.10.39.2, pings the TFTP server |
+      | `copy tftp://... bootflash:` | **89 MB written**, then aborted and deleted; free space returned to `1088667648` exactly |
+
+      That last row is the one that matters for a real restore: a netbooted
+      NX-OS can write to bootflash. The copy was stopped early on purpose --
+      TFTP runs at about 5 MB/min here, so the full 451 MB would take ninety
+      minutes to re-prove what the first 89 MB already showed.
+
+      ⚠ **Two things remain untested, and neither can be tested until the disk
+      is actually wiped**: `install all` itself, and restoring onto an empty
+      bootflash rather than one that already holds the image. What is proven
+      is that the box can be brought up with no working disk and can write to
+      the disk from there, which is the part that would otherwise be a guess.
+
+- [x] **The installer builds, and the image it produces is verified complete.**
+      `make image BOARD=cisco-n3172tq` emits
+      `NOSaic-0.1.0-cisco-n3172tq.sh` (79 MiB), a self-extracting installer
+      run from a root shell on the box; the firmware then boots the kernel
+      itself from an EFI system partition.
+
+      ⚠ The image was checked for the thing that locks you out rather than
+      assumed good: `rootfs.sqsh` carries `portmap.conf`, `polarity.conf`,
+      `retimer.conf`, `network.conf`, `frr.conf` AND `authorized_keys`. A
+      worktree built without those produces an image that boots, has no
+      datapath and no key, on a box whose only other way in is the console.
+
+      ⚠ **Those generated files were nearly lost.** They are gitignored, they
+      lived only in the board's worktree, and that worktree was deleted when
+      its branch merged. They were recovered from `/etc/nosaic` on the running
+      switch -- which is RAM-booted, so a power cycle would have taken them
+      with it. Regenerating `portmap.conf` means booting NX-OS again. Keep a
+      copy outside any worktree.
 
 ## Not blocking — the board runs, short of these
 
@@ -528,3 +575,57 @@ Ordered so each step's failure is diagnosable with the one before it working.
 - **Whether the EFI-stub install path hits the same wall the NBI path did.**
   Unknown until an install is attempted; if it fails identically, the loader
   question and the firmware question turn out to be one.
+
+## Unattended boot: solved, and how
+
+The vendor loader and the firmware's boot manager cooperate here, and nothing
+in it is UEFI `BootOrder` (this firmware ignores it). The chain that runs on
+every boot, measured on the hardware from the console log:
+
+```
+BIOS -> BdsDxe -> Payload (the Cisco loader) -> menu.lst.local
+     -> `boot bootflash:/kickstart.nbi` FAILS -> loader exits
+     -> BdsDxe reads a CMOS boot record -> "Booting from EFI Internal Shell"
+     -> startup.nsh -> \EFI\BOOT\BOOTX64.EFI -> NOSaic
+```
+
+Every piece is load-bearing, and each was found by disassembling
+`BdsDxe.efi` and then testing on the box:
+
+- **The disk is a DOS table with the ESP as partition 1.** The loader finds
+  `menu.lst.local` only at `(hd0,msdos1)` or `(hd0,msdos5)`; on GPT it is never
+  found and the loader sits at `loader>`.
+- **`bootflash:` must fail, and on a DOS table it does** ("Selected disk does
+  not exist"). Naming the image with GRUB's `(hd0,msdosN)` syntax does not
+  fail: it starts a kernel that dies silently, and the box wedges.
+- **The loader must EXIT on a failed autoboot, which needs `bootmode -g2p`
+  (CMOS boot mode 3).** In mode 0 the loader never exits, so the boot manager
+  is never reached and the box waits at `loader>` forever.
+- **BdsDxe's CMOS record** (ports 0x72/0x73, indexes 0xC8..0xDB, 20 bytes):
+  byte 0 is `~(sum of bytes 1..19)`; byte 9 & 3 is the boot mode; bytes 2-3 =
+  `0a 0b` mean "boot the EFI Internal Shell once"; bytes 4-7, 11 and 12-19 must
+  be zero or the whole record is thrown away. The record armed here is
+  `e7 00 0a 0b 00 00 00 00 00 03 00 ...`. The mode persists in the battery
+  backed CMOS across power cycles.
+- **BdsDxe clears the shell request when it uses it**, so the image ships
+  `boot_rearm: scripts/boot-rearm.sh`, an s6 oneshot that writes the record
+  back on every boot. It always exits 0 and logs a read-back.
+
+**First boot of a freshly installed disk is the one manual boot.** The record
+is armed by the running NOSaic, so a box that has never run it (fresh from
+NX-OS, or with a lost CMOS) stops at `loader>`. There, type `efi_shell` -- a
+hidden loader command that launches the EFI shell at once -- and `startup.nsh`
+does the rest; from then on every boot is unattended. TAB at POST then `[ 2 ]`
+does the same from the BIOS menu.
+
+**If NOSaic is down when the box reboots**, the record is empty and the mode
+is 3, so the loader fails, exits, and the boot manager falls through to the
+Network option, whose iPXE loops (about 60-90 s a pass, alternating with the
+loader). That is not a hang; catch `loader>` with Ctrl-L and use `efi_shell`.
+Never type `ipxe` at the loader: it changes the boot mode with no undo.
+
+⚠ **One telnet session per console port.** A lingering one silently starves the
+next; a second connection simply receives nothing, which reads as a dead
+console. And a console server that replays its backlog on connect will hand you
+a stale `loader>` from a previous boot. Match only a prompt that arrives
+*after* this boot's BIOS banner.

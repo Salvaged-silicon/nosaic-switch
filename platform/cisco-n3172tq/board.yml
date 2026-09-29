@@ -48,6 +48,15 @@ asic: td2
 # netboot does.
 boot: uefi
 
+# And an NBI on the data partition as well, because `boot: uefi` is only half
+# the story on this board. The firmware's boot manager ignores UEFI BootOrder
+# and BootNext -- a BootNext survives a boot unconsumed, which is proof it is
+# never read -- and always launches the vendor loader. So the loader is the
+# only thing guaranteed to run, and an NBI is the only container it loads.
+# The build puts one on the data partition, which is what the loader calls
+# `bootflash:`. See docs/install.md.
+loader_nbi: true
+
 # The kernel command line, rendered into startup.nsh on the EFI system
 # partition. The console is stated here as well as in `console:` below because
 # these two are different consumers: this string is what the kernel is told,
@@ -119,17 +128,42 @@ boot_mib: 64
 slot_mib: 512
 data_mib: 512
 
-# GPT, which is the default and is stated here only to record that it is a
-# decision rather than an inheritance. UEFI enumerates EFI system partitions
-# by GPT type GUID; the DOS-table path exists for firmware that cannot read a
-# GPT, and this firmware reads nothing else by preference.
+# ⚠ A DOS TABLE, AND THE LOADER FAILING ON PURPOSE.
 #
-# ⚠ It also means the vendor's MBR layout is gone after an install, and with
-# it `bootflash:`. Getting back to NX-OS is a network boot of the kickstart
-# image followed by the vendor installer rebuilding its own partitions. That
-# is the whole of docs/install.md's last section and it is not optional
-# reading.
-partition_table: gpt
+# The firmware's boot manager ignores UEFI BootOrder and BootNext and always
+# launches the vendor loader first. What decides whether the box comes up by
+# itself is therefore what happens when that loader's autoboot FAILS -- and
+# with `bootmode -g2p` (CMOS boot mode 3) a failed autoboot makes the loader
+# exit back into the boot manager, which then reads a one-shot CMOS record and
+# boots the EFI Internal Shell, whose startup.nsh launches the kernel:
+#
+#   loader -> menu.lst.local -> `boot bootflash:/...` fails -> loader exits
+#          -> BdsDxe reads CMOS record -> EFI shell -> startup.nsh -> NOSaic
+#
+# Measured 138 s from `reboot` to ping with no interaction, and iPXE never
+# runs. The pieces, and why each is the way it is:
+#
+#   * The loader only finds menu.lst.local at (hd0,msdos1) or (hd0,msdos5),
+#     complete literals with no GPT form, so the table is DOS and the ESP is
+#     its first partition. On GPT the file is never found and the loader sits
+#     at its prompt.
+#   * On a DOS table the loader cannot open bootflash:, so the menu's `boot
+#     bootflash:/kickstart.nbi` fails cleanly. That is wanted. Naming the file
+#     with GRUB's own (hd0,msdosN) syntax does not fail: it starts a kernel
+#     that dies silently and wedges the box.
+#   * BdsDxe clears its CMOS record when it consumes it, so the running system
+#     re-writes it every boot: `boot_rearm` below. If NOSaic is down or CMOS is
+#     lost, the box falls back to `loader>`, which is recoverable by hand:
+#     type `efi_shell` there (or TAB then [2] at the BIOS menu).
+#
+# ⚠ Either way the vendor's own MBR layout is gone after an install, and with
+# it their bootflash:. Getting back to NX-OS is a network boot of the
+# kickstart image followed by the vendor installer rebuilding its partitions;
+# that is docs/install.md's last section and it is not optional reading.
+partition_table: dos
+
+# Writes the CMOS boot record BdsDxe consumes. See the script for the layout.
+boot_rearm: scripts/boot-rearm.sh
 
 # x86 describes itself through ACPI, so there is no device tree.
 

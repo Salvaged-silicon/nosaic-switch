@@ -3,24 +3,19 @@
 Written for somebody holding the switch. Assume a console cable and nothing
 else.
 
-> ⚠ **NETBOOT IS PROVEN; THE DISK INSTALL BELOW IS NOT.** NOSaic runs on this
-> board — it boots to userspace over the loader's own TFTP, cools itself,
-> brings up all 54 front-panel ports and routes over four OSPF adjacencies.
-> All of that has been done repeatedly over
-> [netboot](#netbooting-use-the-loaders-tftp-not-ipxe), which writes nothing to
-> the switch and survives no reboot.
->
-> Installing to the eUSB flash is a different sequence, and it is the part that
-> has not been exercised end to end. Every step of it is built out of a
-> mechanism that *was* — the recovery shell, the loader's TFTP transfer, the
-> EFI shell, the UEFI boot policy — but as a whole it is unproven, and it
-> erases the vendor's disk. Netboot first. Read [hardware.md](hardware.md)
-> before either, and [todo.md](todo.md) for what is left.
+> **This has been done, end to end, on the lab chassis.** NOSaic is installed
+> on the internal flash, the vendor OS is gone from it, and the switch boots
+> unattended across `reboot` and across a power cycle. The one thing an
+> installer has to do by hand is the very first boot -- see
+> [Pointing the firmware at NOSaic](#pointing-the-firmware-at-nosaic).
+> [Netboot](#netbooting-use-the-loaders-tftp-not-ipxe) still works and writes
+> nothing, which is why it is the thing to try first. Read
+> [hardware.md](hardware.md) before either.
 
 ## Before you start
 
 **This erases the switch completely.** NOSaic replaces the vendor's MBR
-partition table with its own GPT layout, which destroys `bootflash:` and with
+partition table with its own DOS layout, which destroys `bootflash:` and with
 it the NX-OS image. It is not reversible without that image.
 
 ⚠ **There is exactly one NX-OS image on the chassis.** `sda1`, the 24 MiB
@@ -353,6 +348,45 @@ bash-4.2# chmod +x NOSaic-0.1.0-cisco-n3172tq.sh
 NX-OS image is.** The installer overwrites the whole disk, `/bootflash`
 included. If the image is still on there, copy it off first.
 
+## Check the image before you erase anything
+
+The installer verifies the disk it wrote. Nothing verifies that the image was
+built from a current kernel, and on this board that is the failure that costs
+you the vendor OS before you find out.
+
+Mount the slot image out of the installer's payload -- or, if it is already
+written, out of the disk -- and look for the board's sensor modules:
+
+```
+bash-4.2# find /lib/modules -path '*hwmon*' -name '*.ko' | head
+/lib/modules/6.12.105/kernel/drivers/hwmon/adt7462.ko
+/lib/modules/6.12.105/kernel/drivers/hwmon/pmbus/pmbus.ko
+```
+
+**Empty output means do not install.** This board's kernel fragment asks for
+`CONFIG_SENSORS_ADT7462=m`, `CONFIG_PMBUS=m` and `CONFIG_GPIO_PCA953X=m`, so
+an image with no `hwmon` modules was built from a kernel package older than
+that fragment. It installs and boots perfectly, and then:
+
+* `i2c-devices` exits 1, because `modprobe adt7462` found nothing to load and
+  `new_device` had no driver to bind;
+* s6 reports `unable to start service i2c-devices` and the service database
+  never comes up;
+* `nosd` therefore never starts, so no `eth1_*` interface is ever created;
+* `apply-network` never reaches `eth0`, so the switch sits at a login prompt
+  with **no management address** and the only way in is the console.
+
+Every layer reports its own symptom and none of them names the kernel. The
+count is the quickest tell: 16 modules is the stale set, 26 is the current one.
+
+⚠ `modules.dep` is **not** a check. It is regenerated from whatever modules
+were staged, so a stale image has a perfectly consistent `modules.dep`
+describing a kernel that cannot drive this board.
+
+This is prevented at build time now -- a package whose recipe directory
+changed after it was built stops the build -- but the check is worth a minute
+before an irreversible write.
+
 ## Installing
 
 ```
@@ -386,74 +420,110 @@ The last line is not boilerplate. **Do not reboot yet.**
 
 ## Pointing the firmware at NOSaic
 
-This disk had no EFI system partition before now, so the firmware has no boot
-entry pointing at one. A reboot at this point lands at the vendor loader with
-nothing it recognises to boot.
+**Do not reboot from the installer prompt and expect NOSaic.** The installer
+writes a DOS-partitioned disk with the ESP first, which is what the vendor
+loader needs in order to find its autoboot menu, but the firmware only sends
+the box to the EFI shell (and so to `startup.nsh` and NOSaic) when a CMOS boot
+record says to, and NOSaic is what writes that record. A disk that has never
+run NOSaic has none, so the first boot needs one manual step, and it is the
+only one:
 
-The path through is the EDK2 UEFI Shell, which is already `Boot0002` and
-already active.
-
-1. Reboot, catch the loader with **Ctrl-L**, and tell it to come up in the
-   shell next time:
+1. Reboot and catch the loader with **Ctrl-L** during POST. Then:
 
    ```
    loader> efi_shell
-   loader> reboot
    ```
 
-2. You should land at `Shell>`. Check that the firmware can see our partition:
+   `efi_shell` is a hidden command; it does not appear in `help`. It launches
+   the EFI shell immediately. (From the BIOS menu the same thing is TAB then
+   `[ 2 ]`.)
 
-   ```
-   Shell> map
-   ```
-
-   Look for a `Removable HardDisk` whose device path contains
-   `Pci(0x1D,0x0)/USB` — that is the internal flash. It will have an alias,
-   usually `fs0`.
-
-3. NOSaic's EFI system partition carries a `startup.nsh`, and the shell
-   auto-runs one. If it did, you will have seen
+2. The shell auto-runs `startup.nsh` from the ESP. You should see
 
    ```
    NOSaic 0.1.0
    booting from fs0:
    ```
 
-   and the kernel will already be coming up. **If it did not**, run it by
-   hand — this always works:
+   and the kernel starts. If it did not, `fs0:` then `startup.nsh` by hand.
 
-   ```
-   Shell> fs0:
-   fs0:\> startup.nsh
-   ```
+3. Wait for NOSaic to come up. Its `boot-rearm` service has now written the
+   CMOS record. Reboot; the box comes back by itself.
 
-   ⚠ Whether the shell finds `startup.nsh` by itself on this firmware has not
-   been confirmed. If it does not, the arrangement in step 5 is what you need.
+How and why it works -- the loader failing on purpose, boot mode 3, the CMOS
+record -- is in [todo.md](todo.md#unattended-boot-solved-and-how) and the
+comments in `board.yml`. UEFI boot variables play no part: this firmware
+rewrites `BootOrder` each boot and never consumes `BootNext`.
 
-4. Confirm it boots. See [First boot](#first-boot).
+⚠ **If a boot entry ever were honoured, do not point it at
+`\EFI\BOOT\BOOTX64.EFI` directly.** The kernel would start with no command
+line: no `console=`, no `initrd=`. `startup.nsh` exists precisely because it
+passes arguments.
 
-5. Make it permanent. The shell's boot order is what gets you here, so leave
-   the shell ahead of the vendor loader:
+## Booting through the vendor loader
 
-   ```
-   Shell> bcfg boot dump -v
-   Shell> bcfg boot mv 02 00
-   ```
+The firmware always launches the vendor loader, whatever UEFI says, so the
+loader is the only thing guaranteed to run. It can boot NOSaic, and that is one
+typed line instead of a five-second window during POST:
 
-   That moves `Boot0002` (the shell) to the front, so every boot reaches the
-   shell, the shell runs `startup.nsh` off our partition, and the script
-   launches the kernel. It costs the shell's few-second delay on every boot.
+```
+loader> boot bootflash:/kickstart.nbi
+Booting kickstart image: bootflash:/kickstart.nbi
+Booting the kernel (entry_offset: 0x0000000000000000).
+```
 
-   ⚠ **Do not use `bcfg boot add` to point straight at `\EFI\BOOT\BOOTX64.EFI`
-   instead.** It works, in that the kernel starts — and the entry carries no
-   optional data, so the kernel gets no command line: no `console=`, no
-   `initrd=`. On a 9600 serial console that is a completely silent boot of a
-   kernel with no root filesystem. The shell exists in this path precisely
-   because it passes arguments.
+That brings up the installed system -- slot A, the data partition, the lot.
 
-   The tidy version of step 5 — a real boot entry whose optional data carries
-   the command line as UCS-2, written with `efibootmgr` from the running switch
-   — is in [todo.md](todo.md). `CONFIG_EFIVAR_FS` is built in for it.
+⚠ **Use `bootflash:`, and watch which second line you get.** Naming the same
+file the stock GRUB way, `(hd0,msdosN)/kickstart.nbi`, prints a different and
+shorter message --
+
+```
+Booting kernel
+```
+
+-- and then nothing, ever: the kernel dies before the NIC probes, silently,
+from ext4 and from FAT alike. The two spellings are two different loaders
+inside the same binary, and only Cisco's own takes our image. That second line
+is the quickest way to tell which one ran.
+⚠ **This route does not work on the installed layout.** It did on the earlier
+GPT layout, where `bootflash:` resolved to the data partition. The disk is now
+a DOS table (the loader can only find its autoboot menu there), on which
+`bootflash:` answers "Selected disk does not exist" -- and that failure is the
+mechanism unattended boot depends on. The `kickstart.nbi` the build still puts
+on the data partition is inert; use `efi_shell` instead.
+
+Two things had to be true for that to work, and both are now the build's job:
+
+* **The filesystem must not carry `64bit` or `metadata_csum`.** Modern `mke2fs`
+  enables both, and the GRUB2 this loader is built from refuses a filesystem
+  with either -- it reports the partition and lists nothing, which reads
+  exactly like an empty disk. Linux mounts it perfectly, so the switch tells
+  you nothing is wrong. `buildDataPartition` passes `-O ^64bit,^metadata_csum`.
+* **The image must be an NBI.** The loader parses at most four segment
+  descriptors and does its own Linux setup; `internal/imgbuild/nbi.go` builds
+  the shape it accepts, including the shim that hands the kernel a command
+  line, because the loader supplies one of its own that we cannot influence.
+
+### Why UEFI boot variables are not the answer
+
+Worth recording, because it looks like the obvious fix and it costs a reinstall
+to find out. The entries are `Boot0000` EFI Payload (the loader), `Boot0001`
+EFI Internal Shell, `Boot0002` EFI USB Device, `Boot0003` EFI Network.
+
+`BootOrder` was rewritten to `0001,0000,0002,0003` through `efivarfs` from the
+running switch. The next power cycle went to the loader, and `BootOrder` had
+been **put back**. Then `BootNext=0001` was set -- a one-shot a boot manager
+consumes when it uses it. The next boot went to the loader and `BootNext` was
+**still there, unconsumed**. A variable that is never cleared is a variable
+that is never read. This is a custom boot manager that ignores both.
+
+### Unattended boot
+
+Solved; see [todo.md](todo.md#unattended-boot-solved-and-how) for the chain
+and for what happens when NOSaic is down or the CMOS is lost. In short: the
+loader's autoboot line is made to fail on purpose, the loader exits, and the
+firmware's boot manager takes a one-shot CMOS record to the EFI shell.
 
 ## First boot
 
@@ -604,6 +674,28 @@ partition is not typed as an EFI system partition — the installer verifies the
 FAT signature at the ESP offset and fails loudly if it is absent, so a clean
 install run rules the second out. Try `mount blk<n> fs0` to force it, and check
 `blk` device paths for `Pci(0x1D,0x0)/USB`.
+
+⚠ **If you built that ESP by hand on the switch, this is why.** BusyBox's
+`mkfs.vfat` makes **FAT32 only** — it accepts `-F 16` and ignores it, and its
+own `--help` says "Make a FAT32 filesystem". On a boot partition of this size
+the result is a FAT32 volume with fewer than the 65525 clusters FAT32 requires,
+which is out of spec, and EDK2's FAT driver declines to mount it: no `fs0`, and
+the shell never finds `startup.nsh`. It mounts fine under Linux, so the switch
+itself will tell you nothing is wrong.
+
+Tell them apart from the boot sector. FAT16 puts the type string at offset 54
+and leaves a non-zero root entry count at 17 and FAT size at 22; FAT32 zeroes
+both and puts its type string at 82:
+
+```
+# dd if=/dev/sda1 bs=1 skip=54 count=8 2>/dev/null; echo
+FAT16
+```
+
+The image builder does not have this problem — it runs `mkfs.fat -F 16` from
+dosfstools inside the build container and ships the finished `esp.vfat`, which
+the installer writes out whole. Nothing in the install path runs mkfs on the
+switch. This bites only hand-made test partitions.
 
 **The kernel starts and then nothing.** The most likely cause is no command
 line: you got here through a plain `Boot####` entry rather than through

@@ -9,8 +9,11 @@ installer environment, no ODM reference design to lean on, and no documentation
 — so the whole of this directory came out of reverse engineering the running
 machine and its firmware.
 
-**NOSaic runs on this board.** It netboots through the vendor loader's own
-TFTP to userspace, drives the fans off the ASIC die temperature, brings up all
+**NOSaic runs on this board, installed on its own flash, and boots unattended**
+(across `reboot` and a power cycle, no console needed -- see
+[install.md](docs/install.md#pointing-the-firmware-at-nosaic); a fresh install
+needs one manual `efi_shell` at the loader on its first boot). It also
+netboots through the vendor loader's own TFTP. It drives the fans off the ASIC die temperature, brings up all
 48 copper ports and all six 40G cages, and routes, with three OSPF neighbours
 as of 2026-09-28. On top of that it has been the dual-homed device in an MLAG
 test, run rapid spanning tree with the 7050TX-64, and carried VLANs, QinQ as a
@@ -41,15 +44,15 @@ this machine.
 | Console | `ttyS0` @ **9600** |
 | Board codename | **`quickzinc2`** (`qz2`) — Cisco's, and it is how the firmware refers to this board throughout |
 | Vendor OS | NX-OS 7.0(3)I7(9) |
-| Status | **bringup** — boots, cools, routes; 48 copper and 6 × 40G up; netbooted only, never installed; runs the same build as the other lab switches (switchapi 1.13) |
+| Status | **bringup** — boots, cools, routes; 48 copper and 6 × 40G up; installed on flash and booting unattended (2026-09-29); runs the same build as the other lab switches (switchapi 1.13) |
 
 - **[Hardware reference](docs/hardware.md)** — the block diagram, the boot
   chain, the port map, the four platform transports, and the quirks
 - **[Build](docs/build.md)** — building an image, and the three generators you
   have to run against your own switch
 - **[Install](docs/install.md)** — getting it onto the switch, and getting back
-- **[Todo](docs/todo.md)** — what is proven, and what is left: an install,
-  recovery, the front-panel LEDs
+- **[Todo](docs/todo.md)** — what is proven, and what is left: recovery,
+  the front-panel LEDs
 
 > **Start over the network, not with an install.** The vendor loader's own TFTP
 > boots an `mknbi-linux` NBI container and ours goes all the way to userspace.
@@ -287,8 +290,10 @@ one nobody should leave running, so that path ships, and the board's own HAL,
 
 ## Running it today
 
-The lab unit is netbooted, not installed: the vendor loader TFTPs an NBI and
-hands off to our kernel ([install](docs/install.md#netbooting-use-the-loaders-tftp-not-ipxe)).
+The lab unit is installed on its flash and boots unattended. What follows
+describes the netboot, which is still the way to try a build without touching
+the disk ([install](docs/install.md#netbooting-use-the-loaders-tftp-not-ipxe)):
+the vendor loader TFTPs an NBI and hands off to our kernel.
 Being RAM-booted, it has no data partition and no ssh key, so its
 configuration is baked into the NBI at build time. Copy `network.site.conf`
 and `frr.site.conf` in as `network.conf` and `frr.conf` for the build and

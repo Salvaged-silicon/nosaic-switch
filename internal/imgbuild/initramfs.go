@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // initScript is the first userspace the machine runs.
@@ -251,7 +252,19 @@ while :; do
     FLASH_OPTIONAL=no
     # A flash that is there and holds no data image will not grow one: stop
     # waiting, as this did before the loop existed.
-    if [ "$_dwaited" -ge 15 ] || { [ -n "$FLASH" ] && [ ! -f "$FLASH/nosaic-data.img" ]; }; then
+    #
+    # ⚠ UNLESS THE BOARD KEEPS ITS DATA IN A PARTITION, WHERE $FLASH IS THE ESP.
+    #
+    # On a uefi board the flash filesystem IS the EFI system partition, and an
+    # ESP never holds nosaic-data.img -- so "flash present, no data image" says
+    # nothing whatever about a data partition that is still enumerating. The
+    # Nexus 3172TQ's disk is behind USB: on one boot findfs found sda4 in 1s,
+    # on the next this early-out fired at 3s and the switch came up STATELESS,
+    # forwarding and holding OSPF with a tmpfs for /mnt/data, so nothing it was
+    # configured with would have survived the next reboot. The build sets
+    # EXPECT_DATA_PARTITION on those boards, and there the full wait applies.
+    if [ "$_dwaited" -ge 15 ] || { [ "${EXPECT_DATA_PARTITION:-no}" != yes ] \
+       && [ -n "$FLASH" ] && [ ! -f "$FLASH/nosaic-data.img" ]; }; then
         echo "NOSAIC-INITRAMFS-WARN no data partition after ${_dwaited}s; booting stateless"
         mount -t tmpfs tmpfs /mnt/data || fail "cannot mount a fallback writable layer"
         break
@@ -371,8 +384,20 @@ slotdev() {
     # image has to reach the mount and fail there, because that is what
     # triggers the rollback. Returning nothing instead would turn a
     # recoverable bad upgrade into a board that will not boot.
+    # ⚠ THE NUMBERS ARE NOT ALWAYS 2 AND 3.
+    #
+    # A board whose bootloader has to read one of our partitions may have to
+    # put that partition where the bootloader looks, which moves a slot. The
+    # Nexus 3172TQ is the case: its loader binds bootflash: to partition 3,
+    # so the data partition lives there and slot B moves to 4. The build says
+    # so; the default is the layout every other board uses.
+    #
+    # Getting this wrong is quiet. The guess prefers a device carrying squashfs
+    # magic, but falls back to the first that merely exists -- so a wrong
+    # number lands on the data partition, fails to mount as squashfs, and looks
+    # like a corrupt image rather than a bad lookup.
     local n="" first=""
-    case "$1" in a) n=2 ;; b) n=3 ;; esac
+    case "$1" in a) n=${SLOT_A_PART:-2} ;; b) n=${SLOT_B_PART:-3} ;; esac
     for d in /dev/vda /dev/sda /dev/mmcblk0p; do
         [ -b "$d$n" ] || continue
         [ -n "$first" ] || first="$d$n"
@@ -518,7 +543,21 @@ func buildInitramfs(o Options, work, rootfs string, embed string) (string, error
 	for _, link := range []string{"sh", "mount", "mkdir", "switch_root", "echo"} {
 		_ = os.Symlink("busybox", filepath.Join(dir, "bin", link))
 	}
-	if err := os.WriteFile(filepath.Join(dir, "init"), []byte(initScript), 0o755); err != nil {
+	// A board whose slots and data are partitions must not treat its own ESP
+	// as evidence that no data partition is coming. See the early-out in the
+	// data wait.
+	initSh := initScript
+	if o.Board != nil && o.Board.Boot == "uefi" && !o.RAMBoot {
+		initSh = strings.Replace(initSh, "\nPERSIST=no\n",
+			"\nEXPECT_DATA_PARTITION=yes\nPERSIST=no\n", 1)
+	}
+	// A board whose loader reads one of our partitions may have had a slot
+	// moved to make room for it. See slotdev().
+	if o.Board != nil && o.Board.LoaderNBI && o.Board.PartTable() == "dos" {
+		initSh = strings.Replace(initSh, "\nPERSIST=no\n",
+			"\nSLOT_A_PART=2\nSLOT_B_PART=4\nPERSIST=no\n", 1)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "init"), []byte(initSh), 0o755); err != nil {
 		return "", err
 	}
 

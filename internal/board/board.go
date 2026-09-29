@@ -46,6 +46,14 @@ type Board struct {
 	ASIC string `yaml:"asic"`
 	Boot string `yaml:"boot"`
 
+	// LoaderNBI asks the build for an NBI container on the data partition,
+	// named kickstart.nbi, for a board whose firmware cannot be told to boot
+	// anything of ours. The Nexus 3172TQ is the case: its boot manager ignores
+	// UEFI BootOrder and BootNext and always launches the vendor loader, so the
+	// loader is the only thing that runs on every boot and an NBI is the only
+	// format it takes. See internal/imgbuild/nbi.go.
+	LoaderNBI bool `yaml:"loader_nbi"`
+
 	Profile string `yaml:"profile"`
 	Kernel  string `yaml:"kernel"`
 	Status  string `yaml:"status"`
@@ -112,6 +120,15 @@ type Board struct {
 	// Installed to /etc/nosaic and run once, before nosd, since the daemon
 	// reads link state during bring-up and would see every port down.
 	FrontPanelInit string `yaml:"front_panel_init"`
+
+	// BootRearm is a script under the board directory that re-arms whatever
+	// the firmware needs in order to boot NOSaic unattended next time.
+	//
+	// For a board whose firmware consumes its boot request when it acts on
+	// it. The Nexus 3172TQ's BdsDxe clears the CMOS record that sends it to
+	// the EFI shell, so the running system has to write it again on every
+	// boot. Installed to /etc/nosaic and run once, early, and must exit 0.
+	BootRearm string `yaml:"boot_rearm"`
 
 	// Flash layout, in MiB. Zero means the default, which suits a board with
 	// modest flash; a board with room should say so rather than inherit a
@@ -298,6 +315,11 @@ func (b *Board) Validate(root string) []string {
 	}
 	if b.Boot == "" {
 		bad("boot is required")
+	}
+	if b.BootRearm != "" {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(b.Path), b.BootRearm)); err != nil {
+			bad("boot_rearm %q: %v", b.BootRearm, err)
+		}
 	}
 	if !oneOf(b.Status, validStatus) {
 		bad("status %q must be one of %s", b.Status, strings.Join(validStatus, ", "))

@@ -1118,6 +1118,25 @@ poweroff -f
 		fmt.Fprintf(o.Log, "    front-panel init from %s\n", o.Board.FrontPanelInit)
 	}
 
+	// Re-arm the firmware's boot request, for boards whose firmware clears it
+	// when it acts on it. Independent of the datapath: it only pokes CMOS.
+	if o.Board.BootRearm != "" {
+		src := filepath.Join(filepath.Dir(o.Board.Path), o.Board.BootRearm)
+		b, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("boot_rearm: %w", err)
+		}
+		if err := writeFile(rootfs, "/etc/nosaic/boot-rearm.sh", string(b), 0o755); err != nil {
+			return err
+		}
+		services = append(services, svcgen.Service{
+			Name:    "boot-rearm",
+			Exec:    "/etc/nosaic/boot-rearm.sh",
+			Restart: "never",
+		})
+		fmt.Fprintf(o.Log, "    boot re-arm from %s\n", o.Board.BootRearm)
+	}
+
 	// The datapath.
 	//
 	// Named `nosd` rather than nosd-td2p: the unit, the CLI and the docs only
@@ -1406,6 +1425,14 @@ type staleFinding struct {
 	// hashes to what the package recorded. It has no "by", since a digest
 	// does not say when.
 	recipeChanged bool
+
+	// predatesDigest is a finding by file time against the recipe directory,
+	// for a package too old to have recorded a digest. It warns rather than
+	// refuses: a fresh clone or a new worktree gives every recipe file a new
+	// mtime without changing a byte, so refusing here would stop builds that
+	// are perfectly current. Rebuilding the package records a digest and moves
+	// it onto the check above, which compares content and cannot false-alarm.
+	predatesDigest bool
 }
 
 // stalePackages reports selected packages that are older than the source they
@@ -1484,38 +1511,70 @@ func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr err
 				continue
 			}
 		}
-		if rec.Source == nil || rec.Source.Local == "" {
-			continue
-		}
+		// A package that predates the digest is checked by file time instead.
+		//
+		// ⚠ THE WHOLE RECIPE DIRECTORY, NOT JUST recipe.yml. A kernel's config
+		// fragments and a recipe's patches sit beside it and change what the
+		// package contains without recipe.yml being touched -- and the kernel
+		// is exactly where that bites, because a fragment is how a board asks
+		// for a driver.
+		//
+		// This is not hypothetical. The Nexus 3172TQ's first flash install
+		// shipped a linux package built six days before the fragment that
+		// added CONFIG_SENSORS_ADT7462=m. The image had the modules.dep of a
+		// kernel it did not contain: no adt7462, no pca953x, no pmbus. So
+		// i2c-devices exited 1, the s6 database never came up, nosd never
+		// started, no interface was ever created and the switch booted to a
+		// login prompt with no management address. Nothing in the build said
+		// a word, because the package recorded no digest and its source is a
+		// url -- which used to mean no check ran at all.
+		hasLocal := rec.Source != nil && rec.Source.Local != ""
 
-		// A package that predates the digest is checked by the recipe's file
-		// time instead, as it always was.
 		newest, name := time.Time{}, ""
+		fromRecipeDir := false
 		if recorded == "" {
-			if fi, err := os.Stat(recPath); err == nil {
-				newest, name = fi.ModTime(), recPath
+			if hasLocal {
+				// Unchanged: recipe.yml's own time, as it always was.
+				if fi, err := os.Stat(recPath); err == nil {
+					newest, name = fi.ModTime(), recPath
+				}
+			} else {
+				// New. A url recipe has no tree of ours, which used to mean no
+				// check at all -- the hole the kernel fell through. The whole
+				// recipe directory counts, because a kernel's config fragments
+				// decide what the package contains and never touch recipe.yml.
+				newest, name = newestSource(filepath.Dir(recPath), nil)
+				fromRecipeDir = !newest.IsZero()
 			}
 		}
 
-		// Only the part of the tree this recipe actually compiles. nosd-td2p
-		// and nosd-tdp both declare `local: datapath` and differ by subdir:
-		// td2p builds td2p/ and common/, and never tdp/. Walking the whole
-		// tree marks this board's package stale when the other board's daemon
-		// is edited -- a warning that fires for something that cannot affect
-		// the binary is how a check gets ignored.
-		skip := others[rec.Source.Local][subdirOf(rec)]
-		if t, n := newestSource(filepath.Join(o.Root, rec.Source.Local), skip); t.After(newest) {
-			newest, name = t, n
+		// A url source has no tree of ours to walk. That is a reason to skip
+		// the source comparison below, and not a reason to skip the recipe
+		// comparison above -- which is what returning here unconditionally
+		// used to do.
+		if hasLocal {
+			// Only the part of the tree this recipe actually compiles.
+			// nosd-td2p and nosd-tdp both declare `local: datapath` and differ
+			// by subdir: td2p builds td2p/ and common/, and never tdp/.
+			// Walking the whole tree marks this board's package stale when the
+			// other board's daemon is edited -- a warning that fires for
+			// something that cannot affect the binary is how a check gets
+			// ignored.
+			skip := others[rec.Source.Local][subdirOf(rec)]
+			if t, n := newestSource(filepath.Join(o.Root, rec.Source.Local), skip); t.After(newest) {
+				newest, name, fromRecipeDir = t, n, false
+			}
 		}
 
 		if newest.IsZero() || !newest.After(pkg.ModTime()) {
 			continue
 		}
 		found = append(found, staleFinding{
-			pkg:    r.file,
-			recipe: r.Name,
-			source: rel(o.Root, name),
-			by:     newest.Sub(pkg.ModTime()).Round(time.Second),
+			pkg:            r.file,
+			recipe:         r.Name,
+			source:         rel(o.Root, name),
+			by:             newest.Sub(pkg.ModTime()).Round(time.Second),
+			predatesDigest: fromRecipeDir,
 		})
 	}
 	return found, nil
@@ -1529,10 +1588,34 @@ func stalePackages(o Options, refs []pkgRef) (found []staleFinding, checkErr err
 // image being built -- but it must not be silent either, or the check quietly
 // stops checking and the staleness it exists to catch comes back unannounced.
 func reportStale(o Options, refs []pkgRef) error {
-	found, err := stalePackages(o, refs)
+	all, err := stalePackages(o, refs)
 	if err != nil {
 		fmt.Fprintf(o.Log, "    (could not check packages against their source: %v)\n", err)
 		return nil
+	}
+
+	// A package too old to have recorded a digest is compared by file time
+	// against its recipe directory, and file times do not survive a clone: a
+	// new worktree makes every recipe newer than every package without one
+	// byte having changed. So this says so and lets the build run, where a
+	// content mismatch stops it. Rebuilding the package records a digest and
+	// moves it onto the check that cannot false-alarm.
+	var found []staleFinding
+	var predating []staleFinding
+	for _, f := range all {
+		if f.predatesDigest {
+			predating = append(predating, f)
+			continue
+		}
+		found = append(found, f)
+	}
+	if len(predating) > 0 {
+		fmt.Fprintf(o.Log, "    %d package(s) predate recipe digests and may be stale "+
+			"-- file times only, so a fresh worktree looks like this:\n", len(predating))
+		for _, f := range predating {
+			fmt.Fprintf(o.Log, "      %s: %s is %s newer (make pkg PKG=%s ARCH=%s to know)\n",
+				f.pkg, f.source, f.by, f.recipe, o.Arch.ID)
+		}
 	}
 	if len(found) == 0 {
 		return nil

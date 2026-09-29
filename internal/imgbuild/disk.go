@@ -124,12 +124,44 @@ size=%dMiB, type=83
              type=83
 `, fitMiB, slotMiB, slotMiB)
 		} else {
+			// ⚠ type=ef, NOT 83, WHEN THE FIRMWARE IS THE BOOTLOADER.
+			//
+			// The GPT path above types its boot partition `uefi` for the same
+			// reason: UEFI enumerates EFI system partitions by type, and a FAT
+			// filesystem in a partition typed `linux` is one the firmware will
+			// not look inside. On a DOS table that type is 0xEF. Proven on the
+			// Nexus 3172TQ before the install: with the partition still typed
+			// 0x83 the EFI shell showed no `fs0:` at all; typing it 0xEF made
+			// the shell mount it and run startup.nsh.
+			dosBootType := "83"
+			if o.Board.WantsESP() {
+				dosBootType = "ef"
+			}
 			script = fmt.Sprintf(`label: dos
-size=%dMiB, type=83
+size=%dMiB, type=%s
 size=%dMiB, type=83
 size=%dMiB, type=83
              type=83
-`, bootMiB, slotMiB, slotMiB)
+`, bootMiB, dosBootType, slotMiB, slotMiB)
+
+			// ⚠ DATA THIRD, SLOT B LAST, WHEN THE LOADER HAS TO READ OUR DISK.
+			//
+			// The Cisco loader binds bootflash: to partition 3 -- the vendor's
+			// own bootflash was sda3 -- and that is the only partition of ours
+			// it will look inside. The image it autoboots has to be on it, so
+			// the data partition goes there and slot B takes the tail.
+			//
+			// Slot B is the one to move, not slot A: a freshly installed
+			// switch boots A and leaves B empty, so if the sizes are ever
+			// wrong it is the unused half that suffers.
+			if o.Board.LoaderNBI {
+				script = fmt.Sprintf(`label: dos
+size=%dMiB, type=%s
+size=%dMiB, type=83
+size=%dMiB, type=83
+             type=83
+`, bootMiB, dosBootType, slotMiB, dataMiB)
+			}
 		}
 	}
 
@@ -177,23 +209,37 @@ size=%dMiB, type=83
 	// Built to the partition that actually exists, rather than to the size it
 	// was asked for. GPT overhead makes the last partition smaller than its
 	// nominal size, and a filesystem sized by assumption overruns the disk.
-	data, err := buildDataPartition(o, parts[3].Size*512)
+	// Which partition holds the data depends on the layout, and the layout
+	// depends on whether a bootloader has to read it. See the DOS script above.
+	dataIdx := dataPartitionNumber(o) - 1
+	data, err := buildDataPartition(o, parts[dataIdx].Size*512, kernel, initramfs)
 	if err != nil {
 		return "", 0, err
 	}
-	if err := ddInto(data, out, parts[3].Start*512, parts[3].Size*512, "data"); err != nil {
+	if err := ddInto(data, out, parts[dataIdx].Start*512, parts[dataIdx].Size*512, "data"); err != nil {
 		return "", 0, err
 	}
 
-	fmt.Fprintf(o.Log, "    slot a: %.1f MiB image in a %d MiB slot, slot b: empty, data: %d MiB\n",
-		float64(sq.Size())/(1<<20), parts[1].Size*512/(1<<20), parts[3].Size*512/(1<<20))
+	fmt.Fprintf(o.Log, "    slot a: %.1f MiB image in a %d MiB slot, slot b: empty, data: %d MiB (partition %d)\n",
+		float64(sq.Size())/(1<<20), parts[1].Size*512/(1<<20),
+		parts[dataIdx].Size*512/(1<<20), dataIdx+1)
 	return out, parts[0].Start * 512, nil
+}
+
+// dataPartitionNumber is where the data partition lands, 1-based, which is not
+// always last: a board whose bootloader has to read it may need it earlier.
+// See the DOS script in BuildDisk and slotdev() in the initramfs.
+func dataPartitionNumber(o Options) int {
+	if o.Board.PartTable() == "dos" && o.Board.LoaderNBI {
+		return 3
+	}
+	return 4
 }
 
 // buildDataPartition makes an ext4 filesystem pre-populated with the directory
 // structure the running system expects, so first boot does not have to create
 // it and a factory reset is simply "wipe this partition".
-func buildDataPartition(o Options, size int64) (string, error) {
+func buildDataPartition(o Options, size int64, kernel, initramfs string) (string, error) {
 	work := filepath.Join(o.Root, ".cache", "image", o.Board.ID, "data")
 	if err := os.RemoveAll(work); err != nil {
 		return "", err
@@ -228,6 +274,32 @@ Wiping this partition is a complete factory reset: the switch returns to
 		return "", err
 	}
 
+	// The image the vendor loader boots, for a board whose firmware cannot be
+	// pointed anywhere else. See nbi.go for why that is, and install.md for
+	// the boot it produces. It goes on this partition because this partition
+	// is what the loader calls `bootflash:`.
+	if o.Board.LoaderNBI {
+		k, err := os.ReadFile(kernel)
+		if err != nil {
+			return "", err
+		}
+		rd, err := os.ReadFile(initramfs)
+		if err != nil {
+			return "", err
+		}
+		consoleDev, consoleBaud := o.Board.ConsolePort()
+		cmdline := fmt.Sprintf("console=%s,%dn8 %s", consoleDev, consoleBaud, o.Board.KernelParams)
+		nbi, err := buildNBI(k, rd, strings.TrimSpace(cmdline))
+		if err != nil {
+			return "", fmt.Errorf("building the loader's NBI: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(work, "kickstart.nbi"), nbi, 0o644); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(o.Log, "    kickstart.nbi: %.1f MiB, for the vendor loader\n",
+			float64(len(nbi))/(1<<20))
+	}
+
 	img := filepath.Join(o.Root, ".cache", "image", o.Board.ID, "data.ext4")
 	if err := truncate(img, size); err != nil {
 		return "", err
@@ -238,8 +310,19 @@ Wiping this partition is a complete factory reset: the switch returns to
 	// This partition is not bit-reproducible, and that is fine: it is mutable
 	// state by definition, written to on the first boot. What must be
 	// reproducible is the image, which is the squashfs, and it is.
-	cmd := exec.Command("mke2fs", "-q", "-t", "ext4", "-L", "nosaic-data",
-		"-d", work, "-U", "8f3a1c22-0000-4000-8000-6e6f73616963",
+	// ⚠ WITHOUT ^64bit,^metadata_csum THE VENDOR LOADER CANNOT READ THIS.
+	//
+	// Modern mke2fs turns both on by default, and the GRUB2 the Cisco loader is
+	// built from refuses a filesystem carrying either -- it reports the
+	// partition and lists nothing, which reads exactly like an empty disk.
+	// Linux mounts it perfectly either way, so the switch says nothing is
+	// wrong. On the Nexus 3172TQ that is the difference between a loader that
+	// can boot us and one that drops to its prompt; see install.md.
+	//
+	// Neither feature buys anything here: this partition is well under 16 TiB
+	// and its integrity is not what protects the image.
+	cmd := exec.Command("mke2fs", "-q", "-t", "ext4", "-O", "^64bit,^metadata_csum",
+		"-L", "nosaic-data", "-d", work, "-U", "8f3a1c22-0000-4000-8000-6e6f73616963",
 		"-F", img)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("mke2fs: %v\n%s", err, b)
@@ -405,7 +488,11 @@ func buildESP(o Options, size int64, kernel, initramfs string) (string, error) {
 		}
 		return nil
 	}
-	for _, d := range []string{"::/EFI", "::/EFI/BOOT", "::/boot"} {
+	dirs := []string{"::/EFI", "::/EFI/BOOT", "::/boot"}
+	if o.Board.LoaderNBI {
+		dirs = append(dirs, "::/boot/grub")
+	}
+	for _, d := range dirs {
 		if err := run("mmd", "-i", img, d); err != nil {
 			return "", err
 		}
@@ -454,6 +541,49 @@ func buildESP(o Options, size int64, kernel, initramfs string) (string, error) {
 	}
 	if err := run("mcopy", "-i", img, "-o", active, "::/boot/active"); err != nil {
 		return "", err
+	}
+
+	// The vendor loader's own autoboot file, in the vendor's own format.
+	//
+	// This is what makes the box come up on its own. The loader runs on every
+	// boot whatever UEFI says, and it autoboots by reading this file; NX-OS
+	// wrote its copy to /mnt/cfg/0 and erasing the disk is what stopped the
+	// box booting by itself. `disable certificate` is the vendor's own line,
+	// and is how the signature check is turned off.
+	//
+	// ⚠ ONLY EVER FOUND ON A DOS TABLE. The loader carries exactly two paths,
+	// both complete literals with no GPT form:
+	//
+	//	(hd0,msdos1)/boot/grub/menu.lst.local
+	//	(hd0,msdos5)/boot/grub/menu.lst.local
+	//
+	// so this partition has to be the first partition of a DOS table for the
+	// file to be read at all. On a GPT disk it is ignored -- written, present,
+	// and never looked at.
+	if o.Board.LoaderNBI {
+		// ⚠ bootflash: ON A DOS TABLE IS THE POINT, NOT A BUG. The loader
+		// cannot open its own bootflash: device on a DOS layout -- `boot
+		// bootflash:/...` answers "Selected disk does not exist" -- so the
+		// autoboot fails and the loader exits. That exit is what hands the
+		// box back to the firmware's boot manager, which (with the CMOS
+		// record the boot-rearm service writes) launches the EFI shell and
+		// so startup.nsh and NOSaic. See docs/install.md, "Unattended boot".
+		//
+		// Naming the file the stock GRUB way, (hd0,msdosN)/kickstart.nbi,
+		// does NOT fail: it starts a kernel that dies instantly and silently,
+		// and the box wedges instead of falling through. So never that.
+		dev := "bootflash:"
+		menu := "#\n# General configuration\n#\ndisable certificate\n" +
+			"# Menu entry for the available images\n" +
+			"title " + dev + "/kickstart.nbi\n" +
+			"boot " + dev + "/kickstart.nbi \n"
+		mstage := filepath.Join(dir, "menu.lst.local")
+		if err := os.WriteFile(mstage, []byte(menu), 0o644); err != nil {
+			return "", err
+		}
+		if err := run("mcopy", "-i", img, "-o", mstage, "::/boot/grub/menu.lst.local"); err != nil {
+			return "", err
+		}
 	}
 
 	fmt.Fprintf(o.Log, "    EFI system partition: %d MiB, kernel as \\EFI\\BOOT\\BOOTX64.EFI\n",

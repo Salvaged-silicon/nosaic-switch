@@ -167,6 +167,14 @@ mount_flash() {
 		{"flash with a data image at 2s", "FLASH_AT=2 IMG=1", "data image mounted", true},
 		{"flash with no data image", "FLASH_AT=0", "booting stateless", false},
 		{"nothing at all", "", "no data partition after 15s; booting stateless", false},
+
+		// The Nexus 3172TQ. Its ESP mounts as the flash and never holds a data
+		// image, so the early-out above would fire while the data partition
+		// was still enumerating on a slow USB bus -- and the switch would come
+		// up stateless without saying anything an operator would notice.
+		{"uefi board waits for a partition behind its ESP",
+			"EXPECT_DATA_PARTITION=yes FLASH_AT=0 DATA_AT=4",
+			"data partition mounted (/dev/sda4) after 4s", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
