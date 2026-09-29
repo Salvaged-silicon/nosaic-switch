@@ -553,7 +553,7 @@ func buildInitramfs(o Options, work, rootfs string, embed string) (string, error
 	}
 	// A board whose loader reads one of our partitions may have had a slot
 	// moved to make room for it. See slotdev().
-	if o.Board != nil && o.Board.LoaderNBI {
+	if o.Board != nil && o.Board.LoaderNBI && o.Board.PartTable() == "dos" {
 		initSh = strings.Replace(initSh, "\nPERSIST=no\n",
 			"\nSLOT_A_PART=2\nSLOT_B_PART=4\nPERSIST=no\n", 1)
 	}

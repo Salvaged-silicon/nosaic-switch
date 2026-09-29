@@ -128,35 +128,33 @@ boot_mib: 64
 slot_mib: 512
 data_mib: 512
 
-# ⚠ A DOS TABLE, AND THE LOADER IS THE REASON. GPT COSTS UNATTENDED BOOT.
+# ⚠ GPT WITH A HYBRID MBR, AND THE LOADER NEEDS BOTH HALVES.
 #
-# It was GPT first, on the reasoning that UEFI enumerates EFI system
-# partitions by GPT type GUID. True, and beside the point: this firmware's
-# boot manager never consults UEFI at all -- it ignores BootOrder and does not
-# even read BootNext -- and always launches the vendor loader. The loader is
-# what decides whether this box comes up on its own.
+# The firmware's boot manager ignores UEFI entirely -- it rewrites BootOrder
+# each boot and never even reads BootNext, which survives unconsumed -- and
+# always launches the vendor loader. So the loader decides whether this box
+# comes up on its own, and it wants one thing from each table:
 #
-# It decides by reading /boot/grub/menu.lst.local, and it carries exactly two
-# paths for that file, both complete literals with no GPT form:
+#   * It autoboots by reading /boot/grub/menu.lst.local, and the only two
+#     paths it carries are (hd0,msdos1) and (hd0,msdos5). Complete literals,
+#     no GPT form. On a pure GPT disk the file is never found -- tested:
+#     written to the ESP, present, ignored.
+#   * It loads the image that file names through its own bootflash: device,
+#     which resolves on GPT and NOT on a DOS table, where it answers
+#     "Selected disk does not exist". Naming the image the stock GRUB way
+#     instead, (hd0,msdosN)/kickstart.nbi, makes the loader read the file and
+#     start a kernel that dies instantly and silently -- from ext4 and from
+#     FAT, with and without an initrd, at two different load addresses --
+#     while the identical bytes over TFTP or through bootflash: boot fine.
 #
-#     (hd0,msdos1)/boot/grub/menu.lst.local
-#     (hd0,msdos5)/boot/grub/menu.lst.local
-#
-# On a GPT disk the file cannot be found wherever it is put. That was tested,
-# not assumed: written to the GPT ESP, present, ignored, and the box still
-# stopped at `loader>`. So the boot partition has to be the first partition of
-# a DOS table.
-#
-# Nothing is lost by it. The ESP still works typed 0xEF, proven on this box
-# before the install -- the EFI shell found fs0: and ran startup.nsh off a
-# FAT16 partition on a DOS table. The board gets both routes: the shell, and
-# the loader booting by itself.
+# So the table is GPT, and the build mirrors the ESP into the protective MBR
+# as msdos1 so the menu lookup succeeds. Only the ESP is mirrored.
 #
 # ⚠ Either way the vendor's own MBR layout is gone after an install, and with
-# it their `bootflash:`. Getting back to NX-OS is a network boot of the
+# it their bootflash:. Getting back to NX-OS is a network boot of the
 # kickstart image followed by the vendor installer rebuilding its partitions;
 # that is docs/install.md's last section and it is not optional reading.
-partition_table: dos
+partition_table: gpt
 
 # x86 describes itself through ACPI, so there is no device tree.
 

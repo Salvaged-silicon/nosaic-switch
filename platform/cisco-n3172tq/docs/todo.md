@@ -611,57 +611,60 @@ tested early on, before the install, and the EFI shell found `fs0:` and ran
 `startup.nsh`. So moving to MBR does not cost the shell route; it adds the
 automatic one.
 
-## The loader autoboots, but only a TFTP image actually starts
+## Unattended boot: what it would take, and why it is not close
 
-Unattended boot is mechanically solved and is in the build: the loader reads
-`/boot/grub/menu.lst.local` off partition 1 of a DOS table and loads what it
-names. Confirmed from a cold power cycle with nothing pressed:
+The loader autoboots by reading `/boot/grub/menu.lst.local` and loading the
+image it names. Both halves work -- separately. They cannot currently be made
+to work at the same time, and the reason is a hard contradiction rather than a
+missing step.
+
+**Finding the menu needs an MBR.** The loader carries exactly two paths for it,
+complete literals with no GPT form:
 
 ```
-Booting kickstart image: (hd0,msdos3)/kickstart.nbi
-## get_boot_mode_from_bios,  ios_mode : 0, boot_mode : 0
-Booting kernel
+(hd0,msdos1)/boot/grub/menu.lst.local
+(hd0,msdos5)/boot/grub/menu.lst.local
 ```
 
-**What does not work is the kernel that follows, and only when the image came
-off the local disk.** The bisect is clean, and every leg used the same NBI
-file, verified by md5:
+**Loading the image needs GPT.** The image is fetched through the loader's own
+`bootflash:` device, which resolves on a GPT disk and answers *"Selected disk
+does not exist"* on a DOS one. Naming it the stock GRUB way instead --
+`(hd0,msdosN)/kickstart.nbi` -- makes the loader read the file and start a
+kernel that dies instantly and silently. That was chased properly:
 
-| the loader reads it from | result |
+| tried | result |
 |---|---|
-| `tftp://10.22.1.5/kickstart-test.nbi` | **boots**, userspace, management address, `/dev/sda3` mounted |
-| `(hd0,msdos3)/kickstart.nbi` — ext4 | `Booting kernel`, then nothing |
-| `(hd0,msdos1)/kickstart.nbi` — FAT16 on the ESP | `Booting kernel`, then nothing |
+| same NBI over TFTP | boots to a management address |
+| same NBI via `bootflash:` (GPT) | boots |
+| `(hd0,msdos3)` ext4 / `(hd0,msdos1)` FAT | `Booting kernel`, nothing |
+| kernel-only NBI, no initrd | same |
+| kernel segment moved 0x100000 → 0x2000000 | same |
+| `earlyprintk`/`nokaslr` removed | same |
 
-So it is not the NBI, not the command line, and not the filesystem: ext4 and
-FAT fail alike while the identical bytes over TFTP come up. Ruled out by test
-rather than by reasoning:
+`CONFIG_NETCONSOLE=y` is built in and was used to get past the dead serial
+line: a TFTP boot delivers 37 KB of kernel log over UDP, a local one delivers
+**nothing**, so the kernel is dying before the NIC comes up -- immediately,
+not late. Its NBI loader works with its own device layer and not with GRUB's.
 
-* **The image.** Same file, same md5, boots over TFTP.
-* **The command line.** The wrapper's `earlyprintk`/`nokaslr` were suspected
-  and removed; it fails identically without them.
-* **The filesystem.** Two different ones, both refused.
-* **The layout and the initramfs.** The EFI shell route boots this exact
-  install to a management address, and the initramfs carries the right
-  `SLOT_A_PART`/`SLOT_B_PART`.
+**The hybrid MBR does not bridge it.** Mirroring the ESP into the protective
+MBR as `msdos1` was built and tested. With the `0xEE` protective entry present
+GRUB skips msdos enumeration entirely and the menu is still not found; with it
+removed **Linux stops reading the GPT** and sees a single 64 MiB partition, so
+the slots and data disappear. Linux needs that entry and GRUB refuses to look
+past it. The code was removed again rather than shipped: a hybrid MBR is a
+liability on a disk that upgrades itself, and it bought nothing.
 
-⚠ **There is no console after the handoff on this path.** It dies at
-`Booting kernel` every time on a local boot and carries a full 29 KB log on
-the EFI path, so the fault reports nothing.
+So the box needs one line at a prompt it reaches on its own:
 
-The standing theory, untested: this board's root disk is behind USB and takes
-**44 seconds** to enumerate even on a healthy boot. A local boot is the only
-case where the loader has driven that controller itself before handing over,
-so it is the only case where it could hand the kernel a USB stack it cannot
-re-initialise -- which would look exactly like this, since the kernel would
-come up and never find a root. Testing it needs console output the loader's
-own `debug 3` does not produce (tried; it prints nothing).
+```
+loader> boot bootflash:/kickstart.nbi
+```
 
-Two ways forward, neither started:
+What is left to try, in the order worth trying:
 
-1. Point the menu at a TFTP URL. That works today and gives unattended boot,
-   at the cost of depending on a server -- acceptable in the lab, not for a
-   switch that has to come back alone.
-2. Find why a locally-read image dies. That needs the loader disassembled
-   around its disk read and its USB handoff, or a kernel built to say
-   something over a console this path leaves working.
+1. **Disassemble `load_tagged_image` and the GRUB file path.** Why an image
+   handed over by `grub_file_read` kills the kernel while the same bytes
+   through `bootflash:` and through their TFTP client do not. That is the one
+   answer that unlocks the DOS layout, and with it the menu.
+2. **A menu pointing at TFTP.** Works today and needs a server, which is fine
+   in a lab and wrong for a switch that has to come back alone.
