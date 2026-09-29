@@ -610,3 +610,58 @@ Note the ESP keeps working under MBR with partition type `0xEF` -- that was
 tested early on, before the install, and the EFI shell found `fs0:` and ran
 `startup.nsh`. So moving to MBR does not cost the shell route; it adds the
 automatic one.
+
+## The loader autoboots, but only a TFTP image actually starts
+
+Unattended boot is mechanically solved and is in the build: the loader reads
+`/boot/grub/menu.lst.local` off partition 1 of a DOS table and loads what it
+names. Confirmed from a cold power cycle with nothing pressed:
+
+```
+Booting kickstart image: (hd0,msdos3)/kickstart.nbi
+## get_boot_mode_from_bios,  ios_mode : 0, boot_mode : 0
+Booting kernel
+```
+
+**What does not work is the kernel that follows, and only when the image came
+off the local disk.** The bisect is clean, and every leg used the same NBI
+file, verified by md5:
+
+| the loader reads it from | result |
+|---|---|
+| `tftp://10.22.1.5/kickstart-test.nbi` | **boots**, userspace, management address, `/dev/sda3` mounted |
+| `(hd0,msdos3)/kickstart.nbi` — ext4 | `Booting kernel`, then nothing |
+| `(hd0,msdos1)/kickstart.nbi` — FAT16 on the ESP | `Booting kernel`, then nothing |
+
+So it is not the NBI, not the command line, and not the filesystem: ext4 and
+FAT fail alike while the identical bytes over TFTP come up. Ruled out by test
+rather than by reasoning:
+
+* **The image.** Same file, same md5, boots over TFTP.
+* **The command line.** The wrapper's `earlyprintk`/`nokaslr` were suspected
+  and removed; it fails identically without them.
+* **The filesystem.** Two different ones, both refused.
+* **The layout and the initramfs.** The EFI shell route boots this exact
+  install to a management address, and the initramfs carries the right
+  `SLOT_A_PART`/`SLOT_B_PART`.
+
+⚠ **There is no console after the handoff on this path.** It dies at
+`Booting kernel` every time on a local boot and carries a full 29 KB log on
+the EFI path, so the fault reports nothing.
+
+The standing theory, untested: this board's root disk is behind USB and takes
+**44 seconds** to enumerate even on a healthy boot. A local boot is the only
+case where the loader has driven that controller itself before handing over,
+so it is the only case where it could hand the kernel a USB stack it cannot
+re-initialise -- which would look exactly like this, since the kernel would
+come up and never find a root. Testing it needs console output the loader's
+own `debug 3` does not produce (tried; it prints nothing).
+
+Two ways forward, neither started:
+
+1. Point the menu at a TFTP URL. That works today and gives unattended boot,
+   at the cost of depending on a server -- acceptable in the lab, not for a
+   switch that has to come back alone.
+2. Find why a locally-read image dies. That needs the loader disassembled
+   around its disk read and its USB handoff, or a kernel built to say
+   something over a console this path leaves working.
