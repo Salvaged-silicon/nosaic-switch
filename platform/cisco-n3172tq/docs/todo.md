@@ -577,3 +577,36 @@ Ordered so each step's failure is diagnosable with the one before it working.
 - **Whether the EFI-stub install path hits the same wall the NBI path did.**
   Unknown until an install is attempted; if it fails identically, the loader
   question and the firmware question turn out to be one.
+
+## Unattended boot: move this board's layout to MBR
+
+The loader autoboots from `/boot/grub/menu.lst.local`, and the two paths it
+tries are complete literals with no GPT form:
+
+```
+(hd0,msdos1)/boot/grub/menu.lst.local
+(hd0,msdos5)/boot/grub/menu.lst.local
+```
+
+So the disk has to carry an MBR label for the box to come up on its own. The
+rest is already in place: the loader boots `bootflash:/kickstart.nbi` today,
+the build produces that NBI, and the data partition is made readable to it.
+The file's format is the vendor's, verified from `/mnt/cfg/0` on the original
+disk:
+
+```
+disable certificate
+title bootflash:/kickstart.nbi
+boot bootflash:/kickstart.nbi
+```
+
+What is not known, and needs a test rather than a guess: **which partition
+`bootflash:` resolves to under MBR**. On GPT it is partition 4, confirmed with
+`dir`. The binary also carries `msdos3` and `msdos4`, and the vendor's own
+`bootflash` was `sda3`, so the layout may have to put the data partition where
+the loader expects rather than where the GPT layout puts it.
+
+Note the ESP keeps working under MBR with partition type `0xEF` -- that was
+tested early on, before the install, and the EFI shell found `fs0:` and ran
+`startup.nsh`. So moving to MBR does not cost the shell route; it adds the
+automatic one.

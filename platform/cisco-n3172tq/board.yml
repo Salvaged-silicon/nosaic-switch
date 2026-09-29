@@ -48,6 +48,15 @@ asic: td2
 # netboot does.
 boot: uefi
 
+# And an NBI on the data partition as well, because `boot: uefi` is only half
+# the story on this board. The firmware's boot manager ignores UEFI BootOrder
+# and BootNext -- a BootNext survives a boot unconsumed, which is proof it is
+# never read -- and always launches the vendor loader. So the loader is the
+# only thing guaranteed to run, and an NBI is the only container it loads.
+# The build puts one on the data partition, which is what the loader calls
+# `bootflash:`. See docs/install.md.
+loader_nbi: true
+
 # The kernel command line, rendered into startup.nsh on the EFI system
 # partition. The console is stated here as well as in `console:` below because
 # these two are different consumers: this string is what the kernel is told,

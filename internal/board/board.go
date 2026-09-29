@@ -46,6 +46,14 @@ type Board struct {
 	ASIC string `yaml:"asic"`
 	Boot string `yaml:"boot"`
 
+	// LoaderNBI asks the build for an NBI container on the data partition,
+	// named kickstart.nbi, for a board whose firmware cannot be told to boot
+	// anything of ours. The Nexus 3172TQ is the case: its boot manager ignores
+	// UEFI BootOrder and BootNext and always launches the vendor loader, so the
+	// loader is the only thing that runs on every boot and an NBI is the only
+	// format it takes. See internal/imgbuild/nbi.go.
+	LoaderNBI bool `yaml:"loader_nbi"`
+
 	Profile string `yaml:"profile"`
 	Kernel  string `yaml:"kernel"`
 	Status  string `yaml:"status"`

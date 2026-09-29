@@ -177,7 +177,7 @@ size=%dMiB, type=83
 	// Built to the partition that actually exists, rather than to the size it
 	// was asked for. GPT overhead makes the last partition smaller than its
 	// nominal size, and a filesystem sized by assumption overruns the disk.
-	data, err := buildDataPartition(o, parts[3].Size*512)
+	data, err := buildDataPartition(o, parts[3].Size*512, kernel, initramfs)
 	if err != nil {
 		return "", 0, err
 	}
@@ -193,7 +193,7 @@ size=%dMiB, type=83
 // buildDataPartition makes an ext4 filesystem pre-populated with the directory
 // structure the running system expects, so first boot does not have to create
 // it and a factory reset is simply "wipe this partition".
-func buildDataPartition(o Options, size int64) (string, error) {
+func buildDataPartition(o Options, size int64, kernel, initramfs string) (string, error) {
 	work := filepath.Join(o.Root, ".cache", "image", o.Board.ID, "data")
 	if err := os.RemoveAll(work); err != nil {
 		return "", err
@@ -228,6 +228,32 @@ Wiping this partition is a complete factory reset: the switch returns to
 		return "", err
 	}
 
+	// The image the vendor loader boots, for a board whose firmware cannot be
+	// pointed anywhere else. See nbi.go for why that is, and install.md for
+	// the boot it produces. It goes on this partition because this partition
+	// is what the loader calls `bootflash:`.
+	if o.Board.LoaderNBI {
+		k, err := os.ReadFile(kernel)
+		if err != nil {
+			return "", err
+		}
+		rd, err := os.ReadFile(initramfs)
+		if err != nil {
+			return "", err
+		}
+		consoleDev, consoleBaud := o.Board.ConsolePort()
+		cmdline := fmt.Sprintf("console=%s,%dn8 %s", consoleDev, consoleBaud, o.Board.KernelParams)
+		nbi, err := buildNBI(k, rd, strings.TrimSpace(cmdline))
+		if err != nil {
+			return "", fmt.Errorf("building the loader's NBI: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(work, "kickstart.nbi"), nbi, 0o644); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(o.Log, "    kickstart.nbi: %.1f MiB, for the vendor loader\n",
+			float64(len(nbi))/(1<<20))
+	}
+
 	img := filepath.Join(o.Root, ".cache", "image", o.Board.ID, "data.ext4")
 	if err := truncate(img, size); err != nil {
 		return "", err
@@ -238,8 +264,19 @@ Wiping this partition is a complete factory reset: the switch returns to
 	// This partition is not bit-reproducible, and that is fine: it is mutable
 	// state by definition, written to on the first boot. What must be
 	// reproducible is the image, which is the squashfs, and it is.
-	cmd := exec.Command("mke2fs", "-q", "-t", "ext4", "-L", "nosaic-data",
-		"-d", work, "-U", "8f3a1c22-0000-4000-8000-6e6f73616963",
+	// ⚠ WITHOUT ^64bit,^metadata_csum THE VENDOR LOADER CANNOT READ THIS.
+	//
+	// Modern mke2fs turns both on by default, and the GRUB2 the Cisco loader is
+	// built from refuses a filesystem carrying either -- it reports the
+	// partition and lists nothing, which reads exactly like an empty disk.
+	// Linux mounts it perfectly either way, so the switch says nothing is
+	// wrong. On the Nexus 3172TQ that is the difference between a loader that
+	// can boot us and one that drops to its prompt; see install.md.
+	//
+	// Neither feature buys anything here: this partition is well under 16 TiB
+	// and its integrity is not what protects the image.
+	cmd := exec.Command("mke2fs", "-q", "-t", "ext4", "-O", "^64bit,^metadata_csum",
+		"-L", "nosaic-data", "-d", work, "-U", "8f3a1c22-0000-4000-8000-6e6f73616963",
 		"-F", img)
 	if b, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("mke2fs: %v\n%s", err, b)
