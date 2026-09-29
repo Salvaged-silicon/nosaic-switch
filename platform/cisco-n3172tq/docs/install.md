@@ -509,9 +509,24 @@ typed line instead of a five-second window during POST:
 
 ```
 loader> boot bootflash:/kickstart.nbi
+Booting kickstart image: bootflash:/kickstart.nbi
+Booting the kernel (entry_offset: 0x0000000000000000).
 ```
 
 That brings up the installed system -- slot A, the data partition, the lot.
+
+⚠ **Use `bootflash:`, and watch which second line you get.** Naming the same
+file the stock GRUB way, `(hd0,msdosN)/kickstart.nbi`, prints a different and
+shorter message --
+
+```
+Booting kernel
+```
+
+-- and then nothing, ever: the kernel dies before the NIC probes, silently,
+from ext4 and from FAT alike. The two spellings are two different loaders
+inside the same binary, and only Cisco's own takes our image. That second line
+is the quickest way to tell which one ran.
 The install puts `kickstart.nbi` on the data partition for exactly this, because
 **`bootflash:` is the data partition**: on a GPT disk the loader resolves it to
 partition 4. Confirmed with `dir`, which lists our files.
