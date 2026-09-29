@@ -143,6 +143,25 @@ size=%dMiB, type=83
 size=%dMiB, type=83
              type=83
 `, bootMiB, dosBootType, slotMiB, slotMiB)
+
+			// ⚠ DATA THIRD, SLOT B LAST, WHEN THE LOADER HAS TO READ OUR DISK.
+			//
+			// The Cisco loader binds bootflash: to partition 3 -- the vendor's
+			// own bootflash was sda3 -- and that is the only partition of ours
+			// it will look inside. The image it autoboots has to be on it, so
+			// the data partition goes there and slot B takes the tail.
+			//
+			// Slot B is the one to move, not slot A: a freshly installed
+			// switch boots A and leaves B empty, so if the sizes are ever
+			// wrong it is the unused half that suffers.
+			if o.Board.LoaderNBI {
+				script = fmt.Sprintf(`label: dos
+size=%dMiB, type=%s
+size=%dMiB, type=83
+size=%dMiB, type=83
+             type=83
+`, bootMiB, dosBootType, slotMiB, dataMiB)
+			}
 		}
 	}
 
@@ -190,17 +209,31 @@ size=%dMiB, type=83
 	// Built to the partition that actually exists, rather than to the size it
 	// was asked for. GPT overhead makes the last partition smaller than its
 	// nominal size, and a filesystem sized by assumption overruns the disk.
-	data, err := buildDataPartition(o, parts[3].Size*512, kernel, initramfs)
+	// Which partition holds the data depends on the layout, and the layout
+	// depends on whether a bootloader has to read it. See the DOS script above.
+	dataIdx := dataPartitionNumber(o) - 1
+	data, err := buildDataPartition(o, parts[dataIdx].Size*512, kernel, initramfs)
 	if err != nil {
 		return "", 0, err
 	}
-	if err := ddInto(data, out, parts[3].Start*512, parts[3].Size*512, "data"); err != nil {
+	if err := ddInto(data, out, parts[dataIdx].Start*512, parts[dataIdx].Size*512, "data"); err != nil {
 		return "", 0, err
 	}
 
-	fmt.Fprintf(o.Log, "    slot a: %.1f MiB image in a %d MiB slot, slot b: empty, data: %d MiB\n",
-		float64(sq.Size())/(1<<20), parts[1].Size*512/(1<<20), parts[3].Size*512/(1<<20))
+	fmt.Fprintf(o.Log, "    slot a: %.1f MiB image in a %d MiB slot, slot b: empty, data: %d MiB (partition %d)\n",
+		float64(sq.Size())/(1<<20), parts[1].Size*512/(1<<20),
+		parts[dataIdx].Size*512/(1<<20), dataIdx+1)
 	return out, parts[0].Start * 512, nil
+}
+
+// dataPartitionNumber is where the data partition lands, 1-based, which is not
+// always last: a board whose bootloader has to read it may need it earlier.
+// See the DOS script in BuildDisk and slotdev() in the initramfs.
+func dataPartitionNumber(o Options) int {
+	if o.Board.PartTable() == "dos" && o.Board.LoaderNBI {
+		return 3
+	}
+	return 4
 }
 
 // buildDataPartition makes an ext4 filesystem pre-populated with the directory
@@ -528,10 +561,21 @@ func buildESP(o Options, size int64, kernel, initramfs string) (string, error) {
 	// file to be read at all. On a GPT disk it is ignored -- written, present,
 	// and never looked at.
 	if o.Board.LoaderNBI {
+		// ⚠ (hd0,msdosN), NOT bootflash:. On a DOS table this loader cannot
+		// open its own bootflash: device at all -- `boot bootflash:/...`
+		// answers "Selected disk does not exist" and `dir` prints nothing,
+		// not even its usual header. It does take GRUB's own device syntax,
+		// which is what the vendor's images never needed because their disk
+		// was laid out the way bootflash: expects. Verified at the prompt:
+		//
+		//	loader> boot (hd0,msdos3)/kickstart.nbi
+		//	Booting kickstart image: (hd0,msdos3)/kickstart.nbi
+		//	Booting kernel
+		dev := fmt.Sprintf("(hd0,msdos%d)", dataPartitionNumber(o))
 		menu := "#\n# General configuration\n#\ndisable certificate\n" +
 			"# Menu entry for the available images\n" +
-			"title bootflash:/kickstart.nbi\n" +
-			"boot bootflash:/kickstart.nbi \n"
+			"title " + dev + "/kickstart.nbi\n" +
+			"boot " + dev + "/kickstart.nbi \n"
 		mstage := filepath.Join(dir, "menu.lst.local")
 		if err := os.WriteFile(mstage, []byte(menu), 0o644); err != nil {
 			return "", err
