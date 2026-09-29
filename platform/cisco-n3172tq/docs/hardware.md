@@ -1127,7 +1127,7 @@ getty at the wrong speed reconfigures the port and makes everything after it
 unreadable. Both switches are 1U Ethernet boxes with an RJ45 console on the
 front and they look identical.
 
-**Installing removes `bootflash:`.** NOSaic's GPT layout replaces the vendor's
+**Installing removes `bootflash:`.** NOSaic's DOS layout replaces the vendor's
 MBR one, and the NX-OS image lived on `sda3`. There is exactly one NX-OS image
 on the chassis — `sda1` is empty apart from `lost+found`, formatted 2018-03-20 —
 so there is no second copy to fall back to. Have the image off the box before

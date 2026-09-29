@@ -1118,6 +1118,25 @@ poweroff -f
 		fmt.Fprintf(o.Log, "    front-panel init from %s\n", o.Board.FrontPanelInit)
 	}
 
+	// Re-arm the firmware's boot request, for boards whose firmware clears it
+	// when it acts on it. Independent of the datapath: it only pokes CMOS.
+	if o.Board.BootRearm != "" {
+		src := filepath.Join(filepath.Dir(o.Board.Path), o.Board.BootRearm)
+		b, err := os.ReadFile(src)
+		if err != nil {
+			return fmt.Errorf("boot_rearm: %w", err)
+		}
+		if err := writeFile(rootfs, "/etc/nosaic/boot-rearm.sh", string(b), 0o755); err != nil {
+			return err
+		}
+		services = append(services, svcgen.Service{
+			Name:    "boot-rearm",
+			Exec:    "/etc/nosaic/boot-rearm.sh",
+			Restart: "never",
+		})
+		fmt.Fprintf(o.Log, "    boot re-arm from %s\n", o.Board.BootRearm)
+	}
+
 	// The datapath.
 	//
 	// Named `nosd` rather than nosd-td2p: the unit, the CLI and the docs only

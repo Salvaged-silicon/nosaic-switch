@@ -3,24 +3,19 @@
 Written for somebody holding the switch. Assume a console cable and nothing
 else.
 
-> ⚠ **NETBOOT IS PROVEN; THE DISK INSTALL BELOW IS NOT.** NOSaic runs on this
-> board — it boots to userspace over the loader's own TFTP, cools itself,
-> brings up all 54 front-panel ports and routes over four OSPF adjacencies.
-> All of that has been done repeatedly over
-> [netboot](#netbooting-use-the-loaders-tftp-not-ipxe), which writes nothing to
-> the switch and survives no reboot.
->
-> Installing to the eUSB flash is a different sequence, and it is the part that
-> has not been exercised end to end. Every step of it is built out of a
-> mechanism that *was* — the recovery shell, the loader's TFTP transfer, the
-> EFI shell, the UEFI boot policy — but as a whole it is unproven, and it
-> erases the vendor's disk. Netboot first. Read [hardware.md](hardware.md)
-> before either, and [todo.md](todo.md) for what is left.
+> **This has been done, end to end, on the lab chassis.** NOSaic is installed
+> on the internal flash, the vendor OS is gone from it, and the switch boots
+> unattended across `reboot` and across a power cycle. The one thing an
+> installer has to do by hand is the very first boot -- see
+> [Pointing the firmware at NOSaic](#pointing-the-firmware-at-nosaic).
+> [Netboot](#netbooting-use-the-loaders-tftp-not-ipxe) still works and writes
+> nothing, which is why it is the thing to try first. Read
+> [hardware.md](hardware.md) before either.
 
 ## Before you start
 
 **This erases the switch completely.** NOSaic replaces the vendor's MBR
-partition table with its own GPT layout, which destroys `bootflash:` and with
+partition table with its own DOS layout, which destroys `bootflash:` and with
 it the NX-OS image. It is not reversible without that image.
 
 ⚠ **There is exactly one NX-OS image on the chassis.** `sda1`, the 24 MiB
@@ -425,81 +420,45 @@ The last line is not boilerplate. **Do not reboot yet.**
 
 ## Pointing the firmware at NOSaic
 
-This disk had no EFI system partition before now, so the firmware has no boot
-entry pointing at one. A reboot at this point lands at the vendor loader with
-nothing it recognises to boot.
+**Do not reboot from the installer prompt and expect NOSaic.** The installer
+writes a DOS-partitioned disk with the ESP first, which is what the vendor
+loader needs in order to find its autoboot menu, but the firmware only sends
+the box to the EFI shell (and so to `startup.nsh` and NOSaic) when a CMOS boot
+record says to, and NOSaic is what writes that record. A disk that has never
+run NOSaic has none, so the first boot needs one manual step, and it is the
+only one:
 
-The path through is the EDK2 UEFI Shell, which is already `Boot0002` and
-already active.
-
-An ESP on its own changes nothing. Confirmed on 2026-09-28: with a complete,
-mountable NOSaic ESP on `/dev/sda1` and the partition typed `0xEF`, an
-untouched power cycle still went down the vendor path — `CardIndex = 11091`,
-`Image valid` — and came up in NX-OS at its login prompt. The firmware boots
-what its boot order says, and finding `\EFI\BOOT\BOOTX64.EFI` does not move
-it up. That cuts both ways: writing the ESP is not the step that commits you,
-and step 5 is not optional.
-
-1. Reboot, catch the loader with **Ctrl-L**, and tell it to come up in the
-   shell next time:
+1. Reboot and catch the loader with **Ctrl-L** during POST. Then:
 
    ```
    loader> efi_shell
-   loader> reboot
    ```
 
-2. You should land at `Shell>`. Check that the firmware can see our partition:
+   `efi_shell` is a hidden command; it does not appear in `help`. It launches
+   the EFI shell immediately. (From the BIOS menu the same thing is TAB then
+   `[ 2 ]`.)
 
-   ```
-   Shell> map
-   ```
-
-   Look for a `Removable HardDisk` whose device path contains
-   `Pci(0x1D,0x0)/USB` — that is the internal flash. It will have an alias,
-   usually `fs0`.
-
-3. NOSaic's EFI system partition carries a `startup.nsh`, and the shell
-   auto-runs one. If it did, you will have seen
+2. The shell auto-runs `startup.nsh` from the ESP. You should see
 
    ```
    NOSaic 0.1.0
    booting from fs0:
    ```
 
-   and the kernel will already be coming up. **If it did not**, run it by
-   hand — this always works:
+   and the kernel starts. If it did not, `fs0:` then `startup.nsh` by hand.
 
-   ```
-   Shell> fs0:
-   fs0:\> startup.nsh
-   ```
+3. Wait for NOSaic to come up. Its `boot-rearm` service has now written the
+   CMOS record. Reboot; the box comes back by itself.
 
-   The shell does auto-run it on this firmware — confirmed on the lab box on
-   2026-09-28, from an ESP written to `/dev/sda1` with nothing else on the
-   disk. The console showed `fs0` appear in `map`, then `NOSaic 0.1.0`,
-   `booting from fs0:`, and the EFI stub reporting `Loaded initrd from command
-   line option`. Booting by hand is still there if you want it.
+How and why it works -- the loader failing on purpose, boot mode 3, the CMOS
+record -- is in [todo.md](todo.md#unattended-boot-solved-and-how) and the
+comments in `board.yml`. UEFI boot variables play no part: this firmware
+rewrites `BootOrder` each boot and never consumes `BootNext`.
 
-4. Confirm it boots. See [First boot](#first-boot).
-
-5. **There is a second, shorter route, and a third that is not finished.**
-   See [Booting through the vendor loader](#booting-through-the-vendor-loader).
-   UEFI boot variables are not the way: `bcfg` does not exist in this shell
-   (2.30, `Current running mode 1.1.2`), and the firmware's boot manager reads
-   neither `BootOrder` nor `BootNext` -- proof below.
-
-   ⚠ **And if you ever do get a boot entry honoured, do not point it straight
-   at `\EFI\BOOT\BOOTX64.EFI`.** The kernel would start, but the entry
-   carries no optional data, so it gets no command line: no `console=`, no
-   `initrd=`. On a 9600 serial console that is a completely silent boot of a
-   kernel with no root filesystem. `startup.nsh` exists in this path precisely
-   because it passes arguments. An entry worth adding is one whose optional
-   data carries the command line as UCS-2 — `CONFIG_EFIVAR_FS` is built in, and
-   `efivarfs` has to be mounted by hand (`mount -t efivarfs efivarfs
-   /sys/firmware/efi/efivars`), since nothing mounts it at boot.
-
-   None of that helps today: this firmware ignored `BootOrder` outright, so an
-   entry it does not consult is an entry that does not run.
+⚠ **If a boot entry ever were honoured, do not point it at
+`\EFI\BOOT\BOOTX64.EFI` directly.** The kernel would start with no command
+line: no `console=`, no `initrd=`. `startup.nsh` exists precisely because it
+passes arguments.
 
 ## Booting through the vendor loader
 
@@ -527,9 +486,12 @@ Booting kernel
 from ext4 and from FAT alike. The two spellings are two different loaders
 inside the same binary, and only Cisco's own takes our image. That second line
 is the quickest way to tell which one ran.
-The install puts `kickstart.nbi` on the data partition for exactly this, because
-**`bootflash:` is the data partition**: on a GPT disk the loader resolves it to
-partition 4. Confirmed with `dir`, which lists our files.
+⚠ **This route does not work on the installed layout.** It did on the earlier
+GPT layout, where `bootflash:` resolved to the data partition. The disk is now
+a DOS table (the loader can only find its autoboot menu there), on which
+`bootflash:` answers "Selected disk does not exist" -- and that failure is the
+mechanism unattended boot depends on. The `kickstart.nbi` the build still puts
+on the data partition is inert; use `efi_shell` instead.
 
 Two things had to be true for that to work, and both are now the build's job:
 
@@ -556,36 +518,12 @@ consumes when it uses it. The next boot went to the loader and `BootNext` was
 **still there, unconsumed**. A variable that is never cleared is a variable
 that is never read. This is a custom boot manager that ignores both.
 
-### Unattended boot: what it needs, and why it does not work yet
+### Unattended boot
 
-The loader autoboots by reading a menu file, and NX-OS is what writes it. From
-the vendor's own `/mnt/cfg/0` (`sda5`):
-
-```
-disable certificate
-title bootflash:/n3100-compact.7.0.3.I7.9.bin
-boot bootflash:/n3100-compact.7.0.3.I7.9.bin
-```
-
-`disable certificate` is how the vendor turns the signature check off. Erasing
-the disk erased that file, which is the whole reason the box now stops at
-`loader>` instead of booting something.
-
-⚠ **But the loader only looks for it on an MBR disk.** The two paths are
-complete literals in the binary, and there is no GPT variant:
-
-```
-(hd0,msdos1)/boot/grub/menu.lst.local
-(hd0,msdos5)/boot/grub/menu.lst.local
-```
-
-Writing the file to our GPT ESP does nothing -- tested. So unattended boot
-needs this board's layout changed from GPT to MBR, with the menu file on
-partition 1. That is a partition-table change for one board and it is **not
-done**; it is in [todo.md](todo.md) with what is already known.
-
-Until then the box does not come back by itself after a power cut, and that is
-the one thing to plan around.
+Solved; see [todo.md](todo.md#unattended-boot-solved-and-how) for the chain
+and for what happens when NOSaic is down or the CMOS is lost. In short: the
+loader's autoboot line is made to fail on purpose, the loader exits, and the
+firmware's boot manager takes a one-shot CMOS record to the EFI shell.
 
 ## First boot
 

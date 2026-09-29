@@ -561,28 +561,18 @@ func buildESP(o Options, size int64, kernel, initramfs string) (string, error) {
 	// file to be read at all. On a GPT disk it is ignored -- written, present,
 	// and never looked at.
 	if o.Board.LoaderNBI {
-		// ⚠ (hd0,msdosN), NOT bootflash:. On a DOS table this loader cannot
-		// open its own bootflash: device at all -- `boot bootflash:/...`
-		// answers "Selected disk does not exist" and `dir` prints nothing,
-		// not even its usual header. It does take GRUB's own device syntax,
-		// which is what the vendor's images never needed because their disk
-		// was laid out the way bootflash: expects. Verified at the prompt:
+		// ⚠ bootflash: ON A DOS TABLE IS THE POINT, NOT A BUG. The loader
+		// cannot open its own bootflash: device on a DOS layout -- `boot
+		// bootflash:/...` answers "Selected disk does not exist" -- so the
+		// autoboot fails and the loader exits. That exit is what hands the
+		// box back to the firmware's boot manager, which (with the CMOS
+		// record the boot-rearm service writes) launches the EFI shell and
+		// so startup.nsh and NOSaic. See docs/install.md, "Unattended boot".
 		//
-		//	loader> boot (hd0,msdos3)/kickstart.nbi
-		//	Booting kickstart image: (hd0,msdos3)/kickstart.nbi
-		//	Booting kernel
-		// ⚠ bootflash:, NOT (hd0,msdosN). Both name the same file and only
-		// one of them boots. The loader's NBI loader works through its own
-		// device layer; handed the file by stock GRUB's instead, it starts a
-		// kernel that dies instantly and silently -- tested from ext4 and
-		// from FAT, with and without an initrd, at two load addresses, while
-		// the identical bytes over TFTP or through bootflash: come up. The
-		// hybrid MBR exists so the menu can be FOUND on msdos1 while the
-		// image is still LOADED the way that works.
+		// Naming the file the stock GRUB way, (hd0,msdosN)/kickstart.nbi,
+		// does NOT fail: it starts a kernel that dies instantly and silently,
+		// and the box wedges instead of falling through. So never that.
 		dev := "bootflash:"
-		if o.Board.PartTable() == "dos" {
-			dev = fmt.Sprintf("(hd0,msdos%d)", dataPartitionNumber(o))
-		}
 		menu := "#\n# General configuration\n#\ndisable certificate\n" +
 			"# Menu entry for the available images\n" +
 			"title " + dev + "/kickstart.nbi\n" +

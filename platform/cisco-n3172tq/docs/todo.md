@@ -7,10 +7,11 @@ the board to copy from — its `config/` and its `docs/todo.md` are the model fo
 this one. The 7050SX2-72Q is td2**p** and is only worth reading for the shape of
 its `walkthrough.md`, which is the one rack-to-forwarding document in the tree.
 
-Status as of 2026-09-28: **a switch, netbooted.** It boots, cools itself,
-routes with three OSPF neighbours, and has run every L2/L3 feature the lab has
-tested it for with the other NOSaic switches. What it has not done is install:
-every boot is still a netboot.
+Status as of 2026-09-29: **a switch, installed, booting unattended.** It boots
+from its own flash with nobody at the console -- across `reboot` and across a
+PDU power cycle -- cools itself, routes with three OSPF neighbours, and has run
+every L2/L3 feature the lab has tested it for with the other NOSaic switches.
+NX-OS is gone from the disk. See "Unattended boot" at the end of this page.
 
 ## What is proven on the hardware
 
@@ -212,15 +213,12 @@ Ordered so each step's failure is diagnosable with the one before it working.
       Configure both ends and this becomes the first real traffic test on
       either board.
 
-- [ ] **It is not installed.** Every boot is a netboot; a power cycle returns
-      the box to NX-OS. That is the safety property and it is deliberate, but
-      until it changes this is a demo.
-
-      ⚠ **The install path is not the path being exercised.** Development
-      netboots through the vendor loader's NBI container; the installer writes
-      an EFI system partition and the firmware boots the kernel directly via
-      `CONFIG_EFI_STUB`. Those are two different handoffs and only the first
-      has ever run. Do not assume the install works because netboot does.
+- [x] **It is installed, and it boots by itself.** Installed 2026-09-28, and
+      reinstalled from a clean `make image` on 2026-09-29 to prove the build
+      rather than the hand-made disk. The box comes up from a `reboot` in about
+      150 s and from a PDU power cycle in about 150 s, no console, no TAB, no
+      `loader>` prompt. Mechanism and the recovery path are under "Unattended
+      boot" below.
 
 - [ ] **Recovery is half-exercised: the image is saved, the way back is not.**
 
@@ -578,93 +576,56 @@ Ordered so each step's failure is diagnosable with the one before it working.
   Unknown until an install is attempted; if it fails identically, the loader
   question and the firmware question turn out to be one.
 
-## Unattended boot: move this board's layout to MBR
+## Unattended boot: solved, and how
 
-The loader autoboots from `/boot/grub/menu.lst.local`, and the two paths it
-tries are complete literals with no GPT form:
-
-```
-(hd0,msdos1)/boot/grub/menu.lst.local
-(hd0,msdos5)/boot/grub/menu.lst.local
-```
-
-So the disk has to carry an MBR label for the box to come up on its own. The
-rest is already in place: the loader boots `bootflash:/kickstart.nbi` today,
-the build produces that NBI, and the data partition is made readable to it.
-The file's format is the vendor's, verified from `/mnt/cfg/0` on the original
-disk:
+The vendor loader and the firmware's boot manager cooperate here, and nothing
+in it is UEFI `BootOrder` (this firmware ignores it). The chain that runs on
+every boot, measured on the hardware from the console log:
 
 ```
-disable certificate
-title bootflash:/kickstart.nbi
-boot bootflash:/kickstart.nbi
+BIOS -> BdsDxe -> Payload (the Cisco loader) -> menu.lst.local
+     -> `boot bootflash:/kickstart.nbi` FAILS -> loader exits
+     -> BdsDxe reads a CMOS boot record -> "Booting from EFI Internal Shell"
+     -> startup.nsh -> \EFI\BOOT\BOOTX64.EFI -> NOSaic
 ```
 
-What is not known, and needs a test rather than a guess: **which partition
-`bootflash:` resolves to under MBR**. On GPT it is partition 4, confirmed with
-`dir`. The binary also carries `msdos3` and `msdos4`, and the vendor's own
-`bootflash` was `sda3`, so the layout may have to put the data partition where
-the loader expects rather than where the GPT layout puts it.
+Every piece is load-bearing, and each was found by disassembling
+`BdsDxe.efi` and then testing on the box:
 
-Note the ESP keeps working under MBR with partition type `0xEF` -- that was
-tested early on, before the install, and the EFI shell found `fs0:` and ran
-`startup.nsh`. So moving to MBR does not cost the shell route; it adds the
-automatic one.
+- **The disk is a DOS table with the ESP as partition 1.** The loader finds
+  `menu.lst.local` only at `(hd0,msdos1)` or `(hd0,msdos5)`; on GPT it is never
+  found and the loader sits at `loader>`.
+- **`bootflash:` must fail, and on a DOS table it does** ("Selected disk does
+  not exist"). Naming the image with GRUB's `(hd0,msdosN)` syntax does not
+  fail: it starts a kernel that dies silently, and the box wedges.
+- **The loader must EXIT on a failed autoboot, which needs `bootmode -g2p`
+  (CMOS boot mode 3).** In mode 0 the loader never exits, so the boot manager
+  is never reached and the box waits at `loader>` forever.
+- **BdsDxe's CMOS record** (ports 0x72/0x73, indexes 0xC8..0xDB, 20 bytes):
+  byte 0 is `~(sum of bytes 1..19)`; byte 9 & 3 is the boot mode; bytes 2-3 =
+  `0a 0b` mean "boot the EFI Internal Shell once"; bytes 4-7, 11 and 12-19 must
+  be zero or the whole record is thrown away. The record armed here is
+  `e7 00 0a 0b 00 00 00 00 00 03 00 ...`. The mode persists in the battery
+  backed CMOS across power cycles.
+- **BdsDxe clears the shell request when it uses it**, so the image ships
+  `boot_rearm: scripts/boot-rearm.sh`, an s6 oneshot that writes the record
+  back on every boot. It always exits 0 and logs a read-back.
 
-## Unattended boot: what it would take, and why it is not close
+**First boot of a freshly installed disk is the one manual boot.** The record
+is armed by the running NOSaic, so a box that has never run it (fresh from
+NX-OS, or with a lost CMOS) stops at `loader>`. There, type `efi_shell` -- a
+hidden loader command that launches the EFI shell at once -- and `startup.nsh`
+does the rest; from then on every boot is unattended. TAB at POST then `[ 2 ]`
+does the same from the BIOS menu.
 
-The loader autoboots by reading `/boot/grub/menu.lst.local` and loading the
-image it names. Both halves work -- separately. They cannot currently be made
-to work at the same time, and the reason is a hard contradiction rather than a
-missing step.
+**If NOSaic is down when the box reboots**, the record is empty and the mode
+is 3, so the loader fails, exits, and the boot manager falls through to the
+Network option, whose iPXE loops (about 60-90 s a pass, alternating with the
+loader). That is not a hang; catch `loader>` with Ctrl-L and use `efi_shell`.
+Never type `ipxe` at the loader: it changes the boot mode with no undo.
 
-**Finding the menu needs an MBR.** The loader carries exactly two paths for it,
-complete literals with no GPT form:
-
-```
-(hd0,msdos1)/boot/grub/menu.lst.local
-(hd0,msdos5)/boot/grub/menu.lst.local
-```
-
-**Loading the image needs GPT.** The image is fetched through the loader's own
-`bootflash:` device, which resolves on a GPT disk and answers *"Selected disk
-does not exist"* on a DOS one. Naming it the stock GRUB way instead --
-`(hd0,msdosN)/kickstart.nbi` -- makes the loader read the file and start a
-kernel that dies instantly and silently. That was chased properly:
-
-| tried | result |
-|---|---|
-| same NBI over TFTP | boots to a management address |
-| same NBI via `bootflash:` (GPT) | boots |
-| `(hd0,msdos3)` ext4 / `(hd0,msdos1)` FAT | `Booting kernel`, nothing |
-| kernel-only NBI, no initrd | same |
-| kernel segment moved 0x100000 → 0x2000000 | same |
-| `earlyprintk`/`nokaslr` removed | same |
-
-`CONFIG_NETCONSOLE=y` is built in and was used to get past the dead serial
-line: a TFTP boot delivers 37 KB of kernel log over UDP, a local one delivers
-**nothing**, so the kernel is dying before the NIC comes up -- immediately,
-not late. Its NBI loader works with its own device layer and not with GRUB's.
-
-**The hybrid MBR does not bridge it.** Mirroring the ESP into the protective
-MBR as `msdos1` was built and tested. With the `0xEE` protective entry present
-GRUB skips msdos enumeration entirely and the menu is still not found; with it
-removed **Linux stops reading the GPT** and sees a single 64 MiB partition, so
-the slots and data disappear. Linux needs that entry and GRUB refuses to look
-past it. The code was removed again rather than shipped: a hybrid MBR is a
-liability on a disk that upgrades itself, and it bought nothing.
-
-So the box needs one line at a prompt it reaches on its own:
-
-```
-loader> boot bootflash:/kickstart.nbi
-```
-
-What is left to try, in the order worth trying:
-
-1. **Disassemble `load_tagged_image` and the GRUB file path.** Why an image
-   handed over by `grub_file_read` kills the kernel while the same bytes
-   through `bootflash:` and through their TFTP client do not. That is the one
-   answer that unlocks the DOS layout, and with it the menu.
-2. **A menu pointing at TFTP.** Works today and needs a server, which is fine
-   in a lab and wrong for a switch that has to come back alone.
+⚠ **One telnet session per console port.** A lingering one silently starves the
+next; a second connection simply receives nothing, which reads as a dead
+console. And a console server that replays its backlog on connect will hand you
+a stale `loader>` from a previous boot. Match only a prompt that arrives
+*after* this boot's BIOS banner.
