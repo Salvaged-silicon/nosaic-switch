@@ -203,6 +203,29 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
 	return ((epl - 1) % 2) + (epl >= 13 ? 3 : 1);
 }
 
+/*
+ * JSS block -- Joint Scheduler Support.
+ *
+ * Contains TICK_CFG (the ring's clock-domain enable), the SBus controller,
+ * and timing configuration registers. Writing the golden values below
+ * enables the scheduler-engine clock domain, without which SWEEPER_CFG_4
+ * SchedPeriod ticks into a dead domain and the ring never advances.
+ *
+ * Golden values captured from a running 7150S-52 on 2026-10-01, confirmed
+ * against the EdgeNOS live capture from 2026-07-28.
+ *
+ * ⚠ JSS[1] (0xF001) is the SBus command register. Writing values with the
+ * Execute bit set starts a SBus bus transaction and must not be replayed as
+ * a blind MMIO write. The golden value 0x0521452a does not have the Execute
+ * bit set; it is a configuration write that is safe to replay. [RE]
+ */
+#define FM6000_BLK_JSS			0x00f000
+#define FM6000_JSS_CFG_1		(FM6000_BLK_JSS + 0x001) /* 0x0521452a */
+#define FM6000_JSS_CFG_2		(FM6000_BLK_JSS + 0x002) /* 0x00000016 */
+#define FM6000_JSS_CFG_3		(FM6000_BLK_JSS + 0x003) /* 0x00000015 */
+#define FM6000_JSS_CFG_4		(FM6000_BLK_JSS + 0x004) /* 0x00000002 */
+#define FM6000_JSS_CFG_8		(FM6000_BLK_JSS + 0x008) /* 0x00000001 */
+
 /* The scheduler's tick -- the clock the whole engine, and ESCHED, runs on. */
 #define FM6000_SSCHED_TICK_CFG		0x00f010
 #define FM6000_SSCHED_TICK_PERIOD	0x2
@@ -467,7 +490,22 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
  *
  * DLL_CTRL reads 0 in both states, so it is write-only or its enable does not
  * read back; nothing here depends on reading it. [UNKNOWN]
+ *
+ * PLL_CTRL_0/1 (0x1c042/0x1c043): the EPL and scheduler clock-source select.
+ *
+ * The coldreplay writes these with the golden values below, labelled
+ * "EPL_ClkSelect=1, Enable1" in the EdgeNOS serdes driver [GPL-2.0, ref only].
+ * Without them the SSCHED domain has no clock source: TICK_CFG and
+ * INIT_COMPLETE can be written but the ring never advances. Confirmed missing
+ * from our sequence as the root cause of ring non-circulation 2026-10-01.
+ *
+ * The values are from the running-switch capture, not computed. They are
+ * safe to write at step 6, before DLL_CTRL. [RE]
  */
+#define FM6000_PLL_CTRL_0		0x01c042
+#define FM6000_PLL_CTRL_1		0x01c043
+#define FM6000_PLL_CTRL_0_GOLDEN	0x20841438u
+#define FM6000_PLL_CTRL_1_GOLDEN	0x00005560u
 #define FM6000_PLL_STATUS		0x01c046
 #define FM6000_PLL_STATUS_LOCKED_ALL	0x0000000f
 #define FM6000_PLL_STATUS_PLL_MASK	0x00000003

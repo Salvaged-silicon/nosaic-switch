@@ -76,6 +76,54 @@ struct fm6000;
 #define FM_SSCHED_NEXT_CHAIN	(1u << 2)
 
 /*
+ * Push only the five locked tokens (ports 0, 1, 2, 3, and the management
+ * port) rather than all 64.
+ *
+ * ⚠ WHY THIS EXISTS. INIT_TOKEN is a hardware write-only FIFO of unknown
+ * depth. If its capacity is less than 64, writing all 64 tokens silently
+ * discards the EARLIEST entries. The find probe checks ports 20, 24, 28 and
+ * 0 (the first four from the full ring order), which would all be gone if
+ * the FIFO held fewer than 64. The ring might be advancing with the later
+ * tokens and we would never know.
+ *
+ * This flag matches the "golden ring" in the EdgeNOS reference implementation
+ * exactly: five Locked tokens with self-pointer NEXT entries. If this
+ * circulates when the 64-token variant does not, the FIFO depth is the cause.
+ *
+ * ⚠ NEITHER VARIANT EVER CIRCULATED. Root cause found 2026-10-01: PLL_CTRL_0/1
+ * (0x1c042/0x1c043) were not written, leaving the SSCHED clock domain without
+ * a source. See regs.h FM6000_PLL_CTRL_0. boot.c now writes PLL_CTRL in step 6
+ * and uses the full 65-token ring (this flag no longer used in that path).
+ */
+#define FM_SSCHED_SMALL_RING	(1u << 3)
+
+/*
+ * If set, write the captured CmMonitorTickPeriod value (0x20) to
+ * SWEEPER_CFG word 4 instead of leaving it at zero.  Safe only after
+ * --boot has run a full CRM bulk-init: the CM Monitor will fault on
+ * uninitialised counter tables.  EdgeNOS says the sweeper drives the
+ * scheduler tick; if the ring still does not circulate with this flag,
+ * the clock source is not the issue and something else blocks the engine.
+ */
+#define FM_SSCHED_CM_TICK	(1u << 4)
+
+/*
+ * Management-port-only bootstrap ring.
+ *
+ * Loads a single token for port 78 (the CPU/management port). Port 78 is
+ * above the 76-entry ESCHED table, so the ring engine does not perform an
+ * ESCHED lookup for its token. This lets the ring circulate with uninitialized
+ * ESCHED, setting sched_ready=1 so that fm_esched_init can run.
+ *
+ * Intended use:
+ *   1. --ssched nosweep mgmt_only  → ring circulates, sched_ready=1
+ *   2. --esched                    → writes all 76 ESCHED entries
+ *   3. --ssched nosweep            → reload ring with full token set
+ */
+#define FM_SSCHED_MGMT_ONLY	(1u << 5)
+
+
+/*
  * Where the ring init was when the chip reset itself.
  *
  * ⚠ THIS IS THE POINT OF THE REPORT, not a nicety. Measured on this board: a
@@ -90,6 +138,7 @@ enum fm_ssched_phase {
 	FM_SSCHED_PH_TICK = 0,	/* the tick, the clock everything else needs */
 	FM_SSCHED_PH_SWEEPER,	/* SWEEPER_CFG 0..4 */
 	FM_SSCHED_PH_CLEAR1,	/* replace-token registers cleared */
+	FM_SSCHED_PH_ESCHED,	/* ESCHED pre-init (valid ECC before INIT_COMPLETE) */
 	FM_SSCHED_PH_TOKENS,	/* the ring itself, in service order */
 	FM_SSCHED_PH_VISIT,	/* the visit table */
 	FM_SSCHED_PH_SLOW,	/* the slow-port mask */

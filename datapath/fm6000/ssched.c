@@ -128,6 +128,7 @@ static const char *phase_names[FM_SSCHED_PH__COUNT] = {
 	[FM_SSCHED_PH_TICK]    = "tick",
 	[FM_SSCHED_PH_SWEEPER] = "sweeper config",
 	[FM_SSCHED_PH_CLEAR1]  = "replace tokens cleared",
+	[FM_SSCHED_PH_ESCHED]  = "ESCHED pre-init",
 	[FM_SSCHED_PH_TOKENS]  = "ring tokens inserted",
 	[FM_SSCHED_PH_VISIT]   = "visit table",
 	[FM_SSCHED_PH_SLOW]    = "slow-port mask",
@@ -172,7 +173,19 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 
 	for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++)
 		visit[i] = 0;
-	if (flags & FM_SSCHED_NEXT_CHAIN) {
+	if (flags & FM_SSCHED_MGMT_ONLY) {
+		/* Single-port bootstrap ring: only port 78 (management).
+		 *
+		 * ⚠ ALL 20 NEXT_PORT WORDS MUST BE 0x4e4e4e4e, not just slot 78.
+		 * The engine starts at whatever the current ring position is (often
+		 * slot 0) and follows NEXT_PORT. If NEXT_PORT[0]=0 and all other
+		 * non-78 slots also = 0, the engine loops 0→0→0 forever and never
+		 * reaches slot 78, so FOUND is never set. Setting every slot to 78
+		 * (0x4e) ensures that regardless of starting position the engine
+		 * immediately reaches port 78 on the first step. [EdgeNOS RING=mgmt] */
+		for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++)
+			visit[i] = 0x4e4e4e4eu;
+	} else if (flags & FM_SSCHED_NEXT_CHAIN) {
 		/* Each enrolled port points at the next in service order, and
 		 * the last wraps to the first: a closed cycle. The management
 		 * port is spliced in at the end so it is served once per lap
@@ -194,10 +207,28 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 	}
 
 	/*
-	 * The tick first: it is the clock the whole engine runs on, and every
-	 * write below lands in a domain that cannot retire it until the tick
-	 * exists.
+	 * JSS golden configuration, then the tick.
+	 *
+	 * JSS registers 1..4 and 8 enable the scheduler-engine clock domain.
+	 * Writing them is a prerequisite for TICK_CFG and SWEEPER_CFG_4 to
+	 * have any effect: without them, SchedPeriod ticks into a gated domain
+	 * and the ring never advances regardless of how it is programmed.
+	 *
+	 * Golden values from the 7150S-52 live capture 2026-10-01 (confirmed
+	 * against the EdgeNOS 2026-07-28 capture; both read the same). These
+	 * are factual hardware measurements, not vendor source. [RE]
 	 */
+	if ((rv = fm_wr(d, FM6000_JSS_CFG_1, 0x0521452au)) != FM_OK)
+		return rv;
+	if ((rv = fm_wr(d, FM6000_JSS_CFG_2, 0x00000016u)) != FM_OK)
+		return rv;
+	if ((rv = fm_wr(d, FM6000_JSS_CFG_3, 0x00000015u)) != FM_OK)
+		return rv;
+	if ((rv = fm_wr(d, FM6000_JSS_CFG_4, 0x00000002u)) != FM_OK)
+		return rv;
+	if ((rv = fm_wr(d, FM6000_JSS_CFG_8, 0x00000001u)) != FM_OK)
+		return rv;
+
 	if ((rv = fm_wr(d, FM6000_SSCHED_TICK_CFG, FM6000_SSCHED_TICK_PERIOD)) != FM_OK)
 		return rv;
 
@@ -253,26 +284,21 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 			return rv;
 	}
 
-	/*
-	 * ⚠ WORD 4 IS LEFT AT ZERO, DELIBERATELY.
-	 *
-	 * Writing the captured 0x00002000 here still puts the chip into a
-	 * permanent self-reset storm, measured alone from a fresh boot, and
-	 * writing 0 is free. It is the last sweeper trigger left after the
-	 * step-5 fix cured word 3.
-	 *
-	 * Bit 13 of word 4 most likely arms the L2 lookup sweeper, which walks
-	 * the MAC table -- but CRM-initialising the MAC table first does not
-	 * make it safe, measured. So what it wants is not known, and a
-	 * register whose value we cannot justify is better left alone than
-	 * written from a capture. That is what caused word 3.
-	 */
-	if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_4, 0u)) != FM_OK)
-		return rv;
-	if (!fm_alive(d))
-		return FM_EOFFBUS;
-
 no_sweeper:
+	/*
+	 * SWEEPER_CFG_4 is written after INIT_COMPLETE.
+	 *
+	 * ⚠ SchedPeriod (bits 0-10) must NOT be enabled before INIT_COMPLETE:
+	 * with TICK_CFG=2 active, writing SchedPeriod fires the ring engine
+	 * immediately. With no tokens loaded yet, the engine crashes the chip
+	 * permanently. Measured 2026-10-01.
+	 *
+	 * EdgeNOS writes 0x2000 (CmMonitorTickPeriod only, no SchedPeriod)
+	 * before INIT_COMPLETE. That is safe because bit 13 (cmon) does not
+	 * fire the ring engine. The ring clock itself comes from JSS (written
+	 * above) + SWEEPER_CFG_0; SchedPeriod tunes the tick rate but is not
+	 * the primary clock source.
+	 */
 	phase(d, rep, FM_SSCHED_PH_SWEEPER);
 
 	/* Clear both replace-token registers before programming. */
@@ -283,17 +309,53 @@ no_sweeper:
 
 	phase(d, rep, FM_SSCHED_PH_CLEAR1);
 
-	/* Insert the ring, in service order, both directions. */
-	for (i = 0; i < sizeof ssched_ring; i++) {
-		unsigned port = ssched_ring[i];
-		unsigned sync = (port == SSCHED_MGMT_PORT &&
-				 (flags & FM_SSCHED_SYNC_MGMT)) ? 1 : 0;
-		uint32_t tok = SSCHED_TOKEN(port, ssched_locked(port), sync);
+	/*
+	 * ESCHED pre-init note: ESCHED registers (0x2000-0x3fff) are clock-gated
+	 * off until the scheduler ring circulates. Lbus writes to ESCHED fail at
+	 * the 20th write (the SCD's local-bus queue overflows with unretired
+	 * transactions). The CRM also times out for the same reason. The FM_SSCHED_MGMT_ONLY
+	 * bootstrap uses port 78, which the hardware does not look up in ESCHED,
+	 * to get the ring circulating first. Once sched_ready=1, fm_esched_init
+	 * can write all 76 per-port entries through the unblocked path.
+	 */
+	phase(d, rep, FM_SSCHED_PH_ESCHED);
+
+	/* Insert the ring tokens. MGMT_ONLY uses a single management port token
+	 * to bootstrap without touching ESCHED. SMALL_RING uses five locked
+	 * ports matching the EdgeNOS reference. The full 64-token ring risks
+	 * overflowing the INIT_TOKEN FIFO; probe checks first+last 4. */
+	if (flags & FM_SSCHED_MGMT_ONLY) {
+		/* One token: port 78 (management), locked, no sync. */
+		uint32_t tok = SSCHED_TOKEN(SSCHED_MGMT_PORT, 1, 0);
 
 		if ((rv = fm_wr(d, FM6000_SSCHED_RX_INIT_TOKEN, tok)) != FM_OK)
 			return rv;
 		if ((rv = fm_wr(d, FM6000_SSCHED_TX_INIT_TOKEN, tok)) != FM_OK)
 			return rv;
+	} else if (flags & FM_SSCHED_SMALL_RING) {
+		static const unsigned char small[] = { 0, 1, 2, 3, SSCHED_MGMT_PORT };
+
+		for (i = 0; i < sizeof small; i++) {
+			unsigned port = small[i];
+			uint32_t tok = SSCHED_TOKEN(port, 1, 0);
+
+			if ((rv = fm_wr(d, FM6000_SSCHED_RX_INIT_TOKEN, tok)) != FM_OK)
+				return rv;
+			if ((rv = fm_wr(d, FM6000_SSCHED_TX_INIT_TOKEN, tok)) != FM_OK)
+				return rv;
+		}
+	} else {
+		for (i = 0; i < sizeof ssched_ring; i++) {
+			unsigned port = ssched_ring[i];
+			unsigned sync = (port == SSCHED_MGMT_PORT &&
+					 (flags & FM_SSCHED_SYNC_MGMT)) ? 1 : 0;
+			uint32_t tok = SSCHED_TOKEN(port, ssched_locked(port), sync);
+
+			if ((rv = fm_wr(d, FM6000_SSCHED_RX_INIT_TOKEN, tok)) != FM_OK)
+				return rv;
+			if ((rv = fm_wr(d, FM6000_SSCHED_TX_INIT_TOKEN, tok)) != FM_OK)
+				return rv;
+		}
 	}
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
@@ -354,6 +416,21 @@ no_sweeper:
 
 	phase(d, rep, FM_SSCHED_PH_START);
 
+	/*
+	 * Enable the ring tick NOW -- after INIT_COMPLETE, with tokens loaded.
+	 *
+	 * SchedPeriod=8 must not be written before INIT_COMPLETE: TICK_CFG=2
+	 * is already active at this point (written above), and enabling
+	 * SchedPeriod causes the ring engine to fire immediately. With no
+	 * tokens loaded yet it crashes the chip permanently. Measured 2026-10-01.
+	 * This supersedes the earlier write under the `no_sweeper` label.
+	 */
+	if ((rv = fm_wr(d, FM6000_SWEEPER_CFG_4,
+			(flags & FM_SSCHED_CM_TICK) ? 0x00002008u : 0x0008u)) != FM_OK)
+		return rv;
+	if (!fm_alive(d))
+		return FM_EOFFBUS;
+
 	/* Clear the replace-token registers again, as the running switch does,
 	 * before they are used as a find-probe below. */
 	if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, 0)) != FM_OK)
@@ -372,39 +449,65 @@ no_sweeper:
 	 * that the ring is advancing rather than merely programmed, and it
 	 * stays inside the scheduler block, so it is safe on a chip whose
 	 * egress scheduler is still untouchable.
+	 *
+	 * ⚠ PROBE ORDER. In the full 64-token mode we probe four ports from
+	 * the START of ssched_ring[] AND four from the END. The INIT_TOKEN
+	 * path is a hardware FIFO of unknown capacity; if it overflows, the
+	 * early tokens are discarded and the late ones survive. A probe that
+	 * only checked early tokens would falsely conclude "not circulating"
+	 * when the ring is actually running with the later tokens.
 	 */
-	for (i = 0; i < sizeof ssched_ring; i++) {
-		uint32_t v = 0;
-		unsigned port = ssched_ring[i];
+	{
+		/* Pick probe ports: just port 78 for MGMT_ONLY, the five enrolled
+		 * ports for SMALL_RING, or first+last 4 for the full ring. */
+		unsigned n = sizeof ssched_ring;
+		static const unsigned char small_ports[] = { 0, 1, 2, 3, SSCHED_MGMT_PORT };
+		unsigned nports;
+		uint8_t probe_ports[8];
 
-		if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, port)) != FM_OK)
-			return rv;
-		usleep(FM6000_SSCHED_FIND_US);
-		if ((rv = fm_rd(d, FM6000_SSCHED_RX_REPLACE_TOKEN, &v)) != FM_OK)
-			return rv;
-		if (v & FM6000_SSCHED_RX_FOUND) {
-			fm_sched_mark_ready(d);
-			if (circulating != NULL)
-				*circulating = 1;
-			break;
+		if (flags & FM_SSCHED_MGMT_ONLY) {
+			nports = 1;
+			probe_ports[0] = SSCHED_MGMT_PORT;
+		} else if (flags & FM_SSCHED_SMALL_RING) {
+			nports = sizeof small_ports;
+			for (i = 0; i < nports; i++)
+				probe_ports[i] = small_ports[i];
+		} else {
+			nports = 8;
+			for (i = 0; i < 4; i++) {
+				probe_ports[i]     = ssched_ring[i];
+				probe_ports[i + 4] = ssched_ring[n - 4 + i];
+			}
 		}
 
-		if ((rv = fm_wr(d, FM6000_SSCHED_TX_REPLACE_TOKEN, port)) != FM_OK)
-			return rv;
-		usleep(FM6000_SSCHED_FIND_US);
-		if ((rv = fm_rd(d, FM6000_SSCHED_TX_REPLACE_TOKEN, &v)) != FM_OK)
-			return rv;
-		if (v & FM6000_SSCHED_TX_FOUND) {
-			fm_sched_mark_ready(d);
-			if (circulating != NULL)
-				*circulating = 1;
-			break;
-		}
+		for (i = 0; i < nports && (circulating == NULL || !*circulating); i++) {
+			uint32_t v = 0;
+			unsigned port = probe_ports[i];
 
-		/* Four probes is enough to tell a running ring from a stopped
-		 * one, and sixty-four at 50 ms each is six seconds of nothing. */
-		if (i >= 3)
-			break;
+			if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, port)) != FM_OK)
+				return rv;
+			usleep(FM6000_SSCHED_FIND_US);
+			if ((rv = fm_rd(d, FM6000_SSCHED_RX_REPLACE_TOKEN, &v)) != FM_OK)
+				return rv;
+			if (v & FM6000_SSCHED_RX_FOUND) {
+				fm_sched_mark_ready(d);
+				if (circulating != NULL)
+					*circulating = 1;
+				break;
+			}
+
+			if ((rv = fm_wr(d, FM6000_SSCHED_TX_REPLACE_TOKEN, port)) != FM_OK)
+				return rv;
+			usleep(FM6000_SSCHED_FIND_US);
+			if ((rv = fm_rd(d, FM6000_SSCHED_TX_REPLACE_TOKEN, &v)) != FM_OK)
+				return rv;
+			if (v & FM6000_SSCHED_TX_FOUND) {
+				fm_sched_mark_ready(d);
+				if (circulating != NULL)
+					*circulating = 1;
+				break;
+			}
+		}
 	}
 
 	phase(d, rep, FM_SSCHED_PH_FIND);

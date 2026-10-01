@@ -5,8 +5,10 @@
 #include <time.h>
 
 #include "boot.h"
+#include "memfill.h"
 #include "pci.h"
 #include "regs.h"
+/* ssched.h not needed: TICK_CFG written directly via regs.h (see boot_steps) */
 
 static void nap_ms(long ms)
 {
@@ -264,7 +266,20 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 * practice is the two DLLs in bits [3:2]. Enabling them is a write to
 	 * DLL_CTRL, which does not read back, so the only evidence either way is
 	 * PLL_STATUS.
+	 *
+	 * PLL_CTRL_0/1 must be written first. They select and enable the clock
+	 * source for the EPL and SSCHED domains. Without them the scheduler ring
+	 * cannot advance regardless of how TICK_CFG and INIT_COMPLETE are
+	 * programmed. The values are golden from the running-switch capture.
+	 * [RE, confirmed as root cause 2026-10-01; see regs.h]
 	 */
+	rv = fm_wr(d, FM6000_PLL_CTRL_0, FM6000_PLL_CTRL_0_GOLDEN);
+	if (rv == FM_OK)
+		rv = fm_wr(d, FM6000_PLL_CTRL_1, FM6000_PLL_CTRL_1_GOLDEN);
+	if (rv != FM_OK) {
+		set(d, rep, FM_STEP_PLL, rv, "write to PLL_CTRL failed");
+		return rv;
+	}
 	rv = fm_wr(d, FM6000_DLL_CTRL, FM6000_DLL_CTRL_ENABLE);
 	if (rv != FM_OK) {
 		set(d, rep, FM_STEP_PLL, rv, "write to DLL_CTRL failed");
@@ -330,21 +345,6 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 		return rv;
 
 	/*
-	 * Step 7, SECOND HALF. Now the fabric has its repairs and its freelists,
-	 * so MSB can come out of reset.
-	 */
-	rv = release_modules(d, 0);
-	if (rv != FM_OK) {
-		set(d, rep, FM_STEP_MODULES, rv, "could not release MSB");
-		return rv;
-	}
-	/* set() also moves rep->reached, and this one moves it backwards to step
-	 * 7. Put it back, or the report stops printing at MODULES and hides the
-	 * three commands that just succeeded. */
-	rep->step[FM_STEP_MODULES].note = "released, MSB last after the boot commands";
-	rep->reached = FM_STEP_FREELISTS;
-
-	/*
 	 * Step 11. PCIe.
 	 *
 	 * Nothing to do here and nothing to wait for. We are talking to the chip
@@ -363,57 +363,76 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 * this is the second, because it needs nothing but the bulk writer and
 	 * the CRM's command register map is not known.
 	 *
-	 * ⚠ ONE BANK, NOT THREE. This used to be described as three memories of
-	 * 0x20000 words. Filling them on hardware says otherwise: 0x200000 runs
-	 * to 0x23ffff and takes a fill fine, and 0x240000 and 0x260000 are
-	 * register blocks where the fill dies 54 and 20 words in. See regs.h.
+	 * One prerequisite: MSB released (SSCHED block is in the MSB domain).
+	 * FC_MRL tokens are set below but for the sweeper's sake, not the fill.
 	 *
-	 * What the fill achieves is exactly what the step is for: before it,
-	 * reading 0x200000 takes the chip off the bus; after it, the read is
-	 * safe. What the region then CONTAINS is a separate question and is not
-	 * answered -- it does not read back the pattern written, so it is not
-	 * plain 32-bit RAM.
+	 * 0x240000/0x260000 are register blocks (not ECC SRAM), and 0x003000/
+	 * 0x003c00 are ESCHED runtime state (inaccessible without ring). Neither
+	 * set is in the fill table. See regs.h and esched.c.
+	 *
+	 * The ring is NOT started here (no tokens, no INIT_COMPLETE). The
+	 * scheduler clock domain (TICK_CFG=2) IS activated before the fill --
+	 * without it the PARSER SRAM crashes. --ssched loads tokens and fires
+	 * INIT_COMPLETE after the fill completes.
 	 */
-	if (!mem_init) {
-		set(d, rep, FM_STEP_MEMORY_INIT, FM_ENOADDR, "skipped by request");
-		fm_boot_mark_done(d);
-		return FM_OK;
-	}
-	rv = fm_mem_fill(d, FM6000_BANK_STATS_BASE, FM6000_BANK_STATS_SPAN, 0);
+
+	/*
+	 * Step 7, SECOND HALF. MSB (core fabric) released after the boot
+	 * controller's bank-repair and freelist commands. The SSCHED block is
+	 * in the MSB domain and its registers are not reachable until MSB is out
+	 * of reset. Coldreplay order: boot commands -> MSB -> ring init -> fill.
+	 */
+	rv = release_modules(d, 0);
 	if (rv != FM_OK) {
 		set(d, rep, FM_STEP_MEMORY_INIT, rv,
-		    "the chip stopped answering during the STATS fill");
+		    mem_init ? "could not release MSB" : "could not release MSB (skip path)");
 		return rv;
 	}
-	fm_bank_mark_initialised(d);
-	set(d, rep, FM_STEP_MEMORY_INIT, FM_OK,
-	    "STATS filled and readable. 0x240000 and 0x260000 are left "
-	    "alone -- they are MCAST_DEST_TABLE and MCAST_VLAN_TABLE, and "
-	    "a software fill is the wrong mechanism for them");
+	rep->step[FM_STEP_MODULES].note = "released, MSB last after the boot commands";
 
-	/* The EPL block is now safe to read. Measured: the same word that takes
-	 * the chip off the bus before this sequence returns 0x00080000 after it,
-	 * with the chip still answering. The ECC bank memories are NOT unlocked
-	 * -- they wait for step 12. */
 	/*
-	 * Step 5, AGAIN, now that the chip is settled.
+	 * Activate the scheduler clock domain and zero the sweeper config.
 	 *
-	 * ⚠ THE FIRST ATTEMPT DOES NOT SURVIVE. Measured: the step-5 chain
-	 * write costs three watchdog self-resets when it runs in its
-	 * documented position, and the watchdog puts the fabric back to
-	 * defaults under it -- so whatever it configured is gone before step 6
-	 * begins. The same write on a chip that has finished the sequence is
-	 * free: FATAL_COUNT does not move, twice over, with and without the
-	 * quiesce in front of it.
+	 * TICK_CFG=2 must be written before the fill: without it the PARSER
+	 * SRAM (bank 0, 0x100200) crashes on its first write (FATAL_COUNT
+	 * 4→0, chip off bus). Measured 2026-10-01. TICK_CFG=2 is the clock
+	 * the chip's SRAM ECC domain runs on; the boot-controller write that
+	 * initialises the bank-repair fuses does NOT activate it.
 	 *
-	 * So this is not belt and braces. Without it, "core logic and EPLs to
-	 * normal operating mode" is a step this chip has never actually had.
-	 * Doing it here is the only place measured to work.
+	 * INIT_COMPLETE is NOT fired here. Firing it (which also requires
+	 * TICK_CFG=2 active and tokens in the FIFO) starts the ring engine
+	 * against uninitialized ESCHED tables and produces ~107 self-resets
+	 * during the fill. The tokens and INIT_COMPLETE are deferred to
+	 * --ssched, which runs after the fill is complete.
 	 *
-	 * Why it is free later is not established. The obvious guess is that
-	 * the modules being out of soft reset is what lets the write retire,
-	 * which would mean Table 4-1's ordering does not hold on this part --
-	 * but that is a guess and the measurement is the reset count.
+	 * SWEEPER_CFG_0-4 are all zeroed (sweeper disabled during fill).
+	 */
+	(void)fm_wr(d, FM6000_SSCHED_TICK_CFG, FM6000_SSCHED_TICK_PERIOD);
+	(void)fm_wr(d, FM6000_SWEEPER_CFG_0, 0u);
+	(void)fm_wr(d, FM6000_SWEEPER_CFG_1, 0u);
+	(void)fm_wr(d, FM6000_SWEEPER_CFG_2, 0u);
+	(void)fm_wr(d, FM6000_SWEEPER_CFG_3, 0u);
+	(void)fm_wr(d, FM6000_SWEEPER_CFG_4, 0u);
+
+	/*
+	 * FC_MRL flow-control tokens (prerequisite 3). ESCHED writes stall
+	 * without these. Values from coldreplay, validated against EOS boot.
+	 */
+	rv = fm_wr(d, FM6000_FC_MRL_RATE_LIMITER,  0x500u);
+	if (rv == FM_OK)
+		rv = fm_wr(d, FM6000_FC_MRL_FC_TOKEN_LIMIT, 0x40000100u);
+	if (rv != FM_OK) {
+		set(d, rep, FM_STEP_MEMORY_INIT, rv, "could not set FC_MRL before fill");
+		return rv;
+	}
+
+	/*
+	 * Step 5, AGAIN. The first scan chain write (step 3) is reset out from
+	 * under itself by the boot's self-resets and leaves the core logic NOT
+	 * in normal operating mode. The same write on a settled chip (all
+	 * modules out of reset, ring running) is free -- FATAL_COUNT does not
+	 * move. Done here so both the mem_init=1 and mem_init=0 (skip) paths
+	 * leave the chip in normal operating mode for any subsequent fill.
 	 */
 	rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88800000u);
 	if (rv == FM_OK)
@@ -423,18 +442,41 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	if (rv == FM_OK)
 		rv = fm_wr(d, FM6000_SCAN_CHAIN_DATA_IN, 0xffffffff);
 	if (rv != FM_OK) {
-		set(d, rep, FM_STEP_SCAN_CHAIN, rv,
-		    "the settled-chip repeat of step 5 failed");
+		set(d, rep, FM_STEP_MEMORY_INIT, rv,
+		    "settled-chip scan chain write failed before fill");
 		return rv;
 	}
-	/* Annotate step 5 directly rather than through set(): set() also moves
-	 * rep->reached, and calling it here would move it backwards to step 3
-	 * and report every later step as never attempted. The same trap is
-	 * documented at FM_STEP_MODULES above, and this is the second time it
-	 * has been fallen into. */
 	rep->step[FM_STEP_SCAN_CHAIN].note =
-	    "done twice: once in order, and again once the chip had settled, "
-	    "because the first one is reset out from under itself";
+	    "done twice: once in order (reset out from under itself), "
+	    "and again before the fill once the chip had settled";
+
+	if (!mem_init) {
+		set(d, rep, FM_STEP_MEMORY_INIT, FM_ENOADDR, "skipped by request");
+		fm_boot_mark_done(d);
+		return FM_OK;
+	}
+
+	/*
+	 * Fill all ECC-protected SRAM banks in order. Every bank must be
+	 * written before the sweeper runs -- a cold chip holds uninitialised
+	 * ECC syndromes that the sweeper treats as fatal errors, resetting the
+	 * fabric before the scheduler ring can ever start.
+	 *
+	 * The CM watermark banks (RXMP_PRIVATE_WM / HOG_WM) are written with
+	 * 0xffffffff so the fabric admits frames from the start. Everything
+	 * else is zeroed.
+	 */
+	rv = fm_memfill_all(d);
+	if (rv != FM_OK) {
+		set(d, rep, FM_STEP_MEMORY_INIT, rv,
+		    "the chip stopped answering during the full memory fill");
+		return rv;
+	}
+	fm_bank_mark_initialised(d);
+
+	set(d, rep, FM_STEP_MEMORY_INIT, FM_OK,
+	    "all ECC-protected SRAM banks filled; "
+	    "CM watermarks set to 0xffffffff (admit-all)");
 
 	fm_boot_mark_done(d);
 	return FM_OK;
