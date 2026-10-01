@@ -29,11 +29,12 @@ CFLAGS  += -I../common
 CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"fm6000\"
 LDLIBS  += -lpthread
 
-COMMON_OBJS = pci.o sbus.o serdes.o bist.o saf.o esched.o ssched.o cmwm.o cmrest.o parser.o lbs.o mrl.o crm.o
-DAEMON_OBJS = main.o boot.o sock.o $(COMMON_OBJS)
-PROBE_OBJS  = probe.o boot.o $(COMMON_OBJS)
+COMMON_OBJS   = pci.o sbus.o serdes.o bist.o saf.o esched.o ssched.o cmwm.o cmrest.o parser.o lbs.o mrl.o crm.o memfill.o
+DAEMON_OBJS   = main.o boot.o sock.o $(COMMON_OBJS)
+PROBE_OBJS    = probe.o boot.o $(COMMON_OBJS)
+MEMFILL_OBJS  = memfill_main.o boot.o $(COMMON_OBJS)
 
-all: nosd-fm6000 fm6000-probe
+all: nosd-fm6000 fm6000-probe fm6000-memfill
 
 nosd-fm6000: $(DAEMON_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(DAEMON_OBJS) $(LDLIBS)
@@ -44,9 +45,14 @@ nosd-fm6000: $(DAEMON_OBJS)
 fm6000-probe: $(PROBE_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(PROBE_OBJS) $(LDLIBS)
 
+# Standalone memory-fill tool: initialises all 134 ECC-protected SRAM banks
+# in the correct order. Run between --boot and --ssched.
+fm6000-memfill: $(MEMFILL_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(MEMFILL_OBJS) $(LDLIBS)
+
 main.o: main.c pci.h regs.h boot.h sock.h
 pci.o:  pci.c pci.h regs.h ../common/mmio.h
-boot.o: boot.c boot.h pci.h regs.h
+boot.o: boot.c boot.h memfill.h pci.h regs.h
 sock.o: sock.c sock.h pci.h regs.h
 sbus.o: sbus.c sbus.h pci.h regs.h
 serdes.o: serdes.c serdes.h sbus.h pci.h regs.h
@@ -65,9 +71,12 @@ probe.o: probe.c serdes.h bist.h saf.h esched.h ssched.h cmwm.h cmrest.h parser.
 # is one target away rather than a makefile edit. Unlike the Broadcom datapaths
 # it is not a size emergency here -- there is no SDK to carry, and these are
 # tens of kilobytes rather than hundreds of megabytes.
-strip: nosd-fm6000 fm6000-probe
-	$(CROSS_COMPILE)strip nosd-fm6000 fm6000-probe
-	@echo "    nosd-fm6000 $$(stat -c%s nosd-fm6000) bytes, fm6000-probe $$(stat -c%s fm6000-probe) bytes"
+memfill.o: memfill.c memfill.h pci.h boot.h
+memfill_main.o: memfill_main.c memfill.h pci.h boot.h
+
+strip: nosd-fm6000 fm6000-probe fm6000-memfill
+	$(CROSS_COMPILE)strip nosd-fm6000 fm6000-probe fm6000-memfill
+	@echo "    nosd-fm6000 $$(stat -c%s nosd-fm6000) bytes, fm6000-probe $$(stat -c%s fm6000-probe) bytes, fm6000-memfill $$(stat -c%s fm6000-memfill) bytes"
 
 # Tests run on the build host, not the switch. Everything here that can be
 # checked without a chip should be, because the alternative is checking it on
@@ -93,6 +102,6 @@ test: $(TESTS)
 	@for t in $(TESTS); do ./$$t || exit 1; done
 
 clean:
-	rm -f nosd-fm6000 fm6000-probe $(TESTS) *.o ../common/*.o
+	rm -f nosd-fm6000 fm6000-probe fm6000-memfill $(TESTS) *.o ../common/*.o
 
 .PHONY: all clean strip test

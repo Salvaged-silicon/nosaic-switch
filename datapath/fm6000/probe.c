@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "boot.h"
 #include "sbus.h"
@@ -34,6 +35,7 @@
 #include "cmrest.h"
 #include "parser.h"
 #include "lbs.h"
+#include "memfill.h"
 #include "pci.h"
 #include "regs.h"
 
@@ -58,7 +60,10 @@ static void usage(void)
 "                        and unpaced writes here hang the HOST -- see bist.h.\n"
 "  --bist-cfg            configure the per-memory BIST controllers, which\n"
 "                        nothing in this port has ever done. WRITES.\n"
-"  --crm-batch FILE      run a whole memory-init list: one\n"
+"  --direct-batch FILE   same as --crm-batch but uses direct writes\n"
+	"                        (not the CRM engine); safer for ECC-sensitive\n"
+	"                        regions that the engine cannot reliably reach.\n"
+	"  --crm-batch FILE      run a whole memory-init list: one\n"
 "                        \"base count size value\" per line.\n"
 "  --crm BASE COUNT [SIZE [VAL]]\n"
 "                        initialise a memory block with the CRM, in\n"
@@ -74,7 +79,7 @@ static void usage(void)
 "  --try-pair EPL SBUS   confirm or refute one EPL-to-SBus pairing\n"
 "  --saf                 write the store-and-forward matrix (168 writes)\n"
 "  --esched              configure the egress scheduler\n"
-"  --ssched [sync|nosweep]\n"
+"  --ssched [sync|nosweep|chain|small] [cmon]\n"
 "                        initialise the scheduler ring and say whether it\n"
 "                        circulates. 'sync' sets Sync on the mgmt token;\n"
 "                        'nosweep' skips SWEEPER_CFG, whose word 3 puts this\n"
@@ -798,6 +803,61 @@ int main(int argc, char **argv)
 			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			rc = failed ? 2 : 0;
 		}
+	} else if (strcmp(argv[i], "--direct-batch") == 0 && i + 1 < argc) {
+		/*
+		 * Like --crm-batch but uses direct word writes (fm_mem_fill)
+		 * instead of the CRM engine. EdgeNOS found the CRM engine
+		 * unreliable for some regions and switched to direct MMIO;
+		 * this is that path. Line format: BASE COUNT 0 VALUE.
+		 * SIZE is accepted but ignored -- direct writes are always 32-bit.
+		 */
+		FILE *bf = fopen(argv[i + 1], "r");
+		char line[160];
+		unsigned done = 0, failed = 0, entry = 0;
+		uint32_t before, after;
+
+		if (bf == NULL) {
+			printf("cannot open %s\n", argv[i + 1]);
+			rc = 1;
+		} else if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			fclose(bf);
+			rc = 1;
+		} else {
+			before = fm_fatal_count(&dev);
+			while (fgets(line, sizeof line, bf) != NULL) {
+				uint32_t bb, cc, vv;
+				unsigned ss;
+				uint32_t f0, f1;
+
+				if (line[0] == '#' || line[0] == '\n')
+					continue;
+				if (sscanf(line, "%x %u %u %x", &bb, &cc, &ss, &vv) != 4)
+					continue;
+				f0 = fm_fatal_count(&dev);
+				rv = fm_mem_fill(&dev, bb, cc, vv);
+				f1 = fm_fatal_count(&dev);
+				entry++;
+				if (rv == FM_OK && f1 == f0) {
+					done++;
+				} else {
+					failed++;
+					printf("  [%3u] 0x%06x x%-6u  %s%s\n",
+					       entry, bb, cc, rvstr(rv),
+					       f1 == f0 ? "" : "  RESET THE CHIP");
+				}
+				if (fm_alive(&dev) != 1)
+					break;
+			}
+			fclose(bf);
+			after = fm_fatal_count(&dev);
+			printf("\n  regions filled          %u\n", done);
+			printf("  regions that failed     %u\n", failed);
+			printf("  FATAL_COUNT             %u -> %u\n", before, after);
+			printf("  chip                    %s\n",
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = failed ? 2 : 0;
+		}
 	} else if (strcmp(argv[i], "--crm") == 0 && i + 2 < argc) {
 		uint32_t cbase = strtoul(argv[i + 1], NULL, 0);
 		uint32_t ccount = strtoul(argv[i + 2], NULL, 0);
@@ -1073,12 +1133,32 @@ sweep_done:
 		unsigned flags = 0;
 		int circ = 0, k;
 
-		if (i + 1 < argc && strcmp(argv[i + 1], "sync") == 0)
-			flags |= FM_SSCHED_SYNC_MGMT;
-		if (i + 1 < argc && strcmp(argv[i + 1], "nosweep") == 0)
-			flags |= FM_SSCHED_NO_SWEEPER;
-		if (i + 1 < argc && strcmp(argv[i + 1], "chain") == 0)
-			flags |= FM_SSCHED_NEXT_CHAIN;
+		/* Scan up to two sub-option words after --ssched */
+		{
+			int j;
+			static const struct { const char *w; unsigned f; } opts[] = {
+				{ "sync",    FM_SSCHED_SYNC_MGMT  },
+				{ "nosweep", FM_SSCHED_NO_SWEEPER  },
+				{ "chain",   FM_SSCHED_NEXT_CHAIN  },
+				{ "small",   FM_SSCHED_SMALL_RING  },
+				{ "cmon",     FM_SSCHED_CM_TICK     },
+				{ "mgmt_only", FM_SSCHED_MGMT_ONLY  },
+				{ NULL, 0 }
+			};
+			for (j = i + 1; j < argc && j <= i + 2; j++) {
+				int k2, matched = 0;
+				for (k2 = 0; opts[k2].w; k2++) {
+					if (strcmp(argv[j], opts[k2].w) == 0) {
+						flags |= opts[k2].f;
+						i = j;
+						matched = 1;
+						break;
+					}
+				}
+				if (!matched)
+					break;
+			}
+		}
 		rv = fm_ssched_ring_init(&dev, flags, &circ, &srep);
 		printf("scheduler ring: %s\n", rv == FM_OK ? "initialised" : rvstr(rv));
 		printf("  circulation: %s\n", circ
@@ -1133,16 +1213,42 @@ sweep_done:
 		rv = fm_boot_cold_opt(&dev, &rep, 0);
 		fm_boot_report_print(&rep);
 		rc = (rv == FM_OK) ? 0 : 2;
-	} else if (strcmp(argv[i], "--boot") == 0) {
+	} else if (strcmp(argv[i], "--boot") == 0 ||
+		   strcmp(argv[i], "--boot-skip-mem") == 0) {
 		struct fm_boot_report rep;
+		int skip = strcmp(argv[i], "--boot-skip-mem") == 0;
 
 		printf("Running Intel 331496-002 Table 4-1, in order.\n"
 		       "Steps whose register address is not established refuse\n"
 		       "rather than guess -- a wrong address does not fail, it\n"
 		       "writes somewhere else.\n\n");
-		rv = fm_boot_cold(&dev, &rep);
+		if (skip)
+			printf("(memory initialisation skipped -- use fm6000-memfill separately)\n\n");
+		rv = fm_boot_cold_opt(&dev, &rep, !skip);
 		fm_boot_report_print(&rep);
 		rc = (rv == FM_OK) ? 0 : (rv == FM_EOFFBUS ? 2 : 0);
+	} else if (strcmp(argv[i], "--reset") == 0) {
+		/* Pulse the FM6000 hardware reset via SCD BAR0.
+		 * Use this to revive a SILENT chip without a PDU power cycle. */
+		uint32_t before = 0, after = 0;
+		int was_alive = fm_alive(&dev);
+
+		(void)fm_fatal_count(&dev);  /* prime a baseline read */
+		rv = fm_scd_reset_pulse(&dev);
+		if (rv != FM_OK) {
+			fprintf(stderr, "reset pulse failed -- is this --lbus?\n");
+			rc = 1;
+		} else {
+			struct timespec ts = { 0, 150000000L };  /* 150 ms */
+			nanosleep(&ts, NULL);
+			fm_clear_offbus(&dev);
+			before = (uint32_t)was_alive;
+			after  = (uint32_t)fm_alive(&dev);
+			printf("reset pulse sent (was %s, now %s)\n",
+			       before ? "alive" : "SILENT",
+			       after  ? "alive" : "SILENT");
+			rc = after ? 0 : 2;
+		}
 	} else {
 		usage();
 		rc = 3;

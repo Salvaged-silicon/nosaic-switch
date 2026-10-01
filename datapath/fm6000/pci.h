@@ -161,6 +161,19 @@ int fm_open_auto(struct fm6000 *d, const char *slot, const char *scd_slot);
 
 void fm_close(struct fm6000 *d);
 
+/*
+ * Pulse the FM6000's hardware reset via the SCD's BAR0 reset registers.
+ *
+ * Call this when the chip is SILENT (PIN_STRAP reads 0). It opens SCD BAR0
+ * separately, asserts bits 1,2,8 in resetSet (+0x4000), waits 10 ms, then
+ * deasserts them in resetClear (+0x4010). After the call, wait ~100 ms for
+ * the chip to come back, then call fm_clear_offbus() before trying again.
+ *
+ * Returns FM_OK on success, FM_ERR if the SCD BAR0 could not be opened or
+ * is smaller than expected. Only valid when xport == FM_XPORT_LBUS.
+ */
+int fm_scd_reset_pulse(struct fm6000 *d);
+
 /* Register access by 32-bit WORD address, which is how the chip's own
  * documentation and every address in regs.h are expressed. */
 int fm_rd(struct fm6000 *d, uint32_t word, uint32_t *out);

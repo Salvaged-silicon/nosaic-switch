@@ -173,6 +173,58 @@ int fm_open_lbus(struct fm6000 *d, const char *scd_slot)
 	return map_bar(d, "resource1");
 }
 
+/*
+ * Pulse the FM6000's hardware reset via the SCD's BAR0 reset registers.
+ *
+ * On a 7150S-52, the SCD holds the chip in reset at power-on. A cold chip --
+ * or one that has self-reset after a fatal ECC error -- needs a PULSE, not
+ * just a release: assert the reset bits, wait briefly, then deassert them.
+ * With them merely left deasserted (as they are from power-on) the chip's
+ * PIN_STRAP reads 0 and every register returns 0.
+ *
+ * This opens SCD BAR0 separately for the writes and closes it immediately
+ * after; the caller's fm6000 struct is not involved beyond supplying the
+ * SCD slot name and transport type. After a successful call, wait ~100 ms
+ * for the chip to come up, then call fm_clear_offbus() before trying again.
+ *
+ * SCD BAR0 register offsets (byte):
+ *   +0x4000  resetSet   -- write bits to assert those resets
+ *   +0x4010  resetClear -- write bits to deassert those resets
+ * Bits 1, 2, 8 (mask 0x106) are the FM6000 reset lines.
+ */
+int fm_scd_reset_pulse(struct fm6000 *d)
+{
+	char path[256];
+	struct stat st;
+	volatile uint32_t *bar0;
+	int fd, rv = FM_ERR;
+
+	if (d->xport != FM_XPORT_LBUS)
+		return FM_ERR;
+
+	snprintf(path, sizeof(path), "%s/%s/resource0", PCI_DEVICES, d->slot);
+	if ((fd = open(path, O_RDWR | O_SYNC)) < 0)
+		return FM_ERR;
+	if (fstat(fd, &st) != 0 || (size_t)st.st_size < 0x4014)
+		goto out;
+	bar0 = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+		    fd, 0);
+	if (bar0 == MAP_FAILED)
+		goto out;
+
+	/* resetSet = BAR0 byte 0x4000 = word index 0x1000 */
+	nosaic_mmio_wr32(bar0 + 0x1000, 0x106u);
+	{ struct timespec ts = { 0, 10000000L }; nanosleep(&ts, NULL); }
+	/* resetClear = BAR0 byte 0x4010 = word index 0x1004 */
+	nosaic_mmio_wr32(bar0 + 0x1004, 0x106u);
+
+	munmap((void *)bar0, (size_t)st.st_size);
+	rv = FM_OK;
+out:
+	close(fd);
+	return rv;
+}
+
 void fm_close(struct fm6000 *d)
 {
 	if (d->regs != NULL)
