@@ -442,11 +442,14 @@ no_sweeper:
 	phase(d, rep, FM_SSCHED_PH_CLEAR1);
 
 	/*
-	 * ESCHED registers (0x2000-0x3fff) are clock-gated off until CFG_4
-	 * bit 13 is written. Writing CFG_4=0x2000 enables the ESCHED clock
-	 * domain; port 78's ESCHED entries are initialised in the START phase
-	 * after CFG_4 is written. Once sched_ready=1, fm_esched_init writes
-	 * all 76 front-panel entries.
+	 * ESCHED (0x2000-0x3fff): not written here.
+	 *
+	 * ESCHED writes via PCI BAR never commit -- the LBUS write queue never
+	 * drains regardless of ring state (measured: chip off-bus at write ~20
+	 * with ring running; writes silently dropped without ring; BIST does not
+	 * help). The ring circulates fine with ESCHED scheduling disabled
+	 * (CFG_4=0, clock off); per-port bandwidth allocation is deferred until
+	 * a working write path is found. [RE 2026-10-05]
 	 */
 	phase(d, rep, FM_SSCHED_PH_ESCHED);
 
@@ -623,41 +626,34 @@ no_sweeper:
 		return FM_EOFFBUS;
 
 	/*
-	 * Tight burst: ring SRAMs → CFG_0 → INIT_TOKEN → REPLACE_TOKEN → INIT_COMPLETE.
+	 * START burst: REPLACE_TOKEN → INIT_COMPLETE (and ring SRAMs for MGMT_ONLY).
 	 *
-	 * All ring SRAMs are written immediately before INIT_COMPLETE so any
-	 * late JSS startup reset cannot wipe them between write and fire.
-	 * MGMT_ONLY deliberately omits CFG_4=0x2000 (ESCHED clock enable):
-	 * enabling ESCHED starts an ECC scanner that fires a 0x85 reset ~1.8 μs
-	 * later on every ECC-bad entry (all 76 after boot), clearing INIT_COMPLETE
-	 * and looping.  Port 78 is above the ESCHED table so the ring engine never
-	 * does an ESCHED lookup; the ring circulates without CFG_4. [RE 2026-10-05]
+	 * MGMT_ONLY re-writes the ring SRAMs in this burst because the settle
+	 * phase resets (code 0xd0 from fm_boot_freelists ECC init) can wipe
+	 * NEXT_PORT[0] and SLOW_PORT[0] written earlier.  For the full and
+	 * small rings the ring SRAMs are written in the first pass above; with
+	 * BIST run beforehand the settle produces ~0 resets and those writes
+	 * survive intact, so no re-write is needed.
+	 *
+	 * Neither path enables CFG_4=0x2000 (ESCHED clock domain).  ESCHED
+	 * writes via PCI are not committable -- the LBUS queue never drains
+	 * regardless of ring state (measured: chip off-bus at write ~20 with
+	 * ring running, silently dropped at write 1 without ring).  The ring
+	 * circulates without ESCHED; scheduling policy defaults to zero which
+	 * is benign for a lab switch passing no traffic. [RE 2026-10-05]
 	 */
-	{
+	if (flags & FM_SSCHED_MGMT_ONLY) {
 		uint32_t tok = SSCHED_TOKEN(SSCHED_MGMT_PORT, 1, 0);
 
 		/*
-		 * MGMT_ONLY burst: start ring WITHOUT enabling ESCHED (no CFG_4=0x2000).
+		 * 11-write MGMT_ONLY burst: re-write ring SRAMs to survive
+		 * any settle resets, push the one management token, prime
+		 * REPLACE_TOKEN=78, fire INIT_COMPLETE.
 		 *
-		 * CFG_4=0x2000 enables the ESCHED clock domain, which immediately
-		 * starts a background ECC scanner that reads all 76 ESCHED entries
-		 * (ports 0-75 are ECC-bad after boot).  The scanner fires a 0x85
-		 * reset ~1.8μs after CFG_4, which clears INIT_COMPLETE and stops
-		 * the ring before FOUND can be observed.  Repeating the burst loops
-		 * infinitely: scanner fires on every attempt.
-		 *
-		 * ESCHED is NOT required for token ring circulation -- it controls
-		 * per-port bandwidth allocation (scheduling policy), not the ring's
-		 * token advance logic.  Omitting CFG_4 here means the ring ticks
-		 * with no ESCHED clock domain, no scanner, no reset storm.  Once
-		 * FOUND is confirmed the full ESCHED init (all 76 ports) can be done
-		 * in a subsequent step after the ring is known-good. [RE 2026-10-05]
-		 *
-		 * Ring SRAMs (NEXT_PORT, SLOW_PORT, CFG_0) are ECC-bad after settle
-		 * resets and must be written here; they were written in the first
-		 * pass but wiped by the settle-phase resets. [RE 2026-10-05]
+		 * Port 78 is above the ESCHED table (ports 0-75) so the ring
+		 * engine never does an ESCHED lookup; the ring circulates
+		 * without CFG_4. [RE 2026-10-05]
 		 */
-
 		/* 1 */ if ((rv = fm_wr(d, FM6000_SSCHED_RX_NEXT_PORT(0), 0u)) != FM_OK)
 			return rv;
 		/* 2 */ if ((rv = fm_wr(d, FM6000_SSCHED_TX_NEXT_PORT(0), 0u)) != FM_OK)
@@ -680,6 +676,33 @@ no_sweeper:
 			return rv;
 		/* 11 */ if ((rv = fm_wr(d, FM6000_SSCHED_TX_INIT_COMPLETE, 1u)) != FM_OK)
 			return rv;
+	} else {
+		/*
+		 * Full ring / small ring burst: 4 writes only.
+		 *
+		 * NEXT_PORT, SLOW_PORT, CFG_0/1, and tokens were written in
+		 * the first pass above.  With BIST run before this function
+		 * the settle produces ~0 resets so those writes survive.
+		 *
+		 * ⚠ PREREQUISITE: fm_bist_memory_init() must have been called
+		 * before fm_ssched_ring_init() for non-MGMT_ONLY rings.  Without
+		 * BIST the settle resets wipe NEXT_PORT/SLOW_PORT, and the 64
+		 * tokens in the INIT_TOKEN FIFO are also cleared. [RE 2026-10-05]
+		 *
+		 * Prime REPLACE_TOKEN to the first enrolled port so the ring
+		 * finds it on the first pass (FOUND is set before the FIND
+		 * probe even writes its own request). [RE 2026-10-05]
+		 */
+		unsigned first_port = (flags & FM_SSCHED_SMALL_RING)
+					? 0u : (unsigned)ssched_ring[0];
+		/* 1 */ if ((rv = fm_wr(d, FM6000_SSCHED_RX_REPLACE_TOKEN, first_port)) != FM_OK)
+			return rv;
+		/* 2 */ if ((rv = fm_wr(d, FM6000_SSCHED_TX_REPLACE_TOKEN, first_port)) != FM_OK)
+			return rv;
+		/* 3 */ if ((rv = fm_wr(d, FM6000_SSCHED_RX_INIT_COMPLETE, 1u)) != FM_OK)
+			return rv;
+		/* 4 */ if ((rv = fm_wr(d, FM6000_SSCHED_TX_INIT_COMPLETE, 1u)) != FM_OK)
+			return rv;
 	}
 	if (!fm_alive(d))
 		return FM_EOFFBUS;
@@ -689,18 +712,10 @@ no_sweeper:
 	fm_sched_mark_ready(d);
 
 	/*
-	 * ⚠  Do NOT write REPLACE_TOKEN = 0 here.
-	 *
-	 * The REPLACE_TOKEN register doubles as the find-request register: writing
-	 * a value N with the "found" bit clear asks the running ring engine to
-	 * search for port N's token.  Writing 0 therefore requests a find for
-	 * port 0 — which is not in the MGMT_ONLY ring.  The engine walks the
-	 * ring repeatedly looking for port 0, never finds it, and on each pass
-	 * reads an ECC-uninitialised ESCHED entry, triggering a 0xc5 watchdog
-	 * reset.  That loops 100+ times until the ring state is fully wiped.
-	 *
-	 * The FIND phase below issues its own REPLACE_TOKEN write for port 78,
-	 * which both starts a new find and clears any stale FOUND state.
+	 * ⚠  REPLACE_TOKEN was primed in the burst above (port 78 for MGMT_ONLY,
+	 * first enrolled port for full/small ring).  Do not overwrite it with 0:
+	 * that would request a find for port 0, which is not in the MGMT_ONLY
+	 * ring, causing 0xc5 watchdog resets on every pass. [RE 2026-10-05]
 	 */
 	phase(d, rep, FM_SSCHED_PH_CLEAR2);
 
