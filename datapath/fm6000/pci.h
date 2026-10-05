@@ -56,8 +56,9 @@
 #define FM_SLOT_LEN 16
 
 enum fm_xport {
-	FM_XPORT_PCIE,	/* the FM6000's own BAR0 -- only once it has enumerated */
-	FM_XPORT_LBUS,	/* the SCD's BAR1 -- available cold, and the bring-up path */
+	FM_XPORT_PCIE,   /* the FM6000's own BAR0 -- only once it has enumerated */
+	FM_XPORT_LBUS,   /* the SCD's BAR1 -- available cold, and the bring-up path */
+	FM_XPORT_DEVMEM, /* /dev/mem at a known physical address; same path as LBUS */
 };
 
 struct fm6000 {
@@ -147,6 +148,19 @@ int fm_open(struct fm6000 *d, const char *slot);
 int fm_open_lbus(struct fm6000 *d, const char *scd_slot);
 
 /*
+ * Open the chip by mapping /dev/mem at a known physical address.
+ *
+ * Used when the SCD is not enumerated on PCI but its BAR1 (the FM6000
+ * register window) is mapped at a fixed physical address. The FM_XPORT_DEVMEM
+ * transport behaves identically to FM_XPORT_LBUS for all register accesses;
+ * fm_scd_reset_pulse() is not available (returns FM_ERR).
+ *
+ * phys is the physical base address of the FM6000 register window.
+ * bytes is the window size; 0x01000000 (16 MB) is the FM6000 BAR1 size.
+ */
+int fm_open_devmem(struct fm6000 *d, uintptr_t phys, size_t bytes);
+
+/*
  * Open the chip whichever way it can be reached, and say which.
  *
  * Tries the FM6000's own BAR0 first and falls back to the SCD's local-bus
@@ -173,6 +187,13 @@ void fm_close(struct fm6000 *d);
  * is smaller than expected. Only valid when xport == FM_XPORT_LBUS.
  */
 int fm_scd_reset_pulse(struct fm6000 *d);
+
+/*
+ * Pulse the FM6000 reset via /dev/mem at a known SCD BAR0 physical address,
+ * without needing the SCD in sysfs. Use when PCIe2 has no kernel driver.
+ * On a 7150S-52, bar0_phys is 0xe1000000.
+ */
+int fm_scd_reset_pulse_devmem(uintptr_t bar0_phys);
 
 /* Register access by 32-bit WORD address, which is how the chip's own
  * documentation and every address in regs.h are expressed. */
@@ -295,6 +316,7 @@ void fm_sched_mark_ready(struct fm6000 *d);
  * reachable it has nothing to do there.
  */
 int fm_rd_hazardous(struct fm6000 *d, uint32_t word, uint32_t *out);
+int fm_wr_hazardous(struct fm6000 *d, uint32_t word, uint32_t val);
 
 /*
  * The watchdog's record of the chip resetting itself.

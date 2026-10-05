@@ -42,13 +42,24 @@
 static void usage(void)
 {
 	fprintf(stderr,
-"usage: fm6000-probe [--lbus [SCD_ADDR]] [--slot ADDR] [command]\n"
+"usage: fm6000-probe [--lbus [SCD_ADDR]] [--devmem PHYS] [--slot ADDR] [command]\n"
 "\n"
 "  --lbus [SCD_ADDR]     reach the chip through the SCD's local-bus window\n"
 "                        instead of its own BAR0. THE ONLY PATH THAT WORKS\n"
 "                        ON A COLD BOARD, because the FM6000 does not\n"
 "                        enumerate on PCIe until it has been configured.\n"
 "                        SCD_ADDR defaults to searching for 3475:0001.\n"
+"\n"
+"  --devmem PHYS         reach the chip by mapping /dev/mem at physical\n"
+"                        address PHYS (hex, e.g. 0xe0000000 on a 7150S-52).\n"
+"                        Use when the SCD is not in sysfs but Aboot left its\n"
+"                        FM6000 register window mapped at a fixed address.\n"
+"\n"
+"  --scd-reset PHYS      pulse the FM6000 reset via /dev/mem at SCD BAR0\n"
+"                        (0xe1000000 on a 7150S-52). Use before --devmem\n"
+"                        when the SCD is absent from sysfs (PCIe2 has no\n"
+"                        kernel driver) but Aboot has its ATMU window open.\n"
+"                        Writes 0x106 to resetSet, waits 10 ms, clears it.\n"
 "\n"
 "  (no command)          identify the chip and read what is safe to read\n"
 "  --dump WORD COUNT     dump COUNT words from word address WORD\n"
@@ -374,6 +385,8 @@ int main(int argc, char **argv)
 {
 	struct fm6000 dev;
 	const char *slot = NULL;
+	uintptr_t devmem_phys = 0;
+	uintptr_t scd_bar0_phys = 0;
 	int i, rv, rc, lbus = 0;
 
 	for (i = 1; i < argc; i++) {
@@ -388,10 +401,35 @@ int main(int argc, char **argv)
 				slot = argv[++i];
 			continue;
 		}
+		if (strcmp(argv[i], "--devmem") == 0 && i + 1 < argc) {
+			devmem_phys = (uintptr_t)strtoul(argv[++i], NULL, 0);
+			lbus = 1; /* devmem behaves like lbus for all other flags */
+			continue;
+		}
+		if (strcmp(argv[i], "--scd-reset") == 0 && i + 1 < argc) {
+			scd_bar0_phys = (uintptr_t)strtoul(argv[++i], NULL, 0);
+			continue;
+		}
 		break;
 	}
 
-	rv = lbus ? fm_open_lbus(&dev, slot) : fm_open(&dev, slot);
+	if (scd_bar0_phys != 0) {
+		int r = fm_scd_reset_pulse_devmem(scd_bar0_phys);
+		printf("SCD reset pulse at 0x%lx: %s\n",
+		       (unsigned long)scd_bar0_phys,
+		       r == FM_OK ? "ok" : "FAILED (check /dev/mem access)");
+		if (r != FM_OK)
+			return 2;
+		/* Give the chip ~100 ms to come up before the open. */
+		{ struct timespec ts = { 0, 100000000L }; nanosleep(&ts, NULL); }
+	}
+
+	if (devmem_phys != 0)
+		rv = fm_open_devmem(&dev, devmem_phys, 0x01000000u);
+	else if (lbus)
+		rv = fm_open_lbus(&dev, slot);
+	else
+		rv = fm_open(&dev, slot);
 	if (rv != FM_OK) {
 		if (lbus)
 			fprintf(stderr,
@@ -447,6 +485,18 @@ int main(int argc, char **argv)
 		rc = cmd_survey(&dev);
 	} else if (strcmp(argv[i], "--read") == 0 && i + 1 < argc) {
 		rc = cmd_dump(&dev, (uint32_t)strtoul(argv[i + 1], NULL, 0), 1);
+	} else if (strcmp(argv[i], "--wr") == 0 && i + 2 < argc) {
+		uint32_t w = (uint32_t)strtoul(argv[i + 1], NULL, 0);
+		uint32_t v = (uint32_t)strtoul(argv[i + 2], NULL, 0);
+		rv = fm_wr(&dev, w, v);
+		if (rv != FM_OK) {
+			printf("write 0x%06x <- 0x%08x: %s (chip %s)\n", w, v,
+			       rvstr(rv), fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = 2;
+		} else {
+			printf("write 0x%06x <- 0x%08x: ok (chip %s)\n", w, v,
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+		}
 	} else if (strcmp(argv[i], "--dump") == 0 && i + 2 < argc) {
 		rc = cmd_dump(&dev, (uint32_t)strtoul(argv[i + 1], NULL, 0),
 			      (uint32_t)strtoul(argv[i + 2], NULL, 0));
@@ -736,6 +786,17 @@ int main(int argc, char **argv)
 			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			printf("\n%s\n", rv == FM_OK ? "ok" : rvstr(rv));
 			rc = rv == FM_OK ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--reflists") == 0) {
+		if (fm_boot_already_done(&dev) != 1) {
+			printf("the chip has not been booted; run --boot first\n");
+			rc = 1;
+		} else {
+			rv = fm_boot_freelists(&dev);
+			printf("scheduler freelist re-init: %s, chip %s\n",
+			       rv == FM_OK ? "ok" : rvstr(rv),
+			       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
 		}
 	} else if (strcmp(argv[i], "--bist-cfg") == 0) {
 		unsigned n = 0;
@@ -1075,6 +1136,10 @@ int main(int argc, char **argv)
 sweep_done:
 		printf("\n%u of 24 EPLs mapped\n", found);
 		rc = found == 24 ? 0 : 2;
+	} else if (strcmp(argv[i], "--freelists") == 0) {
+		int fr = fm_boot_freelists(&dev);
+		printf("FREELISTS_ALL: %s\n", fr == FM_OK ? "ok" : "FAILED");
+		rc = fr == FM_OK ? 0 : 2;
 	} else if (strcmp(argv[i], "--saf") == 0) {
 		unsigned n = 0;
 
@@ -1198,6 +1263,40 @@ sweep_done:
 			}
 			printf("  chip %s\n", fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
 			rc = (rv == FM_OK && fm_alive(&dev) == 1) ? 0 : 2;
+		}
+	} else if (strcmp(argv[i], "--ring-live") == 0) {
+		/*
+		 * Combined ssched (MGMT_ONLY+NOSWEEP) + esched test.
+		 *
+		 * Runs the ring init and immediately attempts fm_esched_init()
+		 * in the same process so sched_ready carries over.  If the ring
+		 * is ticking (port 78 / management drains the LBUS queue), all
+		 * 212 ESCHED writes complete.  If the ring is not ticking the
+		 * LBUS write queue fills at write ~20 and the chip wedges.
+		 */
+		{
+			struct fm_ssched_report srep;
+			unsigned flags = FM_SSCHED_MGMT_ONLY; /* no-sweeper: MGMT_ONLY implies it */
+			unsigned n = 0;
+			uint32_t culprit = 0;
+			int circ = 0;
+
+			rv = fm_ssched_ring_init(&dev, flags, &circ, &srep);
+			printf("ring init: %s, circ=%d\n",
+			       rv == FM_OK ? "ok" : rvstr(rv), circ);
+			if (rv != FM_OK) {
+				rc = 2;
+			} else {
+				printf("  trying esched_init immediately (sched_ready=%d)...\n",
+				       dev.sched_ready);
+				rv = fm_esched_init(&dev, &n, &culprit);
+				printf("esched: %u writes, %s", n, rv == FM_OK ? "ok" : rvstr(rv));
+				if (culprit != 0)
+					printf(", died at 0x%06x", culprit);
+				printf("\n  chip %s\n",
+				       fm_alive(&dev) == 1 ? "answering" : "OFF THE BUS");
+				rc = (fm_alive(&dev) == 1) ? 0 : 2;
+			}
 		}
 	} else if (strcmp(argv[i], "--sbus") == 0) {
 		rc = cmd_sbus(&dev);

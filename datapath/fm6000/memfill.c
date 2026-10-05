@@ -126,6 +126,15 @@ static const struct {
 	 * thresholds -- frames are rejected with no drop counter anywhere.
 	 * These MUST be 0xffffffff ("no threshold") for the chip to forward.
 	 */
+	/*
+	 * CM live-counter banks. The CM monitor (CmMonitorTickPeriod in
+	 * SWEEPER_CFG_4) reads these on each tick; with uninitialised ECC
+	 * the CRM times out and the chip resets.
+	 *
+	 * CM_PORT_RXMP_USAGE (0x111000): per-port, per-RXMP usage. 76 ports,
+	 * stride 0x20 (32 words) per port = 2432 words. [RE, 2026-10-01]
+	 */
+	{ 0x111000,  2432, 0x00000000 },
 	{ 0x118800,   960, 0x00000000 },
 	{ 0x112800,   912, 0xffffffff },
 	{ 0x113000,  1216, 0xffffffff },
@@ -152,9 +161,11 @@ static const struct {
 	 */
 	/*
 	 * 0x003000 (ESCHED_DRR_Q) and 0x003c00 (ESCHED_DRR_DC_INIT) are NOT
-	 * here. Both are ESCHED state registers: DRR_Q is the per-class deficit
-	 * counter (live runtime state, not a static init value) and they are
-	 * inaccessible until the scheduler ring circulates. See esched.c.
+	 * here. Both are ECC-protected ESCHED SRAM banks that "read as refused
+	 * or zero" before the ring runs. Hardware confirms (2026-10-02) that
+	 * the WRITE PATH is also completely blocked pre-ring: adding these to
+	 * the fill table caused an immediate chip crash. They can only be
+	 * written after the scheduler ring is circulating.
 	 */
 	/*
 	 * MOD (Modifier) -- 0x150000 control bank.

@@ -106,4 +106,21 @@ uint8_t fm_sbus_epl_base(unsigned epl);
 #define FM_SBUS_EPL_MIN 1
 #define FM_SBUS_EPL_MAX 24
 
+/* Instruction-word count for the FM6000's internal SPICO firmware.
+ * [RE from fm6000_spico_code_size in libFocalpointSDK.so 2026-10-02] */
+#define FM_SPICO_NWORDS 6000
+
+/*
+ * Download SPICO firmware and start the processor.
+ *
+ * fm_spico_download() streams nwords 16-bit instruction words into the SPICO
+ * via the SBus write protocol.  fm_sbus_start() must have been called first
+ * (SPICO out of reset, ENABLE=0 -- the only state that accepts code).
+ *
+ * fm_spico_enable() sets the ENABLE bit and waits for the processor to come
+ * up, then clears the start-trigger so the SBus device is in a clean state.
+ */
+int fm_spico_download(struct fm6000 *d, const uint16_t *code, int nwords);
+int fm_spico_enable(struct fm6000 *d);
+
 #endif /* NOSAIC_FM6000_SBUS_H */

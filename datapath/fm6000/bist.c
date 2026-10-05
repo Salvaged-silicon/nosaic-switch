@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "bist.h"
+#include "boot.h"
 #include "regs.h"
 
 static void nap_us(long us)
@@ -240,6 +241,19 @@ int fm_bist_memory_init(struct fm6000 *d, unsigned pace_us,
 			if (fm_rd(d, 0x1d21b + n * 0x80, &v) == FM_OK && v != 0)
 				rep->defects++;
 	}
+
+	/*
+	 * G. Re-run the scheduler freelist initialisation.
+	 *
+	 * The march overwrites ALL SRAM banks, including the freelist SRAM that
+	 * boot step 8 wrote via BOOT_CMD_FREELISTS_ALL. Writing both a TX and
+	 * an RX NEXT_PORT entry after the march with invalid freelist data wedges
+	 * the chip off the PCI bus (bisected 2026-10-01: two NEXT_PORT writes
+	 * are the trigger; the fix is to restore the freelist first).
+	 */
+	rv = fm_boot_freelists(d);
+	if (rv != FM_OK)
+		return rv;
 	return FM_OK;
 }
 

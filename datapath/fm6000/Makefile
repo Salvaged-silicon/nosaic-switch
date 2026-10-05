@@ -29,12 +29,13 @@ CFLAGS  += -I../common
 CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"fm6000\"
 LDLIBS  += -lpthread
 
-COMMON_OBJS   = pci.o sbus.o serdes.o bist.o saf.o esched.o ssched.o cmwm.o cmrest.o parser.o lbs.o mrl.o crm.o memfill.o
+COMMON_OBJS   = pci.o sbus.o spico.o serdes.o bist.o saf.o esched.o ssched.o cmwm.o cmrest.o parser.o lbs.o mrl.o crm.o memfill.o
 DAEMON_OBJS   = main.o boot.o sock.o $(COMMON_OBJS)
 PROBE_OBJS    = probe.o boot.o $(COMMON_OBJS)
 MEMFILL_OBJS  = memfill_main.o boot.o $(COMMON_OBJS)
+SI5338_OBJS   = si5338_main.o
 
-all: nosd-fm6000 fm6000-probe fm6000-memfill
+all: nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338
 
 nosd-fm6000: $(DAEMON_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(DAEMON_OBJS) $(LDLIBS)
@@ -55,6 +56,7 @@ pci.o:  pci.c pci.h regs.h ../common/mmio.h
 boot.o: boot.c boot.h memfill.h pci.h regs.h
 sock.o: sock.c sock.h pci.h regs.h
 sbus.o: sbus.c sbus.h pci.h regs.h
+spico.o: spico.c spico.h sbus.h pci.h
 serdes.o: serdes.c serdes.h sbus.h pci.h regs.h
 bist.o: bist.c bist.h pci.h regs.h
 saf.o:  saf.c saf.h portmap.h pci.h regs.h
@@ -65,6 +67,7 @@ parser.o: parser.c parser.h portmap.h pci.h regs.h
 lbs.o: lbs.c lbs.h portmap.h pci.h regs.h
 mrl.o: mrl.c mrl.h pci.h regs.h
 crm.o: crm.c crm.h pci.h regs.h
+ssched.o: ssched.c ssched.h sbus.h spico.h pci.h regs.h boot.h crm.h esched.h
 probe.o: probe.c serdes.h bist.h saf.h esched.h ssched.h cmwm.h cmrest.h parser.h lbs.h mrl.h crm.h pci.h regs.h boot.h
 
 # Stripping is a separate target rather than -s at link time, so a debug build
@@ -74,9 +77,14 @@ probe.o: probe.c serdes.h bist.h saf.h esched.h ssched.h cmwm.h cmrest.h parser.
 memfill.o: memfill.c memfill.h pci.h boot.h
 memfill_main.o: memfill_main.c memfill.h pci.h boot.h
 
-strip: nosd-fm6000 fm6000-probe fm6000-memfill
-	$(CROSS_COMPILE)strip nosd-fm6000 fm6000-probe fm6000-memfill
-	@echo "    nosd-fm6000 $$(stat -c%s nosd-fm6000) bytes, fm6000-probe $$(stat -c%s fm6000-probe) bytes, fm6000-memfill $$(stat -c%s fm6000-memfill) bytes"
+fm6000-si5338: $(SI5338_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(SI5338_OBJS) $(LDLIBS)
+
+si5338_main.o: si5338_main.c
+
+strip: nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338
+	$(CROSS_COMPILE)strip nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338
+	@echo "    nosd-fm6000 $$(stat -c%s nosd-fm6000) bytes, fm6000-probe $$(stat -c%s fm6000-probe) bytes, fm6000-memfill $$(stat -c%s fm6000-memfill) bytes, fm6000-si5338 $$(stat -c%s fm6000-si5338) bytes"
 
 # Tests run on the build host, not the switch. Everything here that can be
 # checked without a chip should be, because the alternative is checking it on
@@ -102,6 +110,6 @@ test: $(TESTS)
 	@for t in $(TESTS); do ./$$t || exit 1; done
 
 clean:
-	rm -f nosd-fm6000 fm6000-probe fm6000-memfill $(TESTS) *.o ../common/*.o
+	rm -f nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338 $(TESTS) *.o ../common/*.o
 
 .PHONY: all clean strip test

@@ -60,6 +60,14 @@
 #define FM6000_SSCHED_TX_INIT_TOKEN	0x008020
 #define FM6000_SSCHED_TX_INIT_COMPLETE	0x008021
 #define FM6000_SSCHED_TX_REPLACE_TOKEN	0x008022
+/*
+ * TX_SLOW_PORT: inferred from the RX/TX block symmetry.
+ * RX_SLOW_PORT is at RX base (0x8040) + 0x30 = 0x8070.
+ * TX_SLOW_PORT is therefore TX base (0x8000) + 0x30 = 0x8030.
+ * These 5 words sit in the otherwise-uncharted gap 0x8023..0x803f.
+ * [RE 2026-10-05]
+ */
+#define FM6000_SSCHED_TX_SLOW_PORT(i)	(0x008030u + (i))
 #define FM6000_SSCHED_RX_NEXT_PORT(i)	(0x008040u + (i))
 #define FM6000_SSCHED_RX_INIT_TOKEN	0x008060
 #define FM6000_SSCHED_RX_INIT_COMPLETE	0x008061
@@ -180,7 +188,7 @@
 #define FM6000_SSCHED_RX_FOUND		(1u << 21)
 #define FM6000_SSCHED_TX_FOUND		(1u << 30)
 /* A find is asynchronous: the engine has to reach the slot. */
-#define FM6000_SSCHED_FIND_US		50000
+#define FM6000_SSCHED_FIND_US		5000000
 
 /*
  * The SerDes reference clock, datasheet §6.4 Table 6-7: one 156.25 MHz
@@ -214,10 +222,12 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
  * Golden values captured from a running 7150S-52 on 2026-10-01, confirmed
  * against the EdgeNOS live capture from 2026-07-28.
  *
- * ⚠ JSS[1] (0xF001) is the SBus command register. Writing values with the
- * Execute bit set starts a SBus bus transaction and must not be replayed as
- * a blind MMIO write. The golden value 0x0521452a does not have the Execute
- * bit set; it is a configuration write that is safe to replay. [RE]
+ * ⚠ JSS[1] (0xF001) IS the SBus command register (SBUS_COMMAND). The live-
+ * capture golden value 0x0521452a HAS Execute (bit 24) set -- (0x05 & 1) = 1
+ * -- and must be submitted as a proper SBus transaction via fm_sbus_write(),
+ * not replayed as a blind MMIO write. Doing it blind sends the transaction
+ * with whatever was in SBUS_REQUEST at the time, which is stale data. The
+ * previous comment claiming Execute was not set was wrong. [RE 2026-10-02]
  */
 #define FM6000_BLK_JSS			0x00f000
 #define FM6000_JSS_CFG_1		(FM6000_BLK_JSS + 0x001) /* 0x0521452a */

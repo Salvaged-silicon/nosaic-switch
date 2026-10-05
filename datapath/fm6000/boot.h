@@ -98,6 +98,15 @@ int fm_boot_already_done(struct fm6000 *d);
 /* Print a report in the form a human reads at three in the morning. */
 void fm_boot_report_print(const struct fm_boot_report *rep);
 
+/*
+ * Re-run BOOT command 3 (FREELISTS_ALL) on an already-booted chip.
+ *
+ * Must be called after fm_bist_memory_init(): the BIST march overwrites the
+ * scheduler freelist SRAM and writing SSCHED NEXT_PORT entries on a chip with
+ * invalid freelist data hangs the chip off the PCI bus.
+ */
+int fm_boot_freelists(struct fm6000 *d);
+
 const char *fm_boot_step_name(int step);
 
 #endif /* NOSAIC_FM6000_BOOT_H */

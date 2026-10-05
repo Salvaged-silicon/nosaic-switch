@@ -173,6 +173,37 @@ int fm_open_lbus(struct fm6000 *d, const char *scd_slot)
 	return map_bar(d, "resource1");
 }
 
+int fm_open_devmem(struct fm6000 *d, uintptr_t phys, size_t bytes)
+{
+	void *map;
+
+	memset(d, 0, sizeof(*d));
+	d->bar_fd = -1;
+	d->check_writes = 1;
+	d->xport = FM_XPORT_DEVMEM;
+	snprintf(d->slot, sizeof(d->slot), "devmem");
+
+	d->bar_fd = open("/dev/mem", O_RDWR | O_SYNC);
+	if (d->bar_fd < 0) {
+		perror("/dev/mem");
+		d->bar_fd = -1;
+		return FM_ERR;
+	}
+
+	map = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED,
+		   d->bar_fd, (off_t)phys);
+	if (map == MAP_FAILED) {
+		perror("/dev/mem: mmap");
+		close(d->bar_fd);
+		d->bar_fd = -1;
+		return FM_ERR;
+	}
+
+	d->regs = (volatile uint32_t *)map;
+	d->bar_bytes = bytes;
+	return FM_OK;
+}
+
 /*
  * Pulse the FM6000's hardware reset via the SCD's BAR0 reset registers.
  *
@@ -219,6 +250,39 @@ int fm_scd_reset_pulse(struct fm6000 *d)
 	nosaic_mmio_wr32(bar0 + 0x1004, 0x106u);
 
 	munmap((void *)bar0, (size_t)st.st_size);
+	rv = FM_OK;
+out:
+	close(fd);
+	return rv;
+}
+
+/*
+ * Same reset pulse, but via /dev/mem at a known SCD BAR0 physical address.
+ * Use when the SCD is not enumerated in sysfs (PCIe2 has no kernel driver)
+ * but Aboot has left the outbound ATMU window intact at bar0_phys.
+ *
+ * On a 7150S-52, SCD BAR0 is at physical 0xe1000000 (256 KiB, word-addressed).
+ */
+int fm_scd_reset_pulse_devmem(uintptr_t bar0_phys)
+{
+	volatile uint32_t *bar0;
+	int fd, rv = FM_ERR;
+
+	fd = open("/dev/mem", O_RDWR | O_SYNC);
+	if (fd < 0)
+		return FM_ERR;
+	bar0 = mmap(NULL, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED,
+		    fd, (off_t)bar0_phys);
+	if (bar0 == MAP_FAILED)
+		goto out;
+
+	/* resetSet = BAR0 byte 0x4000 = word index 0x1000 */
+	nosaic_mmio_wr32(bar0 + 0x1000, 0x106u);
+	{ struct timespec ts = { 0, 10000000L }; nanosleep(&ts, NULL); }
+	/* resetClear = BAR0 byte 0x4010 = word index 0x1004 */
+	nosaic_mmio_wr32(bar0 + 0x1004, 0x106u);
+
+	munmap((void *)bar0, 0x10000);
 	rv = FM_OK;
 out:
 	close(fd);
@@ -463,6 +527,24 @@ int fm_rd_hazardous(struct fm6000 *d, uint32_t word, uint32_t *out)
 
 	*out = nosaic_mmio_rd32((const void *)((const char *)d->regs + off));
 	d->reads++;
+	return FM_OK;
+}
+
+int fm_wr_hazardous(struct fm6000 *d, uint32_t word, uint32_t val)
+{
+	size_t off = (size_t)word * 4;
+
+	if (d->regs == NULL)
+		return FM_ERR;
+	if (d->offbus) {
+		d->refused++;
+		return FM_EOFFBUS;
+	}
+	if (off + 4 > d->bar_bytes)
+		return FM_ERR;
+
+	nosaic_mmio_wr32((void *)((char *)d->regs + off), val);
+	d->writes++;
 	return FM_OK;
 }
 

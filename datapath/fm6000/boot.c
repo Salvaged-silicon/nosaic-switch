@@ -497,6 +497,20 @@ int fm_boot_cold_opt(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 	return rv;
 }
 
+/*
+ * Re-run BOOT command 3 (FREELISTS_ALL) on an already-booted chip.
+ *
+ * The BIST memory march overwrites ALL SRAM banks, including the scheduler
+ * freelist SRAM that boot step 8 initialised. Writing both a TX and an RX
+ * NEXT_PORT entry after a BIST march crashes the chip because the freelist
+ * data is invalid march residue. Calling this after fm_bist_memory_init()
+ * restores the freelist to a valid state.
+ */
+int fm_boot_freelists(struct fm6000 *d)
+{
+	return boot_command(d, FM6000_BOOT_CMD_FREELISTS_ALL);
+}
+
 void fm_boot_report_print(const struct fm_boot_report *rep)
 {
 	int i;

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* The SerDes serial bus. See sbus.h for where the numbers come from. */
 #include <stddef.h>
+#include <unistd.h>
 
 #include "regs.h"
 #include "sbus.h"
@@ -192,4 +193,106 @@ uint8_t fm_sbus_epl_base(unsigned epl)
 	if (epl < FM_SBUS_EPL_MIN || epl > FM_SBUS_EPL_MAX)
 		return 0;
 	return epl_sbus[epl];
+}
+
+/*
+ * Load nwords 16-bit instruction words into the SPICO.
+ *
+ * The SPICO download protocol (cross-checked against EdgeNOS fm6000_load_spico,
+ * our own prior live-validated work on this chassis):
+ *
+ *   Pre:  WriteSBus(0xFD, 0x0C, 0x03)       -- reset SPICO processor
+ *         WriteSBus(0xFD, 0x0C, 0x01)       -- enable SPICO for IMEM writes
+ *         WriteSBus(0xFD, 0x06, 0x08)       -- IMEM write enable
+ *   Per word:
+ *         WriteSBus(0xFD, 0x04, addr >> 8)  -- address high byte
+ *         WriteSBus(0xFD, 0x05, addr & 0xFF) -- address low byte
+ *         WriteSBus(0xFD, 0x07, word & 0xFF) -- data low byte (10-bit word)
+ *         WriteSBus(0xFD, 0x06, (word>>8)|0xC) -- data[9:8] + strobe
+ *         WriteSBus(0xFD, 0x06, (word>>8)|0x8) -- data[9:8] + strobe release
+ *   Post: WriteSBus(0xFD, 0x06, 0x00)       -- IMEM write disable
+ *         (run command issued by fm_spico_load, not here)
+ *
+ * Pre-condition: fm_sbus_start() was called (SPICO out of reset at host level).
+ * Post-condition: firmware in IMEM, SPICO enabled but not yet running.
+ *
+ * ⚠ The run command (0x0C=0x08) is NOT issued here. During the 30,000 SBus
+ * writes the chip may self-reset ~39 times, resetting SBUS_CFG to its default
+ * (non-zero = SBus master held in reset). If the reset happens just before or
+ * during the run command, the command is dropped by the idle master and SPICO
+ * never starts. fm_spico_load() calls fm_sbus_start() after the download to
+ * restore SBUS_CFG=0, then issues 0x0C=0x08 on a known-good controller. [RE]
+ *
+ * IMEM words are 10-bit (all words in the firmware are <= 0x3FF). The
+ * word>>8 field never exceeds 0x3, so (word>>8)|0xC lands in {0xC..0xF}
+ * and (word>>8)|0x8 lands in {0x8..0xB}. [RE confirmed 2026-10-05]
+ */
+int fm_spico_download(struct fm6000 *d, const uint16_t *code, int nwords)
+{
+	int i, rv;
+
+	/* Reset then enable the SPICO processor before writing IMEM. */
+	if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x0C, 0x03)) != FM_OK)
+		return rv;
+	if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x0C, 0x01)) != FM_OK)
+		return rv;
+	if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x06, 0x08)) != FM_OK)
+		return rv;
+
+	for (i = 0; i < nwords; i++) {
+		uint16_t w = code[i];
+
+		if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x04,
+					(uint32_t)(i >> 8))) != FM_OK)
+			return rv;
+		if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x05,
+					(uint32_t)(i & 0xFF))) != FM_OK)
+			return rv;
+		if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x07,
+					(uint32_t)(w & 0xFF))) != FM_OK)
+			return rv;
+		if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x06,
+					(uint32_t)((w >> 8) | 0xC))) != FM_OK)
+			return rv;
+		if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x06,
+					(uint32_t)((w >> 8) | 0x8))) != FM_OK)
+			return rv;
+	}
+
+	if ((rv = fm_sbus_write(d, FM_SBUS_DEV_SPICO, 0x06, 0x00)) != FM_OK)
+		return rv;
+	/* Leave SPICO in "enabled, IMEM loaded, not yet running" state.
+	 * The run command (0x0C=0x08) is issued by fm_spico_load() AFTER
+	 * a fm_sbus_start() call, so the SBus controller is known active
+	 * regardless of any chip self-resets during the IMEM upload. */
+	return FM_OK;
+}
+
+/*
+ * Set the host-side ENABLE bit and wait for SPICO to initialise.
+ *
+ * fm_spico_download() already wrote 0x0C=0x08 (run) via SBus, starting the
+ * processor.  This sets the host-side ENABLE bit so the chip allows SBus
+ * interrupt transactions (needed by --spico N).  The EOS driver polls a SPICO
+ * internal register for the ready signal; we use a 200 ms empirical delay as
+ * a first step. [RE 2026-10-05 — cross-checked against EdgeNOS]
+ *
+ * ⚠ Do NOT write 0x0C=0x00 here.  0x0C=0 is the "done" signal for the
+ * CRC-verify handshake (fm6000InterruptSpico cmd 4), which comes AFTER the
+ * processor has been verified running.  Writing it unconditionally stops
+ * SPICO before it can establish its tick clock. [RE 2026-10-05]
+ */
+int fm_spico_enable(struct fm6000 *d)
+{
+	uint32_t v;
+	int rv;
+
+	if ((rv = fm_rd(d, FM6000_SBUS_SPICO, &v)) != FM_OK)
+		return rv;
+	if ((rv = fm_wr(d, FM6000_SBUS_SPICO, v | FM6000_SBUS_SPICO_ENABLE)) != FM_OK)
+		return rv;
+
+	/* Wait for SPICO to complete its internal initialisation. */
+	usleep(200000);
+	return FM_OK;
 }
