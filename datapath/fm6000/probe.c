@@ -1317,15 +1317,33 @@ sweep_done:
 		struct fm_boot_report rep;
 		int skip = strcmp(argv[i], "--boot-skip-mem") == 0;
 
-		printf("Running Intel 331496-002 Table 4-1, in order.\n"
-		       "Steps whose register address is not established refuse\n"
-		       "rather than guess -- a wrong address does not fail, it\n"
-		       "writes somewhere else.\n\n");
-		if (skip)
-			printf("(memory initialisation skipped -- use fm6000-memfill separately)\n\n");
-		rv = fm_boot_cold_opt(&dev, &rep, !skip);
-		fm_boot_report_print(&rep);
-		rc = (rv == FM_OK) ? 0 : (rv == FM_EOFFBUS ? 2 : 0);
+		/*
+		 * ⚠ REFUSE TO RE-BOOT A LIVE CHIP. The boot sequence now
+		 * includes a BIST march (step 11) that wipes all SRAM banks,
+		 * including the scheduler ring's visit tables. Running it while
+		 * the ring is circulating crashes the chip off the local bus
+		 * instantly. The --reset command revives a silent chip; use it
+		 * first, then --boot.
+		 */
+		if (fm_boot_already_done(&dev) == 1) {
+			printf("The chip is already booted (SOFT_RESET=0, "
+			       "CommandDone+Command3 set).\n"
+			       "Running --boot again would re-run BIST with the "
+			       "scheduler ring live -- that crashes the chip.\n"
+			       "Use --reset first to pulse it back to a cold state.\n");
+			rc = 1;
+		} else {
+			printf("Running Intel 331496-002 Table 4-1, in order.\n"
+			       "Steps whose register address is not established "
+			       "refuse\nrather than guess -- a wrong address does "
+			       "not fail, it\nwrites somewhere else.\n\n");
+			if (skip)
+				printf("(memory initialisation skipped -- use "
+				       "fm6000-memfill separately)\n\n");
+			rv = fm_boot_cold_opt(&dev, &rep, !skip);
+			fm_boot_report_print(&rep);
+			rc = (rv == FM_OK) ? 0 : (rv == FM_EOFFBUS ? 2 : 0);
+		}
 	} else if (strcmp(argv[i], "--reset") == 0) {
 		/* Pulse the FM6000 hardware reset via SCD BAR0.
 		 * Use this to revive a SILENT chip without a PDU power cycle. */

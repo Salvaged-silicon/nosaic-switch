@@ -36,6 +36,8 @@ enum fm_boot_step {
 	FM_STEP_FREELISTS,		/* 10: BOOT command 3 */
 	FM_STEP_PCIE,			/* 11 */
 	FM_STEP_MEMORY_INIT,		/* 12: CRM, or software fill */
+	FM_STEP_BIST,			/* beyond Table 4-1: BIST ECC init + freelist restore */
+	FM_STEP_SCHED,			/* beyond Table 4-1: scheduler token ring */
 	FM_STEP__COUNT
 };
 

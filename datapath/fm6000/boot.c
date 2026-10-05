@@ -4,11 +4,12 @@
 #include <string.h>
 #include <time.h>
 
+#include "bist.h"
 #include "boot.h"
 #include "memfill.h"
 #include "pci.h"
 #include "regs.h"
-/* ssched.h not needed: TICK_CFG written directly via regs.h (see boot_steps) */
+#include "ssched.h"
 
 static void nap_ms(long ms)
 {
@@ -28,6 +29,8 @@ static const char *step_names[FM_STEP__COUNT] = {
 	[FM_STEP_FREELISTS]      = "BOOT 3: initialize all scheduler freelists",
 	[FM_STEP_PCIE]           = "PCIe serdes up and out of reset",
 	[FM_STEP_MEMORY_INIT]    = "memory initialised (CRM, or software fill)",
+	[FM_STEP_BIST]           = "BIST memory march and freelist restore",
+	[FM_STEP_SCHED]          = "scheduler token ring circulating",
 };
 
 const char *fm_boot_step_name(int step)
@@ -370,10 +373,10 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 * 0x003c00 are ESCHED runtime state (inaccessible without ring). Neither
 	 * set is in the fill table. See regs.h and esched.c.
 	 *
-	 * The ring is NOT started here (no tokens, no INIT_COMPLETE). The
-	 * scheduler clock domain (TICK_CFG=2) IS activated before the fill --
-	 * without it the PARSER SRAM crashes. --ssched loads tokens and fires
-	 * INIT_COMPLETE after the fill completes.
+	 * The ring is started after the fill (step 14 below). The scheduler
+	 * clock domain (TICK_CFG=2) IS activated before the fill -- without it
+	 * the PARSER SRAM crashes. BIST runs after the fill to make ESCHED ECC
+	 * valid, then INIT_COMPLETE fires.
 	 */
 
 	/*
@@ -477,6 +480,75 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	set(d, rep, FM_STEP_MEMORY_INIT, FM_OK,
 	    "all ECC-protected SRAM banks filled; "
 	    "CM watermarks set to 0xffffffff (admit-all)");
+
+	/*
+	 * Step 13. BIST memory march.
+	 *
+	 * The BIST march writes every SRAM entry with a known pattern, making
+	 * each ECC syndrome valid.  ESCHED (the egress scheduler's per-port
+	 * configuration) cannot be written through the PCI bridge without a
+	 * valid ECC syndrome in its SRAM -- any write attempt before BIST
+	 * causes a burst of CRM access timeouts that self-reset the chip.
+	 *
+	 * BIST also wipes the scheduler freelist SRAM that boot step 8
+	 * initialised.  fm_boot_freelists() re-runs that boot command
+	 * immediately after so the freelist is valid before any SSCHED write.
+	 *
+	 * ⚠ PREREQUISITE FOR THE RING: fm_bist_memory_init() MUST be called
+	 * before fm_ssched_ring_init() for a full or small ring.  Without it
+	 * the settle phase (from fm_boot_freelists) produces resets from ECC
+	 * init (code 0xd0) that wipe NEXT_PORT/SLOW_PORT before INIT_COMPLETE.
+	 */
+	{
+		struct fm_bist_report brep;
+
+		rv = fm_bist_memory_init(d, 0, &brep);
+		if (rv != FM_OK) {
+			set(d, rep, FM_STEP_BIST, rv,
+			    "BIST march failed or chip stopped answering");
+			return rv;
+		}
+		rv = fm_boot_freelists(d);
+		if (rv != FM_OK) {
+			set(d, rep, FM_STEP_BIST, rv,
+			    "freelist re-init after BIST failed");
+			return rv;
+		}
+	}
+	set(d, rep, FM_STEP_BIST, FM_OK,
+	    "BIST march complete; freelists restored");
+
+	/*
+	 * Step 14. Start the scheduler token ring.
+	 *
+	 * All 64 front-panel ports + management (port 78) enrolled in a
+	 * NEXT_CHAIN visit table so every port gets a time slot.  NO_SWEEPER
+	 * skips SWEEPER_CFG word 3 (the manageability reference timer), which
+	 * arms itself over uninitialised tables and fires 315 self-resets on
+	 * every attempt.
+	 *
+	 * FOUND bit in RX_REPLACE_TOKEN confirms the ring engine is walking
+	 * the ring.  A non-circulating ring after EXIT:0 is a fault -- the
+	 * token was written but never found, and packet scheduling is dead.
+	 */
+	{
+		struct fm_ssched_report srep;
+		int circ = 0;
+
+		rv = fm_ssched_ring_init(d, FM_SSCHED_NEXT_CHAIN |
+					    FM_SSCHED_NO_SWEEPER,
+					 &circ, &srep);
+		if (rv != FM_OK || !circ) {
+			set(d, rep, FM_STEP_SCHED,
+			    rv != FM_OK ? rv : FM_ERR,
+			    !circ ? "ring programmed but token not found -- "
+				    "check BIST ran before this call"
+				  : "ring init function failed");
+			return rv != FM_OK ? rv : FM_ERR;
+		}
+	}
+	set(d, rep, FM_STEP_SCHED, FM_OK,
+	    "FOUND -- the engine is walking the ring");
 
 	fm_boot_mark_done(d);
 	return FM_OK;
