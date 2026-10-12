@@ -765,6 +765,42 @@ static inline unsigned fm6000_epl_channel(unsigned epl, unsigned lane)
 #define FM6000_PORT_STATUS_UP		0x8c0
 
 /*
+ * Per-lane EPL MMIO register offsets, relative to FM6000_EPL_LANE(epl, lane).
+ *
+ * These configure the EPL's own TX and RX datapaths and their connection to
+ * the SerDes. Without initialising them, LANE_STATUS never reaches 0x940 even
+ * with a correct SBus bring-up sequence: SERDES_TX_CFG_lo stays 0 (TX
+ * disabled at the EPL) and LANE_CFG bits 19,18 stay 0 (TX and RX held in
+ * reset), so neither HeartbeatOk nor RxLinkUp can assert.
+ *
+ * Value constants are for 10G on this chassis:
+ *   SERDES_CFG_LO_10G  embeds RefSel[11:6]=0x1b (the 10G reference clock
+ *                       routing on the 7150S-52 board).
+ *   SERDES_TX_BASE     is the fixed part of SERDES_TX_CFG_lo; add
+ *                       (pre<<12)|(post<<8) for the per-port equalization.
+ *   SERDES_LANE_STROBE and _10G are the two-write latch sequence for
+ *                       LANE_CFG: writing only the final value does not latch.
+ *
+ * [Offsets from hardware dump of EPL 14 lane 0. Values from comparison of
+ * cold state vs forwarding lane; EQ fields confirmed against two ports with
+ * different pre/post. All are EPL facts, no vendor code copied.]
+ */
+#define FM6000_EPL_SERDES_CFG_LO	0x34u	/* reference clock + power */
+#define FM6000_EPL_SERDES_LANE_CFG	0x37u	/* TX/RX datapath reset control */
+#define FM6000_EPL_SERDES_RX_CFG	0x39u	/* RX path enable + rate */
+#define FM6000_EPL_SERDES_TX_LO		0x3au	/* TX path enable + eq */
+#define FM6000_EPL_SERDES_TX_HI		0x3bu	/* TX config high word */
+#define FM6000_EPL_SERDES_SIG_DET	0x3cu	/* signal detect thresholds */
+
+#define FM6000_EPL_SERDES_CFG_LO_10G	0x0aaa86c0u  /* RefSel=0x1b */
+#define FM6000_EPL_SERDES_RX_10G	0x002a0281u  /* RxEn=1, 10G rate */
+#define FM6000_EPL_SERDES_TX_HI_10G	0x00000c83u
+#define FM6000_EPL_SERDES_SIG_10G	0x000001feu
+#define FM6000_EPL_SERDES_TX_BASE	0xc0000081u  /* TxEn=1; add (pre<<12)|(post<<8) */
+#define FM6000_EPL_SERDES_LANE_STROBE	0x018c0002u  /* first write: set strobe bits */
+#define FM6000_EPL_SERDES_LANE_10G	0x000c0002u  /* final: TX+RX released */
+
+/*
  * ⚠ READ HAZARD: ESCHED at word 0x2000.
  *
  * READING this takes a cold chip off the PCIe bus. Not writing -- reading.

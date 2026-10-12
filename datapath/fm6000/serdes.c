@@ -344,6 +344,51 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 	if (rv != FM_OK)
 		return rv;
 
+	/*
+	 * ⚠ THE PER-LANE EPL SERDES REGISTERS MUST BE WRITTEN OR THE LANE
+	 * NEVER LOCKS. Without these writes:
+	 *   - SERDES_TX_CFG_lo stays 0 (TxEn=0, EPL TX path disabled)
+	 *   - LANE_CFG bits 19,18 stay 0 (EPL TX and RX held in reset)
+	 *   - LANE_STATUS stays 0x000 regardless of what the SBus sequence did
+	 *
+	 * The LANE_CFG write uses a two-step latch sequence: strobe bits 24,23
+	 * must be set in the first write and cleared in the second. Writing
+	 * only the final value does not release the paths from reset.
+	 *
+	 * SERDES_TX_CFG_lo carries per-port equalization: EqPre[14:12] and
+	 * EqPost[11:8] come from the port table, everything else is fixed.
+	 * SERDES_CFG_lo encodes RefSel[11:6]=0x1b for the 10G reference clock
+	 * on this board; SERDES_RX_CFG, TX_HI and SIG_DET are 10G constants.
+	 *
+	 * [Determined by comparing cold-state and forwarding-state register
+	 * dumps on hardware; EQ field encoding confirmed against two ports
+	 * with different pre/post values. All are EPL hardware facts.]
+	 */
+	{
+		uint32_t lb = FM6000_EPL_LANE(p->epl, p->lane);
+		uint32_t tx_lo = FM6000_EPL_SERDES_TX_BASE |
+				 ((uint32_t)(p->pre  & 0x7u) << 12) |
+				 ((uint32_t)(p->post & 0xfu) <<  8);
+
+		if ((rv = fm_wr(d, lb + FM6000_EPL_SERDES_CFG_LO,
+				FM6000_EPL_SERDES_CFG_LO_10G)) == FM_OK &&
+		    (rv = fm_wr(d, lb + FM6000_EPL_SERDES_TX_LO,  tx_lo)) == FM_OK &&
+		    (rv = fm_wr(d, lb + FM6000_EPL_SERDES_TX_HI,
+				FM6000_EPL_SERDES_TX_HI_10G)) == FM_OK &&
+		    (rv = fm_wr(d, lb + FM6000_EPL_SERDES_RX_CFG,
+				FM6000_EPL_SERDES_RX_10G)) == FM_OK &&
+		    (rv = fm_wr(d, lb + FM6000_EPL_SERDES_SIG_DET,
+				FM6000_EPL_SERDES_SIG_10G)) == FM_OK)
+			/* LANE_CFG last: strobe then release. */
+			if ((rv = fm_wr(d, lb + FM6000_EPL_SERDES_LANE_CFG,
+					FM6000_EPL_SERDES_LANE_STROBE)) == FM_OK)
+				rv = fm_wr(d, lb + FM6000_EPL_SERDES_LANE_CFG,
+					   FM6000_EPL_SERDES_LANE_10G);
+	}
+	set(rep, FM_LANE_SERDES, rv, "per-lane SERDES_CFG, TX/RX path, LANE_CFG", NULL);
+	if (rv != FM_OK)
+		return rv;
+
 	/* The transmit equaliser, from the board's own per-port routing data. */
 	{
 		uint32_t r61 = 0, r62 = 0, r65 = 0;
