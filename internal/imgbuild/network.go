@@ -199,7 +199,7 @@ fi
 # $1 = "quiet" while waiting for the datapath, whose ports do not exist yet.
 apply_vlans() {
 command -v nosaic >/dev/null 2>&1 || return 0
-grep -Eq '^(vlan|switchport|lag|lacp|stp|mlag|gateway|mac)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+grep -Eq '^(vlan|switchport|lag|lacp|stp|mlag|gateway|mac|interface)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
 # The LACP system priority first: every LAG negotiates with it from the start.
 # The MAC aging time with it, before anything is learned.
 while read -r kind rest; do
@@ -262,6 +262,12 @@ done < "$CONF"
 while read -r kind a b; do
     [ "$kind" = "gateway" ] && [ "$a" != "mac" ] && [ -n "$b" ] || continue
     out=$(nosaic gateway add "$a" "$b" 2>&1) || say "gateway $a $b FAILED: $out" "$1"
+done < "$CONF"
+# Port admin state: "interface <name> up|down". Applies to front-panel ports
+# that the datapath controls but whose state is not visible to the kernel.
+while read -r kind name state; do
+    [ "$kind" = "interface" ] && [ -n "$name" ] && [ -n "$state" ] || continue
+    out=$(nosaic interface "$name" "$state" 2>&1) || say "interface $name $state FAILED: $out" "$1"
 done < "$CONF"
 }
 
