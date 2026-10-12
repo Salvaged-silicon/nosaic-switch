@@ -273,6 +273,23 @@ rm -f "$ABSENT_FINAL"
 
 apply_routes
 
+# Port admin state: "interface <name> up|down".
+#
+# Unlike kernel interfaces, front-panel ports do not exist as Linux devices;
+# their state lives in nosd. The call is idempotent -- nosd skips the SerDes
+# sequence if the port is already in the requested state, so this is safe to
+# call on every reconcile pass.
+apply_ports() {
+command -v nosaic >/dev/null 2>&1 || return 0
+grep -q '^interface[[:space:]]' "$CONF" || return 0
+while read -r kind name state; do
+    [ "$kind" = "interface" ] && [ -n "$name" ] && [ -n "$state" ] || continue
+    out=$(nosaic interface "$name" "$state" 2>&1) || say "interface $name $state FAILED: $out"
+done < "$CONF"
+}
+
+apply_ports
+
 say done
 
 if [ "$RECONCILE_SECS" -gt 0 ] 2>/dev/null; then
@@ -284,6 +301,7 @@ if [ "$RECONCILE_SECS" -gt 0 ] 2>/dev/null; then
         # which is the one thing an operator needs to see in the log.
         apply_ifaces || :
         apply_routes
+        apply_ports
     done
 fi
 `

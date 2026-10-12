@@ -785,7 +785,10 @@ static inline unsigned fm6000_epl_channel(unsigned epl, unsigned lane)
  * cold state vs forwarding lane; EQ fields confirmed against two ports with
  * different pre/post. All are EPL facts, no vendor code copied.]
  */
-/* LANE_STATUS: receiver lock at +0x38 from the lane base. 0x940 = locked. */
+/* LANE_STATUS: receiver lock at +0x38 from the lane base.
+ * Bits [11,8,6] (0x940) are the minimum set for a locked lane; upper bits
+ * may also be set (0x1C940 observed after repeated init) without affecting
+ * link validity. Check (ls & 0x940) == 0x940, not exact equality. */
 #define FM6000_EPL_LANE_STATUS_OFF	0x38u
 
 #define FM6000_EPL_SERDES_CFG_LO	0x34u	/* reference clock + power */

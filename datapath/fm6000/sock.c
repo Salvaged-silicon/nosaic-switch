@@ -183,7 +183,7 @@ static void answer(FILE *out, const char *req)
 		read_port_hw(p, &ps, &ls);
 		admin_up = port_admin_up[port];
 		oper_up = (ps & FM6000_PORT_STATUS_UP) == FM6000_PORT_STATUS_UP &&
-			  ls == 0x940u;
+			  (ls & 0x940u) == 0x940u;
 		fprintf(out,
 			"{\"ok\":true,\"result\":{"
 			"\"Name\":\"%s\","
@@ -215,13 +215,33 @@ static void answer(FILE *out, const char *req)
 			return;
 		}
 		up = strstr(req, "\"up\":true") != NULL;
+		if (port_admin_up[port] == up) {
+			fprintf(out, "{\"ok\":true,\"result\":{}}\n");
+			return;
+		}
 		if (up) {
+			uint32_t ps = 0, ls = 0;
 			struct fm_lane_report rep;
 			int rv;
 
 			if (sock_dev == NULL) {
 				fprintf(out,
 					"{\"ok\":false,\"error\":\"no chip attached\"}\n");
+				return;
+			}
+			/*
+			 * If the lane is already locked (e.g. nosd restarted but
+			 * the chip was never power-cycled), record admin up and
+			 * return without touching the SerDes.  Re-running
+			 * fm_lane_enable on a live lane issues a SBus device reset
+			 * at step 1, which kills the lock, and the lane may not
+			 * re-lock quickly enough to satisfy the wait.
+			 */
+			read_port_hw(p, &ps, &ls);
+			if ((ps & FM6000_PORT_STATUS_UP) == FM6000_PORT_STATUS_UP &&
+			    (ls & 0x940u) == 0x940u) {
+				port_admin_up[port] = true;
+				fprintf(out, "{\"ok\":true,\"result\":{}}\n");
 				return;
 			}
 			memset(&rep, 0, sizeof(rep));
