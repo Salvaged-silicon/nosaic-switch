@@ -118,17 +118,32 @@ static int esched_fail(int rv, unsigned n, uint32_t dead,
 static int esched_wr(struct fm6000 *d, uint32_t word, uint32_t val,
 		     unsigned *n, uint32_t *culprit)
 {
+	uint32_t rb;
 	int rv = fm_wr(d, word, val);
 
 	if (rv != FM_OK) {
 		*culprit = word;
 		return rv;
 	}
-	(*n)++;
-	if (!fm_alive(d)) {
+	/*
+	 * Force the posted write to drain from the LBUS bridge queue.
+	 *
+	 * Posted writes to ESCHED queue in the SCD bridge and are only
+	 * consumed when the ring engine visits this block.  fm_alive()
+	 * reads a different register and does not force ordering across
+	 * the ESCHED sub-bus.  Reading back the same address we just
+	 * wrote is a non-posted transaction; PCIe/LBUS ordering rules
+	 * require all preceding writes to the same target to complete
+	 * before the read response is returned.  This drains the queue
+	 * one entry at a time instead of letting it fill to ~20 and block.
+	 * [Hypothesis 2026-10-12 -- ESCHED reads safe once sched_ready=1]
+	 */
+	rv = fm_rd(d, word, &rb);
+	if (rv != FM_OK) {
 		*culprit = word;
-		return FM_EOFFBUS;
+		return rv;
 	}
+	(*n)++;
 	return FM_OK;
 }
 

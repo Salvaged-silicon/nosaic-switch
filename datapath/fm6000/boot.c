@@ -9,6 +9,7 @@
 #include "memfill.h"
 #include "pci.h"
 #include "regs.h"
+#include "esched.h"
 #include "ssched.h"
 
 static void nap_ms(long ms)
@@ -549,6 +550,41 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	}
 	set(d, rep, FM_STEP_SCHED, FM_OK,
 	    "FOUND -- the engine is walking the ring");
+
+	/*
+	 * Egress scheduler init: the ESCHED block (0x2000-0x3FFF) requires the
+	 * scheduler ring to be circulating AND the ESCHED SchedPeriod (CFG_4)
+	 * to be non-zero.
+	 *
+	 * Without CFG_4, posted writes to 0x2000-0x3fff queue in the LBUS
+	 * bridge and the chip goes off-bus at write ~20 even with the ring
+	 * circulating (measured 2026-10-12).  EdgeNOS writes CFG_4=0x2000
+	 * before all ESCHED configuration; we do the same after FOUND.
+	 *
+	 * In nosweep mode (CFG_3 not written) CFG_4=0x2000 is safe at any
+	 * point after the ring SRAMs carry valid data (measured 2026-10-05).
+	 * fm_sched_mark_ready permits the ESCHED block writes.
+	 */
+	fm_sched_mark_ready(d);
+	rv = fm_wr(d, FM6000_SWEEPER_CFG_4, 0x2000u);
+	if (rv != FM_OK) {
+		set(d, rep, FM_STEP_SCHED, rv, "CFG_4 (SchedPeriod) write failed");
+		return rv;
+	}
+	{
+		uint32_t culprit = 0;
+		unsigned esched_n = 0;
+
+		rv = fm_esched_init(d, &esched_n, &culprit);
+		if (rv != FM_OK) {
+			fprintf(stderr, "boot: esched init failed at 0x%06x "
+					"after %u writes (%d)\n",
+					culprit, esched_n, rv);
+			/* non-fatal: scheduler is zeroed, traffic will not egress */
+		} else {
+			fprintf(stderr, "boot: esched: %u writes ok\n", esched_n);
+		}
+	}
 
 	fm_boot_mark_done(d);
 	return FM_OK;

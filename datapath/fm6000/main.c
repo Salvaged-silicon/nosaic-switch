@@ -32,8 +32,12 @@
 #include <unistd.h>
 
 #include "boot.h"
+#include "cmrest.h"
+#include "cmwm.h"
+#include "parser.h"
 #include "pci.h"
 #include "regs.h"
+#include "saf.h"
 #include "sock.h"
 
 /*
@@ -46,6 +50,49 @@
 #define FM_DEFAULT_WAIT_SECS 30
 
 static volatile int running = 1;
+
+/*
+ * Pipeline init: the blocks that boot_cold() leaves zeroed and that the
+ * forwarding path needs before frames can move.
+ *
+ * These are idempotent -- the same end state on every call -- so running them
+ * on a chip that has already been through this once (e.g. nosd restarted) is
+ * harmless. A nosd restart that skipped this and left the pipeline unconfigured
+ * would be worse than one that re-ran 400 writes.
+ */
+static void pipeline_init(struct fm6000 *d)
+{
+	struct fm_cmwm_report cmwm;
+	unsigned n;
+	int rv;
+
+	rv = fm_saf_init(d, &n);
+	if (rv != FM_OK)
+		fprintf(stderr, "nosd-fm6000: SAF init failed (%d)\n", rv);
+	else
+		fprintf(stderr, "nosd-fm6000: SAF: %u writes ok\n", n);
+
+	rv = fm_parser_fields_init(d, &n);
+	if (rv != FM_OK)
+		fprintf(stderr, "nosd-fm6000: parser fields init failed (%d)\n", rv);
+	else
+		fprintf(stderr, "nosd-fm6000: parser fields: %u writes ok\n", n);
+
+	rv = fm_cmwm_init(d, &cmwm);
+	if (rv != FM_OK)
+		fprintf(stderr, "nosd-fm6000: CM watermarks init failed (%d)\n", rv);
+	else
+		fprintf(stderr, "nosd-fm6000: CM watermarks: %u writes, "
+				"%u/%u tables verified%s\n",
+				cmwm.written, cmwm.verified, cmwm.readable,
+				cmwm.first_bad ? " (MISMATCH)" : "");
+
+	rv = fm_cmrest_init(d, &n);
+	if (rv != FM_OK)
+		fprintf(stderr, "nosd-fm6000: CM rest init failed (%d)\n", rv);
+	else
+		fprintf(stderr, "nosd-fm6000: CM rest: %u writes ok\n", n);
+}
 
 static void nap_ms(long ms)
 {
@@ -217,6 +264,7 @@ int main(int argc, char **argv)
 				return 1;
 			}
 		}
+		pipeline_init(&dev);
 	}
 
 	if (fm_sock_start(&dev, sockpath) != 0)

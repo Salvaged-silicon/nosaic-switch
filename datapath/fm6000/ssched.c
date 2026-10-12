@@ -444,12 +444,13 @@ no_sweeper:
 	/*
 	 * ESCHED (0x2000-0x3fff): not written here.
 	 *
-	 * ESCHED writes via PCI BAR never commit -- the LBUS write queue never
-	 * drains regardless of ring state (measured: chip off-bus at write ~20
-	 * with ring running; writes silently dropped without ring; BIST does not
-	 * help). The ring circulates fine with ESCHED scheduling disabled
-	 * (CFG_4=0, clock off); per-port bandwidth allocation is deferred until
-	 * a working write path is found. [RE 2026-10-05]
+	 * ESCHED is written by boot.c after FOUND, with CFG_4=0x2000 written
+	 * first to enable the ESCHED write path (measured 2026-10-12: without
+	 * CFG_4, posted writes queue in the LBUS bridge and the chip goes
+	 * off-bus at write ~20 even with the ring circulating).
+	 *
+	 * The ring circulates without ESCHED; scheduling policy defaults to
+	 * zero until fm_esched_init() in boot.c has completed. [RE 2026-10-05]
 	 */
 	phase(d, rep, FM_SSCHED_PH_ESCHED);
 
@@ -635,12 +636,12 @@ no_sweeper:
 	 * BIST run beforehand the settle produces ~0 resets and those writes
 	 * survive intact, so no re-write is needed.
 	 *
-	 * Neither path enables CFG_4=0x2000 (ESCHED clock domain).  ESCHED
-	 * writes via PCI are not committable -- the LBUS queue never drains
-	 * regardless of ring state (measured: chip off-bus at write ~20 with
-	 * ring running, silently dropped at write 1 without ring).  The ring
-	 * circulates without ESCHED; scheduling policy defaults to zero which
-	 * is benign for a lab switch passing no traffic. [RE 2026-10-05]
+	 * Neither path writes CFG_4=0x2000 here.  ESCHED is configured by
+	 * boot.c after FOUND (fm_esched_init), which writes CFG_4=0x2000
+	 * first; without it the LBUS queue fills at write ~20 even with the
+	 * ring running (measured 2026-10-12).  The ring circulates without
+	 * ESCHED; scheduling policy defaults to zero until esched_init runs.
+	 * [RE 2026-10-05]
 	 */
 	if (flags & FM_SSCHED_MGMT_ONLY) {
 		uint32_t tok = SSCHED_TOKEN(SSCHED_MGMT_PORT, 1, 0);
