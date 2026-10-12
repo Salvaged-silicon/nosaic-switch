@@ -264,6 +264,58 @@ static int attach(const char *bdf, char **confs, int nconf, int full)
 			"  attach without a port map, and this board's is generated rather\n"
 			"  than shipped -- see platform/<board>/tools/mkportmap.sh\n");
 
+	/*
+	 * The SerDes tables have to be there, and their absence is the one
+	 * configuration error that does not announce itself.
+	 *
+	 * A missing port map refuses above and says exactly what to run. A
+	 * missing lane map or polarity table does the opposite: every port comes
+	 * UP, at the right speed, reporting healthy on every status the SDK
+	 * offers -- and carries garbage, or nothing at all. Inverting a 64b/66b
+	 * stream turns the sync header 01 into 10, which is also legal, so the
+	 * far end locks happily onto nonsense; a permuted lane map lets each lane
+	 * lock and then reassembles no frame. Both look exactly like a far end
+	 * that is not transmitting.
+	 *
+	 * These tables are generated per board and deliberately kept out of the
+	 * repository, so a fresh worktree produces an image with none of them.
+	 * That has happened: on 2026-09-21 four of six trees here had no
+	 * polarity.conf at all. Refusing to start is worse than nothing for
+	 * exactly as long as it takes to read the message, and better than a
+	 * switch that forwards corrupt frames for a day.
+	 *
+	 * A board that genuinely needs neither says so, rather than being
+	 * indistinguishable from one that forgot.
+	 */
+	{
+		const char *declared = nosaic_props_get("nosaic_serdes_tables");
+		int nlanemap = nosaic_props_count_prefix("xgxs_tx_lane_map_");
+		int npol = nosaic_props_count_prefix("phy_xaui_tx_polarity_flip_") +
+			   nosaic_props_count_prefix("phy_xaui_rx_polarity_flip_");
+
+		if ((declared == NULL || strcmp(declared, "none") != 0) &&
+		    (nlanemap == 0 || npol == 0)) {
+			fprintf(stderr,
+				"nosd: this board's SerDes tables are missing -- %d lane map(s), "
+				"%d polarity entr(ies).\n"
+				"      Refusing to start. Without them the chip initialises, every\n"
+				"      port comes up at the right speed and reports healthy, and the\n"
+				"      wire carries garbage: a wrong polarity still passes the sync\n"
+				"      header, and a permuted lane map still locks each lane.\n"
+				"      There is no symptom to find afterwards, which is why this is\n"
+				"      a refusal and not a warning.\n"
+				"\n"
+				"      They are generated from a switch that already has them:\n"
+				"\n"
+				"        tools/mkpolarity.sh <switch-ip> > %s/polarity.conf\n"
+				"\n"
+				"      A board that truly needs neither declares it instead:\n"
+				"        nosaic_serdes_tables=none\n",
+				nlanemap, npol, PERSIST_CONF_DIR);
+			return 1;
+		}
+	}
+
 	unit = nosaic_sdk_attach(b, TD2P_DEVICE, 0x02);
 	if (unit < 0) {
 		nosaic_bde_close(b);

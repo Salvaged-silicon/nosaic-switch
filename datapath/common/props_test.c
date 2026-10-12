@@ -55,6 +55,30 @@ static void absent_key_reads_as_absent(void)
 	      "an unrelated name that was never set reads as absent");
 }
 
+/* Counting by prefix is what turns "the SerDes tables are missing" from an
+ * invisible condition into a refusal, so it has to count the right things:
+ * the prefix must match at the START of a name and nowhere else, or a board
+ * with no lane maps would look equipped because some other property happened
+ * to contain the string. */
+static void count_prefix_counts_only_leading_matches(void)
+{
+	nosaic_props_set("xgxs_tx_lane_map_49", "0x0123");
+	nosaic_props_set("xgxs_tx_lane_map_53", "0x0123");
+	nosaic_props_set("xgxs_rx_lane_map_49", "0x1032");
+	nosaic_props_set("not_xgxs_tx_lane_map_99", "0x0123");
+
+	check(nosaic_props_count_prefix("xgxs_tx_lane_map_") == 2,
+	      "counts the two names that begin with the prefix");
+	check(nosaic_props_count_prefix("xgxs_rx_lane_map_") == 1,
+	      "and does not confuse tx with rx");
+	check(nosaic_props_count_prefix("phy_xaui_tx_polarity_flip_") == 0,
+	      "a table that was never loaded counts zero -- the case that refuses");
+	check(nosaic_props_count_prefix("") == nosaic_props_count(),
+	      "an empty prefix matches everything");
+	check(nosaic_props_count_prefix(NULL) == 0,
+	      "and a NULL prefix is not a crash");
+}
+
 int main(void)
 {
 	const char *image = "/tmp/props_test_image.conf";
@@ -108,6 +132,7 @@ int main(void)
 	      "a property the override does not mention is kept");
 
 	absent_key_reads_as_absent();
+	count_prefix_counts_only_leading_matches();
 
 	/* Three distinct names went in; three must come out. */
 	check(count == 3, "the table holds one entry per distinct name");

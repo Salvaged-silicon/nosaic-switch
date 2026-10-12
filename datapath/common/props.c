@@ -319,3 +319,20 @@ const char *nosaic_props_value(int i)
 		return NULL;
 	return props[i].value;
 }
+
+int nosaic_props_count_prefix(const char *prefix)
+{
+	int i, n = 0;
+	size_t len;
+
+	if (prefix == NULL)
+		return 0;
+	len = strlen(prefix);
+	for (i = 0; i < nosaic_props_count(); i++) {
+		const char *name = nosaic_props_name(i);
+
+		if (name != NULL && strncmp(name, prefix, len) == 0)
+			n++;
+	}
+	return n;
+}

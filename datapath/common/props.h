@@ -65,6 +65,15 @@ int nosaic_props_load_dir(const char *dir);
 
 int nosaic_props_count(void);
 
+/* How many loaded properties begin with prefix.
+ *
+ * For asking "did this board's SerDes tables actually load", which is a
+ * question with no other answer: the tables are generated per board and kept
+ * out of the repository, so a tree without them produces an image that boots,
+ * links every port and forwards garbage. Counting is the cheapest way to turn
+ * that into a refusal. */
+int nosaic_props_count_prefix(const char *prefix);
+
 /* Iterate the loaded properties by index. */
 const char *nosaic_props_name(int i);
 const char *nosaic_props_value(int i);
