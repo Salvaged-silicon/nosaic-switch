@@ -785,6 +785,9 @@ static inline unsigned fm6000_epl_channel(unsigned epl, unsigned lane)
  * cold state vs forwarding lane; EQ fields confirmed against two ports with
  * different pre/post. All are EPL facts, no vendor code copied.]
  */
+/* LANE_STATUS: receiver lock at +0x38 from the lane base. 0x940 = locked. */
+#define FM6000_EPL_LANE_STATUS_OFF	0x38u
+
 #define FM6000_EPL_SERDES_CFG_LO	0x34u	/* reference clock + power */
 #define FM6000_EPL_SERDES_LANE_CFG	0x37u	/* TX/RX datapath reset control */
 #define FM6000_EPL_SERDES_RX_CFG	0x39u	/* RX path enable + rate */

@@ -18,6 +18,7 @@
  */
 #include <errno.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 
 #include "pci.h"
 #include "regs.h"
+#include "serdes.h"
 #include "sock.h"
 
 #ifndef NOSAIC_QUERY_DRIVER
@@ -36,6 +38,9 @@
 
 static struct fm6000 *sock_dev;
 static const char *sock_path;
+
+/* Admin state for ports 1..8; index 0 unused. */
+static bool port_admin_up[9];
 
 /* Pull an integer argument out of a request. The protocol is deliberately dull
  * and so is this: a real JSON parser here would be more code than the whole
@@ -49,6 +54,55 @@ static long req_int(const char *req, const char *key, long dflt)
 	if ((p = strstr(req, pat)) == NULL)
 		return dflt;
 	return strtol(p + strlen(pat), NULL, 0);
+}
+
+/* Pull a string argument out of a request into buf[len]. Returns buf on
+ * success or NULL if the key is absent or the value does not fit. */
+static char *req_str(const char *req, const char *key, char *buf, size_t len)
+{
+	char pat[64];
+	const char *p, *q;
+	size_t n;
+
+	snprintf(pat, sizeof(pat), "\"%s\":\"", key);
+	if ((p = strstr(req, pat)) == NULL)
+		return NULL;
+	p += strlen(pat);
+	if ((q = strchr(p, '"')) == NULL)
+		return NULL;
+	n = (size_t)(q - p);
+	if (n >= len)
+		return NULL;
+	memcpy(buf, p, n);
+	buf[n] = '\0';
+	return buf;
+}
+
+/* Parse "etN" -> N. Returns 0 on failure. */
+static int port_from_name(const char *name)
+{
+	long n;
+
+	if (name == NULL || (name[0] != 'e' || name[1] != 't'))
+		return 0;
+	n = strtol(name + 2, NULL, 10);
+	if (n < 1 || n > 8)
+		return 0;
+	return (int)n;
+}
+
+/* Read PORT_STATUS and LANE_STATUS for a port. Both are 0 on failure. */
+static void read_port_hw(const struct fm_port *p,
+			 uint32_t *port_status, uint32_t *lane_status)
+{
+	uint32_t lb = FM6000_EPL_LANE(p->epl, p->lane);
+
+	*port_status = 0;
+	*lane_status = 0;
+	if (sock_dev == NULL)
+		return;
+	fm_rd(sock_dev, lb, port_status);
+	fm_rd(sock_dev, lb + FM6000_EPL_LANE_STATUS_OFF, lane_status);
 }
 
 static void answer(FILE *out, const char *req)
@@ -77,7 +131,7 @@ static void answer(FILE *out, const char *req)
 		 */
 		fprintf(out,
 			"{\"ok\":true,\"result\":{\"Contract\":\"1.1\","
-			"\"Driver\":\"%s\",\"MaxPorts\":0,"
+			"\"Driver\":\"%s\",\"MaxPorts\":8,"
 			"\"VLANs\":false,\"MaxVLANs\":0,"
 			"\"L2Learning\":false,\"MaxFDB\":0,"
 			"\"L3\":false,\"MaxV4\":0,\"MaxV6\":0,\"IPv6\":false,"
@@ -89,11 +143,98 @@ static void answer(FILE *out, const char *req)
 		return;
 	}
 
-	/* No taps exist yet, so there are no ports to report. An empty array
-	 * rather than an error: the question is valid and the answer is none. */
+	/* ports: enumerate the eight known front-panel ports. */
 	if (strstr(req, "\"ports\"") != NULL &&
 	    strstr(req, "\"asic.ports\"") == NULL) {
-		fprintf(out, "{\"ok\":true,\"result\":[]}\n");
+		int i;
+		const char *sep = "";
+
+		fprintf(out, "{\"ok\":true,\"result\":[");
+		for (i = 1; i <= 8; i++) {
+			const struct fm_port *p = fm_port_lookup(i);
+
+			if (p == NULL)
+				continue;
+			fprintf(out, "%s{\"Name\":\"et%d\",\"Index\":%d}",
+				sep, p->port, p->port);
+			sep = ",";
+		}
+		fprintf(out, "]}\n");
+		return;
+	}
+
+	/* port.status: read PORT_STATUS and LANE_STATUS from hardware. */
+	if (strstr(req, "\"port.status\"") != NULL) {
+		char name[32];
+		const struct fm_port *p;
+		uint32_t ps, ls;
+		bool admin_up, oper_up;
+		int port;
+
+		if (req_str(req, "name", name, sizeof(name)) == NULL) {
+			fprintf(out, "{\"ok\":false,\"error\":\"missing name\"}\n");
+			return;
+		}
+		if ((port = port_from_name(name)) == 0 ||
+		    (p = fm_port_lookup(port)) == NULL) {
+			fprintf(out, "{\"ok\":false,\"error\":\"unknown port\"}\n");
+			return;
+		}
+		read_port_hw(p, &ps, &ls);
+		admin_up = port_admin_up[port];
+		oper_up = (ps & FM6000_PORT_STATUS_UP) == FM6000_PORT_STATUS_UP &&
+			  ls == 0x940u;
+		fprintf(out,
+			"{\"ok\":true,\"result\":{"
+			"\"Name\":\"%s\","
+			"\"AdminUp\":%s,"
+			"\"OperUp\":%s,"
+			"\"SpeedMbps\":10000,"
+			"\"FullDuplex\":true,"
+			"\"MTU\":9216}}\n",
+			name,
+			admin_up ? "true" : "false",
+			oper_up  ? "true" : "false");
+		return;
+	}
+
+	/* port.admin: bring a port up or down. */
+	if (strstr(req, "\"port.admin\"") != NULL) {
+		char name[32];
+		const struct fm_port *p;
+		bool up;
+		int port;
+
+		if (req_str(req, "name", name, sizeof(name)) == NULL) {
+			fprintf(out, "{\"ok\":false,\"error\":\"missing name\"}\n");
+			return;
+		}
+		if ((port = port_from_name(name)) == 0 ||
+		    (p = fm_port_lookup(port)) == NULL) {
+			fprintf(out, "{\"ok\":false,\"error\":\"unknown port\"}\n");
+			return;
+		}
+		up = strstr(req, "\"up\":true") != NULL;
+		if (up) {
+			struct fm_lane_report rep;
+			int rv;
+
+			if (sock_dev == NULL) {
+				fprintf(out,
+					"{\"ok\":false,\"error\":\"no chip attached\"}\n");
+				return;
+			}
+			memset(&rep, 0, sizeof(rep));
+			rv = fm_lane_enable(sock_dev, p, &rep);
+			if (rv != FM_OK) {
+				fprintf(out,
+					"{\"ok\":false,\"error\":\"lane enable failed at step %d\"}\n",
+					rep.reached);
+				return;
+			}
+		}
+		port_admin_up[port] = up;
+		fprintf(out, "{\"ok\":true,\"result\":{}}\n");
 		return;
 	}
 
