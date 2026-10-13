@@ -33,6 +33,8 @@
  * work on this chassis -- and relicensed. The address set is regenerated from
  * the geometry above and this board's port map.
  */
+#include <stdio.h>
+
 #include "parser.h"
 #include "pci.h"
 #include "portmap.h"
@@ -66,12 +68,17 @@ static int write_entry(struct fm6000 *d, unsigned port, unsigned entry,
 			entry * PARSER_ENTRY_STRIDE;
 	int rv;
 
-	if ((rv = fm_wr(d, base, w0)) != FM_OK)
+	if ((rv = fm_wr(d, base, w0)) != FM_OK) {
+		fprintf(stderr, "parser: port %u entry %u wr w0 addr 0x%06x failed (%d) alive=%d\n",
+			port, entry, base, rv, fm_alive(d));
 		return rv;
-	(*n)++;
-	if ((rv = fm_wr(d, base + 1, w1)) != FM_OK)
+	}
+	if ((rv = fm_wr(d, base + 1, w1)) != FM_OK) {
+		fprintf(stderr, "parser: port %u entry %u wr w1 addr 0x%06x failed (%d) alive=%d\n",
+			port, entry, base + 1, rv, fm_alive(d));
 		return rv;
-	(*n)++;
+	}
+	(*n) += 2;
 	return FM_OK;
 }
 
@@ -84,10 +91,14 @@ int fm_parser_fields_init(struct fm6000 *d, unsigned *written)
 		*written = 0;
 
 	/*
-	 * Entry 0: a seed for the ports that carry traffic, zero for the rest.
-	 *
-	 * The host port and the two internal ports have a GLORT but no
-	 * 0x100|glort in the low half -- only the front panel does.
+	 * Write both entries for each port together so that the four addresses
+	 * of each port's ECC cluster (port*4 + 0..3) are written in a single
+	 * sequential burst. Writing entry 0 for all ports then entry 1 for all
+	 * ports interleaves addresses across clusters, which forces the hardware
+	 * to flush incomplete clusters with an ECC read-modify-write. Parser
+	 * SRAM ECC is not initialised by BIST, so that RMW read hits invalid
+	 * ECC and causes a hard chip fault. The sequential per-port order
+	 * matches the step-10 fill and avoids any mid-cluster RMW read.
 	 */
 	for (port = 0; port < PARSER_PORTS; port++) {
 		uint32_t w0 = 0, w1 = 0;
@@ -105,12 +116,24 @@ int fm_parser_fields_init(struct fm6000 *d, unsigned *written)
 		}
 		if ((rv = write_entry(d, port, 0, w0, w1, &n)) != FM_OK)
 			return rv;
-	}
-
-	/* Entry 1 is unused on every port. */
-	for (port = 0; port < PARSER_PORTS; port++)
+		/* Entry 1 is unused on every port. Write it immediately after
+		 * entry 0 to complete the port's 4-word ECC cluster. */
 		if ((rv = write_entry(d, port, 1, 0, 0, &n)) != FM_OK)
 			return rv;
+	}
+
+	/*
+	 * Flush the LBUS posted-write queue and confirm the chip is alive.
+	 * Read from PIN_STRAP (not parser SRAM, which like SAF may be
+	 * write-only from the management path, or may stall on reads before
+	 * the chip has finished processing ECC for the writes above).
+	 */
+	{
+		uint32_t flush = 0;
+
+		if ((rv = fm_rd(d, 0x000000u, &flush)) != FM_OK)
+			return rv;
+	}
 
 	if (written != NULL)
 		*written = n;

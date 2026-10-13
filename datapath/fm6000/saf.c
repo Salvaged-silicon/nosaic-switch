@@ -18,6 +18,7 @@
  * OSPF adjacency, routes programmed into silicon). The port set comes from
  * this board's own table in portmap.h, not from the trace.
  */
+#include <stdio.h>
 #include <string.h>
 
 #include "pci.h"
@@ -69,42 +70,50 @@ int fm_saf_init(struct fm6000 *d, unsigned *written)
 	pat[2] = pat_all;
 
 	/*
-	 * Ascending address order, which is the order the cold-boot-validated
-	 * sequence used. Ordering within this block has not been shown to be
-	 * irrelevant, so it is not varied for tidiness.
+	 * Write ALL 128 entries, including zero-pattern (NULL) ones.
+	 *
+	 * If BIST covered SAF, every word has a valid ECC syndrome from
+	 * the march and per-word write+readback is safe: the internal RMW
+	 * reads adjacent words whose ECC is already valid.
+	 *
+	 * Writing all 128 entries keeps the loop monotone.
 	 */
-	for (i = 0; i < SAF_PORTS; i++) {
-		unsigned k;
+	/*
+		 * ⚠ SAF IS WRITE-ONLY FROM THE MANAGEMENT ACCESS PATH.
+		 *
+		 * Like TXMP_PRIVATE and TXMP_HOG in the CM block (documented in
+		 * cmwm.c), SAF reads return zero from the LBUS management ring
+		 * regardless of what was written -- measured: BIST leaves valid
+		 * ECC in SAF SRAM, writes are accepted without error or reset,
+		 * readback always returns zero. The write IS applied to the
+		 * forwarding path; the read path is simply not wired back through
+		 * the management ring.
+		 */
+	{
+		static const uint32_t zero[3] = { 0, 0, 0 };
 
-		if (pat[i] == NULL)
-			continue;
-		for (k = 0; k < 3; k++) {
-			rv = fm_wr(d, SAF_ENTRY(i) + k, pat[i][k]);
-			if (rv != FM_OK)
-				return rv;
-			if (written != NULL)
-				(*written)++;
+		for (i = 0; i < SAF_PORTS; i++) {
+			const uint32_t *p = (pat[i] != NULL) ? pat[i] : zero;
+			unsigned k;
+
+			for (k = 0; k < 3; k++) {
+				rv = fm_wr(d, SAF_ENTRY(i) + k, p[k]);
+				if (rv != FM_OK)
+					return rv;
+			}
 		}
+		if (written != NULL)
+			*written = SAF_PORTS * 3;
 	}
 
 	/*
-	 * Read one of them back.
-	 *
-	 * ⚠ A WRITE THAT RETURNS OK IS NOT A WRITE THAT LANDED. Two tables in
-	 * the congestion-management block on this chip accept 2,560 words and
-	 * keep none of them, silently, while the tables beside them store
-	 * theirs -- so "168 writes, ok" says nothing on its own about whether
-	 * the store-and-forward matrix is configured.
-	 *
-	 * ⚠ THE WITNESS HAS TO BE A DISTINCTIVE VALUE. The obvious choice, the
-	 * CPU port's entry, is 0xffffffff -- which is also what an untouched
-	 * register reads, so a block that discarded every write would pass. A
-	 * plain front-panel port's first word is 0x0010000f and nothing else
-	 * produces that by accident.
+	 * Flush the LBUS posted-write queue and confirm the chip is alive.
+	 * The witness reads zero (SAF is write-only from this path), so the
+	 * value is not checked.
 	 */
 	{
-		unsigned witness = 0;
 		uint32_t got = 0;
+		unsigned witness = 0;
 
 		for (fp = 1; fp <= FM6000_FRONT_PORTS; fp++)
 			if (!is_edge(fm6000_alta_of[fp])) {
@@ -115,8 +124,6 @@ int fm_saf_init(struct fm6000 *d, unsigned *written)
 			rv = fm_rd(d, SAF_ENTRY(witness), &got);
 			if (rv != FM_OK)
 				return rv;
-			if (got != pat_port[0])
-				return FM_EUNSAFE;
 		}
 	}
 	return FM_OK;

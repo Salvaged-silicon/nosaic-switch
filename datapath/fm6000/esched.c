@@ -25,6 +25,16 @@
  * getting twenty registers in and taking the switch down. A refusal here is
  * the guard working, not a bug in the table below.
  *
+ * ⚠ LBUS (SCD BAR1) CANNOT WRITE THIS BLOCK. Measured 2026-10-13: every
+ * address in 0x002000-0x003fff is fatal via the LBUS regardless of value or
+ * ring state. fm_esched_init() is therefore a stub that returns FM_OK without
+ * writing anything until the FM6000's PCIe link is brought up. The ring
+ * circulates with zero scheduling policy (post-BIST defaults), which is
+ * sufficient for bring-up testing. When step 9 (PCIe serdes) is implemented,
+ * this stub must be replaced by PCIe-resource0 writes matching EdgeNOS's
+ * fm6000_esched.c + fm6000_eschedrr.c. The 42 fm_boot_freelists() resets
+ * wipe ESCHED SRAM, so fm6000_eschedrr.c (DRR quanta) must run first.
+ *
  * PROVENANCE. The geometry and values are from EdgeNOS's fm6000_esched.c --
  * our own prior work on this chassis -- whose C file is a materialised table
  * from its own generator. Regenerated here from that geometry rather than
@@ -32,8 +42,6 @@
  */
 #include "esched.h"
 #include "pci.h"
-#include "portmap.h"
-#include "regs.h"
 
 /*
  * The block is eight instances of the same four arrays, 0x200 apart, each
@@ -90,132 +98,32 @@
 #define ESCHED_DRR_PENALTY  0x14ffffffu
 #define ESCHED_DRR_SETTLED  0x00ffffffu
 
-/*
- * Write one register and prove the chip survived it.
- *
- * ⚠ OVER THE LOCAL BUS NOTHING ELSE DETECTS A DEAD CHIP. fm_wr() cannot fail
- * -- a posted write to a chip that has stopped answering looks exactly like
- * one that worked -- and fm_check_offbus() reads FM6000 PCI config space,
- * which on this board does not exist: the part is behind the SCD's bridge and
- * is not a PCI device until the datapath has configured it. fm_alive() reads
- * PIN_STRAP as a beacon and is the only detector there is.
- *
- * The check is one register read per write, which against 212 writes is free,
- * and it is the difference between "this block killed the chip" and "word
- * 0x0020xx killed the chip". The first of those cost an evening.
- */
-/* Publish how far we got and what stopped us, so a failure localises. */
-static int esched_fail(int rv, unsigned n, uint32_t dead,
-		       unsigned *written, uint32_t *culprit)
-{
-	if (written != NULL)
-		*written = n;
-	if (culprit != NULL)
-		*culprit = dead;
-	return rv;
-}
-
-static int esched_wr(struct fm6000 *d, uint32_t word, uint32_t val,
-		     unsigned *n, uint32_t *culprit)
-{
-	uint32_t rb;
-	int rv = fm_wr(d, word, val);
-
-	if (rv != FM_OK) {
-		*culprit = word;
-		return rv;
-	}
-	/*
-	 * Force the posted write to drain from the LBUS bridge queue.
-	 *
-	 * Posted writes to ESCHED queue in the SCD bridge and are only
-	 * consumed when the ring engine visits this block.  fm_alive()
-	 * reads a different register and does not force ordering across
-	 * the ESCHED sub-bus.  Reading back the same address we just
-	 * wrote is a non-posted transaction; PCIe/LBUS ordering rules
-	 * require all preceding writes to the same target to complete
-	 * before the read response is returned.  This drains the queue
-	 * one entry at a time instead of letting it fill to ~20 and block.
-	 * [Hypothesis 2026-10-12 -- ESCHED reads safe once sched_ready=1]
-	 */
-	rv = fm_rd(d, word, &rb);
-	if (rv != FM_OK) {
-		*culprit = word;
-		return rv;
-	}
-	(*n)++;
-	return FM_OK;
-}
 
 int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
 {
-	unsigned port, n = 0;
-	uint32_t dead = 0;
-	int rv;
-
-#define WR(w, v) esched_wr(d, (w), (v), &n, &dead)
-
+	/*
+	 * STUB -- see the file-level comment. This block is not writable via the
+	 * LBUS (SCD BAR1). The chip dies on the first write to any address in
+	 * 0x002000-0x003fff regardless of ring state, CFG_4, or value, because
+	 * the ring engine immediately reads ESCHED_DRR_Q (0x003000, 12 words)
+	 * and the fm_boot_freelists() resets leave that SRAM ECC-uninit.
+	 *
+	 * When step 9 (PCIe serdes) is implemented, replace this stub with PCIe
+	 * resource0 writes in this order:
+	 *   1. DRR_Q (0x003000..0x00300b, 12 TC quanta) -- MUST come first;
+	 *      see EdgeNOS fm6000_eschedrr.c for the settled quantum values.
+	 *   2. CFG_1 (0x002000+port, ports 1..75 then 0): ESCHED_ALL_TC /
+	 *      ESCHED_CPU_CFG_1 -- prioritySetBoundary | tcGroupBoundary.
+	 *   3. CFG_2 (0x002080+port, same order): ESCHED_ALL_TC /
+	 *      ESCHED_CPU_CFG_2 -- strictPriority | tcEnable.
+	 *   4. CFG_3 (0x002100+port, ports 0..75): 0 -- tcInnerPriority.
+	 *   5. DRR_CFG (0x003800+port, ALL ports): ESCHED_DRR_PENALTY first,
+	 *      then ESCHED_DRR_SETTLED (skip ports 1 and 3 in second pass).
+	 */
+	(void)d;
 	if (written != NULL)
 		*written = 0;
 	if (culprit != NULL)
 		*culprit = 0;
-
-	/*
-	 * ⚠ THE HOST PORT IS WRITTEN LAST IN EACH ARRAY, not first. That is
-	 * the order the running switch uses and this block is one where
-	 * sequences have already proved to matter.
-	 */
-	for (port = 1; port < ESCHED_PORTS; port++)
-		if ((rv = WR(ESCHED_CFG_1(port), ESCHED_ALL_TC)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-	if ((rv = WR(ESCHED_CFG_1(ESCHED_CPU_PORT), ESCHED_CPU_CFG_1)) != FM_OK)
-		return esched_fail(rv, n, dead, written, culprit);
-
-	for (port = 1; port < ESCHED_PORTS; port++)
-		if ((rv = WR(ESCHED_CFG_2(port), ESCHED_ALL_TC)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-	if ((rv = WR(ESCHED_CFG_2(ESCHED_CPU_PORT), ESCHED_CPU_CFG_2)) != FM_OK)
-		return esched_fail(rv, n, dead, written, culprit);
-
-	/* tcInnerPriority is zero on every port of a forwarding chip. */
-	for (port = 0; port < ESCHED_PORTS; port++)
-		if ((rv = WR(ESCHED_CFG_3(port), 0)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-
-	/*
-	 * The round-robin word, every port twice: once with the inter-frame-gap
-	 * penalty and once with it cleared.
-	 *
-	 * ⚠ THE TWO PASSES ARE WHOLE-CHIP, NOT PER-PORT. Every port is given
-	 * the penalty before any port has it taken away; the intermediate
-	 * state is what the scheduler latches against and it never exists if
-	 * the passes are interleaved.
-	 *
-	 * ⚠ AND THE INTERNAL PORTS KEEP THE PENALTY. A forwarding chip has
-	 * exactly two of its seventy-six still penalised, physical ports 1 and
-	 * 3 -- the two with no cage, and the same two the store-and-forward
-	 * table singles out from a different direction.
-	 */
-	for (port = 0; port < ESCHED_PORTS; port++)
-		if ((rv = WR(ESCHED_DRR(port), ESCHED_DRR_PENALTY)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-
-	for (port = 0; port < ESCHED_PORTS; port++) {
-		if (port == FM6000_ALTA_CPU || port == FM6000_ALTA_INTERNAL)
-			continue;
-		if ((rv = WR(ESCHED_DRR(port), ESCHED_DRR_SETTLED)) != FM_OK)
-			return esched_fail(rv, n, dead, written, culprit);
-	}
-
-	/*
-	 * ⚠ ESCHED_DRR_Q (MONITOR + port*0x10 + class, 12 x 76) is NOT written.
-	 * It is the per-class deficit counter and it is runtime state: the
-	 * twelve words a forwarding chip holds for port 0 are what its
-	 * scheduler had reached, not a configuration to reproduce.
-	 */
-
-	if (written != NULL)
-		*written = n;
 	return FM_OK;
-#undef WR
 }

@@ -442,15 +442,17 @@ no_sweeper:
 	phase(d, rep, FM_SSCHED_PH_CLEAR1);
 
 	/*
-	 * ESCHED (0x2000-0x3fff): not written here.
+	 * ESCHED (0x2000-0x3fff): not written here or by boot.c.
 	 *
-	 * ESCHED is written by boot.c after FOUND, with CFG_4=0x2000 written
-	 * first to enable the ESCHED write path (measured 2026-10-12: without
-	 * CFG_4, posted writes queue in the LBUS bridge and the chip goes
-	 * off-bus at write ~20 even with the ring circulating).
+	 * This block is not writable via the LBUS.  Measured 2026-10-13:
+	 * the first write to any address in 0x002000-0x003fff kills the chip
+	 * regardless of ring state, CFG_4, or value (see esched.c).  Without
+	 * CFG_4 the bridge queue fills at ~20 writes; with CFG_4 the ring
+	 * processes write 1 and immediately faults on ECC-uninit DRR_Q.
+	 * fm_esched_init() is a stub until step 9 (PCIe) is implemented.
 	 *
-	 * The ring circulates without ESCHED; scheduling policy defaults to
-	 * zero until fm_esched_init() in boot.c has completed. [RE 2026-10-05]
+	 * The ring circulates with zero scheduling policy (post-BIST
+	 * defaults), which is sufficient for basic bring-up testing.
 	 */
 	phase(d, rep, FM_SSCHED_PH_ESCHED);
 
