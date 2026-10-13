@@ -42,6 +42,7 @@
  */
 #include "esched.h"
 #include "pci.h"
+#include "regs.h"
 
 /*
  * The block is eight instances of the same four arrays, 0x200 apart, each
@@ -99,31 +100,99 @@
 #define ESCHED_DRR_SETTLED  0x00ffffffu
 
 
+/* Settled DRR quanta per traffic class, from EdgeNOS fm6000_eschedrr.c.
+ * TC9/TC10 get five times TC3/TC5; the other eight sit between.
+ * ⚠ These are the vendor's settled values after convergence.  A quantum wrong
+ * by one shows up as unfairness under load, not a failed ping. */
+static const uint32_t drr_q[12] = {
+	0x1450, 0x1450, 0x1450, 0x05c8, 0x1450, 0x05c8,
+	0x1450, 0x1450, 0x1450, 0x6590, 0x6590, 0x39d0,
+};
+
 int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
 {
-	/*
-	 * STUB -- see the file-level comment. This block is not writable via the
-	 * LBUS (SCD BAR1). The chip dies on the first write to any address in
-	 * 0x002000-0x003fff regardless of ring state, CFG_4, or value, because
-	 * the ring engine immediately reads ESCHED_DRR_Q (0x003000, 12 words)
-	 * and the fm_boot_freelists() resets leave that SRAM ECC-uninit.
-	 *
-	 * When step 9 (PCIe serdes) is implemented, replace this stub with PCIe
-	 * resource0 writes in this order:
-	 *   1. DRR_Q (0x003000..0x00300b, 12 TC quanta) -- MUST come first;
-	 *      see EdgeNOS fm6000_eschedrr.c for the settled quantum values.
-	 *   2. CFG_1 (0x002000+port, ports 1..75 then 0): ESCHED_ALL_TC /
-	 *      ESCHED_CPU_CFG_1 -- prioritySetBoundary | tcGroupBoundary.
-	 *   3. CFG_2 (0x002080+port, same order): ESCHED_ALL_TC /
-	 *      ESCHED_CPU_CFG_2 -- strictPriority | tcEnable.
-	 *   4. CFG_3 (0x002100+port, ports 0..75): 0 -- tcInnerPriority.
-	 *   5. DRR_CFG (0x003800+port, ALL ports): ESCHED_DRR_PENALTY first,
-	 *      then ESCHED_DRR_SETTLED (skip ports 1 and 3 in second pass).
-	 */
-	(void)d;
+	unsigned n = 0;
+	unsigned p;
+
 	if (written != NULL)
 		*written = 0;
 	if (culprit != NULL)
 		*culprit = 0;
+
+	/*
+	 * Stub path: no PCIe BAR0 attached. The ESCHED block (0x002000-0x003fff)
+	 * is not writable via the LBUS -- any write there kills the chip.
+	 * Return OK; the ring circulates with zero ESCHED policy (post-BIST
+	 * defaults), which is sufficient for basic forwarding. Step 9 (PCIe
+	 * serdes init in boot.c) must succeed before this can do real work.
+	 */
+	if (d->pcie_regs == NULL)
+		return FM_OK;
+
+	/*
+	 * Write order is critical:
+	 *
+	 * 1. DRR_Q (0x003000, 12 quanta) FIRST. The ring engine reads these on
+	 *    every write to the ESCHED block. fm_boot_freelists()'s 42 self-
+	 *    resets leave them ECC-uninit, so any write before this causes a
+	 *    deferred hard fault. Writes here go via PCIe resource0 (fm_wr_pcie)
+	 *    -- they are not reachable via the LBUS.
+	 *
+	 * 2. CFG_1/CFG_2/CFG_3 per port (priority sets, TC enables, inner prio).
+	 *
+	 * 3. DRR_CFG per port, written twice: first with IFG penalty, then with
+	 *    it cleared. The intermediate value matters -- the scheduler latches
+	 *    against it. Skip ports 1 and 3 on the second pass (vendor pattern).
+	 *
+	 * 4. CFG_4 = 0x2000 (SchedPeriod) LAST. Enables the ESCHED clock domain.
+	 *    Writing it before DRR_Q is valid faults the chip asynchronously.
+	 */
+
+	/* 1. DRR quanta (SRAM -- no LBUS path). */
+	for (p = 0; p < 12; p++) {
+		fm_wr_pcie(d, 0x003000u + p, drr_q[p]);
+		n++;
+	}
+
+	/* 2a. CFG_1: ports 1..75, then 0. */
+	for (p = 1; p < ESCHED_PORTS; p++) {
+		fm_wr_pcie(d, ESCHED_CFG_1(p), ESCHED_ALL_TC);
+		n++;
+	}
+	fm_wr_pcie(d, ESCHED_CFG_1(ESCHED_CPU_PORT), ESCHED_CPU_CFG_1);
+	n++;
+
+	/* 2b. CFG_2: same order. */
+	for (p = 1; p < ESCHED_PORTS; p++) {
+		fm_wr_pcie(d, ESCHED_CFG_2(p), ESCHED_ALL_TC);
+		n++;
+	}
+	fm_wr_pcie(d, ESCHED_CFG_2(ESCHED_CPU_PORT), ESCHED_CPU_CFG_2);
+	n++;
+
+	/* 2c. CFG_3: 0 for all ports (tcInnerPriority). */
+	for (p = 0; p < ESCHED_PORTS; p++) {
+		fm_wr_pcie(d, ESCHED_CFG_3(p), 0u);
+		n++;
+	}
+
+	/* 3. DRR_CFG: penalty pass, then settled pass. */
+	for (p = 0; p < ESCHED_DRR_PORTS; p++) {
+		fm_wr_pcie(d, ESCHED_DRR(p), ESCHED_DRR_PENALTY);
+		n++;
+	}
+	for (p = 0; p < ESCHED_DRR_PORTS; p++) {
+		if (p == 1 || p == 3)
+			continue;
+		fm_wr_pcie(d, ESCHED_DRR(p), ESCHED_DRR_SETTLED);
+		n++;
+	}
+
+	/* 4. CFG_4 = SchedPeriod: enables the ESCHED clock domain. */
+	fm_wr_pcie(d, FM6000_SWEEPER_CFG_4, 0x2000u);
+	n++;
+
+	if (written != NULL)
+		*written = n;
 	return FM_OK;
 }

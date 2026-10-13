@@ -835,6 +835,32 @@ static inline unsigned fm6000_epl_channel(unsigned epl, unsigned lane)
 #define FM6000_BLK_ESCHED_SPAN		0x002000
 
 /*
+ * PCIe controller block (0x01000-0x015ff). [RE, from EdgeNOS scaffold]
+ *
+ * NOT guarded by fm_hazard(): these addresses are reachable via LBUS at any
+ * time and the writes have not been measured harmful before boot_done. The
+ * block is NOT in the EPL, bank-memory, or ESCHED hazard zones.
+ *
+ * ⚠ PCIe serdes init must run AFTER ring_init, because fm_boot_freelists()'s
+ * 42 self-resets wipe SerDes configuration. Writing these before ring_init
+ * settles is wasted work.
+ *
+ * None of these addresses have been independently confirmed against the
+ * running chip -- treat as [RE] until a live read validates them.
+ */
+#define FM6000_PCI_CFG_1		0x01002	/* PCIe config register */
+#define FM6000_PCI_ENDIANISM		0x01400	/* byte-swap control */
+#define FM6000_PCI_DMA_CFG		0x01418	/* DMA engine config */
+#define FM6000_PCI_MASK_A		0x0140c	/* interrupt mask A */
+#define FM6000_PCI_MASK_B		0x0140d	/* interrupt mask B */
+#define FM6000_PCI_CORE_CTRL_1		0x0141d	/* PCIe core enable (bit 16 enables) */
+#define FM6000_PCI_SERDES_CTRL_1	0x01435	/* PCIe SerDes lane enable */
+
+/* Management block, PCIe clock/power gate. Raw address -- purpose inferred
+ * from position in bringup sequence only, not from a register map. [RE] */
+#define FM6000_MGMT_PCIE_CLK		0x1c002
+
+/*
  * Packet DMA. ⚠ THIS ONE IS A BYTE OFFSET INTO BAR0, not a word address --
  * the only such block found so far. Reading it as a word address lands in a
  * different block entirely and the chip answers plausibly. [RE]

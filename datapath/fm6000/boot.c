@@ -10,6 +10,7 @@
 #include "pci.h"
 #include "regs.h"
 #include "esched.h"
+#include "sbus.h"
 #include "ssched.h"
 
 static void nap_ms(long ms)
@@ -179,6 +180,87 @@ int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 	return fm_boot_cold_opt(d, rep, 1);
 }
 
+
+/*
+ * FM6000 PCIe SerDes bringup: configure the on-chip PCIe controller so the
+ * chip enumerates as 8086:155b.
+ *
+ * ⚠ MUST RUN AFTER ring_init (fm_ssched_ring_init). The 42 self-resets from
+ * fm_boot_freelists() wipe the SerDes configuration; any write here before
+ * those resets is lost. See ssched.c.
+ *
+ * Translated from EdgeNOS fm6000_i2c_bringup.c pcie() (GPL-2.0, reference
+ * only). The SOFT_RESET write uses RMW so it is safe regardless of which
+ * modules step 5 left released -- EdgeNOS starts from the cold value (0x16)
+ * but NOSaic's step 5 leaves 0x00.
+ */
+static int __attribute__((unused)) pcie_serdes_init(struct fm6000 *d)
+{
+	uint32_t sr0 = 0;
+	int rv;
+
+	/* Normal operating mode: same scan-chain writes as step 3, repeated
+	 * here on the settled chip to guarantee the PCIe SerDes sees the
+	 * right mode bits. The first copy can be reset out from under itself
+	 * by fm_boot_freelists()'s self-resets. */
+	rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88800000u);
+	if (rv == FM_OK) { nap_ms(1); rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88008000u); }
+	if (rv == FM_OK) { nap_ms(1); rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x80000040u); }
+	if (rv == FM_OK) rv = fm_wr(d, FM6000_SCAN_CHAIN_DATA_IN, 0xffffffffu);
+	if (rv != FM_OK)
+		return rv;
+
+	rv = fm_wr(d, FM6000_DLL_CTRL, FM6000_DLL_CTRL_ENABLE);
+	if (rv != FM_OK)
+		return rv;
+	nap_ms(1);
+
+	/* Hold PCIe in reset while configuring the SerDes, then release it.
+	 * RMW preserves all other module-reset bits step 5 left cleared. */
+	rv = fm_rd(d, FM6000_SOFT_RESET, &sr0);
+	if (rv != FM_OK)
+		return rv;
+	rv = fm_wr(d, FM6000_SOFT_RESET, sr0 | FM6000_SOFT_RESET_PCIE);
+	if (rv != FM_OK)
+		return rv;
+
+	rv = fm_wr(d, FM6000_SBUS_CFG, 0u);
+	if (rv != FM_OK)
+		return rv;
+	nap_ms(1);
+
+	rv = fm_wr(d, FM6000_LCI_IM, 1u);
+	if (rv != FM_OK)
+		return rv;
+
+	/* Release PCIe from reset (SerDes starts locking to reference). */
+	rv = fm_wr(d, FM6000_SOFT_RESET, sr0 & ~(uint32_t)FM6000_SOFT_RESET_PCIE);
+	if (rv != FM_OK)
+		return rv;
+
+	/* SBus WRITE to device 0xFE (SBus controller), reg 0x0A, data 0x4.
+	 * Decoded from EdgeNOS 0x0121FE0A = EXECUTE | OP_WRITE<<16 | DEV_CONTROLLER<<8 | 0x0A. */
+	rv = fm_sbus_write(d, FM_SBUS_DEV_CONTROLLER, 0x0au, 0x4u);
+	if (rv != FM_OK)
+		return rv;
+
+	/* PCIe block registers: endian, config, DMA, interrupt masks,
+	 * SerDes lane enable, management clock gate, core enable. */
+	rv = fm_wr(d, FM6000_PCI_ENDIANISM,    0u);
+	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_CFG_1,        0x02000000u);
+	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_DMA_CFG,      0x35u);
+	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_MASK_A,       0xffffffffu);
+	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_MASK_B,       0xffffffffu);
+	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_SERDES_CTRL_1, 0x0f121f34u);
+	if (rv == FM_OK) rv = fm_wr(d, FM6000_MGMT_PCIE_CLK,    0x3fffu);
+	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_CORE_CTRL_1,  0x1c01fu);
+	if (rv != FM_OK)
+		return rv;
+
+	nap_ms(2000); /* link training */
+	return FM_OK;
+}
+
 static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 {
 	int rv;
@@ -201,11 +283,26 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 		return FM_ERR;
 	}
 	if (fm_alive(d) != 1) {
-		set(d, rep, FM_STEP_RESET_RELEASED, FM_EOFFBUS,
-		    "chip is not answering. On the local bus that means it has "
-		    "had no reset PULSE -- being found with the resets clear is "
-		    "not the same thing");
-		return FM_EOFFBUS;
+		/*
+		 * Chip is not answering. On the LBUS transport this means no
+		 * reset pulse has been issued -- the SCD leaves the resets
+		 * deasserted at power-on but PIN_STRAP reads 0 until the chip
+		 * has been pulsed. Issue the pulse now and retry once.
+		 *
+		 * pci.h: "After a successful call, wait ~100 ms for the chip
+		 * to come up, then call fm_clear_offbus() before trying again."
+		 */
+		if (d->xport == FM_XPORT_LBUS &&
+		    fm_scd_reset_pulse(d) == FM_OK) {
+			nap_ms(100);
+			fm_clear_offbus(d);
+		}
+		if (fm_alive(d) != 1) {
+			set(d, rep, FM_STEP_RESET_RELEASED, FM_EOFFBUS,
+			    "chip is not answering after reset pulse; "
+			    "SCD not holding the chip or pulse failed");
+			return FM_EOFFBUS;
+		}
 	}
 	set(d, rep, FM_STEP_RESET_RELEASED, FM_OK, NULL);
 
@@ -349,17 +446,10 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 		return rv;
 
 	/*
-	 * Step 11. PCIe.
-	 *
-	 * Nothing to do here and nothing to wait for. We are talking to the chip
-	 * over the SCD's local bus, not over PCIe, and the endpoint is expected
-	 * to be absent until it is configured -- which is a later job, for
-	 * whatever wants packet DMA. Saying "ok" would claim a link that has not
-	 * been brought up.
+	 * Step 9 (PCIe) is deferred to after ring_init -- see below.
+	 * The 42 fm_boot_freelists() self-resets would wipe any SerDes
+	 * configuration written here.
 	 */
-	set(d, rep, FM_STEP_PCIE, FM_ENOADDR,
-	    "not attempted: the PCIe block is configured separately, and "
-	    "nothing before packet DMA needs it");
 
 	/*
 	 * Step 12. Initialise memory. The datasheet offers two routes -- program
@@ -552,30 +642,49 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	    "FOUND -- the engine is walking the ring");
 
 	/*
-	 * Egress scheduler init: fm_esched_init() is currently a stub.
+	 * Step 9: PCIe SerDes init.
 	 *
-	 * The ESCHED block (0x002000-0x003fff) is not writable via the LBUS.
-	 * Measured 2026-10-13: the first write to any address in that range
-	 * kills the chip regardless of ring state, CFG_4, or value, because
-	 * the ring engine immediately reads ESCHED_DRR_Q (0x003000, 12 words)
-	 * and fm_boot_freelists()'s 42 self-resets leave that SRAM ECC-uninit.
+	 * ⚠ CANNOT RUN FROM WITHIN THIS DAEMON. Writing PCI_CORE_CTRL_1
+	 * enables the FM6000 PCIe endpoint, which starts link training on the
+	 * host PCIe bus. The FM6000's PCIe lanes and the SCD's PCIe slot share
+	 * the same host bridge; link training disrupts the SCD slot, invalidates
+	 * the LBUS mapping (d->regs), and hangs the kernel (measured 2026-10-13
+	 * -- two confirmed hangs requiring PDU power cycle).
 	 *
-	 * CFG_4=0x2000 (the SchedPeriod register) is NOT written here.
-	 * ring_init explicitly clears CFG_4 to 0 (ssched.c, START phase) so
-	 * the ESCHED clock domain is disabled.  Enabling it now (writing
-	 * 0x2000) causes the ring engine to read DRR_Q (0x003000, 12 words),
-	 * which is ECC-uninit after the ring_init resets -- the chip dies
-	 * asynchronously after SAF writes complete, measured 2026-10-13.
+	 * The pcie_serdes_init() function is fully implemented above. It must be
+	 * called from a SHORT-LIVED PROCESS that:
+	 *   1. Opens the LBUS, writes all PCIe registers including PCI_CORE_CTRL_1.
+	 *   2. Exits immediately -- before link training disrupts anything.
+	 * The daemon can then call fm_attach_pcie() after a 4s wait.
 	 *
-	 * CFG_4 must be written AFTER DRR_Q is initialised, which requires
-	 * the PCIe path (step 9, not yet implemented).  See esched.c for the
-	 * required write order.
+	 * Until that tool exists, skip and use the ESCHED stub. The chip
+	 * forwards without ESCHED policy (post-BIST defaults).
+	 */
+	set(d, rep, FM_STEP_PCIE, FM_ENOADDR,
+	    "not run from daemon: PCI_CORE_CTRL_1 disrupts the SCD LBUS slot; "
+	    "run fm6000-pcie-init separately, then restart the daemon");
+
+	/*
+	 * Egress scheduler init.
 	 *
-	 * The ring circulates with zero ESCHED policy (post-BIST defaults),
-	 * which is sufficient for basic bring-up testing.  See esched.c.
+	 * fm_esched_init() writes the ESCHED block (0x002000-0x003fff) via
+	 * PCIe resource0 (d->pcie_regs) when the endpoint is attached, or
+	 * returns FM_OK without writes when it is not (stub path).
+	 *
+	 * Write order if PCIe is available:
+	 *   1. DRR_Q (0x003000, 12 TC quanta) -- MUST come first; the ring
+	 *      engine reads these on every write to the ESCHED block, and
+	 *      fm_boot_freelists()'s 42 resets leave them ECC-uninit.
+	 *   2. CFG_1/CFG_2/CFG_3 per port, then DRR_CFG.
+	 *   3. CFG_4 (SchedPeriod, 0x2000) -- enables the ESCHED clock domain;
+	 *      must be last, after DRR_Q is valid.
+	 *
+	 * ⚠ CFG_4 MUST NOT be written before DRR_Q is initialised. It enables
+	 * the ESCHED clock domain; with DRR_Q ECC-uninit the ring engine faults
+	 * asynchronously after SAF writes complete (measured 2026-10-13).
 	 */
 	fm_sched_mark_ready(d);
-	(void)fm_esched_init(d, NULL, NULL);	/* stub -- no writes, always ok */
+	(void)fm_esched_init(d, NULL, NULL);
 
 	fm_boot_mark_done(d);
 	return FM_OK;

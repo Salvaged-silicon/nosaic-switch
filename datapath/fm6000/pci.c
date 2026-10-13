@@ -131,6 +131,7 @@ int fm_open(struct fm6000 *d, const char *slot)
 {
 	memset(d, 0, sizeof(*d));
 	d->bar_fd = -1;
+	d->pcie_bar_fd = -1;
 	d->check_writes = 1;
 	d->xport = FM_XPORT_PCIE;
 
@@ -157,6 +158,7 @@ int fm_open_lbus(struct fm6000 *d, const char *scd_slot)
 {
 	memset(d, 0, sizeof(*d));
 	d->bar_fd = -1;
+	d->pcie_bar_fd = -1;
 	d->check_writes = 1;
 	d->xport = FM_XPORT_LBUS;
 
@@ -179,6 +181,7 @@ int fm_open_devmem(struct fm6000 *d, uintptr_t phys, size_t bytes)
 
 	memset(d, 0, sizeof(*d));
 	d->bar_fd = -1;
+	d->pcie_bar_fd = -1;
 	d->check_writes = 1;
 	d->xport = FM_XPORT_DEVMEM;
 	snprintf(d->slot, sizeof(d->slot), "devmem");
@@ -297,6 +300,47 @@ void fm_close(struct fm6000 *d)
 		close(d->bar_fd);
 	d->regs = NULL;
 	d->bar_fd = -1;
+	if (d->pcie_regs != NULL)
+		munmap((void *)d->pcie_regs, d->pcie_bar_bytes);
+	if (d->pcie_bar_fd >= 0)
+		close(d->pcie_bar_fd);
+	d->pcie_regs = NULL;
+	d->pcie_bar_fd = -1;
+}
+
+int fm_attach_pcie(struct fm6000 *d)
+{
+	char slot[FM_SLOT_LEN];
+	char path[256];
+	struct stat st;
+	volatile uint32_t *m;
+	int fd;
+
+	if (d->pcie_regs != NULL)
+		return FM_OK;
+
+	if (find_slot(slot, sizeof(slot)) != FM_OK)
+		return FM_ERR;
+
+	enable_device(slot);
+
+	snprintf(path, sizeof(path), "%s/%s/resource0", PCI_DEVICES, slot);
+	if ((fd = open(path, O_RDWR | O_SYNC)) < 0)
+		return FM_ERR;
+	if (fstat(fd, &st) != 0 || st.st_size == 0) {
+		close(fd);
+		return FM_ERR;
+	}
+	m = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE,
+		 MAP_SHARED, fd, 0);
+	if (m == MAP_FAILED) {
+		close(fd);
+		return FM_ERR;
+	}
+	d->pcie_regs      = m;
+	d->pcie_bar_bytes = (size_t)st.st_size;
+	d->pcie_bar_fd    = fd;
+	return FM_OK;
 }
 
 void fm_clear_offbus(struct fm6000 *d)

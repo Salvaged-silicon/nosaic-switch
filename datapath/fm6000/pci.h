@@ -71,6 +71,14 @@ struct fm6000 {
 	size_t             bar_bytes;
 	int                bar_fd;
 
+	/* PCIe BAR0 of the FM6000 itself, mapped by fm_attach_pcie() after the
+	 * serdes init and PCI rescan succeed.  NULL until then.  Writes here go
+	 * through PCIe resource0 rather than the SCD local-bus window, which is
+	 * the only path that can reach the ESCHED block (0x002000-0x003fff). */
+	volatile uint32_t *pcie_regs;
+	size_t             pcie_bar_bytes;
+	int                pcie_bar_fd;
+
 	/* Sticky. Once the chip has left the bus it does not come back without
 	 * a reset, so there is nothing to be gained by trying again -- and a
 	 * great deal of log noise to be had. */
@@ -174,6 +182,23 @@ int fm_open_devmem(struct fm6000 *d, uintptr_t phys, size_t bytes);
 int fm_open_auto(struct fm6000 *d, const char *slot, const char *scd_slot);
 
 void fm_close(struct fm6000 *d);
+
+/*
+ * Map the FM6000's own PCIe BAR0 (resource0) into d->pcie_regs.
+ *
+ * Call this ONLY after the PCIe serdes init sequence (pcie_serdes_init in
+ * boot.c) and a PCI rescan have made the FM6000 enumerate as 8086:155b.
+ * Before that it will not be found and this returns FM_ERR.
+ *
+ * On success, d->pcie_regs points at a 32 MB window and every word in the
+ * FM6000's address space is reachable at d->pcie_regs[word]. The ESCHED
+ * block (0x002000-0x003fff) is ONLY reachable this way; the LBUS path
+ * (d->regs, via the SCD's BAR1) kills the chip on any write there.
+ *
+ * Does not replace d->regs -- the LBUS path stays for all ordinary access.
+ * Calling a second time is a no-op (returns FM_OK).
+ */
+int fm_attach_pcie(struct fm6000 *d);
 
 /*
  * Pulse the FM6000's hardware reset via the SCD's BAR0 reset registers.
@@ -423,5 +448,21 @@ const char *fm_hazard(const struct fm6000 *d, uint32_t word, int writing);
 /* Human-readable name for a word address's block, for diagnostics. Returns a
  * static string; never NULL. */
 const char *fm_block_name(uint32_t word);
+
+/*
+ * Write one word via the FM6000's own PCIe BAR0.
+ *
+ * d->pcie_regs MUST be non-NULL (i.e. fm_attach_pcie() must have succeeded).
+ * Unlike fm_wr(), this path has no hazard check, no offbus latch, and no
+ * per-write config-space poll. It is for the ESCHED block and other addresses
+ * that the LBUS cannot write; callers must check the chip's health themselves.
+ *
+ * The __sync_synchronize() is a full MMIO write barrier (MFENCE on x86).
+ */
+static inline void fm_wr_pcie(struct fm6000 *d, uint32_t word, uint32_t val)
+{
+	d->pcie_regs[word] = val;
+	__sync_synchronize();
+}
 
 #endif /* NOSAIC_FM6000_PCI_H */
