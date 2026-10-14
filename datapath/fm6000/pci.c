@@ -3,11 +3,18 @@
  * FM6000 register access over a sysfs mapping of BAR0. See pci.h for why this
  * is guarded rather than thin.
  *
- * BAR0 is mapped through /sys/bus/pci/devices/<slot>/resource0 rather than
- * /dev/mem. The Broadcom boards in this tree use /dev/mem and need
- * `iomem=relaxed` on the kernel command line to be allowed to; sysfs needs
- * neither, bounds the mapping to the device's own BAR, and goes away when the
- * device does. There is no reason to carry the older approach onto a new board.
+ * fm_attach_pcie (the short-lived esched-init path) maps BAR0 via /dev/mem
+ * rather than sysfs resource0. The sysfs resource handler invokes
+ * pci_enable_device(), which can deadlock with the kernel's PCIe AER error
+ * handler; using /dev/mem with the physical address from the sysfs resource
+ * file bypasses that path entirely. Confirmed on the 7150S-52: the resource0
+ * sysfs file hangs on open while the /dev/mem mapping of the same address
+ * works without blocking.
+ *
+ * The Broadcom boards in this tree use /dev/mem because the SCD's BAR1 is
+ * not a standard PCIe BAR (it is not in sysfs as resource1 for the right
+ * device). The FM6000 BAR0 IS in sysfs, but we still use /dev/mem for the
+ * reason above.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -312,9 +319,10 @@ int fm_attach_pcie(struct fm6000 *d)
 {
 	char slot[FM_SLOT_LEN];
 	char path[256];
-	struct stat st;
 	volatile uint32_t *m;
 	int fd;
+	FILE *rf;
+	unsigned long bar_start = 0, bar_end = 0, bar_flags = 0;
 
 	if (d->pcie_regs != NULL)
 		return FM_OK;
@@ -322,23 +330,37 @@ int fm_attach_pcie(struct fm6000 *d)
 	if (find_slot(slot, sizeof(slot)) != FM_OK)
 		return FM_ERR;
 
-	enable_device(slot);
-
-	snprintf(path, sizeof(path), "%s/%s/resource0", PCI_DEVICES, slot);
-	if ((fd = open(path, O_RDWR | O_SYNC)) < 0)
+	/*
+	 * Read the physical BAR0 address from the sysfs resource file (first
+	 * line: start end flags). Then map via /dev/mem rather than resource0.
+	 *
+	 * The sysfs resource0 open path calls pci_enable_device(), which can
+	 * deadlock with the kernel's PCIe AER handler on the 7150S-52. Using
+	 * /dev/mem with the physical BAR address avoids that path without
+	 * sacrificing safety: the FM6000 BAR is in a reserved MMIO region that
+	 * no other device uses, so bounds protection from sysfs is not needed.
+	 */
+	snprintf(path, sizeof(path), "%s/%s/resource", PCI_DEVICES, slot);
+	if ((rf = fopen(path, "r")) == NULL)
 		return FM_ERR;
-	if (fstat(fd, &st) != 0 || st.st_size == 0) {
-		close(fd);
+	if (fscanf(rf, "0x%lx 0x%lx 0x%lx", &bar_start, &bar_end, &bar_flags) != 3
+	    || bar_start == 0 || bar_end <= bar_start) {
+		fclose(rf);
 		return FM_ERR;
 	}
-	m = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE,
-		 MAP_SHARED, fd, 0);
+	fclose(rf);
+
+	if ((fd = open("/dev/mem", O_RDWR | O_SYNC)) < 0)
+		return FM_ERR;
+
+	m = mmap(NULL, (size_t)(bar_end - bar_start + 1),
+		 PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)bar_start);
 	if (m == MAP_FAILED) {
 		close(fd);
 		return FM_ERR;
 	}
 	d->pcie_regs      = m;
-	d->pcie_bar_bytes = (size_t)st.st_size;
+	d->pcie_bar_bytes = (size_t)(bar_end - bar_start + 1);
 	d->pcie_bar_fd    = fd;
 	return FM_OK;
 }

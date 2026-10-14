@@ -33,6 +33,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* FM6000_SKIP_PCIE_INLINE is passed by the Makefile (-D flag) so both this
+ * file and esched.c see it -- suppresses pci.h's static inline so the linker
+ * resolves fm_wr_pcie to the stub below instead of inlining it in esched.c. */
+
 #include "esched.h"
 #include "pci.h"
 #include "portmap.h"
@@ -44,15 +48,24 @@ static unsigned nlog;
 static int failures;
 static unsigned written_out;
 
-/* The two functions esched.c reaches for. No chip, no mapping. */
+/* The functions esched.c reaches for. No chip, no mapping.
+ * fm_wr is unused (esched writes only via fm_wr_pcie now) but kept so the
+ * linker is satisfied if any other stub in the test translation unit needs it.
+ */
 int fm_wr(struct fm6000 *d, uint32_t word, uint32_t val)
 {
+	(void)d; (void)word; (void)val;
+	return FM_OK;
+}
+
+void fm_wr_pcie(struct fm6000 *d, uint32_t word, uint32_t val)
+{
+	(void)d;
 	if (nlog >= MAX_WRITES)
-		return FM_ERR;
+		return;
 	log[nlog].word = word;
 	log[nlog].val = val;
 	nlog++;
-	return FM_OK;
 }
 
 int fm_alive(struct fm6000 *d)
@@ -76,16 +89,19 @@ int main(void)
 	int rv;
 
 	memset(&dev, 0, sizeof dev);
+	/* Set pcie_regs non-NULL so fm_esched_init takes the real PCIe path.
+	 * The value is a sentinel -- fm_wr_pcie in this test does not use it. */
+	dev.pcie_regs = (volatile uint32_t *)1u;
 	rv = fm_esched_init(&dev, &written_out, &culprit);
 
 	check(rv == FM_OK, "init returns FM_OK");
 	check(culprit == 0, "no culprit on success");
 	check(written_out == nlog, "the reported count is the count written");
 
-	/* Three arrays of 76, then the round-robin word over 76 twice less the
-	 * two that keep the penalty. */
-	check(nlog == 76 * 3 + 76 + 74,
-	      "378 writes: three configuration arrays and two round-robin passes");
+	/* 12 DRR quanta, three arrays of 76, then the round-robin word over 76
+	 * twice less the two that keep the penalty. */
+	check(nlog == 12 + 76 * 3 + 76 + 74,
+	      "390 writes: 12 DRR quanta, three configuration arrays, two round-robin passes");
 
 	for (i = 0; i < nlog; i++) {
 		unsigned j;
@@ -97,17 +113,24 @@ int main(void)
 		if (!dup)
 			seen[distinct++] = log[i].word;
 	}
-	check(distinct == 76 * 4, "304 distinct addresses");
+	check(distinct == 12 + 76 * 4, "316 distinct addresses");
 
-	/* Nothing outside the three registers and the round-robin array. */
+	/* Nothing outside the known address ranges. */
 	for (i = 0; i < nlog; i++) {
 		uint32_t w = log[i].word;
 		int ok = (w >= 0x002000u && w < 0x002000u + 76) ||
 			 (w >= 0x002080u && w < 0x002080u + 76) ||
 			 (w >= 0x002100u && w < 0x002100u + 76) ||
+			 (w >= 0x003000u && w < 0x003000u + 12) ||
 			 (w >= 0x003800u && w < 0x003800u + 76);
 
 		check(ok, "every write lands inside a register the block has");
+	}
+
+	/* DRR quanta written first, before any CFG or DRR pass. */
+	for (i = 0; i < 12; i++) {
+		check(log[i].word == 0x003000u + i,
+		      "DRR quanta written in order 0..11 before everything else");
 	}
 
 	/* The host port's two configuration words differ, and CFG_3 is zero. */
@@ -129,7 +152,7 @@ int main(void)
 
 	/* The two passes, and who keeps the penalty. */
 	{
-		unsigned base = 76 * 3, penalised = 0, settled = 0;
+		unsigned base = 12 + 76 * 3, penalised = 0, settled = 0;
 
 		for (i = base; i < base + 76; i++) {
 			check(log[i].word == 0x003800u + (i - base),

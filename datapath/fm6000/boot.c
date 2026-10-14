@@ -10,7 +10,6 @@
 #include "pci.h"
 #include "regs.h"
 #include "esched.h"
-#include "sbus.h"
 #include "ssched.h"
 
 static void nap_ms(long ms)
@@ -180,86 +179,6 @@ int fm_boot_cold(struct fm6000 *d, struct fm_boot_report *rep)
 	return fm_boot_cold_opt(d, rep, 1);
 }
 
-
-/*
- * FM6000 PCIe SerDes bringup: configure the on-chip PCIe controller so the
- * chip enumerates as 8086:155b.
- *
- * ⚠ MUST RUN AFTER ring_init (fm_ssched_ring_init). The 42 self-resets from
- * fm_boot_freelists() wipe the SerDes configuration; any write here before
- * those resets is lost. See ssched.c.
- *
- * Translated from EdgeNOS fm6000_i2c_bringup.c pcie() (GPL-2.0, reference
- * only). The SOFT_RESET write uses RMW so it is safe regardless of which
- * modules step 5 left released -- EdgeNOS starts from the cold value (0x16)
- * but NOSaic's step 5 leaves 0x00.
- */
-static int __attribute__((unused)) pcie_serdes_init(struct fm6000 *d)
-{
-	uint32_t sr0 = 0;
-	int rv;
-
-	/* Normal operating mode: same scan-chain writes as step 3, repeated
-	 * here on the settled chip to guarantee the PCIe SerDes sees the
-	 * right mode bits. The first copy can be reset out from under itself
-	 * by fm_boot_freelists()'s self-resets. */
-	rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88800000u);
-	if (rv == FM_OK) { nap_ms(1); rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88008000u); }
-	if (rv == FM_OK) { nap_ms(1); rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x80000040u); }
-	if (rv == FM_OK) rv = fm_wr(d, FM6000_SCAN_CHAIN_DATA_IN, 0xffffffffu);
-	if (rv != FM_OK)
-		return rv;
-
-	rv = fm_wr(d, FM6000_DLL_CTRL, FM6000_DLL_CTRL_ENABLE);
-	if (rv != FM_OK)
-		return rv;
-	nap_ms(1);
-
-	/* Hold PCIe in reset while configuring the SerDes, then release it.
-	 * RMW preserves all other module-reset bits step 5 left cleared. */
-	rv = fm_rd(d, FM6000_SOFT_RESET, &sr0);
-	if (rv != FM_OK)
-		return rv;
-	rv = fm_wr(d, FM6000_SOFT_RESET, sr0 | FM6000_SOFT_RESET_PCIE);
-	if (rv != FM_OK)
-		return rv;
-
-	rv = fm_wr(d, FM6000_SBUS_CFG, 0u);
-	if (rv != FM_OK)
-		return rv;
-	nap_ms(1);
-
-	rv = fm_wr(d, FM6000_LCI_IM, 1u);
-	if (rv != FM_OK)
-		return rv;
-
-	/* Release PCIe from reset (SerDes starts locking to reference). */
-	rv = fm_wr(d, FM6000_SOFT_RESET, sr0 & ~(uint32_t)FM6000_SOFT_RESET_PCIE);
-	if (rv != FM_OK)
-		return rv;
-
-	/* SBus WRITE to device 0xFE (SBus controller), reg 0x0A, data 0x4.
-	 * Decoded from EdgeNOS 0x0121FE0A = EXECUTE | OP_WRITE<<16 | DEV_CONTROLLER<<8 | 0x0A. */
-	rv = fm_sbus_write(d, FM_SBUS_DEV_CONTROLLER, 0x0au, 0x4u);
-	if (rv != FM_OK)
-		return rv;
-
-	/* PCIe block registers: endian, config, DMA, interrupt masks,
-	 * SerDes lane enable, management clock gate, core enable. */
-	rv = fm_wr(d, FM6000_PCI_ENDIANISM,    0u);
-	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_CFG_1,        0x02000000u);
-	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_DMA_CFG,      0x35u);
-	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_MASK_A,       0xffffffffu);
-	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_MASK_B,       0xffffffffu);
-	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_SERDES_CTRL_1, 0x0f121f34u);
-	if (rv == FM_OK) rv = fm_wr(d, FM6000_MGMT_PCIE_CLK,    0x3fffu);
-	if (rv == FM_OK) rv = fm_wr(d, FM6000_PCI_CORE_CTRL_1,  0x1c01fu);
-	if (rv != FM_OK)
-		return rv;
-
-	nap_ms(2000); /* link training */
-	return FM_OK;
-}
 
 static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init)
 {
@@ -651,14 +570,14 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 * the LBUS mapping (d->regs), and hangs the kernel (measured 2026-10-13
 	 * -- two confirmed hangs requiring PDU power cycle).
 	 *
-	 * The pcie_serdes_init() function is fully implemented above. It must be
-	 * called from a SHORT-LIVED PROCESS that:
+	 * fm6000-pcie-init is the short-lived tool that runs this. It:
 	 *   1. Opens the LBUS, writes all PCIe registers including PCI_CORE_CTRL_1.
-	 *   2. Exits immediately -- before link training disrupts anything.
-	 * The daemon can then call fm_attach_pcie() after a 4s wait.
+	 *   2. Calls _exit(0) immediately -- before link training disrupts anything.
+	 * Restart the daemon after ~4 s; it will call fm_attach_pcie() and then
+	 * fm_esched_init() will use the real PCIe path.
 	 *
-	 * Until that tool exists, skip and use the ESCHED stub. The chip
-	 * forwards without ESCHED policy (post-BIST defaults).
+	 * Until fm6000-pcie-init has run and the daemon has been restarted, skip
+	 * and use the ESCHED stub. The chip forwards without ESCHED policy.
 	 */
 	set(d, rep, FM_STEP_PCIE, FM_ENOADDR,
 	    "not run from daemon: PCI_CORE_CTRL_1 disrupts the SCD LBUS slot; "

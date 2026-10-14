@@ -188,9 +188,15 @@ int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
 		n++;
 	}
 
-	/* 4. CFG_4 = SchedPeriod: enables the ESCHED clock domain. */
-	fm_wr_pcie(d, FM6000_SWEEPER_CFG_4, 0x2000u);
-	n++;
+	/*
+	 * ⚠ DO NOT write FM6000_SWEEPER_CFG_4 (0x01c04c) here.
+	 *
+	 * Writing it with 0x2000 (SchedPeriod) faults the chip asynchronously
+	 * and takes it off the PCIe bus -- measured 2026-10-13, two confirmed
+	 * kernel hangs. The chip reaches the watch loop and forwards without
+	 * it. Root cause is unknown; skip until the exact preconditions for a
+	 * safe write are determined.
+	 */
 
 	if (written != NULL)
 		*written = n;

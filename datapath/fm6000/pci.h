@@ -459,10 +459,17 @@ const char *fm_block_name(uint32_t word);
  *
  * The __sync_synchronize() is a full MMIO write barrier (MFENCE on x86).
  */
+/* FM6000_SKIP_PCIE_INLINE: defined by unit tests that provide their own
+ * fm_wr_pcie so they can intercept PCIe writes without real hardware. */
+#ifndef FM6000_SKIP_PCIE_INLINE
 static inline void fm_wr_pcie(struct fm6000 *d, uint32_t word, uint32_t val)
 {
 	d->pcie_regs[word] = val;
 	__sync_synchronize();
 }
+#else
+/* Declaration for the test-supplied version. */
+void fm_wr_pcie(struct fm6000 *d, uint32_t word, uint32_t val);
+#endif
 
 #endif /* NOSAIC_FM6000_PCI_H */

@@ -29,13 +29,15 @@ CFLAGS  += -I../common
 CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"fm6000\"
 LDLIBS  += -lpthread
 
-COMMON_OBJS   = pci.o sbus.o spico.o serdes.o bist.o saf.o esched.o ssched.o cmwm.o cmrest.o parser.o lbs.o mrl.o crm.o memfill.o
-DAEMON_OBJS   = main.o boot.o sock.o $(COMMON_OBJS)
-PROBE_OBJS    = probe.o boot.o $(COMMON_OBJS)
-MEMFILL_OBJS  = memfill_main.o boot.o $(COMMON_OBJS)
-SI5338_OBJS   = si5338_main.o
+COMMON_OBJS       = pci.o sbus.o spico.o serdes.o bist.o saf.o esched.o ssched.o cmwm.o cmrest.o parser.o lbs.o mrl.o crm.o memfill.o
+DAEMON_OBJS       = main.o boot.o sock.o $(COMMON_OBJS)
+PROBE_OBJS        = probe.o boot.o $(COMMON_OBJS)
+MEMFILL_OBJS      = memfill_main.o boot.o $(COMMON_OBJS)
+PCIE_INIT_OBJS    = pcie_init_main.o pcie_init.o boot.o $(COMMON_OBJS)
+ESCHED_INIT_OBJS  = esched_init_main.o boot.o $(COMMON_OBJS)
+SI5338_OBJS       = si5338_main.o
 
-all: nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338
+all: nosd-fm6000 fm6000-probe fm6000-memfill fm6000-pcie-init fm6000-esched-init fm6000-si5338
 
 nosd-fm6000: $(DAEMON_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(DAEMON_OBJS) $(LDLIBS)
@@ -77,14 +79,27 @@ probe.o: probe.c serdes.h bist.h saf.h esched.h ssched.h cmwm.h cmrest.h parser.
 memfill.o: memfill.c memfill.h pci.h boot.h
 memfill_main.o: memfill_main.c memfill.h pci.h boot.h
 
+# Short-lived tool: configures FM6000 PCIe SerDes and enables the endpoint,
+# then exits immediately so the daemon can restart and attach via resource0.
+fm6000-pcie-init: $(PCIE_INIT_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(PCIE_INIT_OBJS) $(LDLIBS)
+
+fm6000-esched-init: $(ESCHED_INIT_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(ESCHED_INIT_OBJS) $(LDLIBS)
+
 fm6000-si5338: $(SI5338_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(SI5338_OBJS) $(LDLIBS)
 
+esched_init_main.o: esched_init_main.c esched.h pci.h
+
 si5338_main.o: si5338_main.c
 
-strip: nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338
-	$(CROSS_COMPILE)strip nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338
-	@echo "    nosd-fm6000 $$(stat -c%s nosd-fm6000) bytes, fm6000-probe $$(stat -c%s fm6000-probe) bytes, fm6000-memfill $$(stat -c%s fm6000-memfill) bytes, fm6000-si5338 $$(stat -c%s fm6000-si5338) bytes"
+pcie_init.o:      pcie_init.c pcie_init.h pci.h regs.h sbus.h
+pcie_init_main.o: pcie_init_main.c pcie_init.h boot.h pci.h
+
+strip: nosd-fm6000 fm6000-probe fm6000-memfill fm6000-pcie-init fm6000-esched-init fm6000-si5338
+	$(CROSS_COMPILE)strip nosd-fm6000 fm6000-probe fm6000-memfill fm6000-pcie-init fm6000-esched-init fm6000-si5338
+	@echo "    nosd-fm6000 $$(stat -c%s nosd-fm6000) bytes, fm6000-probe $$(stat -c%s fm6000-probe) bytes, fm6000-memfill $$(stat -c%s fm6000-memfill) bytes, fm6000-pcie-init $$(stat -c%s fm6000-pcie-init) bytes, fm6000-esched-init $$(stat -c%s fm6000-esched-init) bytes, fm6000-si5338 $$(stat -c%s fm6000-si5338) bytes"
 
 # Tests run on the build host, not the switch. Everything here that can be
 # checked without a chip should be, because the alternative is checking it on
@@ -92,7 +107,7 @@ strip: nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338
 TESTS = esched-test parser-test lbs-test epl-test mrl-test
 
 esched-test: esched_test.c esched.c esched.h portmap.h pci.h regs.h
-	$(CC) $(CFLAGS) -o $@ esched_test.c esched.c
+	$(CC) $(CFLAGS) -DFM6000_SKIP_PCIE_INLINE -o $@ esched_test.c esched.c
 
 parser-test: parser_test.c parser.c parser.h portmap.h pci.h regs.h
 	$(CC) $(CFLAGS) -o $@ parser_test.c parser.c
@@ -110,6 +125,6 @@ test: $(TESTS)
 	@for t in $(TESTS); do ./$$t || exit 1; done
 
 clean:
-	rm -f nosd-fm6000 fm6000-probe fm6000-memfill fm6000-si5338 $(TESTS) *.o ../common/*.o
+	rm -f nosd-fm6000 fm6000-probe fm6000-memfill fm6000-pcie-init fm6000-esched-init fm6000-si5338 $(TESTS) *.o ../common/*.o
 
 .PHONY: all clean strip test

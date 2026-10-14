@@ -73,6 +73,15 @@ static void pipeline_init(struct fm6000 *d)
 		fm_alive(d), fc_before);
 
 	/*
+	 * ESCHED is NOT written here. Writing the ESCHED block (0x002000-0x003fff)
+	 * via PCIe while this daemon also holds the LBUS (SCD BAR1) mapping causes
+	 * a chip fault that hangs the kernel. ESCHED is handled by the short-lived
+	 * fm6000-esched-init tool, which holds only PCIe resource0 (no LBUS) and
+	 * calls _exit(0) immediately after writing. Run it between fm6000-pcie-init
+	 * and (re)starting this daemon.
+	 */
+
+	/*
 	 * Probe SAF word 0 before writing anything.
 	 *
 	 * If BIST covered SAF, this read succeeds and returns a non-zero
