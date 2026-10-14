@@ -10,7 +10,7 @@ every other board in this tree has a Broadcom chip.
 | Arch | x86_64 — AMD Family-10h embedded, RS780 + SB700/SB800 |
 | Boots via | Aboot 2.1.0 ("norcal2") from a USB DOM |
 | Front panel | 52 SFP+, 10G, no QSFP, no external PHYs |
-| Status | **planned** — nothing has been built or booted for this board yet |
+| Status | **bringup** — cold boot, pipeline init (SAF, parser, CM, SSCHED, ESCHED), and PCIe confirmed; chip forwards |
 
 - [Installing](docs/install.md) · [Building](docs/build.md) ·
   [Hardware reference](docs/hardware.md) · [What is left](docs/todo.md) ·

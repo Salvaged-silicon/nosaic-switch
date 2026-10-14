@@ -5,10 +5,10 @@
 # may be linked -- libFocalpointSDK.so is proprietary and stays out of this
 # repository. The datapath for this chip is register-level code we write.
 #
-# STATUS: planned. Nothing here has been built or booted. What is recorded below
-# was read off the running unit (EOS 4.16.8M, hostname sw7150-lab) during the
-# reverse engineering that precedes this port, and is transcribed rather than
-# re-derived -- see docs/hardware.md for what is measured and what is assumed.
+# STATUS: bringup. Cold boot, full pipeline init (SAF, parser, CM, SSCHED, ESCHED),
+# and PCIe enumeration are confirmed on hardware. The chip forwards with zero
+# scheduling policy. Register map derived from libFocalpointSDK.so and EdgeNOS
+# reference (GPL-2.0, docs/hardware.md for what is measured vs assumed).
 
 id: arista-7150s-52
 vendor: arista
@@ -264,7 +264,7 @@ platform_hal:
     sfp_count: 52
     sfp_eeprom: {accel_base: 2, buses_per_accel: 8}
 
-status: planned
+status: bringup
 
 notes: >
   The FM6000 is held in reset by the SCD from power-on and does not enumerate on
