@@ -2,12 +2,15 @@
 /* Intel 331496-002 §4.2 Table 4-1, in order. See boot.h. */
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "bist.h"
 #include "boot.h"
 #include "memfill.h"
 #include "pci.h"
+#include "pcie_init.h"
 #include "regs.h"
 #include "esched.h"
 #include "ssched.h"
@@ -563,34 +566,70 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	/*
 	 * Step 9: PCIe SerDes init.
 	 *
-	 * ⚠ CANNOT RUN FROM WITHIN THIS DAEMON. Writing PCI_CORE_CTRL_1
-	 * enables the FM6000 PCIe endpoint, which starts link training on the
-	 * host PCIe bus. The FM6000's PCIe lanes and the SCD's PCIe slot share
-	 * the same host bridge; link training disrupts the SCD slot, invalidates
-	 * the LBUS mapping (d->regs), and hangs the kernel (measured 2026-10-13
-	 * -- two confirmed hangs requiring PDU power cycle).
+	 * fm_pcie_serdes_init writes PCI_CORE_CTRL_1 as its last access,
+	 * enabling the FM6000 PCIe endpoint. Link training then starts on the
+	 * host bus. While it runs, any access to d->regs (SCD BAR1) may fault;
+	 * so the LBUS mapping is released immediately after the call returns --
+	 * before any other code runs -- then reopened after a sleep.
 	 *
-	 * fm6000-pcie-init is the short-lived tool that runs this. It:
-	 *   1. Opens the LBUS, writes all PCIe registers including PCI_CORE_CTRL_1.
-	 *   2. Calls _exit(0) immediately -- before link training disrupts anything.
-	 * Restart the daemon after ~4 s; it will call fm_attach_pcie() and then
-	 * fm_esched_init() will use the real PCIe path.
-	 *
-	 * Until fm6000-pcie-init has run and the daemon has been restarted, skip
-	 * and use the ESCHED stub. The chip forwards without ESCHED policy.
+	 * The two kernel hangs measured on 2026-10-13 were from esched-init's
+	 * old sysfs path calling pci_enable_device() while the AER handler was
+	 * active (during training). fm_attach_pcie now uses /dev/mem to bypass
+	 * that path. The LBUS munmap before sleep prevents any access hazard
+	 * from this daemon's side.
 	 */
-	set(d, rep, FM_STEP_PCIE, FM_ENOADDR,
-	    "not run from daemon: PCI_CORE_CTRL_1 disrupts the SCD LBUS slot; "
-	    "run fm6000-pcie-init separately, then restart the daemon");
+	{
+		char saved_slot[FM_SLOT_LEN];
+		int banks_ready_saved = d->banks_ready;
+		int rv9;
+
+		memcpy(saved_slot, d->slot, sizeof(saved_slot));
+		rv9 = fm_pcie_serdes_init(d);
+
+		/*
+		 * Release LBUS mapping NOW. Do not touch d->regs after this
+		 * point (not even to log rv9 via fm_rd) until fm_open_lbus
+		 * has been called again below.
+		 */
+		munmap((void *)d->regs, d->bar_bytes);
+		close(d->bar_fd);
+		d->regs = NULL;
+		d->bar_fd = -1;
+
+		if (rv9 != FM_OK) {
+			set(d, rep, FM_STEP_PCIE, rv9,
+			    "PCIe serdes init failed");
+			/*
+			 * Reopen LBUS so the ESCHED stub and watch loop work.
+			 * (ESCHED will use the stub path: pcie_regs == NULL.)
+			 */
+			if (fm_open_lbus(d, saved_slot) == FM_OK)
+				d->banks_ready = banks_ready_saved;
+		} else {
+			set(d, rep, FM_STEP_PCIE, FM_OK,
+			    "PCIe SerDes configured; waiting for enumeration");
+			nap_ms(5000);
+			if (fm_open_lbus(d, saved_slot) != FM_OK) {
+				fprintf(stderr,
+"nosd-fm6000: WARNING: LBUS reopen failed after PCIe init; "
+"ESCHED will use the stub path\n");
+			} else {
+				d->banks_ready = banks_ready_saved;
+				if (fm_attach_pcie(d) == FM_OK)
+					set(d, rep, FM_STEP_PCIE, FM_OK,
+					    "PCIe attached; ESCHED path live");
+			}
+		}
+	}
 
 	/*
 	 * Egress scheduler init.
 	 *
 	 * fm_esched_init() writes the ESCHED block (0x002000-0x003fff) via
-	 * PCIe resource0 (d->pcie_regs) when the endpoint is attached, or
-	 * returns FM_OK without writes when it is not (stub path).
+	 * d->pcie_regs when the endpoint is attached (set above), or returns
+	 * FM_OK without writes when it is not (stub path).
 	 *
-	 * Write order if PCIe is available:
+	 * Write order:
 	 *   1. DRR_Q (0x003000, 12 TC quanta) -- MUST come first; the ring
 	 *      engine reads these on every write to the ESCHED block, and
 	 *      fm_boot_freelists()'s 42 resets leave them ECC-uninit.
@@ -604,6 +643,8 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 */
 	fm_sched_mark_ready(d);
 	(void)fm_esched_init(d, NULL, NULL);
+	/* PCIe mapping no longer needed; daemon uses LBUS for the watch loop. */
+	fm_detach_pcie(d);
 
 	fm_boot_mark_done(d);
 	return FM_OK;

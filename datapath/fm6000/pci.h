@@ -201,6 +201,15 @@ void fm_close(struct fm6000 *d);
 int fm_attach_pcie(struct fm6000 *d);
 
 /*
+ * Release the FM6000 PCIe BAR0 mapping (d->pcie_regs).
+ *
+ * Counterpart to fm_attach_pcie. Call after ESCHED writes are complete.
+ * The LBUS mapping (d->regs) is unaffected. Safe to call when pcie_regs
+ * is already NULL (no-op).
+ */
+void fm_detach_pcie(struct fm6000 *d);
+
+/*
  * Pulse the FM6000's hardware reset via the SCD's BAR0 reset registers.
  *
  * Call this when the chip is SILENT (PIN_STRAP reads 0). It opens SCD BAR0

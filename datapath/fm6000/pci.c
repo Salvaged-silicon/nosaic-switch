@@ -365,6 +365,16 @@ int fm_attach_pcie(struct fm6000 *d)
 	return FM_OK;
 }
 
+void fm_detach_pcie(struct fm6000 *d)
+{
+	if (d->pcie_regs != NULL)
+		munmap((void *)d->pcie_regs, d->pcie_bar_bytes);
+	if (d->pcie_bar_fd >= 0)
+		close(d->pcie_bar_fd);
+	d->pcie_regs = NULL;
+	d->pcie_bar_fd = -1;
+}
+
 void fm_clear_offbus(struct fm6000 *d)
 {
 	d->offbus = 0;
