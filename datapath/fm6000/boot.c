@@ -71,7 +71,8 @@ static void finish(struct fm6000 *d, struct fm_boot_report *rep)
 		rep->last_fatal = f.last;
 
 	for (i = 1; i < FM_STEP__COUNT; i++)
-		if (i <= rep->reached && rep->step[i].rv != FM_OK &&
+		if (rep->step[i].what != NULL &&
+		    rep->step[i].rv != FM_OK &&
 		    rep->step[i].rv != FM_ENOADDR)
 			all_ok = 0;
 
@@ -90,7 +91,8 @@ static void set(struct fm6000 *d, struct fm_boot_report *rep, int step, int rv,
 	rep->step[step].resets = now > rep->mark ? now - rep->mark : 0;
 	rep->resets += rep->step[step].resets;
 	rep->mark = now;
-	rep->reached = step;
+	if (step > rep->reached)
+		rep->reached = step;
 }
 
 /*
@@ -572,11 +574,11 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 * so the LBUS mapping is released immediately after the call returns --
 	 * before any other code runs -- then reopened after a sleep.
 	 *
-	 * The two kernel hangs measured on 2026-10-13 were from esched-init's
-	 * old sysfs path calling pci_enable_device() while the AER handler was
-	 * active (during training). fm_attach_pcie now uses /dev/mem to bypass
-	 * that path. The LBUS munmap before sleep prevents any access hazard
-	 * from this daemon's side.
+	 * pci_enable_device() and the AER handler deadlock during training.
+	 * fm_attach_pcie uses /dev/mem for BAR0 (confirmed fix, 2026-10-13).
+	 * fm_reopen_lbus_devmem uses /dev/mem for BAR1 for the same reason
+	 * (confirmed deadlock: nosd hung, management IP never appeared, only
+	 * physical link survived -- 2026-10-14).
 	 */
 	{
 		char saved_slot[FM_SLOT_LEN];
@@ -588,8 +590,18 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 
 		/*
 		 * Release LBUS mapping NOW. Do not touch d->regs after this
-		 * point (not even to log rv9 via fm_rd) until fm_open_lbus
-		 * has been called again below.
+		 * point (not even to log rv9 via fm_rd) until LBUS has been
+		 * reopened below.
+		 *
+		 * REOPEN VIA /dev/mem, NOT fm_open_lbus. fm_open_lbus writes
+		 * to the sysfs enable file which calls pci_enable_device()
+		 * inside the kernel. During PCIe link training, the AER handler
+		 * holds locks that pci_enable_device() also needs -- deadlock,
+		 * confirmed on 2026-10-14 (nosd hung, management IP never
+		 * appeared, only physical link survived). Opening resource1 has
+		 * the same problem. fm_reopen_lbus_devmem reads the physical
+		 * address from the sysfs resource TEXT file (safe: no lock) and
+		 * maps via /dev/mem, bypassing the deadlock path entirely.
 		 */
 		munmap((void *)d->regs, d->bar_bytes);
 		close(d->bar_fd);
@@ -603,21 +615,33 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 			 * Reopen LBUS so the ESCHED stub and watch loop work.
 			 * (ESCHED will use the stub path: pcie_regs == NULL.)
 			 */
-			if (fm_open_lbus(d, saved_slot) == FM_OK)
+			if (fm_reopen_lbus_devmem(d, saved_slot) == FM_OK)
 				d->banks_ready = banks_ready_saved;
 		} else {
 			set(d, rep, FM_STEP_PCIE, FM_OK,
 			    "PCIe SerDes configured; waiting for enumeration");
 			nap_ms(5000);
-			if (fm_open_lbus(d, saved_slot) != FM_OK) {
+			if (fm_reopen_lbus_devmem(d, saved_slot) != FM_OK) {
 				fprintf(stderr,
 "nosd-fm6000: WARNING: LBUS reopen failed after PCIe init; "
 "ESCHED will use the stub path\n");
 			} else {
 				d->banks_ready = banks_ready_saved;
-				if (fm_attach_pcie(d) == FM_OK)
+				if (fm_attach_pcie(d) == FM_OK) {
+					/*
+					 * Enable Memory Space + Bus Master before
+					 * ESCHED writes. Without this, writes to
+					 * pcie_regs are silently dropped by the PCIe
+					 * fabric (chip command register has bits 0/2
+					 * clear after enumeration, so BAR0 MMIO
+					 * transactions are ignored). Measured 2026-10-15:
+					 * fm_esched_init ran 390 writes but ESCHED read
+					 * back 0xffffffff because command=0x0000.
+					 */
+					(void)fm_pcie_enable_command(d);
 					set(d, rep, FM_STEP_PCIE, FM_OK,
 					    "PCIe attached; ESCHED path live");
+				}
 			}
 		}
 	}
@@ -642,9 +666,17 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 * asynchronously after SAF writes complete (measured 2026-10-13).
 	 */
 	fm_sched_mark_ready(d);
+	/*
+	 * Steps 10-12 produce many self-resets. Each reset clears the PCIe
+	 * command register back to 0x0000 (Memory Space disabled), so the
+	 * earlier fm_pcie_enable_command() call at step 9 is lost by the time
+	 * we reach here. Re-enable immediately before ESCHED writes so that
+	 * all 390 register writes are actually received by the chip.
+	 */
+	if (d->pcie_regs != NULL)
+		(void)fm_pcie_enable_command(d);
 	(void)fm_esched_init(d, NULL, NULL);
-	/* PCIe mapping no longer needed; daemon uses LBUS for the watch loop. */
-	fm_detach_pcie(d);
+	/* Leave BAR0 mapped (d->pcie_regs) -- the DMA engine needs it. */
 
 	fm_boot_mark_done(d);
 	return FM_OK;

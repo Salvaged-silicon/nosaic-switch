@@ -30,7 +30,7 @@ CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"fm6000\"
 LDLIBS  += -lpthread
 
 COMMON_OBJS       = pci.o sbus.o spico.o serdes.o bist.o saf.o esched.o ssched.o cmwm.o cmrest.o parser.o lbs.o mrl.o crm.o memfill.o
-DAEMON_OBJS       = main.o boot.o pcie_init.o sock.o $(COMMON_OBJS)
+DAEMON_OBJS       = main.o boot.o pcie_init.o sock.o glort.o l2f.o dma.o tap.o $(COMMON_OBJS)
 PROBE_OBJS        = probe.o boot.o pcie_init.o $(COMMON_OBJS)
 MEMFILL_OBJS      = memfill_main.o boot.o pcie_init.o $(COMMON_OBJS)
 PCIE_INIT_OBJS    = pcie_init_main.o pcie_init.o boot.o $(COMMON_OBJS)
@@ -53,7 +53,11 @@ fm6000-probe: $(PROBE_OBJS)
 fm6000-memfill: $(MEMFILL_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(MEMFILL_OBJS) $(LDLIBS)
 
-main.o: main.c pci.h regs.h boot.h sock.h
+main.o: main.c pci.h regs.h boot.h sock.h dma.h glort.h l2f.h lbs.h tap.h portmap.h
+glort.o: glort.c glort.h pci.h
+l2f.o: l2f.c l2f.h pci.h
+dma.o: dma.c dma.h pci.h regs.h
+tap.o: tap.c tap.h
 pci.o:  pci.c pci.h regs.h ../common/mmio.h
 boot.o: boot.c boot.h memfill.h pci.h pcie_init.h regs.h
 sock.o: sock.c sock.h pci.h regs.h

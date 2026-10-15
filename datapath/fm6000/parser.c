@@ -109,7 +109,9 @@ int fm_parser_fields_init(struct fm6000 *d, unsigned *written)
 					 port != FM6000_ALTA_CPU &&
 					 port != FM6000_ALTA_INTERNAL;
 
-			w0 = PARSER_FLAGS_DOWN << 16;
+			/* Internal ports are always up; only front-panel ports
+			 * start down and get the flag cleared in link_up(). */
+			w0 = front ? (PARSER_FLAGS_DOWN << 16) : 0;
 			if (front)
 				w0 |= 0x100u | glort;
 			w1 = ((uint32_t)glort << 16) | 1u;
@@ -138,4 +140,31 @@ int fm_parser_fields_init(struct fm6000 *d, unsigned *written)
 	if (written != NULL)
 		*written = n;
 	return fm_alive(d) ? FM_OK : FM_EOFFBUS;
+}
+
+/*
+ * Update the parser seed after a front-panel port's SerDes comes up.
+ *
+ * The initial seed carries FLAGS_DOWN so the chip knows the port hasn't
+ * linked yet. Once SerDes is up that flag must be cleared or the chip
+ * continues treating the port as down in the forwarding path.
+ *
+ * Only entry 0 (the live seed) is updated; entry 1 stays zero.
+ * ECC is valid from the full init, so a single-entry update is safe.
+ */
+int fm_parser_port_link_up(struct fm6000 *d, unsigned fp_port)
+{
+	unsigned alta, glort;
+	unsigned n = 0;
+
+	if (fp_port < 1 || fp_port > FM6000_FRONT_PORTS)
+		return FM_ERR;
+
+	alta  = fm6000_alta_of[fp_port];
+	glort = fm6000_glort_of(alta);
+
+	return write_entry(d, alta, 0,
+			   (0x100u | glort),
+			   ((uint32_t)glort << 16) | 1u,
+			   &n);
 }

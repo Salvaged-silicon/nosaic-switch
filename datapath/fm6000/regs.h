@@ -865,27 +865,67 @@ static inline unsigned fm6000_epl_channel(unsigned epl, unsigned lane)
  * the only such block found so far. Reading it as a word address lands in a
  * different block entirely and the chip answers plausibly. [RE]
  *
- * The engine itself is documented: TX and RX buffer-descriptor rings, sized to
- * a power of two and 32-byte aligned, with a 16-byte descriptor of
- * Status / Length / BufferAddrLo / BufferAddrHi. [DS §7.11, Table 7-5]
+ * DMA register offsets (byte offsets from BAR0). Recovered from EdgeNOS
+ * disassembly of Arista's proprietary fpdma.ko. [RE, confirmed EdgeNOS]
  */
 #define FM6000_DMA_BYTE_BASE		0x5000
-#define FM6000_DMA_DESC_BYTES		16
-#define FM6000_DMA_RING_ALIGN		32
+#define FM6000_DMA_BASE			0x5000
+#define FM6000_DMA_COMMAND		0x5004
+#define FM6000_DMA_STATUS		0x5008
+#define FM6000_DMA_COALESCING		0x500C
+#define FM6000_DMA_RX_BD_BASE_LO	0x5010
+#define FM6000_DMA_RX_BD_BASE_HI	0x5014
+#define FM6000_DMA_RX_BD_END_LO		0x5018
+#define FM6000_DMA_RX_BD_END_HI		0x501C
+#define FM6000_DMA_TX_BD_BASE_LO	0x5020
+#define FM6000_DMA_TX_BD_BASE_HI	0x5024
+#define FM6000_DMA_TX_BD_END_LO		0x5028
+#define FM6000_DMA_TX_BD_END_HI		0x502C
+#define FM6000_DMA_IP			0x5030
+#define FM6000_DMA_IM			0x5034
+#define FM6000_DMA_CFG2			0x505C
+#define FM6000_DMA_CFG			0x5060
+#define FM6000_DMA_UNK68		0x5068
+
+#define FM6000_DMA_CMD_TX		0x1
+#define FM6000_DMA_CMD_RX		0x2
+#define FM6000_DMA_CMD_TX_POST		0x5
+#define FM6000_DMA_CMD_RX_POST		0x6
+#define FM6000_DMA_CMD_TX_STOP		0x3	/* PCI_TX_STOP (scaffold); 0x9 was wrong */
+#define FM6000_DMA_CMD_RX_STOP		0x4	/* PCI_RX_STOP */
+#define FM6000_DMA_CFG2_INIT		0x71F	/* live-captured working EOS 2026-08-05; 0x30F was vendor disasm */
+#define FM6000_DMA_IM_RUN		0x3
+#define FM6000_DMA_STATUS_READY		(1u << 0)
+
+/* Descriptor layout (32-byte stride). [RE -- the datasheet says 16] */
+#define FM6000_DESC_STRIDE		32
+#define FM6000_DMA_RING_ALIGN		64
+#define FM6000_DESC_STATUS		0x00
+#define FM6000_DESC_LEN			0x02
+#define FM6000_DESC_ADDR_LO		0x04
+#define FM6000_DESC_ADDR_HI		0x08
+#define FM6000_DESC_RX_READY		0x01
+#define FM6000_DESC_DONE		0x04
+#define FM6000_DESC_HANDOFF		0x09
+#define FM6000_RING_MAX			1024
+#define FM6000_RX_MAX_LEN		2048
 
 /*
- * The internal frame tag, inline in the frame at L2 offset 12 -- NOT in the
- * descriptor field that looks like it should carry it. The frame's length
- * includes it.
+ * The internal frame tag, inline in the frame at L2 offset 12. [RE]
  *
- * ⚠ Table 7-8 documents SEVEN bytes (DGLORT, SGLORT, SWPRI, USER, FTYPE); the
- * prior work on this chassis measured EIGHT when it snooped a working
- * transmit. One is wrong, or the eighth byte is alignment padding. A tag wrong
- * by one byte produces frames the chip accepts and misparses, so this is
- * settled on the bench before the packet path is trusted.
- * [DS Table 7-8 vs RE -- CONFLICT, unresolved]
+ * ⚠ EOS puts the tag inline in the payload and leaves the descriptor's own
+ * F64 field (BD offset 0x0C) zero. Using only the descriptor field produces
+ * frames the chip accepts and strips, delivering nothing to the wire.
+ * Measured 2026-08-05 against a running EOS. [RE]
+ *
+ * Tag format (8 bytes, big-endian, at L2 offset 12):
+ *   bytes 0-1: FTYPE   (0x0000 = normal Ethernet)
+ *   bytes 2-3: VLAN
+ *   bytes 4-5: SGLORT  (FM6000_GLORT_CPU for CPU-injected frames)
+ *   bytes 6-7: DGLORT  (target port's GLORT)
  */
 #define FM6000_F64_OFFSET		12
+#define FM6000_F64_LEN			8
 #define FM6000_F64_LEN_DATASHEET	7
 #define FM6000_F64_LEN_OBSERVED		8
 

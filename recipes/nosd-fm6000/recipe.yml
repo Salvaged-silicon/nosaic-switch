@@ -69,6 +69,9 @@ build:
     - src: fm6000/fm6000-probe
       dst: /usr/sbin/fm6000-probe
       mode: "0755"
+    - src: fm6000/fm6000-esched-init
+      dst: /usr/sbin/fm6000-esched-init
+      mode: "0755"
 
   # The name everything above this layer uses. The unit, the CLI and the docs
   # only ever say `nosd`; the builder picks the provider from the board's ASIC.

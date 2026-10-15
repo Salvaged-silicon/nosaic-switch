@@ -182,6 +182,72 @@ int fm_open_lbus(struct fm6000 *d, const char *scd_slot)
 	return map_bar(d, "resource1");
 }
 
+/*
+ * Reopen the LBUS mapping via /dev/mem after PCIe SerDes init.
+ *
+ * fm_open_lbus() calls enable_device(), which writes to the sysfs enable file
+ * and triggers pci_enable_device() inside the kernel. During PCIe link
+ * training (started by fm_pcie_serdes_init), the AER handler runs and holds
+ * locks that pci_enable_device() also needs -- deadlock. Opening resource1
+ * has the same problem; the kernel's resource mmap path calls pci_enable_device
+ * too.
+ *
+ * This function reads BAR1's physical address from the sysfs resource text
+ * file (which does NOT call pci_enable_device) and maps it via /dev/mem,
+ * bypassing the deadlock path entirely.
+ */
+int fm_reopen_lbus_devmem(struct fm6000 *d, const char *scd_slot)
+{
+	char path[256];
+	FILE *rf;
+	unsigned long bar_start = 0, bar_end = 0, bar_flags = 0;
+	unsigned long dummy_s, dummy_e, dummy_f;
+	void *m;
+	int fd;
+
+	if (scd_slot == NULL || strlen(scd_slot) >= sizeof(d->slot))
+		return FM_ERR;
+
+	/* BAR1 is the second line in the resource text file. */
+	snprintf(path, sizeof(path), "%s/%s/resource", PCI_DEVICES, scd_slot);
+	if ((rf = fopen(path, "r")) == NULL)
+		return FM_ERR;
+	/* Skip line 1 (BAR0). resource file uses hex: "0xSTART 0xEND 0xFLAGS\n" */
+	if (fscanf(rf, "0x%lx 0x%lx 0x%lx\n", &dummy_s, &dummy_e, &dummy_f) != 3) {
+		fclose(rf);
+		return FM_ERR;
+	}
+	/* Read line 2 (BAR1 = LBUS window). */
+	if (fscanf(rf, "0x%lx 0x%lx 0x%lx", &bar_start, &bar_end, &bar_flags) != 3
+	    || bar_start == 0 || bar_end <= bar_start) {
+		fclose(rf);
+		return FM_ERR;
+	}
+	fclose(rf);
+
+	memset(d, 0, sizeof(*d));
+	d->bar_fd      = -1;
+	d->pcie_bar_fd = -1;
+	d->check_writes = 1;
+	d->xport       = FM_XPORT_LBUS;
+	snprintf(d->slot, sizeof(d->slot), "%s", scd_slot);
+
+	if ((fd = open("/dev/mem", O_RDWR | O_SYNC)) < 0)
+		return FM_ERR;
+
+	m = mmap(NULL, (size_t)(bar_end - bar_start + 1),
+		 PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)bar_start);
+	if (m == MAP_FAILED) {
+		close(fd);
+		return FM_ERR;
+	}
+
+	d->regs      = (volatile uint32_t *)m;
+	d->bar_bytes = (size_t)(bar_end - bar_start + 1);
+	d->bar_fd    = fd;
+	return FM_OK;
+}
+
 int fm_open_devmem(struct fm6000 *d, uintptr_t phys, size_t bytes)
 {
 	void *map;
@@ -373,6 +439,28 @@ void fm_detach_pcie(struct fm6000 *d)
 		close(d->pcie_bar_fd);
 	d->pcie_regs = NULL;
 	d->pcie_bar_fd = -1;
+}
+
+int fm_pcie_enable_command(struct fm6000 *d)
+{
+	char slot[FM_SLOT_LEN];
+	char path[256];
+	int fd;
+	uint16_t cmd = 0x0006;  /* Memory Space + Bus Master */
+
+	if (find_slot(slot, sizeof(slot)) != FM_OK)
+		return FM_ERR;
+
+	snprintf(path, sizeof(path), "%s/%s/config", PCI_DEVICES, slot);
+	fd = open(path, O_RDWR);
+	if (fd < 0)
+		return FM_ERR;
+	if (pwrite(fd, &cmd, 2, 4) != 2) {
+		close(fd);
+		return FM_ERR;
+	}
+	close(fd);
+	return FM_OK;
 }
 
 void fm_clear_offbus(struct fm6000 *d)

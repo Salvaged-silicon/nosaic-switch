@@ -30,16 +30,25 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/select.h>
 
 #include "boot.h"
 #include "cmrest.h"
 #include "cmwm.h"
+#include "dma.h"
+#include "glort.h"
+#include "l2f.h"
+#include "lbs.h"
 #include "memfill.h"
 #include "parser.h"
 #include "pci.h"
+#include "portmap.h"
 #include "regs.h"
 #include "saf.h"
+#include "serdes.h"
 #include "sock.h"
+#include "tap.h"
 
 /*
  * How long to wait for the chip before failing.
@@ -218,6 +227,27 @@ static void pipeline_init(struct fm6000 *d)
 		fprintf(stderr, "nosd-fm6000: CM rest init failed (%d)\n", rv);
 	else
 		fprintf(stderr, "nosd-fm6000: CM rest: %u writes ok\n", n);
+
+	rv = fm_lbs_init(d, &n);
+	if (rv != FM_OK)
+		fprintf(stderr, "nosd-fm6000: LBS init failed (%d)\n", rv);
+	else
+		fprintf(stderr, "nosd-fm6000: LBS: %u writes ok\n", n);
+
+	rv = fm_glort_init(d);
+	if (rv != FM_OK)
+		fprintf(stderr, "nosd-fm6000: GLORT init failed (%d)\n", rv);
+	else {
+		uint32_t mcast1_w0 = 0xdeadbeef, mcast1_w1 = 0xdeadbeef;
+		uint32_t glort_cam0 = 0xdeadbeef;
+		/* Readback: verify MCAST_DEST_TABLE[1] and GLORT_CAM[0] took effect */
+		(void)fm_rd(d, 0x240004u, &mcast1_w0);
+		(void)fm_rd(d, 0x240005u, &mcast1_w1);
+		(void)fm_rd(d, 0x00e000u, &glort_cam0);
+		fprintf(stderr,
+			"nosd-fm6000: GLORT: ok; MCAST_DEST[1]={0x%08x,0x%08x} CAM[0]=0x%08x\n",
+			mcast1_w0, mcast1_w1, glort_cam0);
+	}
 }
 
 static void nap_ms(long ms)
@@ -225,6 +255,315 @@ static void nap_ms(long ms)
 	struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
 
 	nanosleep(&ts, NULL);
+}
+
+/*
+ * Forwarding state: DMA engine + TAP file descriptors for et1/et2.
+ *
+ * Only et1 and et2 are wired up -- they are the ports with cables in the lab.
+ * Adding more ports is a matter of creating more TAPs and extending the table.
+ */
+#define FWD_NPORTS 2
+
+struct fwd_port {
+	int       tap_fd;
+	uint16_t  glort;
+	const char *name;
+};
+
+struct fwd_state {
+	struct fm_dma    dma;
+	struct fwd_port  ports[FWD_NPORTS];
+};
+
+static struct fwd_state g_fwd;
+
+static unsigned long g_rx_total = 0;
+
+/* Called from DMA RX poll for each received frame. */
+static void rx_deliver(void *ctx, const uint8_t *frame, uint16_t len)
+{
+	static unsigned long rx_unknown = 0;
+	unsigned long rx_total;
+	uint16_t sglort;
+	int i;
+
+	(void)ctx;
+
+	/* Frame is DMAC(6) SMAC(6) F64(8) EType(2) Payload...
+	 * Strip the F64 tag before delivering to the TAP.
+	 * Minimum viable frame: 14 bytes of header + F64 + EType = 22 bytes. */
+	if (len < 22)
+		return;
+
+	rx_total = ++g_rx_total;
+	sglort = fm_f64_sglort(frame, len);
+
+	/* Log first 8 frames and every 100th unknown frame for diagnosis. */
+	if (rx_total <= 8 || (rx_unknown > 0 && rx_unknown % 100 == 0)) {
+		fprintf(stderr, "nosd-fm6000: DMA RX #%lu: sglort=%u len=%u\n",
+			rx_total, sglort, len);
+	}
+
+	for (i = 0; i < FWD_NPORTS; i++) {
+		if (g_fwd.ports[i].glort != sglort)
+			continue;
+		if (g_fwd.ports[i].tap_fd < 0)
+			return;
+		/* Build frame without the F64 tag: DMAC(6) SMAC(6) EType... */
+		{
+			uint8_t stripped[4096];
+			uint16_t stripped_len = len - FM6000_F64_LEN;
+
+			if (stripped_len > sizeof(stripped))
+				return;
+			memcpy(stripped, frame, 12);                    /* DMAC+SMAC */
+			memcpy(stripped + 12, frame + 20, len - 20);   /* EType+payload */
+			fm_tap_write(g_fwd.ports[i].tap_fd, stripped, stripped_len);
+		}
+		return;
+	}
+	/* Frame from an unknown SGLORT -- not a TAP port, ignore. */
+	rx_unknown++;
+}
+
+static void *fwd_thread(void *arg)
+{
+	struct fwd_state *fwd = arg;
+	uint8_t txbuf[4096];
+	struct timeval tv;
+	fd_set rfds;
+	int maxfd, i, n;
+	time_t last_log = 0;
+	unsigned long rx_poll_count = 0;
+	unsigned long tx_sent = 0, tx_ringfull = 0;
+
+	for (;;) {
+		/* Poll DMA RX (non-blocking) */
+		rx_poll_count++;
+		fm_dma_rx_poll(&fwd->dma, 16, rx_deliver, NULL);
+		fm_dma_tx_reclaim(&fwd->dma);
+
+		/* Log TX/RX activity every 30 seconds */
+		{
+			time_t now = time(NULL);
+			if (now - last_log >= 30) {
+				last_log = now;
+				/* Dump first 4 TX descriptor STATUS bytes for diagnosis */
+				{
+					const struct fm_dma_ring *r = &fwd->dma.tx;
+					uint32_t j;
+					fprintf(stderr,
+						"nosd-fm6000: fwd heartbeat: rx_polls=%lu rx_frames=%lu tx_sent=%lu tx_ringfull=%lu tx_head=%u tx_tail=%u\n",
+						rx_poll_count, g_rx_total, tx_sent, tx_ringfull,
+						r->head & r->mask, r->tail & r->mask);
+					/* Dump all 32 bytes of descriptor slot 0 */
+					fprintf(stderr, "nosd-fm6000: TX desc[0] raw:");
+					{
+						const uint8_t *b = r->desc;
+						uint32_t k;
+						for (k = 0; k < FM6000_DESC_STRIDE; k++)
+							fprintf(stderr, " %02x", b[k]);
+					}
+					fprintf(stderr, "\n");
+					fprintf(stderr, "nosd-fm6000: TX desc STATUS[0..7]:");
+					for (j = 0; j < 8 && j < r->size; j++)
+						fprintf(stderr, " %02x",
+							*(const uint8_t *)(r->desc + (size_t)j * FM6000_DESC_STRIDE + FM6000_DESC_STATUS));
+					fprintf(stderr, "\n");
+
+					/* Dump RX descriptor STATUS bytes */
+					{
+						const struct fm_dma_ring *rx = &fwd->dma.rx;
+						fprintf(stderr, "nosd-fm6000: RX desc STATUS[0..7]:");
+						for (j = 0; j < 8 && j < rx->size; j++)
+							fprintf(stderr, " %02x",
+								*(const uint8_t *)(rx->desc + (size_t)j * FM6000_DESC_STRIDE + FM6000_DESC_STATUS));
+						fprintf(stderr, "\n");
+					}
+
+					/* DMA engine status via PCIe BAR0 */
+					{
+						const volatile uint32_t *pr = fwd->dma.d->pcie_regs;
+						uint32_t dma_st, dma_cmd, tx_base, tx_end, dma_cfg, unk68;
+						uint32_t tx_curr, rx_curr; /* current-pointer regs */
+						__sync_synchronize();
+						dma_st  = pr[FM6000_DMA_STATUS  / 4];
+						dma_cmd = pr[FM6000_DMA_COMMAND  / 4];
+						tx_base = pr[FM6000_DMA_TX_BD_BASE_LO / 4];
+						tx_end  = pr[FM6000_DMA_TX_BD_END_LO / 4];
+						dma_cfg = pr[FM6000_DMA_CFG      / 4];
+						unk68   = pr[FM6000_DMA_UNK68    / 4];
+						tx_curr = pr[0x5048 / 4]; /* TX current BD pointer */
+						rx_curr = pr[0x5050 / 4]; /* RX current BD pointer */
+						fprintf(stderr,
+							"nosd-fm6000: DMA regs: status=0x%08x tx_base=0x%08x tx_end=0x%08x tx_curr=0x%08x rx_curr=0x%08x cfg=0x%08x unk68=0x%08x\n",
+							dma_st, tx_base, tx_end, tx_curr, rx_curr, dma_cfg, unk68);
+					}
+
+					/* Frame buffer slot 0 bytes 0-23 (Ethernet header + F64 tag) */
+					if (r->buf_va[0]) {
+						const uint8_t *fr = r->buf_va[0];
+						fprintf(stderr, "nosd-fm6000: TX buf[0] bytes 0-23:");
+						for (j = 0; j < 24; j++)
+							fprintf(stderr, " %02x", fr[j]);
+						fprintf(stderr, "\n");
+					}
+
+					/* L2F_TABLE_256 dest-mask readback: GLORT_RAM dmaskbaseidx groups */
+					{
+						struct fm6000 *d = fwd->dma.d;
+						uint32_t g0w0=0,g0w1=0,g1w0=0,g1w1=0,g2w0=0,g2w1=0;
+						(void)fm_rd(d, 0x1a0000u, &g0w0);
+						(void)fm_rd(d, 0x1a0001u, &g0w1);
+						(void)fm_rd(d, 0x1a0004u, &g1w0);
+						(void)fm_rd(d, 0x1a0005u, &g1w1);
+						(void)fm_rd(d, 0x1a0008u, &g2w0);
+						(void)fm_rd(d, 0x1a0009u, &g2w1);
+						fprintf(stderr,
+							"nosd-fm6000: L2F_DMASK: grp0={0x%08x,0x%08x} grp1={0x%08x,0x%08x} grp2={0x%08x,0x%08x}\n",
+							g0w0,g0w1,g1w0,g1w1,g2w0,g2w1);
+					}
+				}
+			}
+		}
+
+		/* Wait up to 1ms for TAP readability */
+		FD_ZERO(&rfds);
+		maxfd = -1;
+		for (i = 0; i < FWD_NPORTS; i++) {
+			if (fwd->ports[i].tap_fd >= 0) {
+				FD_SET(fwd->ports[i].tap_fd, &rfds);
+				if (fwd->ports[i].tap_fd > maxfd)
+					maxfd = fwd->ports[i].tap_fd;
+			}
+		}
+		if (maxfd < 0) {
+			usleep(1000);
+			continue;
+		}
+		tv.tv_sec = 0; tv.tv_usec = 1000;
+		n = select(maxfd + 1, &rfds, NULL, NULL, &tv);
+		if (n <= 0)
+			continue;
+
+		for (i = 0; i < FWD_NPORTS; i++) {
+			ssize_t len;
+			int fd = fwd->ports[i].tap_fd;
+
+			if (fd < 0 || !FD_ISSET(fd, &rfds))
+				continue;
+			len = fm_tap_read(fd, txbuf, sizeof(txbuf));
+			if (len < 14)
+				continue;
+			if (fm_dma_tx(&fwd->dma, txbuf, (uint16_t)len,
+				      FM6000_GLORT_CPU, fwd->ports[i].glort) == 0)
+				tx_sent++;
+			else
+				tx_ringfull++;
+		}
+	}
+	return NULL;
+}
+
+/*
+ * Bring up the two front-panel ports that have cables in the lab.
+ *
+ * fm_lane_enable() runs the full SerDes init: SBus device reset, polarity,
+ * rate select, PLL lock, TX/RX enable, EPL_CFG_A/B, per-lane SERDES regs,
+ * and the TX equalizer.  Without this the physical ports never emit signal
+ * and no frames flow regardless of the DMA state.
+ */
+static void bring_up_ports(struct fm6000 *d)
+{
+	static const int portlist[] = { 1, 2 };
+	static const char *portnames[] = { "et1", "et2" };
+	int saved_check;
+	size_t i;
+
+	/*
+	 * Disable the per-write fm_check_offbus() sysfs reads for the duration.
+	 * Each SBus write would otherwise open /sys/.../config, which acquires
+	 * a kernel PCIe lock.  The DMA fwd_thread is already running at this
+	 * point, and AER events from in-flight DMA traffic can hold that lock,
+	 * producing a deadlock that freezes the kernel.
+	 *
+	 * The local bus reads 0x00000000 (not 0xffffffff) when the chip is
+	 * off-bus, so fm_rd_byte never triggers the sysfs path either.
+	 * fm_alive() is the right post-init check if we need one.
+	 */
+	saved_check = d->check_writes;
+	d->check_writes = 0;
+
+	for (i = 0; i < sizeof(portlist) / sizeof(portlist[0]); i++) {
+		const struct fm_port *p = fm_port_lookup(portlist[i]);
+		struct fm_lane_report rep;
+		int rv;
+
+		if (!p) {
+			fprintf(stderr,
+				"nosd-fm6000: port %d (%s) not in SerDes table\n",
+				portlist[i], portnames[i]);
+			continue;
+		}
+		rv = fm_lane_enable(d, p, &rep);
+		fprintf(stderr,
+			"nosd-fm6000: %s (port %d, EPL %d lane %d): SerDes %s\n",
+			portnames[i], portlist[i], p->epl, p->lane,
+			rv == FM_OK ? "up" : "FAILED");
+		if (rv == FM_OK) {
+			/*
+			 * Clear PARSER_FLAGS_DOWN. The init seed marks every port
+			 * link-down; leaving it set after SerDes comes up causes
+			 * the chip to treat the port as down in the forwarding path.
+			 */
+			int pr = fm_parser_port_link_up(d, portlist[i]);
+			fprintf(stderr,
+				"nosd-fm6000: %s parser seed link-up: %s\n",
+				portnames[i], pr == FM_OK ? "ok" : "FAILED");
+		}
+	}
+
+	d->check_writes = saved_check;
+}
+
+static int start_forwarding(struct fm6000 *d)
+{
+	pthread_t tid;
+	int i;
+
+	if (d->pcie_regs == NULL) {
+		fprintf(stderr, "nosd-fm6000: PCIe BAR0 not mapped; skipping DMA\n");
+		return -1;
+	}
+
+	if (fm_dma_init(&g_fwd.dma, d) < 0)
+		return -1;
+
+	/* et1 = front-panel port 1, GLORT 1 */
+	g_fwd.ports[0].name  = "et1";
+	g_fwd.ports[0].glort = 1;
+	g_fwd.ports[0].tap_fd = fm_tap_create("et1");
+
+	/* et2 = front-panel port 2, GLORT 2 */
+	g_fwd.ports[1].name  = "et2";
+	g_fwd.ports[1].glort = 2;
+	g_fwd.ports[1].tap_fd = fm_tap_create("et2");
+
+	for (i = 0; i < FWD_NPORTS; i++) {
+		if (g_fwd.ports[i].tap_fd < 0)
+			fprintf(stderr,
+				"nosd-fm6000: WARNING: TAP %s failed to create\n",
+				g_fwd.ports[i].name);
+	}
+
+	if (pthread_create(&tid, NULL, fwd_thread, &g_fwd) != 0) {
+		fprintf(stderr, "nosd-fm6000: could not start forwarding thread\n");
+		return -1;
+	}
+	pthread_detach(tid);
+	fprintf(stderr, "nosd-fm6000: packet forwarding active (et1/et2)\n");
+	return 0;
 }
 
 static void banner(const struct fm6000 *d)
@@ -235,8 +574,7 @@ static void banner(const struct fm6000 *d)
 	else
 		printf("nosd-fm6000: Intel FM6000 at %s, BAR0 %zu MB\n",
 		       d->slot, d->bar_bytes >> 20);
-	printf("nosd-fm6000: this datapath does not forward yet. "
-	       "`nosaic show caps` reports what it can actually do.\n");
+	printf("nosd-fm6000: forwarding via DMA punt/inject; TAPs et1/et2\n");
 	fflush(stdout);
 }
 
@@ -369,6 +707,10 @@ int main(int argc, char **argv)
 			fprintf(stderr, "nosd-fm6000: the chip is already booted; "
 					"leaving it alone\n");
 			fm_boot_mark_done(&dev);
+			/* Attach PCIe BAR0 for DMA (normally done inside
+			 * fm_boot_cold step 9; must be explicit on warm restart). */
+			if (fm_attach_pcie(&dev) != FM_OK)
+				fprintf(stderr, "nosd-fm6000: PCIe attach failed on warm restart\n");
 		} else {
 			struct fm_boot_report rep;
 			int rv;
@@ -391,6 +733,15 @@ int main(int argc, char **argv)
 			}
 		}
 		pipeline_init(&dev);
+		bring_up_ports(&dev);
+		{
+			int rv = fm_l2f_init(&dev);
+			if (rv != FM_OK)
+				fprintf(stderr, "nosd-fm6000: L2F init failed (%d)\n", rv);
+			else
+				fprintf(stderr, "nosd-fm6000: L2F: ok\n");
+		}
+		start_forwarding(&dev);
 	}
 
 	if (fm_sock_start(&dev, sockpath) != 0)

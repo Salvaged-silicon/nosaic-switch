@@ -10,5 +10,6 @@ struct fm6000;
  * entry everywhere.
  */
 int fm_parser_fields_init(struct fm6000 *d, unsigned *written);
+int fm_parser_port_link_up(struct fm6000 *d, unsigned fp_port);
 
 #endif /* NOSAIC_FM6000_PARSER_H */

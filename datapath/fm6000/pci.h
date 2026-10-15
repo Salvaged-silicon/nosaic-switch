@@ -169,6 +169,20 @@ int fm_open_lbus(struct fm6000 *d, const char *scd_slot);
 int fm_open_devmem(struct fm6000 *d, uintptr_t phys, size_t bytes);
 
 /*
+ * Reopen the SCD's LBUS window via /dev/mem after PCIe SerDes init.
+ *
+ * fm_open_lbus() cannot be used here: it calls pci_enable_device() via the
+ * sysfs enable file, which deadlocks with the AER handler during PCIe link
+ * training. This function reads BAR1's physical address from the sysfs
+ * resource text file (safe: no pci_enable_device) and maps it via /dev/mem.
+ *
+ * scd_slot must be the SCD's PCI address ("0000:04:00.0"). NULL is not
+ * accepted since there is no safe way to search for the slot while AER may
+ * be running.
+ */
+int fm_reopen_lbus_devmem(struct fm6000 *d, const char *scd_slot);
+
+/*
  * Open the chip whichever way it can be reached, and say which.
  *
  * Tries the FM6000's own BAR0 first and falls back to the SCD's local-bus
@@ -199,6 +213,17 @@ void fm_close(struct fm6000 *d);
  * Calling a second time is a no-op (returns FM_OK).
  */
 int fm_attach_pcie(struct fm6000 *d);
+
+/*
+ * Enable Memory Space and Bus Master in the FM6000's PCI command register.
+ *
+ * After PCIe link training, the chip enumerates with command=0x0000 (both
+ * bits clear), so BAR0 reads return 0xffffffff until this is called. Must be
+ * called AFTER fm_attach_pcie() and BEFORE any DMA register access.
+ *
+ * Returns FM_OK on success, FM_ERR if the config file could not be opened.
+ */
+int fm_pcie_enable_command(struct fm6000 *d);
 
 /*
  * Release the FM6000 PCIe BAR0 mapping (d->pcie_regs).
