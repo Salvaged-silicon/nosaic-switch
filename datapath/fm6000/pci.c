@@ -163,38 +163,66 @@ int fm_open(struct fm6000 *d, const char *slot)
 
 int fm_open_lbus(struct fm6000 *d, const char *scd_slot)
 {
-	memset(d, 0, sizeof(*d));
-	d->bar_fd = -1;
-	d->pcie_bar_fd = -1;
-	d->check_writes = 1;
-	d->xport = FM_XPORT_LBUS;
+	char slot[FM_SLOT_LEN];
+	char path[256];
+	uint16_t cmd = 0x0006;  /* Memory Space + Bus Master */
+	int fd;
 
 	if (scd_slot != NULL) {
-		if (strlen(scd_slot) >= sizeof(d->slot))
+		if (strlen(scd_slot) >= sizeof(slot))
 			return FM_ERR;
-		snprintf(d->slot, sizeof(d->slot), "%s", scd_slot);
-	} else if (find_slot_id(d->slot, sizeof(d->slot),
+		snprintf(slot, sizeof(slot), "%s", scd_slot);
+	} else if (find_slot_id(slot, sizeof(slot),
 				SCD_VENDOR, SCD_DEVICE) != FM_OK) {
 		return FM_ERR;
 	}
 
-	enable_device(d->slot);
-	return map_bar(d, "resource1");
+	/* Enable Memory Space in the command register via the config file.
+	 * Writing to the sysfs "enable" file calls pci_enable_device() which
+	 * acquires the AER port lock -- see the comment above
+	 * fm_reopen_lbus_devmem for why that deadlocks. Directly writing the
+	 * command register at offset 4 of the config file bypasses that path. */
+	snprintf(path, sizeof(path), "%s/%s/config", PCI_DEVICES, slot);
+	if ((fd = open(path, O_RDWR)) >= 0) {
+		(void)pwrite(fd, &cmd, 2, 4);
+		close(fd);
+	}
+
+	/* Map BAR1 via /dev/mem. Opening resource1 also triggers
+	 * pci_enable_device() via the kernel's resource mmap handler; /dev/mem
+	 * bypasses that path too. */
+	return fm_reopen_lbus_devmem(d, slot);
 }
 
 /*
- * Reopen the LBUS mapping via /dev/mem after PCIe SerDes init.
+ * Open or reopen the LBUS mapping via /dev/mem.
  *
- * fm_open_lbus() calls enable_device(), which writes to the sysfs enable file
- * and triggers pci_enable_device() inside the kernel. During PCIe link
- * training (started by fm_pcie_serdes_init), the AER handler runs and holds
- * locks that pci_enable_device() also needs -- deadlock. Opening resource1
- * has the same problem; the kernel's resource mmap path calls pci_enable_device
- * too.
+ * Both the sysfs "enable" file and the sysfs "resource1" mmap path call
+ * pci_enable_device() inside the kernel. That function acquires the AER port
+ * driver lock, which the AER handler also holds when it fires.  Concurrency
+ * between a pci_enable_device() call and the AER handler (which fires on any
+ * PCIe error, including those caused by ESCHED accessing the FM6000 before
+ * bring-up is complete) produces a deadlock: nosd hangs, management IP never
+ * appears, only physical link survives.
  *
- * This function reads BAR1's physical address from the sysfs resource text
- * file (which does NOT call pci_enable_device) and maps it via /dev/mem,
- * bypassing the deadlock path entirely.
+ * Confirmed on the 7150S-52:
+ *   - resource0 sysfs mmap hangs on open; /dev/mem mapping of the same
+ *     physical address works (esched-init path, 2026-10-13)
+ *   - resource1 sysfs mmap and the "enable" file hang during LBUS reopen
+ *     after PCIe SerDes init; devmem works (boot.c step 9, 2026-10-14)
+ *   - "enable" and "resource1" also deadlock during the INITIAL fm_open_lbus()
+ *     call from main.c on a cold boot (after PDU cycle), because ESCHED init
+ *     fires AER events before nosd even starts (2026-10-15)
+ *
+ * The fix for all three cases: read BAR1's physical address from the resource
+ * text file (safe: read-only, no lock), enable Memory Space in the command
+ * register by writing directly to the config file at offset 4 (safe: PCI
+ * config space writes do not go through pci_enable_device and do not acquire
+ * the AER lock), then map the physical address via /dev/mem (safe: no
+ * pci_enable_device).
+ *
+ * fm_open_lbus() uses this function for its initial open; boot.c's step 9
+ * calls it directly for the reopen after PCIe SerDes init.
  */
 int fm_reopen_lbus_devmem(struct fm6000 *d, const char *scd_slot)
 {
