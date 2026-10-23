@@ -665,9 +665,25 @@ int fm_l2f_init(struct fm6000 *d)
 	unsigned i;
 
 	for (i = 0; i < L2F_TABLE_LEN; i++) {
-		int rv = fm_wr(d, l2f_table[i][0], l2f_table[i][1]);
+		uint32_t addr = l2f_table[i][0];
+		int rv = fm_wr(d, addr, l2f_table[i][1]);
 		if (rv != FM_OK)
 			return rv;
+		/*
+		 * L2F_TABLE_256 (0x1a0000) and L2F_TABLE_4K (0x180000) are
+		 * 4-word wide-atomic: an entry commits only when its MSW
+		 * (word 3, the highest address in the 4-word group) is written.
+		 * memfill committed all-zero entries for both tables; our writes
+		 * to words 0–2 update the chip's holding registers but do not
+		 * commit until word 3 is explicitly written.  Write word 3 = 0
+		 * immediately after word 2 so the entry commits with the new
+		 * values before the next entry's words touch the holding regs.
+		 */
+		if (addr >= 0x180000u && addr < 0x1a1000u && (addr & 3u) == 2u) {
+			rv = fm_wr(d, addr + 1, 0);
+			if (rv != FM_OK)
+				return rv;
+		}
 	}
 	return FM_OK;
 }

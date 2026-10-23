@@ -377,8 +377,9 @@ int fm_dma_tx(struct fm_dma *dma, const uint8_t *frame, uint16_t len,
 	/* Ring full check */
 	if (((r->head + 1) & r->mask) == (r->tail & r->mask))
 		return -1;
-	/* Frame (without F64 tag) must fit in one page */
-	if (len > 4096 - 4)
+	if (len < 12)
+		return -1;
+	if (len > 4096u - 4u)
 		return -1;
 
 	/* Allocate TX buffer lazily; reuse slot once allocated. */
@@ -390,25 +391,36 @@ int fm_dma_tx(struct fm_dma *dma, const uint8_t *frame, uint16_t len,
 
 	buf = r->buf_va[slot];
 	/*
-	 * Frame buffer: verbatim copy WITHOUT any F64 tag.
-	 * The DMA engine reads the F64 tag from the BD's field at offset 0x0C
-	 * and inserts it into the frame at offset 12 on the way to the fabric
-	 * (datasheet §7.11.1.4).  The frame buffer must be tag-free.
+	 * Copy the clean Ethernet frame (DMAC+SMAC+EType+Payload) with no
+	 * inline F64 bytes.  The 8-byte F64 tag lives in the BD field at
+	 * FM6000_DESC_F64 (offset 0x0C); the DMA engine reads it from there
+	 * and inserts it between SMAC and EType on the fabric side.  The
+	 * egress MODIFY stage strips it before the frame hits the wire.
+	 *
+	 * RC6–RC9 inserted the tag inline in the payload buffer instead.
+	 * The chip reads the routing tag only from the BD field and ignored
+	 * the inline bytes, silently dropping every injected frame.
 	 */
 	memcpy(buf, frame, len);
 
 	d = desc_at(r, slot);
-	/* Write F64 into the BD field; zero unused bytes first. */
-	memset((void *)(d + FM6000_DESC_F64), 0, FM6000_DESC_STRIDE - FM6000_DESC_F64);
-	{
-		volatile uint8_t *f = d + FM6000_DESC_F64;
-		f[0] = 0x00; f[1] = 0x00;              /* FTYPE = 0 (normal)    */
-		f[2] = 0x00; f[3] = 0x00;              /* VLAN = 0              */
-		f[4] = (uint8_t)(sglort >> 8);
-		f[5] = (uint8_t)(sglort & 0xff);       /* SGLORT big-endian     */
-		f[6] = (uint8_t)(dglort >> 8);
-		f[7] = (uint8_t)(dglort & 0xff);       /* DGLORT big-endian     */
-	}
+	/*
+	 * F64 BD field at FM6000_DESC_F64 = 0x0C (8 bytes, big-endian):
+	 *   [0-1]  FTYPE  = 0x0100  (CPU inject / direct GLORT delivery)
+	 *   [2-3]  DGLORT (big-endian)
+	 *   [4-5]  SGLORT (big-endian) — FM6000_GLORT_CPU = 54 = 0x0036
+	 *   [6-7]  padding = 0x0000
+	 * Written before desc_write()'s DMA_WMB()+STATUS so all BD field
+	 * stores are visible to the chip before it takes descriptor ownership.
+	 */
+	d[FM6000_DESC_F64 + 0] = 0x01;
+	d[FM6000_DESC_F64 + 1] = 0x00;
+	d[FM6000_DESC_F64 + 2] = (uint8_t)(dglort >> 8);
+	d[FM6000_DESC_F64 + 3] = (uint8_t)(dglort & 0xff);
+	d[FM6000_DESC_F64 + 4] = (uint8_t)(sglort >> 8);
+	d[FM6000_DESC_F64 + 5] = (uint8_t)(sglort & 0xff);
+	d[FM6000_DESC_F64 + 6] = 0x00;
+	d[FM6000_DESC_F64 + 7] = 0x00;
 	desc_write(d, FM6000_DESC_HANDOFF, len, r->buf_phys[slot]);
 	/* Log first TX descriptor physical address once for diagnostics. */
 	if (r->head == 0) {
