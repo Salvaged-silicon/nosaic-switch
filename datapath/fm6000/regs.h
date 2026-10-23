@@ -34,6 +34,10 @@
 #define NOSAIC_FM6000_REGS_H
 
 /* PCI identity. [live: lspci on DCS-7150S-52, 2026-09-22] */
+/* FM6000 native PCIe endpoint vendor/device.  On the 7150S-52 the FM6000
+ * has no independent PCIe endpoint (all management goes through the SCD
+ * LocalBus); find_slot() will return FM_ERR, causing fm_open_auto() to
+ * fall through to fm_open_lbus() which uses the SCD BAR1 instead. */
 #define FM6000_PCI_VENDOR	0x8086
 #define FM6000_PCI_DEVICE	0x155b
 
@@ -555,11 +559,13 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
  * separate erratum workaround, applied after the boot commands and gated on a
  * chip-revision check, not part of Table 4-1 at all.
  *
- * ⚠ We do not write SCAN_SELECT before the step-5 write, so that write lands
- * on whichever chain the reset default selects. That is a gap, not a decision:
- * the vendor sequence never touches a data-in register without setting the
- * selector in the same breath. Which selector step 5 wants is not documented
- * and has not been measured here, so it is not guessed.
+ * ⚠ ssched.c now writes SCAN_CONTROL = FM6000_SCAN_CHAIN_CORE before every
+ * step-5 data write (install47, testing since installs 41-46 all produced
+ * circ=0).  Hypothesis: the power-on default chain differs from 0x10, so the
+ * writes were landing on the wrong chain and the ring never circulated.
+ * SCAN_CHAIN_CORE (0x10) is what the vendor sequence uses for the core-logic /
+ * EPL normal-mode enable, confirmed from mrl.c which always sets chain 0x10
+ * before the normal-mode data word.  [RE 2026-10-19, pending hardware confirm]
  */
 #define FM6000_SCAN_CONTROL		0x01c039	/* [RE] chain selector, [4:0] */
 #define FM6000_SCAN_CONFIG_DATA_IN	0x01c03a	/* [OURS] warm 0xffffffff */
@@ -893,7 +899,7 @@ static inline unsigned fm6000_epl_channel(unsigned epl, unsigned lane)
 #define FM6000_DMA_CMD_RX_POST		0x6
 #define FM6000_DMA_CMD_TX_STOP		0x3	/* PCI_TX_STOP (scaffold); 0x9 was wrong */
 #define FM6000_DMA_CMD_RX_STOP		0x4	/* PCI_RX_STOP */
-#define FM6000_DMA_CFG2_INIT		0x71F	/* live-captured working EOS 2026-08-05; 0x30F was vendor disasm */
+#define FM6000_DMA_CFG2_INIT		0x30F	/* vendor fpdma.ko disasm (FPDMA.md); 0x71F EOS live-capture added bits 4,10 which may enable scatter-gather and break single-buffer TX */
 #define FM6000_DMA_IM_RUN		0x3
 #define FM6000_DMA_STATUS_READY		(1u << 0)
 
@@ -925,6 +931,7 @@ static inline unsigned fm6000_epl_channel(unsigned epl, unsigned lane)
  *   bytes 6-7: DGLORT  (target port's GLORT)
  */
 #define FM6000_F64_OFFSET		12
+#define FM6000_DESC_F64			0x0Cu	/* F64/ISL tag field in BD (8 bytes) */
 #define FM6000_F64_LEN			8
 #define FM6000_F64_LEN_DATASHEET	7
 #define FM6000_F64_LEN_OBSERVED		8

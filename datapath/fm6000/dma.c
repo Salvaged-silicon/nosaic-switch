@@ -21,6 +21,16 @@
 /* x86: sfence orders descriptor-body stores before the ownership handoff. */
 #define DMA_WMB() __asm__ __volatile__("sfence" ::: "memory")
 
+static void dma_kmsg(const char *msg)
+{
+	int fd = open("/dev/kmsg", O_WRONLY | O_NOCTTY);
+	if (fd >= 0) {
+		write(fd, msg, strlen(msg));
+		write(fd, "\n", 1);
+		close(fd);
+	}
+}
+
 /* ---- physical address lookup via /proc/self/pagemap --------------------- */
 
 static uintptr_t virt_to_phys(const void *ptr)
@@ -122,17 +132,19 @@ static void desc_write(volatile uint8_t *d, uint8_t status,
 /* ---- DMA register I/O --------------------------------------------------- */
 
 /*
- * DMA registers live in PCIe BAR0 (word address 0x1400-0x141f, byte 0x5000-
- * 0x507f).  They are not accessible via the SCD LocalBus (LBUS / BAR1) --
- * the DMA engine is a PCIe-side block.
+ * DMA registers live in the FM6000 PCIe BAR0 space (offsets 0x5000+).
+ * They are NOT reachable via the SCD local-bus (d->regs); that space maps
+ * FM6000 switch/management registers (PLLs, EPL, parser, etc.) at entirely
+ * different addresses.  Always use d->pcie_regs for DMA register access.
  *
- * Write via d->pcie_regs directly, exactly as fm_wr_pcie() does for ESCHED.
- * Do NOT use fm_wr_byte()/fm_rd_byte() here: those functions call
- * fm_check_offbus() (a sysfs config-space read) after every access, and that
- * sysfs path can deadlock the kernel's PCIe AER handler on the 7150S-52 --
- * the same problem fm_reopen_lbus_devmem() and fm_attach_pcie() were fixed
- * for.  __sync_synchronize() (MFENCE) orders MMIO writes to the ring
- * registers before the DMA_COMMAND doorbell, matching fm_wr_pcie's barrier.
+ * Written with posted Memory Write TLPs, dma_wr is safe as long as BAR0
+ * is mapped.  The 30-second pre-DMA sleep in start_forwarding ensures the
+ * PCIe link is in L0 before dma_settle reads BAR0.
+ *
+ * install85 root cause: an earlier version probed d->regs[DMA_STATUS/4] and
+ * found it returned 0x00000000 (some random LBUS register), mistook that for
+ * "DMA registers reachable via LBUS", then wrote all ring addresses to wrong
+ * LBUS offsets.  BAR0 was never programmed; the DMA engine never started.
  */
 static inline void dma_wr(struct fm6000 *d, uint32_t off, uint32_t val)
 {
@@ -148,16 +160,28 @@ static inline uint32_t dma_rd(struct fm6000 *d, uint32_t off)
 	return v;
 }
 
-/* Brief settle after a COMMAND write (matches EdgeNOS fpdma.c dma_settle). */
+uint32_t fm_dma_rd_reg(const struct fm_dma *dma, uint32_t byte_off)
+{
+	__sync_synchronize();
+	return dma->d->pcie_regs[byte_off / 4];
+}
+
+/*
+ * Brief settle after a COMMAND write.
+ *
+ * FM6000 PCIe BAR0 MMIO reads can stall indefinitely even after the 30-second
+ * pre-DMA sleep: the PCIe endpoint responds to posted writes (fire-and-forget)
+ * but completion TLPs for reads may not arrive until the link wakes from a
+ * power state or finishes a training sequence the root complex cannot see.
+ *
+ * DMA command writes are posted writes; no completion is needed and they never
+ * stall.  All we need here is a brief delay for the chip to process the command
+ * before the next register write.  Skip the STATUS read entirely.
+ */
 static void dma_settle(struct fm6000 *d)
 {
-	int i;
-	for (i = 0; i < 50; i++) {
-		uint32_t st = dma_rd(d, FM6000_DMA_STATUS);
-		if (st == 0xFFFFFFFFu || (st & FM6000_DMA_STATUS_READY))
-			break;
-		usleep(10);
-	}
+	(void)d;
+	usleep(2000);	/* 2ms: time for FM6000 to process a DMA command */
 }
 
 /* ---- ring alloc / free --------------------------------------------------- */
@@ -242,6 +266,9 @@ static void program_rings(struct fm_dma *dma)
 	 * without it posix_memalign returns pages from the Normal zone and the
 	 * chip silently cannot reach them.
 	 */
+	fprintf(stderr, "nosd-fm6000: DMA phys: tx_base=0x%lx tx_end=0x%lx rx_base=0x%lx rx_end=0x%lx\n",
+		(unsigned long)tx_base, (unsigned long)tx_end,
+		(unsigned long)rx_base, (unsigned long)rx_end);
 	if (tx_base >> 32 || rx_base >> 32) {
 		fprintf(stderr,
 			"nosd-fm6000: FATAL: DMA rings above 4 GB "
@@ -277,7 +304,19 @@ static void program_rings(struct fm_dma *dma)
 	dma_wr(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_RX);
 	dma_settle(d);
 
-	dma_wr(d, FM6000_DMA_IM, FM6000_DMA_IM_RUN);
+	/*
+	 * DMA_IM_RUN = 0x3: matches the vendor fpdma.ko sequence (recovered
+	 * from disasm in EdgeNOS FPDMA.md).  This must be written AFTER both
+	 * TX and RX engines are started, not before.  Setting it before start
+	 * prevents the engines from running -- the chip needs this "unmask"
+	 * step to begin scanning descriptor rings.
+	 *
+	 * PCIe-level INTx is suppressed by the Interrupt Disable bit (bit 10)
+	 * in the FM6000 endpoint command register (set by fm_pcie_enable_command
+	 * during boot step 9), so no interrupt storm can occur even if DMA_IM
+	 * also controls interrupt generation.
+	 */
+	dma_wr(d, FM6000_DMA_IM,   FM6000_DMA_IM_RUN);
 }
 
 /* ---- public API ---------------------------------------------------------- */
@@ -287,23 +326,34 @@ int fm_dma_init(struct fm_dma *dma, struct fm6000 *d)
 	memset(dma, 0, sizeof(*dma));
 	dma->d = d;
 
+	dma_kmsg("nosd-fm6000: DMA TX ring_alloc start");
 	if (ring_alloc(&dma->tx, FM_DMA_TX_RING, 0) < 0) {
 		fprintf(stderr, "dma: TX ring alloc failed\n");
 		return -1;
 	}
+	dma_kmsg("nosd-fm6000: DMA TX ring_alloc done; RX start");
 	if (ring_alloc(&dma->rx, FM_DMA_RX_RING, FM6000_RX_MAX_LEN) < 0) {
 		fprintf(stderr, "dma: RX ring alloc failed\n");
 		ring_free(&dma->tx);
 		return -1;
 	}
-	/* Enable Memory Space + Bus Master so the chip can complete DMA
-	 * transactions.  Done here rather than in boot.c so Bus Master is not
-	 * active before the ring base addresses are written into the chip. */
-	(void)fm_pcie_enable_command(d);
+	dma_kmsg("nosd-fm6000: DMA RX ring_alloc done");
+	/* Bus Master was restored by start_forwarding() via fm_pcie_enable_portio()
+	 * after the FATAL_COUNT stability wait.  No Config Write needed here. */
+	dma_kmsg("nosd-fm6000: DMA program_rings start");
 	program_rings(dma);
+	dma_kmsg("nosd-fm6000: DMA program_rings done");
 	fprintf(stderr, "nosd-fm6000: DMA rings up (tx=%u rx=%u)\n",
 		FM_DMA_TX_RING, FM_DMA_RX_RING);
 	return 0;
+}
+
+void fm_dma_reprogram(struct fm_dma *dma)
+{
+	/* Caller (fwd_thread) has already called fm_pcie_enable_portio() to
+	 * restore Bus Master after the FATAL_COUNT stability wait.  We only
+	 * need to reprogram the DMA ring addresses. */
+	program_rings(dma);
 }
 
 void fm_dma_shutdown(struct fm_dma *dma)
@@ -323,13 +373,12 @@ int fm_dma_tx(struct fm_dma *dma, const uint8_t *frame, uint16_t len,
 	uint32_t slot = r->head & r->mask;
 	volatile uint8_t *d;
 	uint8_t *buf;
-	uint16_t total;
 
 	/* Ring full check */
 	if (((r->head + 1) & r->mask) == (r->tail & r->mask))
 		return -1;
-	/* Max frame with tag must fit in 4096 */
-	if (len + FM6000_F64_LEN > 4096 - 4)
+	/* Frame (without F64 tag) must fit in one page */
+	if (len > 4096 - 4)
 		return -1;
 
 	/* Allocate TX buffer lazily; reuse slot once allocated. */
@@ -339,29 +388,41 @@ int fm_dma_tx(struct fm_dma *dma, const uint8_t *frame, uint16_t len,
 			return -1;
 	}
 
-	buf   = r->buf_va[slot];
-	total = len + FM6000_F64_LEN;
-
+	buf = r->buf_va[slot];
 	/*
-	 * Build the frame with the F64 tag inline at offset 12.
-	 * Frame layout: DMAC(6) SMAC(6) F64(8) EType(2) Payload...
-	 * Input `frame`: DMAC(6) SMAC(6) EType(2) Payload...
+	 * Frame buffer: verbatim copy WITHOUT any F64 tag.
+	 * The DMA engine reads the F64 tag from the BD's field at offset 0x0C
+	 * and inserts it into the frame at offset 12 on the way to the fabric
+	 * (datasheet §7.11.1.4).  The frame buffer must be tag-free.
 	 */
-	memcpy(buf, frame, 12);                  /* DMAC + SMAC           */
-	buf[12] = 0x00; buf[13] = 0x00;          /* FTYPE = 0 (normal)    */
-	buf[14] = 0x00; buf[15] = 0x00;          /* VLAN = 0              */
-	buf[16] = (uint8_t)(sglort >> 8);
-	buf[17] = (uint8_t)(sglort & 0xff);      /* SGLORT big-endian     */
-	buf[18] = (uint8_t)(dglort >> 8);
-	buf[19] = (uint8_t)(dglort & 0xff);      /* DGLORT big-endian     */
-	memcpy(buf + 20, frame + 12, len - 12);  /* EType + payload       */
+	memcpy(buf, frame, len);
 
 	d = desc_at(r, slot);
-	/* Clear BD F64 field (must be zero when using inline tag). */
-	memset((void *)(d + 0x0C), 0, FM6000_DESC_STRIDE - 0x0C);
-	desc_write(d, FM6000_DESC_HANDOFF, total, r->buf_phys[slot]);
+	/* Write F64 into the BD field; zero unused bytes first. */
+	memset((void *)(d + FM6000_DESC_F64), 0, FM6000_DESC_STRIDE - FM6000_DESC_F64);
+	{
+		volatile uint8_t *f = d + FM6000_DESC_F64;
+		f[0] = 0x00; f[1] = 0x00;              /* FTYPE = 0 (normal)    */
+		f[2] = 0x00; f[3] = 0x00;              /* VLAN = 0              */
+		f[4] = (uint8_t)(sglort >> 8);
+		f[5] = (uint8_t)(sglort & 0xff);       /* SGLORT big-endian     */
+		f[6] = (uint8_t)(dglort >> 8);
+		f[7] = (uint8_t)(dglort & 0xff);       /* DGLORT big-endian     */
+	}
+	desc_write(d, FM6000_DESC_HANDOFF, len, r->buf_phys[slot]);
+	/* Log first TX descriptor physical address once for diagnostics. */
+	if (r->head == 0) {
+		static int logged;
+		if (!logged) {
+			logged = 1;
+			fprintf(stderr, "nosd-fm6000: TX slot0 buf_phys=0x%lx len=%u\n",
+				(unsigned long)r->buf_phys[slot], len);
+		}
+	}
 	r->head++;
 
+	/* TX_POST notifies the engine that a new descriptor is ready.
+	 * EdgeNOS fpdma.ko uses TX_POST per-frame (FPDMA.md confirmed). */
 	dma_wr(dma->d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_TX_POST);
 	return 0;
 }
@@ -387,10 +448,11 @@ int fm_dma_rx_poll(struct fm_dma *dma, int budget,
 {
 	struct fm_dma_ring *r = &dma->rx;
 	int n = 0;
-
-	/* Ack pending interrupts (W1C) */
-	dma_wr(dma->d, FM6000_DMA_IP,
-	       dma_rd(dma->d, FM6000_DMA_IP));
+	/* DMA_IP is NOT cleared here.  program_rings clears it once at startup
+	 * and sets DMA_IM=0 (all interrupts masked).  With no interrupt line
+	 * asserted there is nothing to ack; writing DMA_IP while the DMA engine
+	 * is actively writing received frames via PCIe DMA causes the FM6000
+	 * PCIe bridge to deadlock (the write never completes). */
 
 	while (n < budget) {
 		volatile uint8_t *d = desc_at(r, r->tail);
