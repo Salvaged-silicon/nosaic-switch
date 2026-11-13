@@ -31,8 +31,11 @@
  * documented Count ceiling of 1048575, so stride2 never participates.
  */
 
+#include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "crm.h"
 #include "pci.h"
