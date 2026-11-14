@@ -116,6 +116,18 @@ CONFIG_EFIVAR_FS=y
 # are 8086:0436, which is in no Intel driver's table in 6.12 -- see
 # platform/cisco-n3172tq/docs/hardware.md, because which of the four is the
 # management port is not yet established.
+#
+# ⚠ THE ARISTA 7150S-52'S SWITCH ASIC SHARES THIS VENDOR:DEVICE WITH THE I354.
+#
+# The FM6000's PCI ID is 8086:155b, which is also E1000_DEV_ID_I354_BACKPLANE_1GBPS
+# in igb's device table. The FM6000 is absent from the bus at boot; the SCD
+# releases it via pciehp at daemon startup. When igb claims the FM6000 it calls
+# pci_enable_device_mem(), which deadlocks with the AER handler racing against
+# the same PCIe link training that brought the chip up. Console goes silent.
+#
+# Patch 0004 removes the I354_BACKPLANE_1GBPS entry from igb's table. The I354
+# is not present on any board in this project, so the removal has no effect
+# beyond fixing the deadlock.
 CONFIG_IGB=y
 
 # --- environmentals: reaching the board's sensors, fans and PSUs -----------

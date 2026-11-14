@@ -1159,9 +1159,13 @@ poweroff -f
 		} else if o.Board.FrontPanelInit != "" {
 			after = append(after, "transceivers")
 		}
+		nosdExec := "/usr/sbin/nosd"
+		if o.Board.DatapathNoBoot {
+			nosdExec += " --no-boot"
+		}
 		services = append(services, svcgen.Service{
 			Name:    "nosd",
-			Exec:    "/usr/sbin/nosd",
+			Exec:    nosdExec,
 			After:   after,
 			Restart: "always",
 			// The SDK writes tens of thousands of lines bringing the chip up.

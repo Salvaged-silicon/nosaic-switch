@@ -40,10 +40,22 @@
  * ranges; here they are predicates over portmap.h, which is the same content
  * and one fewer thing to keep in step.
  */
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 #include "cmwm.h"
 #include "pci.h"
 #include "portmap.h"
 #include "regs.h"
+
+static void cmwm_kmsg(const char *msg)
+{
+	int fd = open("/dev/kmsg", O_WRONLY | O_NOCTTY);
+	if (fd < 0) return;
+	(void)write(fd, msg, strlen(msg));
+	close(fd);
+}
 
 #define CMWM_RXMP_PRIVATE	0x112800u
 #define CMWM_RXMP_HOG		0x113000u
@@ -166,6 +178,7 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 				    cmwm_active(port) ? active : idle,
 				    CMWM_TC, &n)) != FM_OK)
 			return rv;
+	cmwm_kmsg("nosd-fm6000: CMWM chk1: RXMP_PRIVATE done\n");
 
 	/* RXMP_HOG -- the shared-pool ceiling. No port is limited here; the
 	 * private allowance above is what does the limiting. */
@@ -175,6 +188,7 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 		if ((rv = cmwm_port(d, CMWM_RXMP_HOG, port, active,
 				    CMWM_PORT_STRIDE, &n)) != FM_OK)
 			return rv;
+	cmwm_kmsg("nosd-fm6000: CMWM chk2: RXMP_HOG done\n");
 
 	/*
 	 * TXMP_PRIVATE -- the per-port transmit allowance.
@@ -212,6 +226,7 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 				    CMWM_PORT_STRIDE, &n)) != FM_OK)
 			return rv;
 	}
+	cmwm_kmsg("nosd-fm6000: CMWM chk3: TXMP_PRIVATE done\n");
 
 	/* TXMP_HOG -- the transmit shared-pool ceiling, same port grouping. */
 	for (port = 0; port < CMWM_TX_PORTS; port++) {
@@ -238,6 +253,7 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 				    CMWM_PORT_STRIDE, &n)) != FM_OK)
 			return rv;
 	}
+	cmwm_kmsg("nosd-fm6000: CMWM chk4: TXMP_HOG done\n");
 
 	/*
 	 * The two PAUSE thresholds -- the occupancy at which the chip starts
@@ -262,6 +278,23 @@ int fm_cmwm_init(struct fm6000 *d, struct fm_cmwm_report *rep)
 		if ((rv = cmwm_port(d, CMWM_RXMP_PAUSE_OFF, port,
 				    paused ? active : idle, CMWM_TC, &n)) != FM_OK)
 			return rv;
+	}
+	cmwm_kmsg("nosd-fm6000: CMWM chk5: PAUSE done\n");
+
+	/*
+	 * Read-back RXMP_PRIVATE port 0 class 0 to distinguish three cases:
+	 *   0x0013003a = write landed (HOST port, class 0, active value)
+	 *   0xffffffff = write not applied (ssched fill value retained; TICK_CFG=0?)
+	 *   0x00000000 = chip already dead (LBUS returns 0)
+	 */
+	{
+		uint32_t rb = 0;
+		char lbuf[80];
+		(void)fm_rd(d, CMWM_RXMP_PRIVATE + FM6000_ALTA_HOST * CMWM_PORT_STRIDE, &rb);
+		snprintf(lbuf, sizeof lbuf,
+			"nosd-fm6000: CMWM rb: RXMP_PRIVATE[host,0]=0x%08x (want=0x0013003a fill=0xffffffff dead=0x0)\n",
+			rb);
+		cmwm_kmsg(lbuf);
 	}
 
 	if (!fm_alive(d))

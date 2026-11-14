@@ -35,6 +35,10 @@ const platformUsage = `usage: nosaic platform <command>
                        run the cooling loop: fans track the hottest sensor,
                        fail to full cooling, and are left at full on exit
   beacon [on|off]      the blue locator, for finding this box in a rack
+  ledshow probe <port> <word>
+                       write a candidate colour word to one port lamp
+  ledshow run <pattern> [options]
+                       run a light-show pattern across the front panel
   linkmap              which ports the chip will actually egress to
   scd diff <start> <end>
                        which controller registers are moving (read-only)
@@ -141,6 +145,8 @@ func platformCmd(args []string) error {
 		return watchdogCmd(hal, rest[1:])
 	case "beacon":
 		return beaconCmd(hal, rest[1:])
+	case "ledshow":
+		return ledshowCmd(hal, rest[1:])
 	}
 	return fmt.Errorf("unknown platform command %q", rest[0])
 }
@@ -181,11 +187,12 @@ var installedBoardFile = "/etc/nosaic/board.yml"
 
 func openFor(b *board.Board) (platformhal.HAL, *board.Board, error) {
 	hal, err := platformhal.Open(b.PlatformHAL.Driver, platformhal.Config{
-		PCI:     b.PlatformHAL.PCI,
-		ASICPCI: b.PlatformHAL.ASICPCI,
-		SMBus:   b.PlatformHAL.SMBus,
-		Cages:   b.PlatformHAL.Cages,
-		Resets:  b.PlatformHAL.Resets,
+		PCI:      b.PlatformHAL.PCI,
+		ASICPCI:  b.PlatformHAL.ASICPCI,
+		SMBus:    b.PlatformHAL.SMBus,
+		Cages:    b.PlatformHAL.Cages,
+		PortLEDs: b.PlatformHAL.PortLEDs,
+		Resets:   b.PlatformHAL.Resets,
 		// The board's own switch-chip reset bits, not the driver's default
 		// pair. Silent when wrong: an unimplemented bit takes the write.
 		SwitchResetBits:        b.PlatformHAL.SwitchResetBits,

@@ -519,6 +519,39 @@ Features that do not need the ASIC, measured and working 2026-09-25:
       (`0x6050`/`0x6060`/`0x6090`, `portLinkLed` at `0x60d0` stride `0x10`) but
       no `statusleds.conf` is generated for this board.
 
+- [ ] **port LEDs / light show (2026-10-17)** — built, not yet run on
+      hardware (no console/mgmt access this session; owner is wiring this
+      board into the lab network). For a synchronized light-show video
+      across this board and the Nexus 3172TQ stacked above it, not a board
+      feature.
+
+      `platform_hal.port_leds` in board.yml now declares the addresses
+      (`0x60d0` + `0x10*(port-1)`, 52 ports — same block as the status-lamp
+      note above). `internal/platformhal/scd/portled.go` adds
+      `SetPortLED`/`SetPortLEDRaw`, and `internal/ledshow` is a new,
+      hardware-free, pure-function-of-time pattern engine (chase, cylon,
+      rain, life, pulse) — pure so that this board and the Nexus can each
+      render the identical frame from nothing but a shared `--epoch` and
+      their own (NTP-synced) clocks, no realtime link needed once a show
+      starts. `nosaic platform ledshow run <pattern> --epoch <unix>` drives
+      it; all of the above is unit-tested without hardware and `make check`
+      passes.
+
+      ⚠ **Exactly the same trap as the status lamps, and handled the same
+      way: the ADDRESS is stated here, the COLOUR WORD IS NOT.** The sibling
+      7050SX2/7050TX-64 use bit28=green/bit27=amber on the same SCD family,
+      and it is tempting to assume it carries over — don't. `nosaic platform
+      ledshow probe <port> <word>` writes one candidate word to one port and
+      nothing else, for finding out by looking at the panel, the same
+      discipline as `mkstatusleds.sh`. The confirmed words go in
+      `/etc/nosaic/portleds.conf`; `SetPortLED` refuses until that file
+      exists rather than writing a plausible-looking guess.
+
+      Also worth knowing before combining with the Nexus: previewed (not on
+      hardware) at this board's native 1-row-of-52 shape, chase/cylon/pulse
+      look right but rain and life are visually weak on a single row — they
+      want the Nexus's rows in the canvas too.
+
 ## M2 — the chip survives being talked to
 
 This is where the board is actually hard. An access to an uninitialised bank

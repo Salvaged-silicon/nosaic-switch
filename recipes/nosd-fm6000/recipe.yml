@@ -39,7 +39,7 @@ conflicts: [nosd]
 source:
   local: datapath
 
-depends: [glibc]
+depends: [glibc, fm6000-kdrv]
 
 # Deliberately no build_depends. Every other nosd recipe stages openbcm here.
 # If a vendor tree ever appears in this list, something has gone wrong with the
@@ -71,6 +71,9 @@ build:
       mode: "0755"
     - src: fm6000/fm6000-esched-init
       dst: /usr/sbin/fm6000-esched-init
+      mode: "0755"
+    - src: fm6000/fm6000-si5338
+      dst: /usr/sbin/fm6000-si5338
       mode: "0755"
 
   # The name everything above this layer uses. The unit, the CLI and the docs

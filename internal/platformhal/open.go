@@ -20,6 +20,9 @@ type Config struct {
 	// Cages is the board's front-panel transceiver table. Optional in the
 	// same way and for the same reason: a board with no cages states none.
 	Cages *CageTable
+	// PortLEDs is where the board's per-port front-panel LEDs are. Optional;
+	// see PortLEDTable for why this is addresses only, not colours.
+	PortLEDs *PortLEDTable
 	// Resets are board reset lines released during bring-up, beyond the
 	// switch chip's own.
 	Resets []ResetLine
@@ -84,6 +87,9 @@ func Open(driver string, cfg Config) (HAL, error) {
 	}
 	if err := cfg.Cages.Validate(); err != nil {
 		return nil, fmt.Errorf("this board's cage table: %w", err)
+	}
+	if err := cfg.PortLEDs.Validate(); err != nil {
+		return nil, fmt.Errorf("this board's port LED table: %w", err)
 	}
 	if err := ValidateResets(cfg.Resets); err != nil {
 		return nil, fmt.Errorf("this board's reset lines: %w", err)

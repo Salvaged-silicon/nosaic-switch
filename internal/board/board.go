@@ -113,6 +113,16 @@ type Board struct {
 	// reads link state during bring-up and would see every port down.
 	FrontPanelInit string `yaml:"front_panel_init"`
 
+	// DatapathNoBoot passes --no-boot to the datapath daemon, holding the
+	// switch chip cold instead of running its ASIC bring-up sequence.
+	//
+	// For a board whose chip needs none of this board's other services --
+	// the SCD-driven port LEDs, for instance, which never touch the ASIC --
+	// and whose ASIC bring-up is not yet reliable enough to boot through.
+	// This is a workaround for that unreliability, not a feature: a board
+	// that wants to forward unsets it.
+	DatapathNoBoot bool `yaml:"datapath_no_boot"`
+
 	// Flash layout, in MiB. Zero means the default, which suits a board with
 	// modest flash; a board with room should say so rather than inherit a
 	// number chosen for a virtual machine.
@@ -326,6 +336,9 @@ func (b *Board) Validate(root string) []string {
 	if err := b.PlatformHAL.Cages.Validate(); err != nil {
 		bad("platform_hal.%s", err)
 	}
+	if err := b.PlatformHAL.PortLEDs.Validate(); err != nil {
+		bad("platform_hal.%s", err)
+	}
 	if err := b.PlatformHAL.I2C.Validate(); err != nil {
 		bad("platform_hal.i2c: %s", err)
 	}
@@ -476,6 +489,10 @@ type PlatformHAL struct {
 	// control words are and how many there are. Also per-board, and also
 	// something a wrong value writes registers for rather than failing.
 	Cages *platformhal.CageTable `yaml:"cages"`
+	// PortLEDs is where the per-port front-panel LED registers are. Addresses
+	// only -- see platformhal.PortLEDTable for why the colour encoding is
+	// deliberately not board data.
+	PortLEDs *platformhal.PortLEDTable `yaml:"port_leds"`
 	// Resets are board reset lines released during bring-up beyond the switch
 	// chip's own -- a retimer in front of some cages, for instance.
 	Resets []platformhal.ResetLine `yaml:"resets"`

@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <sys/mman.h>
 
 #include "dma.h"
@@ -138,18 +139,33 @@ static void desc_write(volatile uint8_t *d, uint8_t status,
  * different addresses.  Always use d->pcie_regs for DMA register access.
  *
  * Written with posted Memory Write TLPs, dma_wr is safe as long as BAR0
- * is mapped.  The 30-second pre-DMA sleep in start_forwarding ensures the
- * PCIe link is in L0 before dma_settle reads BAR0.
+ * is mapped.  fm_pcie_enable_portio() confirms PCIe L0 before dma_settle.
  *
  * install85 root cause: an earlier version probed d->regs[DMA_STATUS/4] and
  * found it returned 0x00000000 (some random LBUS register), mistook that for
  * "DMA registers reachable via LBUS", then wrote all ring addresses to wrong
  * LBUS offsets.  BAR0 was never programmed; the DMA engine never started.
+ *
+ * install122: dma_wr_nc() for init-path writes (ring config in program_rings).
+ * MFENCE (in dma_wr) stalls indefinitely on AMD RS780 when a posted write TLP
+ * is buffered while the PCIe link is retraining after an ESCHED FATAL reset.
+ * BAR0 is mapped UC via /dev/mem O_SYNC; x86 strongly orders UC MMIO writes
+ * without MFENCE, so a compiler barrier suffices for register setup.  The
+ * MFENCE in dma_wr() is kept for doorbell writes (TX/RX post) where it fences
+ * DRAM descriptor stores before the doorbell MMIO write.
  */
 static inline void dma_wr(struct fm6000 *d, uint32_t off, uint32_t val)
 {
 	d->pcie_regs[off / 4] = val;
 	__sync_synchronize();
+}
+
+/* Compiler-barrier-only variant: use for MMIO register setup (program_rings).
+ * Safe because x86 UC MMIO writes are strongly ordered by hardware. */
+static inline void dma_wr_nc(struct fm6000 *d, uint32_t off, uint32_t val)
+{
+	d->pcie_regs[off / 4] = val;
+	asm volatile ("" ::: "memory");
 }
 
 static inline uint32_t dma_rd(struct fm6000 *d, uint32_t off)
@@ -252,13 +268,26 @@ static void ring_free(struct fm_dma_ring *r)
 
 /* ---- engine programming -------------------------------------------------- */
 
-static void program_rings(struct fm_dma *dma)
+/*
+ * program_rings — write DMA ring addresses and start both engines.
+ *
+ * stop_engines: true when called from fm_dma_reprogram (DMA is already
+ * running and must be stopped before the ring addresses are rewritten).
+ * false when called from fm_dma_init (DMA engine has never been started;
+ * issuing TX_STOP/RX_STOP on a never-started engine causes the FM6000 to
+ * stall PCIe completions long enough for a concurrent config-read (BIOS SMI
+ * periodic timer, pcie_pme rescan) to exceed the AMD RS780 completion timeout
+ * and freeze the CPU). [install217]
+ */
+static void program_rings(struct fm_dma *dma, bool stop_engines)
 {
 	struct fm6000 *d = dma->d;
 	uintptr_t rx_base = dma->rx.desc_phys;
 	uintptr_t rx_end  = rx_base + (uintptr_t)dma->rx.size * FM6000_DESC_STRIDE;
 	uintptr_t tx_base = dma->tx.desc_phys;
 	uintptr_t tx_end  = tx_base + (uintptr_t)dma->tx.size * FM6000_DESC_STRIDE;
+
+	dma_kmsg("nosd-fm6000: DMA rings: pr_enter [install216]");
 
 	/*
 	 * FM6000 DMA is 32-bit: ring buffers must be below 4 GB.  On this
@@ -277,32 +306,89 @@ static void program_rings(struct fm_dma *dma)
 		_exit(1);
 	}
 
-	/* Stop both engines before reprogramming ring addresses so the chip
-	 * restarts from BASE (slot 0) rather than wherever the old ring left
-	 * the current pointer. */
-	dma_wr(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_TX_STOP);
-	dma_settle(d);
-	dma_wr(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_RX_STOP);
-	dma_settle(d);
+	dma_kmsg("nosd-fm6000: DMA rings: pr_phys_ok [install216]");
 
-	dma_wr(d, FM6000_DMA_IP,    0xFFFFFFFFu);	/* clear pending  */
-	dma_wr(d, FM6000_DMA_UNK68, 0);
-	dma_wr(d, FM6000_DMA_CFG,   0x37u);		/* enable         */
-	dma_wr(d, FM6000_DMA_CFG2,  FM6000_DMA_CFG2_INIT);
+	if (stop_engines) {
+		/* Stop both engines before reprogramming ring addresses so the
+		 * chip restarts from BASE (slot 0) rather than wherever the old
+		 * ring left the current pointer. */
+		dma_kmsg("nosd-fm6000: DMA rings: pr_before_TX_STOP [install216]");
+		dma_wr_nc(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_TX_STOP);
+		usleep(100000);
+		dma_kmsg("nosd-fm6000: DMA rings: TX_STOP+100ms done [install216]");
+		dma_settle(d);
+		dma_kmsg("nosd-fm6000: DMA rings: TX_STOP+settle done");
+		dma_wr_nc(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_RX_STOP);
+		usleep(100000);
+		dma_settle(d);
+		dma_kmsg("nosd-fm6000: DMA rings: RX_STOP+settle done");
+	} else {
+		dma_kmsg("nosd-fm6000: DMA rings: STOP_SKIPPED (initial init) [install217]");
+	}
 
-	dma_wr(d, FM6000_DMA_TX_BD_BASE_LO, (uint32_t)tx_base);
-	dma_wr(d, FM6000_DMA_TX_BD_BASE_HI, (uint32_t)((uint64_t)tx_base >> 32));
-	dma_wr(d, FM6000_DMA_TX_BD_END_LO,  (uint32_t)tx_end);
-	dma_wr(d, FM6000_DMA_TX_BD_END_HI,  (uint32_t)((uint64_t)tx_end >> 32));
-	dma_wr(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_TX);
-	dma_settle(d);
+	/*
+	 * install230: write FM6000_PCI_DMA_CFG (LBUS) + DMA_CFG (BAR0) BEFORE
+	 * DMA_IP.  Root cause of the install229 posted-write stall:
+	 *
+	 * fpdma_init's sequence is "config → TX ring → TX_START → …".  The
+	 * "config" step writes DMA_CFG=0x37 (enable) first.  We were writing
+	 * DMA_IP (0x5030) first instead.  DMA_IP is only reachable once the DMA
+	 * engine is enabled by DMA_CFG.  With DMA_CFG bit 1 = 0 (reset state)
+	 * the FM6000 endpoint stalls posted writes to 0x5030, back-pressuring
+	 * the AMD RS780's posted-write buffer and freezing the CPU.
+	 *
+	 * Also: FM6000_PCI_DMA_CFG (LBUS 0x01418) is the LBUS-side mirror of
+	 * DMA_CFG.  pcie_init.c writes it once at cold boot.  ESCHED FATALs can
+	 * reset it.  Re-writing 0x35 via LBUS before the BAR0 enable ensures
+	 * the DMA block is out of LBUS-side reset before any BAR0 access.
+	 *
+	 * Correct init order (matches fpdma_init disasm, FPDMA.md):
+	 *   1. PCI_DMA_CFG (LBUS) = 0x35  — DMA block out of LBUS reset
+	 *   2. DMA_CFG  (BAR0 0x5060) = 0x37 — DMA engine enabled (run state)
+	 *   3. DMA_IP   (BAR0 0x5030) = 0xFFFFFFFF — clear pending interrupts
+	 *   4. DMA_UNK68 / DMA_CFG2 as before
+	 */
+	{
+		int r230 = fm_wr(d, FM6000_PCI_DMA_CFG, 0x35u);
+		char buf230[80];
+		snprintf(buf230, sizeof(buf230),
+			"nosd-fm6000: DMA230: PCI_DMA_CFG LBUS rv=%d [install230]",
+			r230);
+		dma_kmsg(buf230);
+	}
+	usleep(1000);	/* 1ms: DMA block LBUS-side stabilise before BAR0 enable */
+	fprintf(stderr, "nosd-fm6000: DMA program_rings: CFG group\n");
+	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* enable first   */
+	dma_kmsg("nosd-fm6000: DMA230: DMA_CFG done [install230]");
+	dma_wr_nc(d, FM6000_DMA_IP,    0xFFFFFFFFu);	/* clear pending  */
+	dma_kmsg("nosd-fm6000: DMA230: DMA_IP done [install230]");
+	dma_wr_nc(d, FM6000_DMA_UNK68, 0);
+	dma_wr_nc(d, FM6000_DMA_CFG2,  FM6000_DMA_CFG2_INIT);
+	dma_kmsg("nosd-fm6000: DMA rings: CFG group done");
 
-	dma_wr(d, FM6000_DMA_RX_BD_BASE_LO, (uint32_t)rx_base);
-	dma_wr(d, FM6000_DMA_RX_BD_BASE_HI, (uint32_t)((uint64_t)rx_base >> 32));
-	dma_wr(d, FM6000_DMA_RX_BD_END_LO,  (uint32_t)rx_end);
-	dma_wr(d, FM6000_DMA_RX_BD_END_HI,  (uint32_t)((uint64_t)rx_end >> 32));
-	dma_wr(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_RX);
+	fprintf(stderr, "nosd-fm6000: DMA program_rings: TX BD\n");
+	dma_wr_nc(d, FM6000_DMA_TX_BD_BASE_LO, (uint32_t)tx_base);
+	dma_wr_nc(d, FM6000_DMA_TX_BD_BASE_HI, (uint32_t)((uint64_t)tx_base >> 32));
+	dma_wr_nc(d, FM6000_DMA_TX_BD_END_LO,  (uint32_t)tx_end);
+	dma_wr_nc(d, FM6000_DMA_TX_BD_END_HI,  (uint32_t)((uint64_t)tx_end >> 32));
+	dma_kmsg("nosd-fm6000: DMA rings: pr_before_CMD_TX [install217]");
+	dma_wr_nc(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_TX);
+	usleep(100000);
+	dma_kmsg("nosd-fm6000: DMA rings: CMD_TX+100ms done [install217]");
 	dma_settle(d);
+	dma_kmsg("nosd-fm6000: DMA rings: TX BD+start+settle done");
+
+	fprintf(stderr, "nosd-fm6000: DMA program_rings: RX BD\n");
+	dma_wr_nc(d, FM6000_DMA_RX_BD_BASE_LO, (uint32_t)rx_base);
+	dma_wr_nc(d, FM6000_DMA_RX_BD_BASE_HI, (uint32_t)((uint64_t)rx_base >> 32));
+	dma_wr_nc(d, FM6000_DMA_RX_BD_END_LO,  (uint32_t)rx_end);
+	dma_wr_nc(d, FM6000_DMA_RX_BD_END_HI,  (uint32_t)((uint64_t)rx_end >> 32));
+	dma_kmsg("nosd-fm6000: DMA rings: pr_before_CMD_RX [install217]");
+	dma_wr_nc(d, FM6000_DMA_COMMAND, FM6000_DMA_CMD_RX);
+	usleep(100000);
+	dma_kmsg("nosd-fm6000: DMA rings: CMD_RX+100ms done [install217]");
+	dma_settle(d);
+	dma_kmsg("nosd-fm6000: DMA rings: RX BD+start+settle done");
 
 	/*
 	 * DMA_IM_RUN = 0x3: matches the vendor fpdma.ko sequence (recovered
@@ -316,7 +402,10 @@ static void program_rings(struct fm_dma *dma)
 	 * during boot step 9), so no interrupt storm can occur even if DMA_IM
 	 * also controls interrupt generation.
 	 */
-	dma_wr(d, FM6000_DMA_IM,   FM6000_DMA_IM_RUN);
+	fprintf(stderr, "nosd-fm6000: DMA program_rings: DMA_IM\n");
+	dma_wr_nc(d, FM6000_DMA_IM,   FM6000_DMA_IM_RUN);
+	dma_kmsg("nosd-fm6000: DMA rings: DMA_IM done");
+	fprintf(stderr, "nosd-fm6000: DMA program_rings: done\n");
 }
 
 /* ---- public API ---------------------------------------------------------- */
@@ -340,11 +429,103 @@ int fm_dma_init(struct fm_dma *dma, struct fm6000 *d)
 	dma_kmsg("nosd-fm6000: DMA RX ring_alloc done");
 	/* Bus Master was restored by start_forwarding() via fm_pcie_enable_portio()
 	 * after the FATAL_COUNT stability wait.  No Config Write needed here. */
-	dma_kmsg("nosd-fm6000: DMA program_rings start");
-	program_rings(dma);
+	{
+		char _lbuf[80];
+		snprintf(_lbuf, sizeof _lbuf,
+			"nosd-fm6000: DMA program_rings start (pcie_regs=%p)",
+			(void *)dma->d->pcie_regs);
+		dma_kmsg(_lbuf);
+	}
+	/*
+	 * install232: force a full PCIe link down/up cycle to reinitialize
+	 * flow-control credits before the first BAR0 write.
+	 *
+	 * install231 confirmed the stall is NOT caused by an in-progress link
+	 * Recovery: fm_wait_link_active returned rv=0 (DLLLA already 1) and
+	 * 500ms passed, yet the first BAR0 write still stalled.  The RS780's
+	 * PH credit counter for the FM6000 endpoint is permanently 0 after
+	 * ESCHED FATALs, regardless of DLLLA state.
+	 *
+	 * Root cause: ESCHED FATALs cause the FM6000 endpoint to reset and
+	 * re-advertise FC credits = 0 during FC_INIT after the last Recovery
+	 * cycle (DMA block in init state → endpoint buffer = 0).  The RS780
+	 * records PH = 0 and can never forward posted writes thereafter.
+	 *
+	 * Fix: a full Link Disable → re-enable cycle (via root port LNKCTL
+	 * bit 4) forces a fresh FC_INIT exchange.  After the link comes back
+	 * (DLLLA=1), the endpoint advertises positive PH credits and the RS780
+	 * resumes TLP forwarding.  install113 runs the same sequence earlier
+	 * in the boot; this repeats it here to cover ESCHED FATALs that
+	 * happen AFTER install113. [install232]
+	 */
+	{
+		int r232 = fm_upstream_link_disable(1);
+		char b[80];
+		snprintf(b, sizeof(b),
+			"nosd-fm6000: install232: link_down rv=%d [install232]", r232);
+		dma_kmsg(b);
+	}
+	usleep(100000);	/* 100ms: link goes dark (Detect/Electrical Idle) */
+	{
+		int r232 = fm_upstream_link_disable(0);
+		char b[80];
+		snprintf(b, sizeof(b),
+			"nosd-fm6000: install232: link_up_start rv=%d [install232]", r232);
+		dma_kmsg(b);
+	}
+	{
+		int r232a = fm_wait_link_active(3000);
+		/* BAR0 and Command registers are cleared by the link reset;
+		 * reprogram both via CF8 portio (no sysfs required). [install232] */
+		int r232b = fm_reprogram_bar_and_cmd_portio(dma->d);
+		char b[128];
+		snprintf(b, sizeof(b),
+			"nosd-fm6000: install232: link_active rv=%d bar_rv=%d [install232]",
+			r232a, r232b);
+		dma_kmsg(b);
+	}
+	usleep(200000);	/* 200ms: FC credit settle after fresh FC_INIT [install232] */
+	dma_kmsg("nosd-fm6000: install232: ready for BAR0 [install232]");
+	program_rings(dma, false);	/* initial boot: engines never started, skip STOP [install217] */
 	dma_kmsg("nosd-fm6000: DMA program_rings done");
 	fprintf(stderr, "nosd-fm6000: DMA rings up (tx=%u rx=%u)\n",
 		FM_DMA_TX_RING, FM_DMA_RX_RING);
+
+	/*
+	 * Self-loop diagnostic: inject one frame to DGLORT=0 (HOST itself).
+	 *
+	 * For injection frames (FTYPE=0x0100) the chip routes by DGLORT directly,
+	 * bypassing L2F MAC lookup.  DGLORT=0 = FM6000_GLORT_HOST; the chip should
+	 * deliver the frame back to the DMA RX ring.  If the RX descriptor stays
+	 * RX_READY (0x01) the DMA RX ring is not working -- either the chip rejects
+	 * HOST→HOST loopback or the RX engine itself is broken.  If it becomes DONE
+	 * (0x04), the DMA TX/RX pipeline is intact and the real problem is DGLORT
+	 * routing for et1/et2 (GLORT_TABLE or GLORT_CAM lookup).
+	 */
+	{
+		static const uint8_t test_pkt[14] = {
+			0xff,0xff,0xff,0xff,0xff,0xff,	/* DMAC: broadcast */
+			0x00,0x11,0x22,0x33,0x44,0x55,	/* SMAC: arbitrary */
+			0x08,0x00			/* EType: IPv4 */
+		};
+		char lbuf[128];
+		volatile uint8_t *d0 = desc_at(&dma->rx, 0);
+		uint8_t st_before = *(volatile uint8_t *)(d0 + FM6000_DESC_STATUS);
+
+		fm_dma_tx(dma, test_pkt, sizeof test_pkt, 0xFF00u /* CPU_GLORT */, 0x0000u /* HOST */);
+		usleep(50000);	/* 50ms for chip to process */
+		fm_dma_tx_reclaim(dma);
+
+		{
+			uint8_t st_after = *(volatile uint8_t *)(d0 + FM6000_DESC_STATUS);
+			snprintf(lbuf, sizeof lbuf,
+				"nosd-fm6000: DMA LOOP_TEST: rx_desc[0] before=0x%02x after=0x%02x%s",
+				(unsigned)st_before, (unsigned)st_after,
+				(st_after & FM6000_DESC_DONE) ? " DONE=FILLED" : " STILL_READY");
+			dma_kmsg(lbuf);
+		}
+	}
+
 	return 0;
 }
 
@@ -353,7 +534,7 @@ void fm_dma_reprogram(struct fm_dma *dma)
 	/* Caller (fwd_thread) has already called fm_pcie_enable_portio() to
 	 * restore Bus Master after the FATAL_COUNT stability wait.  We only
 	 * need to reprogram the DMA ring addresses. */
-	program_rings(dma);
+	program_rings(dma, true);	/* reprogram: engines running, must stop first [install217] */
 }
 
 void fm_dma_shutdown(struct fm_dma *dma)
@@ -379,7 +560,7 @@ int fm_dma_tx(struct fm_dma *dma, const uint8_t *frame, uint16_t len,
 		return -1;
 	if (len < 12)
 		return -1;
-	if (len > 4096u - 4u)
+	if (len > 4096u - FM6000_F64_LEN - 4u)
 		return -1;
 
 	/* Allocate TX buffer lazily; reuse slot once allocated. */
@@ -391,44 +572,47 @@ int fm_dma_tx(struct fm_dma *dma, const uint8_t *frame, uint16_t len,
 
 	buf = r->buf_va[slot];
 	/*
-	 * Copy the clean Ethernet frame (DMAC+SMAC+EType+Payload) with no
-	 * inline F64 bytes.  The 8-byte F64 tag lives in the BD field at
-	 * FM6000_DESC_F64 (offset 0x0C); the DMA engine reads it from there
-	 * and inserts it between SMAC and EType on the fabric side.  The
-	 * egress MODIFY stage strips it before the frame hits the wire.
+	 * Insert the F64 tag inline at L2 offset 12 (between SMAC and EType).
+	 * EOS does this and leaves the BD F64 field (offset 0x0C) zero.
+	 * Using only the BD field delivers nothing to the wire (measured on
+	 * a live 7150S; see regs.h FM6000_F64_OFFSET).
 	 *
-	 * RC6–RC9 inserted the tag inline in the payload buffer instead.
-	 * The chip reads the routing tag only from the BD field and ignored
-	 * the inline bytes, silently dropping every injected frame.
+	 * Inline tag layout (8 bytes, big-endian):
+	 *   [0-1]  FTYPE  = 0x0100  (SPECIAL injection — required; 0x0000 is
+	 *                             normal Ethernet and bypasses injection routing)
+	 *   [2-3]  DGLORT (big-endian) — target port's egress GLORT
+	 *   [4-5]  SGLORT (big-endian) — FM6000_CPU_GLORT = 0xFF00
+	 *   [6-7]  VLAN   = 0x0000
+	 *
+	 * Source: EdgeNOS fm6000_l3.c TAG={0x0100, 0x03ef, 0xff00, 0x0000}
+	 * validated with OSPF adjacency on this chassis (2026-08-07).
 	 */
-	memcpy(buf, frame, len);
+	memcpy(buf, frame, 12);                         /* DMAC + SMAC */
+	buf[12] = 0x01; buf[13] = 0x00;                 /* FTYPE = 0x0100 (SPECIAL) */
+	buf[14] = (uint8_t)(dglort >> 8);               /* DGLORT high */
+	buf[15] = (uint8_t)(dglort);                    /* DGLORT low */
+	buf[16] = (uint8_t)(sglort >> 8);               /* SGLORT high */
+	buf[17] = (uint8_t)(sglort);                    /* SGLORT low */
+	buf[18] = 0x00; buf[19] = 0x00;                 /* VLAN  = 0 */
+	memcpy(buf + 20, frame + 12, len - 12);         /* EType + payload */
 
 	d = desc_at(r, slot);
-	/*
-	 * F64 BD field at FM6000_DESC_F64 = 0x0C (8 bytes, big-endian):
-	 *   [0-1]  FTYPE  = 0x0100  (CPU inject / direct GLORT delivery)
-	 *   [2-3]  DGLORT (big-endian)
-	 *   [4-5]  SGLORT (big-endian) — FM6000_GLORT_CPU = 54 = 0x0036
-	 *   [6-7]  padding = 0x0000
-	 * Written before desc_write()'s DMA_WMB()+STATUS so all BD field
-	 * stores are visible to the chip before it takes descriptor ownership.
-	 */
-	d[FM6000_DESC_F64 + 0] = 0x01;
-	d[FM6000_DESC_F64 + 1] = 0x00;
-	d[FM6000_DESC_F64 + 2] = (uint8_t)(dglort >> 8);
-	d[FM6000_DESC_F64 + 3] = (uint8_t)(dglort & 0xff);
-	d[FM6000_DESC_F64 + 4] = (uint8_t)(sglort >> 8);
-	d[FM6000_DESC_F64 + 5] = (uint8_t)(sglort & 0xff);
-	d[FM6000_DESC_F64 + 6] = 0x00;
-	d[FM6000_DESC_F64 + 7] = 0x00;
-	desc_write(d, FM6000_DESC_HANDOFF, len, r->buf_phys[slot]);
+	/* BD F64 field stays zero (chip uses the inline tag, not the BD field). */
+	d[FM6000_DESC_F64 + 0] = 0; d[FM6000_DESC_F64 + 1] = 0;
+	d[FM6000_DESC_F64 + 2] = 0; d[FM6000_DESC_F64 + 3] = 0;
+	d[FM6000_DESC_F64 + 4] = 0; d[FM6000_DESC_F64 + 5] = 0;
+	d[FM6000_DESC_F64 + 6] = 0; d[FM6000_DESC_F64 + 7] = 0;
+	{
+		uint16_t total = len + FM6000_F64_LEN;
+		desc_write(d, FM6000_DESC_HANDOFF, total, r->buf_phys[slot]);
+	}
 	/* Log first TX descriptor physical address once for diagnostics. */
 	if (r->head == 0) {
 		static int logged;
 		if (!logged) {
 			logged = 1;
-			fprintf(stderr, "nosd-fm6000: TX slot0 buf_phys=0x%lx len=%u\n",
-				(unsigned long)r->buf_phys[slot], len);
+			fprintf(stderr, "nosd-fm6000: TX slot0 buf_phys=0x%lx len=%u (with F64)\n",
+				(unsigned long)r->buf_phys[slot], len + FM6000_F64_LEN);
 		}
 	}
 	r->head++;

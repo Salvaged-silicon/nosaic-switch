@@ -176,6 +176,14 @@ type SCD struct {
 	// states none, which is an answer: this board has no cages to drive.
 	cages *platformhal.CageTable
 
+	// portLEDs is where the board's per-port front-panel LED registers are.
+	// Nil where the board states none.
+	portLEDs *platformhal.PortLEDTable
+
+	// portLEDColours is the board's port-LED colour encoding, loaded once
+	// from a generated file the first time it is needed. See portled.go.
+	portLEDColours *portLEDColourMap
+
 	// resets are the board's own reset lines, released during bring-up
 	// alongside the switch chip's.
 	resets []platformhal.ResetLine
@@ -237,7 +245,7 @@ func Open(cfg platformhal.Config) (*SCD, error) {
 	}
 	return &SCD{
 		bar: bar, pci: pciAddr, asic: asicAddr,
-		smbusMap: cfg.SMBus, cages: cfg.Cages, resets: cfg.Resets,
+		smbusMap: cfg.SMBus, cages: cfg.Cages, portLEDs: cfg.PortLEDs, resets: cfg.Resets,
 		resetBits:       cfg.SwitchResetBits,
 		alwaysPulse:     cfg.SwitchResetAlwaysPulse,
 		pcieAfterConfig: cfg.SwitchPCIeAfterConfig,

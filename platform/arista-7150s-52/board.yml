@@ -81,7 +81,57 @@ data_mib: 128
 # DMA engine).  That approach would also work but requires a fixed physical
 # address for the reservation, and picking the wrong one produces a kernel that
 # dies before the console is up.  mem=3G is simpler and equally effective.
-kernel_params: "mem=3G"
+#
+# pci=noaer disables PCIe Advanced Error Reporting.  When the SCD releases the
+# FM6000 from PCIe reset, link training on 0000:00:04.0 generates correctable
+# errors that fire the AER recovery handler.  The AER handler calls
+# pci_lock_rescan_remove() to protect the bus while doing recovery; pciehp is
+# simultaneously calling pci_lock_rescan_remove() to add the newly-appeared
+# FM6000.  Neither can proceed: a kernel deadlock, console goes silent.
+#
+# The I354 igb issue (patch 0004) stopped igb_probe from calling
+# pci_enable_device_mem() during that same window, but the higher-level lock
+# contention between pciehp and the AER handler remains.  Disabling AER
+# eliminates the handler entirely; correctable link-training errors on a device
+# we control via /dev/mem are not actionable anyway.
+#
+# pcie_ports=native (previously =compat) activates pciehp, the PCIe hotplug
+# driver.  With it active, when the FM6000's PCIe block comes online after
+# pcie_init, pciehp detects the link-up and enumerates 0000:02:00.0
+# automatically.  The fm6000_kdrv kernel module binds at that moment
+# (pcim_enable_device + pci_set_master + pci_save_state) and pciehp calls
+# pci_restore_state() on every subsequent link-up event — keeping Memory Space
+# and Bus Master enabled across the ~245 SPICO/NEXT_CHAIN self-resets.
+#
+# The previous pciehp/uio_pci_generic deadlock is gone: we use fm6000_kdrv
+# (a dedicated driver) instead of uio_pci_generic.  With a dedicated driver,
+# its probe() is called synchronously by pciehp's own enumeration pass, not
+# from a competing context that tries to acquire pci_lock_rescan_remove while
+# pciehp holds it.  The lock cycle no longer exists.
+#
+# pci=noaer is kept: it suppresses the AER recovery handler that races with
+# pciehp during initial link training (correctable errors from SCD reset
+# release).  With AER disabled there is no competing lock holder.
+#
+# iommu=pt puts all devices in IOMMU passthrough (identity) mode: DMA
+# addresses equal physical addresses.  Without this the AMD IOMMU runs in
+# Translated mode (log: "Default domain type: Translated"); the FM6000 DMA
+# engine writes to raw physical addresses obtained from /proc/self/pagemap,
+# which the IOMMU has no mapping for.  The resulting IOMMU fault fires an
+# interrupt whose handler calls printk, deadlocking with the nosd-fm6000
+# kmsg write in progress and freezing the kernel (install87/88, 2026-10-22).
+kernel_params: "mem=3G pci=noaer pcie_ports=compat iommu=pt panic=10 reboot=p"
+
+# 2026-10-18: ASIC bring-up now runs on every boot (datapath_no_boot removed).
+# Root-cause of the earlier failures:
+#   1. CFG_2 writes for front-panel ports (addr ≥ 0x002094) via PCIe BAR0
+#      caused a full-chip reset → PCIe endpoint bounce → kernel PCIe error
+#      handler deadlock (install35/36/37).
+#   2. Skipping ALL CFG_2 writes left ring-internal ports (1-3, 12-19) with
+#      ECC-bad entries; ring engine read them on every pass → ~2 0xc5 watchdog
+#      resets/s × 80 s = 154 resets, probe timeout (install38).
+#   Fix: write CFG_2=0 ONLY for ring-internal ports (esched.c, install39+).
+#   Verified: no PCIe deadlock, ring-internal ports ECC-valid, FOUND expected.
 
 # thermal: sensors declared (lm90 x2) but no fan controller found on this
 # board.  The cooling loop tracks temperature but regulates nothing.
@@ -270,6 +320,23 @@ platform_hal:
     count: 52
     sfp_count: 52
     sfp_eeprom: {accel_base: 2, buses_per_accel: 8}
+
+  # Per-port front-panel lamps. 0x60d0..0x64c0 is the "portLinkLed[1..64]"
+  # block from the SCD register map (see nosaic-7150s-status.txt section 3) --
+  # ADDRESSES ONLY. This board has 52 ports, not 64; the extra sixteen slots
+  # in that block are presumably for a QSFP/breakout variant of this family
+  # and are not declared here.
+  #
+  # ⚠ What value lights a lamp green, amber or off is NOT stated here and
+  # deliberately not guessed at from the sibling 7050SX2/7050TX-64 boards'
+  # bit28/bit27 encoding on the same SCD family -- see
+  # internal/platformhal/scd/portled.go for why. Run
+  # `nosaic platform ledshow probe <port> <word>` against this board and
+  # record the result in /etc/nosaic/portleds.conf before trusting this.
+  port_leds:
+    base: 0x60d0
+    stride: 0x10
+    count: 52
 
 status: bringup
 

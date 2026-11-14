@@ -2,203 +2,275 @@
 /*
  * The egress scheduler.
  *
- * Three registers per physical port, all indexed by the port number directly:
+ * WRITE ORDER (post-NEXT_CHAIN settle, pre-probe):
  *
- *     CFG_1   0x002000 + port    strictPriority[11:0] | tcEnable[23:12]
- *     CFG_2   0x002080 + port    same shape
- *     DRR_CFG 0x003800 + port    zeroLength[11:0] | groupBoundary[23:12]
- *                                | ifgPenalty[31:24]
+ *   1. CFG_1  (0x002000 + port)  front panel, ring-internal, then CPU
+ *   2. CFG_2  (0x002080 + port)  NOT written here -- see fm_esched_set_cfg2()
  *
- * A front-panel port runs strict priority on all twelve traffic classes with
- * all twelve enabled, which is 0xffffff in both CFG registers. The CPU port
- * is the exception and the only one: strict on a subset in CFG_1, none in
- * CFG_2.
+ * DRR registers (0x003000, 0x003800, 0x003c00) are NOT written here.
+ * Those addresses are accessible only after the ring circulates; in
+ * MGMT_ONLY ring state they are mapped to different hardware.  Writing
+ * DRR_Q (0x003000) in MGMT_ONLY mode corrupts chip state and makes
+ * subsequent CFG_1 writes fatal (measured install24, 2026-10-16).
+ * Writing DRR_CFG (0x003800) in MGMT_ONLY mode directly causes FM6000
+ * self-reset regardless of value (measured install22/23, 2026-10-16).
  *
- * ⚠ DRR_CFG IS WRITTEN TWICE PER PORT, with an inter-frame-gap penalty of 20
- * and then with it cleared. That is not redundancy to tidy away -- the vendor
- * does it, the intermediate value is presumably what the scheduler latches
- * against, and this block is one where sequences matter.
+ * CFG_3 (0x002100) and CFG_4 (0x002180) are NOT written.
+ * CFG_4 faults the chip asynchronously (measured 2026-10-13).
  *
- * ⚠ PRECONDITION: THE SCHEDULER RING MUST BE CIRCULATING. Until it is, every
- * address in this file is fatal to touch -- see ssched.c -- so fm_hazard()
- * refuses the whole block and this function writes nothing rather than
- * getting twenty registers in and taking the switch down. A refusal here is
- * the guard working, not a bug in the table below.
+ * PORT SET:
+ *   Front-panel: ports 20-47, 52-75 → CFG_1=0x00ffffff, CFG_2=0x00ffffff
+ *   Ring-internal: ports 1-3, 12-19 → CFG_1=0, CFG_2=0 (ECC init only;
+ *     these ports are in ssched_ring[] so the ring engine reads their
+ *     CFG entries; ECC-bad entries trigger 0xc5 watchdog resets during
+ *     NEXT_CHAIN probe.  Value 0 = no traffic classes, safe for internal
+ *     ports.  [RE 2026-10-16])
+ *   CPU: port 0 → CFG_1=ESCHED_CPU_CFG_1 (CFG_2 handled by fm_esched_set_cfg2)
+ *   Internal 48-51 (NOT in ssched_ring[]): not written.
  *
- * ⚠ LBUS (SCD BAR1) CANNOT WRITE THIS BLOCK. Measured 2026-10-13: every
- * address in 0x002000-0x003fff is fatal via the LBUS regardless of value or
- * ring state. fm_esched_init() is therefore a stub that returns FM_OK without
- * writing anything until the FM6000's PCIe link is brought up. The ring
- * circulates with zero scheduling policy (post-BIST defaults), which is
- * sufficient for bring-up testing. When step 9 (PCIe serdes) is implemented,
- * this stub must be replaced by PCIe-resource0 writes matching EdgeNOS's
- * fm6000_esched.c + fm6000_eschedrr.c. The 42 fm_boot_freelists() resets
- * wipe ESCHED SRAM, so fm6000_eschedrr.c (DRR quanta) must run first.
- *
- * PROVENANCE. The geometry and values are from EdgeNOS's fm6000_esched.c --
- * our own prior work on this chassis -- whose C file is a materialised table
- * from its own generator. Regenerated here from that geometry rather than
- * copied, and the port set comes from this board's map in portmap.h.
+ * ⚠ LBUS (SCD BAR1) CANNOT WRITE THIS BLOCK. Every address in
+ * 0x002000-0x003fff is fatal via the LBUS regardless of value or ring state.
+ * fm_esched_init() is a no-op when pcie_regs == NULL.
  */
+#include <stdio.h>
+#include <fcntl.h>
+#include <time.h>
+#include <unistd.h>
+#include <string.h>
 #include "esched.h"
 #include "pci.h"
 #include "regs.h"
 
-/*
- * The block is eight instances of the same four arrays, 0x200 apart, each
- * array holding one word per physical port.
- *
- * Array 2 is left at zero -- a forwarding chip has it zero in all eight
- * instances, and our earlier prior-art tool wrote it as an explicit zero.
- * Arrays 0, 1 and 3 are filled.
- */
-/*
- * The register map, from the vendor's own header rather than inferred:
- *
- *   ESCHED_CFG_1   0x2000 + port   prioritySetBoundary[11:0] tcGroupBoundary[23:12]
- *   ESCHED_CFG_2   0x2080 + port   strictPriority[11:0]      tcEnable[23:12]
- *   ESCHED_CFG_3   0x2100 + port   tcInnerPriority[11:0]
- *   ESCHED_DRR_CFG 0x3800 + port
- *
- * ⚠ SEVENTY-SIX ENTRIES EACH, AND ONLY THREE REGISTERS IN THE BLOCK.
- *
- * This file used to write eight "instances" of four arrays over 128 ports --
- * 3,222 writes across the whole of 0x2000-0x2fff -- because that is the
- * shape a forwarding chip's register dump appears to have. It is not a
- * shape. The block holds three registers of 76 entries and decodes only
- * part of the address, so everything above 0x2180 is those same registers
- * seen again. The dump was 24 aliases of one array, and the model built
- * from it was 13 times more writes than the hardware has registers.
- *
- * ⚠ AND THE FIELD NAMES WERE ON THE WRONG REGISTER. The comment here said
- * CFG_1 carried strictPriority and tcEnable. Those are CFG_2's. CFG_1 is
- * the priority-set and traffic-class group boundaries.
- *
- * Diffing against a forwarding chip will now show it holding values at
- * addresses we do not write. Those are the aliases, and writing them once
- * through the canonical address is the same operation.
- */
-#define ESCHED_PORTS		76u
+static void esched_dbg(const char *msg)
+{
+	int fd;
+	fprintf(stderr, "%s\n", msg);
+	fflush(stderr);
+	fd = open("/dev/kmsg", O_WRONLY | O_NOCTTY);
+	if (fd >= 0) {
+		write(fd, msg, strlen(msg));
+		write(fd, "\n", 1);
+		close(fd);
+	}
+}
+
 #define ESCHED_CFG_1(p)		(0x002000u + (unsigned)(p))
 #define ESCHED_CFG_2(p)		(0x002080u + (unsigned)(p))
-#define ESCHED_CFG_3(p)		(0x002100u + (unsigned)(p))
 
-/* The round-robin word is one array, and it covers the switch ports only. */
-#define ESCHED_DRR(p)   (0x003800u + (unsigned)(p))
-#define ESCHED_DRR_PORTS	76u
+#define ESCHED_ALL_TC		0x00ffffffu
+#define ESCHED_CPU_PORT		0u
+#define ESCHED_CPU_CFG_1	0x00fff800u
+#define ESCHED_CPU_CFG_2	0x00fff000u
 
-/* Strict priority on all twelve classes, all twelve enabled. */
-#define ESCHED_ALL_TC       0x00ffffffu
-/* The CPU port. Physical port 0, not the CPU number in portmap.h's logical
- * space -- the egress scheduler indexes physical ports throughout. */
-#define ESCHED_CPU_PORT     0u
-/* Its two, which are the only values that are not ALL_TC. */
-#define ESCHED_CPU_CFG_1    0x00fff800u
-#define ESCHED_CPU_CFG_2    0x00fff000u
-/* The deficit round-robin word, with and without the IFG penalty. */
-#define ESCHED_DRR_PENALTY  0x14ffffffu
-#define ESCHED_DRR_SETTLED  0x00ffffffu
+/* Front-panel port ranges (full traffic class mask). */
+static const struct { unsigned lo, hi; } ESCHED_FRONT[] = {
+	{ 20, 47 },
+	{ 52, 75 },
+};
 
-
-/* Settled DRR quanta per traffic class, from EdgeNOS fm6000_eschedrr.c.
- * TC9/TC10 get five times TC3/TC5; the other eight sit between.
- * ⚠ These are the vendor's settled values after convergence.  A quantum wrong
- * by one shows up as unfairness under load, not a failed ping. */
-static const uint32_t drr_q[12] = {
-	0x1450, 0x1450, 0x1450, 0x05c8, 0x1450, 0x05c8,
-	0x1450, 0x1450, 0x1450, 0x6590, 0x6590, 0x39d0,
+/*
+ * Ring-internal ports: in ssched_ring[] but not front-panel.
+ * CFG_1 and CFG_2 must be ECC-valid before NEXT_CHAIN starts.
+ * Without these writes, the ring engine reads ECC-bad entries for
+ * ports 1-3 and 12-19 on every pass and triggers 0xc5 watchdog
+ * resets (~2/s for 80 s = 154 resets, circ=0).
+ * Value 0 = no traffic classes (safe: no user traffic on these ports).
+ * [RE 2026-10-16]
+ */
+static const struct { unsigned lo, hi; } ESCHED_RING_INTERNAL[] = {
+	{  1,  3 },
+	{ 12, 19 },
 };
 
 int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
 {
 	unsigned n = 0;
-	unsigned p;
+	unsigned i, p;
 
 	if (written != NULL)
 		*written = 0;
 	if (culprit != NULL)
 		*culprit = 0;
 
-	/*
-	 * Stub path: no PCIe BAR0 attached. The ESCHED block (0x002000-0x003fff)
-	 * is not writable via the LBUS -- any write there kills the chip.
-	 * Return OK; the ring circulates with zero ESCHED policy (post-BIST
-	 * defaults), which is sufficient for basic forwarding. Step 9 (PCIe
-	 * serdes init in boot.c) must succeed before this can do real work.
-	 */
 	if (d->pcie_regs == NULL)
 		return FM_OK;
 
 	/*
-	 * Write order is critical:
-	 *
-	 * 1. DRR_Q (0x003000, 12 quanta) FIRST. The ring engine reads these on
-	 *    every write to the ESCHED block. fm_boot_freelists()'s 42 self-
-	 *    resets leave them ECC-uninit, so any write before this causes a
-	 *    deferred hard fault. Writes here go via PCIe resource0 (fm_wr_pcie)
-	 *    -- they are not reachable via the LBUS.
-	 *
-	 * 2. CFG_1/CFG_2/CFG_3 per port (priority sets, TC enables, inner prio).
-	 *
-	 * 3. DRR_CFG per port, written twice: first with IFG penalty, then with
-	 *    it cleared. The intermediate value matters -- the scheduler latches
-	 *    against it. Skip ports 1 and 3 on the second pass (vendor pattern).
-	 *
-	 * 4. CFG_4 = 0x2000 (SchedPeriod) LAST. Enables the ESCHED clock domain.
-	 *    Writing it before DRR_Q is valid faults the chip asynchronously.
+	 * install58: skip ALL pre-probe writes. BIST already initialized all
+	 * ESCHED SRAM to ECC-valid zero. In c5567d2 (first TX circulation),
+	 * ESCHED writes via BAR0 were silently dropped and TX circulated.
+	 * With writes landing (Memory Space enabled), TX stalls at ring slot 0
+	 * (port 20) regardless of CFG_1 value. Skipping writes reverts to
+	 * c5567d2 behavior to confirm BIST ECC-init is sufficient pre-probe.
+	 * fm_esched_set_cfg2() still runs post-probe with DRR_Q + CFG_1 + CFG_2.
+	 * [RE 2026-10-23]
 	 */
-
-	/* 1. DRR quanta (SRAM -- no LBUS path). */
-	for (p = 0; p < 12; p++) {
-		fm_wr_pcie(d, 0x003000u + p, drr_q[p]);
-		n++;
-	}
-
-	/* 2a. CFG_1: ports 1..75, then 0. */
-	for (p = 1; p < ESCHED_PORTS; p++) {
-		fm_wr_pcie(d, ESCHED_CFG_1(p), ESCHED_ALL_TC);
-		n++;
-	}
-	fm_wr_pcie(d, ESCHED_CFG_1(ESCHED_CPU_PORT), ESCHED_CPU_CFG_1);
-	n++;
-
-	/* 2b. CFG_2: same order. */
-	for (p = 1; p < ESCHED_PORTS; p++) {
-		fm_wr_pcie(d, ESCHED_CFG_2(p), ESCHED_ALL_TC);
-		n++;
-	}
-	fm_wr_pcie(d, ESCHED_CFG_2(ESCHED_CPU_PORT), ESCHED_CPU_CFG_2);
-	n++;
-
-	/* 2c. CFG_3: 0 for all ports (tcInnerPriority). */
-	for (p = 0; p < ESCHED_PORTS; p++) {
-		fm_wr_pcie(d, ESCHED_CFG_3(p), 0u);
-		n++;
-	}
-
-	/* 3. DRR_CFG: penalty pass, then settled pass. */
-	for (p = 0; p < ESCHED_DRR_PORTS; p++) {
-		fm_wr_pcie(d, ESCHED_DRR(p), ESCHED_DRR_PENALTY);
-		n++;
-	}
-	for (p = 0; p < ESCHED_DRR_PORTS; p++) {
-		if (p == 1 || p == 3)
-			continue;
-		fm_wr_pcie(d, ESCHED_DRR(p), ESCHED_DRR_SETTLED);
-		n++;
-	}
+	esched_dbg("nosd-fm6000: ESCHED: init skipped (BIST provides ECC-valid zero)");
+	if (written != NULL)
+		*written = 0;
+	return FM_OK;
 
 	/*
-	 * ⚠ DO NOT write FM6000_SWEEPER_CFG_4 (0x01c04c) here.
+	 * 1. CFG_1: ALL ports written to 0 (ECC-valid, no TCs enabled).
 	 *
-	 * Writing it with 0x2000 (SchedPeriod) faults the chip asynchronously
-	 * and takes it off the PCIe bus -- measured 2026-10-13, two confirmed
-	 * kernel hangs. The chip reaches the watch loop and forwards without
-	 * it. Root cause is unknown; skip until the exact preconditions for a
-	 * safe write are determined.
+	 * Writing non-zero CFG_1 here (before IC=1) causes the TX ring to stall:
+	 * the TX ring engine reads ESCHED CFG_1 on every pass; with CFG_1=0xffffff
+	 * (24 TCs enabled) on the first ring slot (port 20), the engine tries to
+	 * schedule those TCs but DRR_Q is still 0 (from BIST), which provides
+	 * zero quanta and stalls the TX ring permanently.  RX ring does not read
+	 * ESCHED and circulates freely, matching the observed TX_FOUND=0/RX_FOUND=1.
+	 *
+	 * Real CFG_1 values (0x00ffffff for front-panel, ESCHED_CPU_CFG_1 for CPU)
+	 * are written by fm_esched_set_cfg2() AFTER the ring circulates and DRR_Q
+	 * has valid quanta.  Ring-internal ports (1-3, 12-19) stay 0 permanently.
+	 * [RE 2026-10-23, install58]
+	 */
+	esched_dbg("nosd-fm6000: ESCHED: writing CFG_1");
+	for (i = 0; i < 2; i++)
+		for (p = ESCHED_FRONT[i].lo; p <= ESCHED_FRONT[i].hi; p++) {
+			fm_wr_pcie(d, ESCHED_CFG_1(p), 0u);
+			n++;
+		}
+	for (i = 0; i < 2; i++)
+		for (p = ESCHED_RING_INTERNAL[i].lo; p <= ESCHED_RING_INTERNAL[i].hi; p++) {
+			fm_wr_pcie(d, ESCHED_CFG_1(p), 0u);
+			n++;
+		}
+	fm_wr_pcie(d, ESCHED_CFG_1(ESCHED_CPU_PORT), 0u); n++;
+	esched_dbg("nosd-fm6000: ESCHED: CFG_1 done");
+
+	/*
+	 * 2. CFG_2 (0x002080 + port): ring-internal ports ONLY.
+	 *
+	 * Writing CFG_2 for front-panel or CPU ports via PCIe BAR0 causes a
+	 * full-chip reset that bounces the PCIe endpoint and deadlocks the
+	 * kernel PCIe error handler (tested install35/36/37, value 0x00ffffff
+	 * and 0u both fatal).  The deadlock triggers at port 20 (0x002094),
+	 * the first front-panel address.
+	 *
+	 * Ring-internal ports 1-3 (0x002081-0x002083) and 12-19
+	 * (0x00208c-0x002093) are in ssched_ring[] and their CFG_2 is read on
+	 * every ring pass.  Without an ECC-valid write here the NEXT_CHAIN probe
+	 * triggers ~2 0xc5 watchdog resets/s for 80 s (154 total, circ=0).
+	 * Writing value 0 (no traffic classes) is ECC-valid and safe for these
+	 * internal ports.  [RE 2026-10-17, install38]
+	 *
+	 * Front-panel and CPU CFG_2 are written after probe (FOUND) by
+	 * fm_esched_set_cfg2().
+	 */
+	esched_dbg("nosd-fm6000: ESCHED: writing CFG_2 (ring-internal only)");
+	for (i = 0; i < 2; i++)
+		for (p = ESCHED_RING_INTERNAL[i].lo; p <= ESCHED_RING_INTERNAL[i].hi; p++) {
+			fm_wr_pcie(d, ESCHED_CFG_2(p), 0u);
+			n++;
+		}
+	esched_dbg("nosd-fm6000: ESCHED: CFG_2 done");
+
+	/*
+	 * ⚠ DO NOT write CFG_4 (0x002180, ESCHED clock enable = 0x2000) here.
+	 * Writing it faults the chip asynchronously -- measured 2026-10-13.
 	 */
 
 	if (written != NULL)
 		*written = n;
+	return FM_OK;
+}
+
+/*
+ * Post-ring ESCHED initialisation.  Must be called AFTER the SSCHED token
+ * ring is circulating (probe FOUND) and after PCIe Memory Space is restored.
+ *
+ * Writes the registers that are unsafe or wrong to write before the ring
+ * circulates:
+ *   - DRR_Q (0x003000): quanta values -- MUST be first; ring engine reads
+ *     these on every ESCHED write, and the fill-zero values from bank-init
+ *     give wrong scheduling behaviour.
+ *   - CFG_2 (0x002080) for front-panel and CPU ports: writing these before
+ *     probe FOUND causes a full-chip reset (tested install35/36/37).
+ *   - DRR_Q + CFG_2 only.  CFG_3 (0x002100) and DRR_CFG (0x003800) are NOT
+ *     written: CFG_3 causes a full-chip self-reset post-ring (install47,
+ *     2026-10-22); DRR_CFG behaviour post-ring is untested.
+ *
+ * No-op when d->pcie_regs is NULL.  Never writes via LBUS (fatal for all
+ * addresses in 0x002000-0x003fff regardless of ring state).
+ */
+int fm_esched_set_cfg2(struct fm6000 *d)
+{
+	static const uint32_t drr_q[12] = {
+		0x1450, 0x1450, 0x1450, 0x05c8, 0x1450, 0x05c8,
+		0x1450, 0x1450, 0x1450, 0x6590, 0x6590, 0x39d0,
+	};
+	unsigned i, p;
+
+	if (d->pcie_regs == NULL)
+		return FM_OK;
+
+	/* 1. DRR quanta: MUST be written first. */
+	/*
+	 * DRR_Q (0x003000+p) is indexed by TC (traffic class), not by port.
+	 * The FM6000 ESCHED has 12 TCs (indices 0..11).  Writing beyond index
+	 * 11 hits reserved or aliased addresses that fault the chip (measured
+	 * install79, 2026-10-25: writing indices 12-75 caused ESCHED fault
+	 * before SPICO load → AER/PCIe deadlock).  12 entries are correct.
+	 */
+	esched_dbg("nosd-fm6000: ESCHED post-ring: writing DRR_Q[0..11]");
+	for (p = 0; p < 12; p++)
+		fm_wr_pcie(d, 0x003000u + p, drr_q[p]);
+
+	/* 2. CFG_1: front-panel and CPU (now that DRR_Q has valid quanta). */
+	esched_dbg("nosd-fm6000: ESCHED post-ring: writing CFG_1 (front-panel + CPU)");
+	for (i = 0; i < 2; i++)
+		for (p = ESCHED_FRONT[i].lo; p <= ESCHED_FRONT[i].hi; p++)
+			fm_wr_pcie(d, ESCHED_CFG_1(p), ESCHED_ALL_TC);
+	fm_wr_pcie(d, ESCHED_CFG_1(ESCHED_CPU_PORT), ESCHED_CPU_CFG_1);
+
+	/*
+	 * install155: CFG_1 writes can trigger a chip FATAL (link bounce).
+	 * Clear Root Error Status at the root port (bus=0, safe during bounce).
+	 *
+	 * install196: replaced fm_wait_link_active() (CF8/portio) with a
+	 * LBUS-based FATAL_COUNT stability poll.  fm_wait_link_active reads
+	 * LNKSTA via CF8 outl; that outl fires the SB700 SMI trap, causing the
+	 * BIOS handler to read bus=2 in SMM.  If FM6000 is still in FATAL from
+	 * the CFG_1 bounce, the read CTOs:
+	 *  - SERR# enabled → RS780 sends error completion → BIOS exits →
+	 *    SERR# latches → BIOS SERR# handler fires → reads bus=2 → CTO →
+	 *    BIOS clears SERR# to 0x0007 → BIOS SERR# handler fires again →
+	 *    SERR# now 0x0007 → CTO → no error completion → RS780 stall.
+	 * Polling FATAL_COUNT via LBUS (SCD BAR1) has no CF8 I/O and is safe
+	 * during FATAL; once stable the link is confirmed up before CFG_2.
+	 */
+	esched_dbg("nosd-fm6000: ESCHED post-ring: aer_clear after CFG_1");
+	fm_pcie_clear_root_aer_errors();
+	esched_dbg("nosd-fm6000: ESCHED post-ring: wait-stable after CFG_1 [install196]");
+	{
+		uint32_t fc0 = 0xFFFFFFFFu, fc1;
+		int stable = 0;
+		for (int i = 0; i < 40 && stable < 5; i++) {
+			struct timespec ts = { 0, 100000000L };	/* 100 ms */
+			nanosleep(&ts, NULL);
+			if (fm_rd(d, FM6000_FATAL_COUNT, &fc1) != FM_OK)
+				fc1 = 0xFFFFFFFFu;
+			if (fc1 != 0xFFFFFFFFu && fc1 == fc0)
+				stable++;
+			else { fc0 = fc1; stable = 0; }
+		}
+	}
+
+	/* 3. CFG_2: front-panel then CPU. */
+	esched_dbg("nosd-fm6000: ESCHED post-ring: writing CFG_2 (front-panel + CPU)");
+	for (i = 0; i < 2; i++)
+		for (p = ESCHED_FRONT[i].lo; p <= ESCHED_FRONT[i].hi; p++)
+			fm_wr_pcie(d, ESCHED_CFG_2(p), ESCHED_ALL_TC);
+	fm_wr_pcie(d, ESCHED_CFG_2(ESCHED_CPU_PORT), ESCHED_CPU_CFG_2);
+
+	/*
+	 * CFG_3 (0x002100) and DRR_CFG (0x003800) are NOT written here.
+	 * Writing CFG_3 for any port after the ring circulates causes a
+	 * full-chip self-reset (measured install47, 2026-10-22).
+	 * DRR_Q + CFG_2 (steps 1-2 above) are sufficient for forwarding.
+	 */
+
+	esched_dbg("nosd-fm6000: ESCHED post-ring: CFG_1+CFG_2+DRR_Q done");
 	return FM_OK;
 }

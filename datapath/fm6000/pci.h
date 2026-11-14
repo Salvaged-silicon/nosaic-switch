@@ -78,6 +78,10 @@ struct fm6000 {
 	volatile uint32_t *pcie_regs;
 	size_t             pcie_bar_bytes;
 	int                pcie_bar_fd;
+	/* Physical start of FM6000 BAR0, cached on first successful
+	 * fm_attach_pcie() so the device can be re-attached via /dev/mem
+	 * without a sysfs rescan (install203). */
+	unsigned long      pcie_bar_phys;
 
 	/* Sticky. Once the chip has left the bus it does not come back without
 	 * a reset, so there is nothing to be gained by trying again -- and a
@@ -224,6 +228,21 @@ int fm_attach_pcie(struct fm6000 *d);
  * Returns FM_OK on success, FM_ERR if the config file could not be opened.
  */
 int fm_pcie_enable_command(struct fm6000 *d);
+void fm_pcie_serr_reenable(void);
+void fm_pcie_serr_disable(void);
+void fm_pcie_dev_memspc_disable(void);
+void fm_pcie_dev_memspc_enable(void);
+void fm_pcie_clear_root_aer_errors(void);
+void fm_pcie_disable_root_aer_cmd(void);
+void fm_pcie_restore_root_aer_cmd(void);
+int  fm_pcie_smi_global_disable(void);   /* install208: 1=disabled, 0=PMIO not found */
+void fm_pcie_smi_global_restore(void);
+int  fm_pcie_clear_bridge_status(void);
+int  fm_pcie_clear_bridge_status_sysfs(void);
+void fm_pcie_serr_reenable_sysfs(void);
+void fm_pcie_wait_dllla_stable(int required_stable, int enable_serr_on_dllla);
+int  fm_pcie_ep_disable_error_reporting(uint8_t bus, uint8_t dev, uint8_t func);
+int fm_pcie_enable_portio(uint8_t bus, uint8_t dev, uint8_t func);
 
 /*
  * Release the FM6000 PCIe BAR0 mapping (d->pcie_regs).
@@ -233,6 +252,29 @@ int fm_pcie_enable_command(struct fm6000 *d);
  * is already NULL (no-op).
  */
 void fm_detach_pcie(struct fm6000 *d);
+int  fm_reprogram_bar_portio(struct fm6000 *d);     /* install204 */
+int  fm_reprogram_bar_and_cmd_portio(struct fm6000 *d); /* install219 */
+
+/*
+ * Poll FM6000 PCIe config-space vendor ID until valid or max_ms expires.
+ * Safe to call when LBUS reads would stall (goes through root complex, not
+ * the SCD LocalBus bridge).  Returns FM_OK when alive, FM_ERR on timeout.
+ */
+int fm_wait_pcie_alive(int max_ms);
+
+/*
+ * Set or clear the Link Disable bit (bit 4) in the upstream port's
+ * (0000:00:04.0) PCIe Link Control register.  Pass disable=1 to suppress
+ * pciehp slot events during FM6000 SerDes initialisation, disable=0 to
+ * re-enable link training and allow pciehp to enumerate the endpoint once
+ * Config Space is stable.  Returns FM_OK on success, FM_ERR if the upstream
+ * port's config file could not be opened or has no PCIe capability.
+ */
+int fm_upstream_link_disable(int disable);
+int fm_upstream_sbr(int assert);      /* 1=assert SBR/PERST#, 0=deassert */
+int fm_pcie_sltctl_clear_hpie(void);  /* clear HPIE/PDCE/DLLSCE on upstream port */
+int fm_wait_link_active(int max_ms);  /* poll Link Status until L0, max_ms timeout */
+int fm_pcieport_bind(int bind);  /* 0=unbind, 1=bind pcieport from/to 0000:00:04.0 */
 
 /*
  * Pulse the FM6000's hardware reset via the SCD's BAR0 reset registers.
@@ -499,7 +541,26 @@ const char *fm_block_name(uint32_t word);
 static inline void fm_wr_pcie(struct fm6000 *d, uint32_t word, uint32_t val)
 {
 	d->pcie_regs[word] = val;
-	__sync_synchronize();
+	/*
+	 * Compiler barrier only -- no mfence.
+	 *
+	 * On x86, stores to UC (uncacheable) MMIO are strongly ordered: the
+	 * CPU issues them in program order with no buffering or reordering.
+	 * An mfence would wait for the store TLP to be *accepted* by the PCIe
+	 * link layer, which stalls indefinitely if the FM6000 is mid-reset
+	 * (the chip self-resets 462 times during the boot sequence; each reset
+	 * briefly takes the PCIe link down, and an mfence during that window
+	 * spins until the link recovers -- measured 157+ seconds).
+	 *
+	 * The compiler barrier prevents the compiler from reordering stores;
+	 * the x86 TSO memory model prevents the CPU from doing so for UC
+	 * MMIO.  The write ordering required by ESCHED init (DRR_Q first,
+	 * CFG_4 last) is therefore preserved without the stall.
+	 *
+	 * dma.c's dma_wr() keeps its own mfence because DMA runs in steady
+	 * state (link stable) and the doorbell MUST be seen after ring writes.
+	 */
+	__asm__ volatile("" ::: "memory");
 }
 #else
 /* Declaration for the test-supplied version. */

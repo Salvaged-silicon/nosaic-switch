@@ -1,6 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Intel 331496-002 §4.2 Table 4-1, in order. See boot.h. */
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
@@ -20,6 +23,20 @@ static void nap_ms(long ms)
 	struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
 
 	nanosleep(&ts, NULL);
+}
+
+static void dbg(const char *msg)
+{
+	int kmsg_fd;
+
+	fprintf(stderr, "%s\n", msg);
+	fflush(stderr);
+	kmsg_fd = open("/dev/kmsg", O_WRONLY | O_NOCTTY);
+	if (kmsg_fd >= 0) {
+		write(kmsg_fd, msg, strlen(msg));
+		write(kmsg_fd, "\n", 1);
+		close(kmsg_fd);
+	}
 }
 
 static const char *step_names[FM_STEP__COUNT] = {
@@ -67,7 +84,12 @@ static void finish(struct fm6000 *d, struct fm_boot_report *rep)
 	struct fm_fatal f;
 	int i, all_ok = 1;
 
-	if (fm_fatal_read(d, &f) == FM_OK)
+	/* Guard the BAR1 read: ESCHED writes trigger ~1-2 FATALs that bounce
+	 * the PCIe link.  On AMD RS780 with SERR# disabled, any BAR1 MMIO
+	 * access while the link is re-training stalls the CPU permanently.
+	 * Wait here for DLLLA=1 (safe sysfs read, no bus=2 access) before
+	 * touching BAR1 via fm_fatal_read().  [install153, 2026-10-27] */
+	if (fm_wait_link_active(10000) == FM_OK && fm_fatal_read(d, &f) == FM_OK)
 		rep->last_fatal = f.last;
 
 	for (i = 1; i < FM_STEP__COUNT; i++)
@@ -276,10 +298,33 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 		return rv;
 	}
 
+	{
+		uint32_t ss = 0;
+		char lbuf[80];
+
+		fm_rd(d, FM6000_SCAN_STATUS, &ss);
+		snprintf(lbuf, sizeof(lbuf),
+			 "nosd-fm6000: boot step5: SCAN_STATUS pre=0x%08x", ss);
+		dbg(lbuf);
+	}
+	rv = fm_wr(d, FM6000_SCAN_CONTROL, FM6000_SCAN_CHAIN_CORE);
+	if (rv != FM_OK) {
+		set(d, rep, FM_STEP_SCAN_CHAIN, rv, "SCAN_CONTROL chain select failed");
+		return rv;
+	}
 	rv = fm_wr(d, FM6000_SCAN_CHAIN_DATA_IN, 0xffffffff);
 	if (rv != FM_OK) {
 		set(d, rep, FM_STEP_SCAN_CHAIN, rv, "write to SCAN_CHAIN_DATA_IN failed");
 		return rv;
+	}
+	{
+		uint32_t ss = 0;
+		char lbuf[80];
+
+		fm_rd(d, FM6000_SCAN_STATUS, &ss);
+		snprintf(lbuf, sizeof(lbuf),
+			 "nosd-fm6000: boot step5: SCAN_STATUS post=0x%08x (0x100=retired)", ss);
+		dbg(lbuf);
 	}
 	set(d, rep, FM_STEP_SCAN_CHAIN, FM_OK, NULL);
 
@@ -370,9 +415,10 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 		return rv;
 
 	/*
-	 * Step 9 (PCIe) is deferred to after ring_init -- see below.
+	 * Step 9 (PCIe) runs after Phase 1 ring init (MGMT_ONLY) -- see below.
 	 * The 42 fm_boot_freelists() self-resets would wipe any SerDes
-	 * configuration written here.
+	 * configuration written here, and PCIe needs the ring running for
+	 * link stability during enumeration.
 	 */
 
 	/*
@@ -452,17 +498,37 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	 * move. Done here so both the mem_init=1 and mem_init=0 (skip) paths
 	 * leave the chip in normal operating mode for any subsequent fill.
 	 */
+	{
+		uint32_t ss = 0;
+		char lbuf[80];
+
+		fm_rd(d, FM6000_SCAN_STATUS, &ss);
+		snprintf(lbuf, sizeof(lbuf),
+			 "nosd-fm6000: boot step5-again: SCAN_STATUS pre=0x%08x", ss);
+		dbg(lbuf);
+	}
 	rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88800000u);
 	if (rv == FM_OK)
 		rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x88008000u);
 	if (rv == FM_OK)
 		rv = fm_wr(d, FM6000_SCAN_CONFIG_DATA_IN, 0x80000040u);
 	if (rv == FM_OK)
+		rv = fm_wr(d, FM6000_SCAN_CONTROL, FM6000_SCAN_CHAIN_CORE);
+	if (rv == FM_OK)
 		rv = fm_wr(d, FM6000_SCAN_CHAIN_DATA_IN, 0xffffffff);
 	if (rv != FM_OK) {
 		set(d, rep, FM_STEP_MEMORY_INIT, rv,
 		    "settled-chip scan chain write failed before fill");
 		return rv;
+	}
+	{
+		uint32_t ss = 0;
+		char lbuf[80];
+
+		fm_rd(d, FM6000_SCAN_STATUS, &ss);
+		snprintf(lbuf, sizeof(lbuf),
+			 "nosd-fm6000: boot step5-again: SCAN_STATUS post=0x%08x", ss);
+		dbg(lbuf);
 	}
 	rep->step[FM_STEP_SCAN_CHAIN].note =
 	    "done twice: once in order (reset out from under itself), "
@@ -523,6 +589,15 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 			    "BIST march failed or chip stopped answering");
 			return rv;
 		}
+		/*
+		 * SAF SRAM is not reachable by BIST on this chip: fm_bist_memory_init
+		 * does not initialise SAF ECC.  Any write to SAF (via fm_wr or direct
+		 * MMIO) causes an internal ECC read-modify-write on uninitialised ECC,
+		 * which faults the chip (measured: install96-install99, every attempt
+		 * at fc=0 through fc=242 all produced alive=0 fc=0 immediately after
+		 * the write loop). SAF init is therefore intentionally omitted here and
+		 * in pipeline_init.  The chip runs with BIST march residue in SAF.
+		 */
 		rv = fm_boot_freelists(d);
 		if (rv != FM_OK) {
 			set(d, rep, FM_STEP_BIST, rv,
@@ -534,18 +609,81 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	    "BIST march complete; freelists restored");
 
 	/*
-	 * Step 14. Start the scheduler token ring.
+	 * Phase 1 (MGMT_ONLY) is intentionally omitted.
 	 *
-	 * All 64 front-panel ports + management (port 78) enrolled in a
-	 * NEXT_CHAIN visit table so every port gets a time slot.  NO_SWEEPER
+	 * SSCHED's IC flip-flop lives in a persistent power domain that only
+	 * resets at power-on.  Firing MGMT_ONLY's IC=1 puts SSCHED into RUNNING
+	 * state; the engine then stays RUNNING through fm_boot_freelists (42
+	 * resets), and any number of scheduler-domain watchdog resets.
+	 * NEXT_CHAIN's IC=1 on a RUNNING engine is a no-op -- the ring
+	 * continues looping the MGMT_ONLY token.
+	 *
+	 * Fix: leave SSCHED in RESET (IC never fired) so NEXT_CHAIN's IC=1 is
+	 * the first strobe on a fresh engine and the 64-token ring circulates.
+	 */
+
+	/*
+	 * Step 9 (PCIe SerDes init) is deferred to AFTER ring_init.
+	 *
+	 * c5567d2 (first confirmed TX circulation, 2026-10-11) ran ring_init
+	 * without PCIe Memory Space enabled (pcie_regs was NULL; the standalone
+	 * --ssched tool never called fm_pcie_enable_command).  TX ring
+	 * circulated.  All subsequent boots have had Memory Space enabled
+	 * BEFORE ring_init and TX never circulates (TX_REPLACE_TOKEN stuck at
+	 * ring slot 0, RX_FOUND=1, TX_FOUND=0 every time).
+	 *
+	 * install59 hypothesis (2026-10-23): enabling PCIe Memory Space before
+	 * IC=1 stalls the TX ring engine.  The fix is to run ring_init with
+	 * pcie_regs == NULL (BAR0 not attached).  PCIe SerDes init runs once,
+	 * post-ring, below.
+	 *
+	 * fm_esched_init() is a no-op when pcie_regs == NULL (guard at the
+	 * top of the function).  BIST provides ECC-valid zero for all ESCHED
+	 * SRAM; no writes are needed pre-probe.
+	 */
+
+	/*
+	 * d->pcie_regs is NULL here; fm_esched_init() inside
+	 * fm_ssched_ring_init() will skip all writes via the pcie_regs == NULL
+	 * guard.  BIST provides ECC-valid zero for all ESCHED SRAM.
+	 */
+	fm_sched_mark_ready(d);
+
+	/*
+	 * Step 14: Start the scheduler token ring (NEXT_CHAIN mode).
+	 *
+	 * All 64 front-panel/ring-internal ports enrolled in a NEXT_CHAIN
+	 * visit table (port 78 excluded -- FIFO capacity is 64).  NO_SWEEPER
 	 * skips SWEEPER_CFG word 3 (the manageability reference timer), which
 	 * arms itself over uninitialised tables and fires 315 self-resets on
 	 * every attempt.
 	 *
+	 * fm_ssched_ring_init() writes ESCHED post-settle (fm_esched_init),
+	 * before the ring ticks any ESCHED slot.  The NEXT_CHAIN settle resets
+	 * affect only SSCHED SRAM; ESCHED SRAM remains valid after they clear.
+	 *
 	 * FOUND bit in RX_REPLACE_TOKEN confirms the ring engine is walking
-	 * the ring.  A non-circulating ring after EXIT:0 is a fault -- the
-	 * token was written but never found, and packet scheduling is dead.
+	 * the full ring.
+	 *
+	 * install67: log PCI Command register for 0000:02:00.0 immediately before
+	 * ring_init to check whether the kernel already enabled Memory Space.
+	 * If MemSpc=1 here, the hypothesis that Memory Space before IC=1 stalls
+	 * TX is testable; if MemSpc=0, the stall has a different cause.
 	 */
+	{
+		int _cfd = open("/sys/bus/pci/devices/0000:02:00.0/config", O_RDONLY);
+		if (_cfd >= 0) {
+			uint16_t _cmd = 0;
+			if (pread(_cfd, &_cmd, sizeof _cmd, 4) == (ssize_t)sizeof _cmd) {
+				char _pb[128];
+				snprintf(_pb, sizeof _pb,
+					"nosd-fm6000: pre-ring PCI CMD(02:00.0)=0x%04x MemSpc=%d BusMaster=%d",
+					_cmd, !!(_cmd & 0x0002), !!(_cmd & 0x0004));
+				dbg(_pb);
+			}
+			close(_cfd);
+		}
+	}
 	{
 		struct fm_ssched_report srep;
 		int circ = 0;
@@ -553,130 +691,319 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 		rv = fm_ssched_ring_init(d, FM_SSCHED_NEXT_CHAIN |
 					    FM_SSCHED_NO_SWEEPER,
 					 &circ, &srep);
+		/* Always log phase reset counts for diagnostics. */
+		{
+			char buf[128];
+			int k;
+			for (k = 0; k < FM_SSCHED_PH__COUNT; k++) {
+				if (srep.resets[k] == 0)
+					continue;
+				snprintf(buf, sizeof buf,
+					 "nosd-fm6000: NEXT_CHAIN phase %-24s: %u resets",
+					 fm_ssched_phase_name(k), srep.resets[k]);
+				dbg(buf);
+			}
+			snprintf(buf, sizeof buf,
+				 "nosd-fm6000: NEXT_CHAIN total=%u circ=%d last_fatal=0x%02x",
+				 srep.total, circ, srep.last_fatal);
+			dbg(buf);
+		}
 		if (rv != FM_OK || !circ) {
 			set(d, rep, FM_STEP_SCHED,
 			    rv != FM_OK ? rv : FM_ERR,
-			    !circ ? "ring programmed but token not found -- "
-				    "check BIST ran before this call"
-				  : "ring init function failed");
+			    !circ ? "NEXT_CHAIN ring programmed but token not found"
+				  : "NEXT_CHAIN ring init function failed");
 			return rv != FM_OK ? rv : FM_ERR;
 		}
 	}
 	set(d, rep, FM_STEP_SCHED, FM_OK,
-	    "FOUND -- the engine is walking the ring");
+	    "FOUND -- full ring circulating");
 
 	/*
-	 * Step 9: PCIe SerDes init.
+	 * Step 9: PCIe SerDes init (post-ring).
 	 *
-	 * fm_pcie_serdes_init writes PCI_CORE_CTRL_1 as its last access,
-	 * enabling the FM6000 PCIe endpoint. Link training then starts on the
-	 * host bus. While it runs, any access to d->regs (SCD BAR1) may fault;
-	 * so the LBUS mapping is released immediately after the call returns --
-	 * before any other code runs -- then reopened after a sleep.
+	 * PCIe init is deferred to here so ring_init runs with pcie_regs==NULL.
+	 * See the comment above ring_init for why this matters.
 	 *
-	 * pci_enable_device() and the AER handler deadlock during training.
-	 * fm_attach_pcie uses /dev/mem for BAR0 (confirmed fix, 2026-10-13).
-	 * fm_reopen_lbus_devmem uses /dev/mem for BAR1 for the same reason
-	 * (confirmed deadlock: nosd hung, management IP never appeared, only
-	 * physical link survived -- 2026-10-14).
+	 * Load fm6000_kdrv first so the driver is registered before the PCIe
+	 * endpoint appears.  pci_enable_device() and the AER handler deadlock
+	 * during link training; fm_attach_pcie uses /dev/mem for BAR0
+	 * (confirmed fix, 2026-10-13) and fm_reopen_lbus_devmem uses /dev/mem
+	 * for BAR1 (deadlock confirmed 2026-10-14).
+	 *
+	 * The ~57 SPICO FATALs caused by serdes_init fire AER uncorrectable
+	 * events recovered by fm6000_kdrv's handlers (error_detected →
+	 * CAN_RECOVER, slot_reset → re-enable, resume), ~1 ms each.
 	 */
+	(void)system("modprobe fm6000_kdrv 2>/dev/null");
 	{
-		char saved_slot[FM_SLOT_LEN];
-		int banks_ready_saved = d->banks_ready;
-		int rv9;
+		char saved_slot2[FM_SLOT_LEN];
+		int banks_ready2 = d->banks_ready;
+		int rv_s2;
 
-		memcpy(saved_slot, d->slot, sizeof(saved_slot));
-		rv9 = fm_pcie_serdes_init(d);
+		memcpy(saved_slot2, d->slot, sizeof(saved_slot2));
 
-		/*
-		 * Release LBUS mapping NOW. Do not touch d->regs after this
-		 * point (not even to log rv9 via fm_rd) until LBUS has been
-		 * reopened below.
-		 *
-		 * REOPEN VIA /dev/mem, NOT fm_open_lbus. fm_open_lbus writes
-		 * to the sysfs enable file which calls pci_enable_device()
-		 * inside the kernel. During PCIe link training, the AER handler
-		 * holds locks that pci_enable_device() also needs -- deadlock,
-		 * confirmed on 2026-10-14 (nosd hung, management IP never
-		 * appeared, only physical link survived). Opening resource1 has
-		 * the same problem. fm_reopen_lbus_devmem reads the physical
-		 * address from the sysfs resource TEXT file (safe: no lock) and
-		 * maps via /dev/mem, bypassing the deadlock path entirely.
-		 */
+		dbg("nosd-fm6000: post-SSCHED: PCIe SerDes init (link → x4)");
+		rv_s2 = fm_pcie_serdes_init(d);
+
+		/* Release LBUS -- chip is resetting during SPICO loads. */
 		munmap((void *)d->regs, d->bar_bytes);
 		close(d->bar_fd);
 		d->regs = NULL;
 		d->bar_fd = -1;
 
-		if (rv9 != FM_OK) {
-			set(d, rep, FM_STEP_PCIE, rv9,
-			    "PCIe serdes init failed");
-			/*
-			 * Reopen LBUS so the ESCHED stub and watch loop work.
-			 * (ESCHED will use the stub path: pcie_regs == NULL.)
-			 */
-			if (fm_reopen_lbus_devmem(d, saved_slot) == FM_OK)
-				d->banks_ready = banks_ready_saved;
+		if (rv_s2 != FM_OK) {
+			dbg("nosd-fm6000: post-SSCHED: PCIe SerDes init FAILED"
+			    " -- DMA will not work");
 		} else {
-			set(d, rep, FM_STEP_PCIE, FM_OK,
-			    "PCIe SerDes configured; waiting for enumeration");
+			dbg("nosd-fm6000: post-SSCHED: PCIe SerDes init done;"
+			    " waiting 5s for x4 link to stabilise");
 			nap_ms(5000);
-			if (fm_reopen_lbus_devmem(d, saved_slot) != FM_OK) {
-				fprintf(stderr,
-"nosd-fm6000: WARNING: LBUS reopen failed after PCIe init; "
-"ESCHED will use the stub path\n");
+
+			/*
+			 * install205: if pcie_bar_phys is already known (second
+			 * boot_cold, called from ring-reinit), skip the sysfs
+			 * rescan write — it can freeze under BIOS SMI handling
+			 * during PCIe link training.  Use CF8 portio to enable
+			 * Memory Space directly instead.
+			 *
+			 * On the FIRST boot_cold, pcie_bar_phys==0 so we take
+			 * the original sysfs rescan path unchanged.
+			 *
+			 * fm_reopen_lbus_devmem() calls memset(d,0,sizeof(*d))
+			 * which would zero pcie_bar_phys and pcie_bar_bytes.
+			 * Save them here and restore after the call so that
+			 * fm_attach_pcie()'s cached path can mmap /dev/mem.
+			 * [install205, 2026-10-29]
+			 */
+			unsigned long saved_pcie_phys  = d->pcie_bar_phys;
+			size_t        saved_pcie_bytes = d->pcie_bar_bytes;
+
+			if (saved_pcie_phys != 0) {
+				/* Portio path: BAR address known; skip sysfs rescan */
+				int rv_p = fm_pcie_enable_portio(2, 0, 0);
+				char msg205[128];
+				snprintf(msg205, sizeof msg205,
+				    "nosd-fm6000: post-SSCHED: portio-rescan"
+				    " rv=%d bar=0x%lx [install205]",
+				    rv_p, saved_pcie_phys);
+				dbg(msg205);
+				nap_ms(200);
 			} else {
-				d->banks_ready = banks_ready_saved;
-				if (fm_attach_pcie(d) == FM_OK) {
-					/*
-					 * Enable Memory Space + Bus Master before
-					 * ESCHED writes. Without this, writes to
-					 * pcie_regs are silently dropped by the PCIe
-					 * fabric (chip command register has bits 0/2
-					 * clear after enumeration, so BAR0 MMIO
-					 * transactions are ignored). Measured 2026-10-15:
-					 * fm_esched_init ran 390 writes but ESCHED read
-					 * back 0xffffffff because command=0x0000.
-					 */
-					(void)fm_pcie_enable_command(d);
-					set(d, rep, FM_STEP_PCIE, FM_OK,
-					    "PCIe attached; ESCHED path live");
+				/* Original path: first boot_cold; sysfs rescan */
+				int rfd = open(
+				    "/sys/class/pci_bus/0000:02/rescan",
+				    O_WRONLY);
+				if (rfd < 0)
+					rfd = open(
+					    "/sys/devices/pci0000:00"
+					    "/0000:00:04.0/pci0000:02/rescan",
+					    O_WRONLY);
+				if (rfd >= 0) {
+					(void)write(rfd, "1\n", 2);
+					close(rfd);
+					dbg("nosd-fm6000: post-SSCHED: PCIe rescan done");
+					nap_ms(1000);
 				}
+			}
+
+			/* Reopen LBUS and re-attach PCIe. */
+			if (fm_reopen_lbus_devmem(d, saved_slot2) == FM_OK) {
+				d->banks_ready = banks_ready2;
+				/* Restore PCIe BAR cache wiped by memset above */
+				if (saved_pcie_phys != 0) {
+					d->pcie_bar_phys  = saved_pcie_phys;
+					d->pcie_bar_bytes = saved_pcie_bytes;
+				}
+				if (fm_attach_pcie(d) == FM_OK) {
+					dbg("nosd-fm6000: post-SSCHED: PCIe attached");
+					(void)fm_pcie_enable_command(d);
+					dbg("nosd-fm6000: post-SSCHED: Memory Space enabled");
+					/*
+					 * Disable FM6000 error reporting while the endpoint is
+					 * on the bus.  SERR# is NOT disabled here; see the
+					 * comment before fm_pcie_serr_disable() below.
+					 * [install191, 2026-10-28 — moves serr_disable to after
+					 * stability wait; reverts install188 first serr_disable]
+					 */
+					fm_pcie_ep_disable_error_reporting(2, 0, 0);
+					fm_pcie_clear_root_aer_errors();
+					/*
+					 * Remove FM6000 from PCIe bus before the SSCHED
+					 * stability wait and the subsequent fm_spico_load.
+					 *
+					 * Both operations cause chip self-resets (link
+					 * bounces).  pciehp just re-enumerated the endpoint
+					 * via the rescan above and is now monitoring the
+					 * slot.  Any link-up during a pciehp Config Space
+					 * access window hangs the AMD RS780 CF8/CFC loop
+					 * forever (no Completion Timeout).
+					 *
+					 * BAR0 (/dev/mem mapping, d->pcie_regs) stays valid
+					 * for the duration: the physical range does not
+					 * change.  start_forwarding() calls fm_detach_pcie()
+					 * + fm_attach_pcie() after SerDes re-init to
+					 * reprogram the BAR register before DMA starts.
+					 *
+					 * The explicit rescan in start_forwarding() Phase 2
+					 * re-enumerates the endpoint with working Config
+					 * Space after link training completes.
+					 * [2026-10-25, install83]
+					 */
+					{
+						int rfd = open(
+						    "/sys/bus/pci/devices"
+						    "/0000:02:00.0/remove",
+						    O_WRONLY);
+						if (rfd >= 0) {
+							(void)write(rfd, "1\n", 2);
+							close(rfd);
+							dbg("nosd-fm6000: post-SSCHED: FM6000 removed from PCIe bus");
+						} else {
+							dbg("nosd-fm6000: post-SSCHED: WARNING: could not open remove path");
+						}
+					}
+				} else {
+					dbg("nosd-fm6000: post-SSCHED: PCIe attach failed"
+					    " -- DMA will not work");
+				}
+			} else {
+				dbg("nosd-fm6000: post-SSCHED: LBUS reopen failed"
+				    " -- DMA will not work");
 			}
 		}
 	}
 
 	/*
-	 * Egress scheduler init.
-	 *
-	 * fm_esched_init() writes the ESCHED block (0x002000-0x003fff) via
-	 * d->pcie_regs when the endpoint is attached (set above), or returns
-	 * FM_OK without writes when it is not (stub path).
-	 *
-	 * Write order:
-	 *   1. DRR_Q (0x003000, 12 TC quanta) -- MUST come first; the ring
-	 *      engine reads these on every write to the ESCHED block, and
-	 *      fm_boot_freelists()'s 42 resets leave them ECC-uninit.
-	 *   2. CFG_1/CFG_2/CFG_3 per port, then DRR_CFG.
-	 *   3. CFG_4 (SchedPeriod, 0x2000) -- enables the ESCHED clock domain;
-	 *      must be last, after DRR_Q is valid.
-	 *
-	 * ⚠ CFG_4 MUST NOT be written before DRR_Q is initialised. It enables
-	 * the ESCHED clock domain; with DRR_Q ECC-uninit the ring engine faults
-	 * asynchronously after SAF writes complete (measured 2026-10-13).
+	 * Wait for FATAL_COUNT to fully settle before writing ESCHED registers.
+	 * The ~57 SPICO FATALs from the second serdes_init are quickly recovered
+	 * by fm6000_kdrv's AER handlers, but we want 10 s of zero-FATAL
+	 * stability before any BAR0 write to guarantee no intermediate reset
+	 * during the ESCHED write sequence (which would ECC-corrupt DRR_Q and
+	 * make subsequent CFG_3/DRR_CFG writes fatal).
 	 */
-	fm_sched_mark_ready(d);
+	{
+		uint32_t fc = 0, fc2 = 0;
+		int n_stable = 0;
+		char stab_buf[128];
+		fm_rd(d, 0x8, &fc);
+		snprintf(stab_buf, sizeof stab_buf,
+			 "nosd-fm6000: post-SSCHED: waiting for stability fc=%u", fc);
+		dbg(stab_buf);
+		for (int i = 0; i < 60 && n_stable < 20; i++) {
+			struct timespec ts = { 0, 500000000L };
+			nanosleep(&ts, NULL);
+			fm_rd(d, 0x8, &fc2);
+			if (fc2 == fc)
+				n_stable++;
+			else {
+				fc = fc2;
+				n_stable = 0;
+			}
+		}
+		snprintf(stab_buf, sizeof stab_buf,
+			 "nosd-fm6000: post-SSCHED: chip %s fc=%u n_stable=%d",
+			 n_stable >= 20 ? "stable" : "unstable(timeout)", fc, n_stable);
+		dbg(stab_buf);
+	}
+
 	/*
-	 * Steps 10-12 produce many self-resets. Each reset clears the PCIe
-	 * command register back to 0x0000 (Memory Space disabled), so the
-	 * earlier fm_pcie_enable_command() call at step 9 is lost by the time
-	 * we reach here. Re-enable immediately before ESCHED writes so that
-	 * all 390 register writes are actually received by the chip.
+	 * Clear HPIE/DLLSCE/PDCE on the upstream port before ESCHED writes.
+	 *
+	 * The FM6000 removal above caused pciehp to transition to EMPTY state
+	 * and re-arm the three slot-interrupt enables.  ESCHED CFG_2 triggers
+	 * ~1–2 chip FALTALs (confirmed install83/install115) on the running ring;
+	 * each FATAL bounces the PCIe link.  With HPIE live, pciehp's IRQ handler
+	 * fires on the link-up edge and issues a CF8/CFC read to FM6000 config
+	 * space (bus 2) while the link is still training → AMD RS780 stalls the
+	 * CF8/CFC access indefinitely (SERR# is disabled at this point; the root
+	 * complex cannot release the stall without SERR#) → kernel deadlock.
+	 *
+	 * Clearing the three bits via the upstream port's config file (bus 0,
+	 * always accessible, never stalls) quiesces pciehp without any CF8/CFC
+	 * access to bus 2.  Distinct from a PCIe rescan, which enumerates bus 2
+	 * and ITSELF issues CF8/CFC reads — unsafe while SERR# is disabled.
+	 * [install137, 2026-10-27]
 	 */
-	if (d->pcie_regs != NULL)
-		(void)fm_pcie_enable_command(d);
-	(void)fm_esched_init(d, NULL, NULL);
+	if (fm_pcie_sltctl_clear_hpie() == FM_OK)
+		dbg("nosd-fm6000: post-SSCHED: SLTCTL HPIE/DLLSCE/PDCE cleared (pciehp quiesced)");
+	else
+		dbg("nosd-fm6000: post-SSCHED: WARNING: SLTCTL clear failed (HPIE may be live)");
+
+	/*
+	 * Clear AER Root Error Status and disable Root Error Command before
+	 * ESCHED writes.  SERR# is disabled at this point (disabled before
+	 * FM6000 removal above); the HPIE comment above explains why SERR#
+	 * must be off before pciehp-quiescing and before ESCHED link bounces.
+	 * [install188, 2026-10-28 — reverts install186 comment]
+	 */
+	dbg("nosd-fm6000: post-SSCHED: pre-ESCHED: aer_clear");
+	fm_pcie_clear_root_aer_errors();
+	/* install166: disable Root Error Command before any link-bouncing ESCHED
+	 * write to prevent aer_isr() from firing a CF8/CFC to training bus=2. */
+	fm_pcie_disable_root_aer_cmd();
+	dbg("nosd-fm6000: post-SSCHED: pre-ESCHED: aer_clear done");
+
+	/*
+	 * Disable SERR# before bridge_clear and ESCHED writes.
+	 *
+	 * We intentionally keep SERR# enabled throughout the stability wait
+	 * above so that any transient FATAL link bounce during the wait causes
+	 * the BIOS periodic SMI timer to receive an error completion
+	 * (RS780 sends 0xFFFFFFFF) rather than stalling the CF8/CFC loop.
+	 * With SERR# enabled the BIOS exits SMM normally even if the FM6000
+	 * link is momentarily down; the subsequent FM6000 recovery (typically
+	 * < 100 ms) ensures the next timer fire ~3.5 s later finds the link up.
+	 *
+	 * SERR# is disabled NOW — after the stability wait — to protect the
+	 * bridge_clear CF8 sequence and the ESCHED CFG_2 link bounces that
+	 * follow.  SERR# is immediately re-enabled (serr_reenable below) so
+	 * CFG_2 CTOs also get error completions.
+	 * [install175, 2026-10-27; install191 merges two calls into one here]
+	 */
+	fm_pcie_serr_disable();
+	fm_pcie_clear_bridge_status();
+	fm_pcie_serr_reenable();
+
+	/*
+	 * [install196] Pre-fill ECC-protected SRAM tables via LBUS before
+	 * ESCHED writes.  After RESET_N (ring-reinit path) or after many
+	 * self-resets during SPICO load, these cells may have uninitialized
+	 * ECC; when CFG_1 enables all TCs, ring tokens traverse them and
+	 * each ECC-bad read triggers a chip self-reset.  Sustained self-resets
+	 * widen the FATAL window and make the BIOS periodic-timer CF8 cascade
+	 * (bus=2 read during FATAL → SERR# double-fire → RS780 stall) far more
+	 * likely.  Writing zeros via LBUS gives all cells valid ECC.  Values
+	 * are correct: pipeline_init re-programs them after boot_cold returns.
+	 * Running in both initial-boot and ring-reinit paths is harmless
+	 * (BIST already wrote zeros; pipeline_init overwrites regardless).
+	 */
+	fm_mem_fill(d, 0x100200u, 14336u, 0u);	/* parser */
+	fm_mem_fill(d, 0x108000u,   152u, 0u);
+	fm_mem_fill(d, 0x108200u,   304u, 0u);
+	fm_mem_fill(d, 0x014000u,    76u, 0u);	/* LBS_CAM */
+	fm_mem_fill(d, 0x00e000u,  1024u, 0u);	/* GLORT_CAM */
+	fm_mem_fill(d, 0x00e800u,  2048u, 0u);	/* GLORT_RAM */
+	fm_mem_fill(d, 0x180000u, 16384u, 0u);	/* L2F_TABLE_4K */
+	fm_mem_fill(d, 0x1a0000u,  4096u, 0u);	/* L2F_TABLE_256 */
+	dbg("nosd-fm6000: post-SSCHED: SRAM pre-fill done [install196]");
+
+	dbg("nosd-fm6000: post-SSCHED: writing ESCHED post-ring config");
+	fm_esched_set_cfg2(d);
+	dbg("nosd-fm6000: post-SSCHED: ESCHED post-ring config done");
 	/* Leave BAR0 mapped (d->pcie_regs) -- the DMA engine needs it. */
+
+	/* SERR# is re-enabled above; clear Root Error Status accumulated
+	 * during ESCHED-triggered FATALs so the BIOS timer sees a clean
+	 * slate on its next poll.  [install154, install175, 2026-10-27] */
+	fm_pcie_clear_root_aer_errors();
+
+	/*
+	 * Now wait for the PCIe link to re-train before finish() reads BAR1.
+	 * Also guarded inside finish() for defence-in-depth.
+	 * [install150/153/154, 2026-10-27]
+	 */
+	fm_wait_link_active(5000);
 
 	fm_boot_mark_done(d);
 	return FM_OK;

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 func init() { register(aboot{}) }
@@ -295,6 +296,16 @@ func buildSWI(img Image, out string) error {
 	}
 
 	boot0 := fmt.Sprintf(abootBoot0, img.Version, img.Board)
+	// The 7150S-52 has a BCM50610 external PHY connected via RGMII to the
+	// BCM5785. Bringing ma1 down via tg3's ndo_stop() issues an MDIO write
+	// that sets MII_BMCR bit 11 (power-down). The next kernel's tg3 probe
+	// then reads 0xffff from every MDIO register and reports "No PHY devices".
+	// Omit the down step so the PHY remains reachable when our kernel probes,
+	// accepting a brief DMA window (~16s until our tg3 reinitialises).
+	if img.Board == "arista-7150s-52" {
+		boot0 = strings.Replace(boot0,
+			"ip link set \"$NETDEV\" down 2>/dev/null || true\n", "", 1)
+	}
 	if err := os.WriteFile(filepath.Join(work, "boot0"), []byte(boot0), 0o755); err != nil {
 		return err
 	}

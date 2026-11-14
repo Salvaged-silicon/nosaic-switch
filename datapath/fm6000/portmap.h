@@ -87,6 +87,16 @@ static const unsigned char fm6000_alta_of[FM6000_FRONT_PORTS + 1] = {
 #define FM6000_GLORT_INTERNAL	53	/* physical 3 */
 #define FM6000_GLORT_CPU	54	/* physical 1 */
 
+/*
+ * CPU DMA GLORT used in the F64 tag for host-injected frames.
+ * EdgeNOS RE: AltaLib CPU_GLORT = 0xFF00.  The SGLORT in the F64 tag of every
+ * frame the CPU injects must be exactly this value; the chip uses it to
+ * identify injection traffic and route it via the special-delivery path.
+ * Distinct from FM6000_GLORT_CPU (54 = ALTA_CPU = the store-and-forward CPU
+ * port), which is used only in PARSER GLORT assignments.
+ */
+#define FM6000_CPU_GLORT	0xFF00u
+
 /* 0 for a port that carries no traffic and is given no GLORT. */
 static inline unsigned fm6000_glort_of(unsigned alta)
 {

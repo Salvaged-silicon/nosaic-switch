@@ -67,6 +67,7 @@ enum fm_lane_step {
 	FM_LANE_QUIESCE,	/* reg 34: hold RX down */
 	FM_LANE_RATE,		/* regs 0, 29, 54, 59, 23: 10G rate select */
 	FM_LANE_RELEASE,	/* reg 34: release RX */
+	FM_LANE_REFCLK,		/* SERDES_CFG_LO RefSel + SERDES_RX_CFG: before PLL */
 	FM_LANE_PLL,		/* wait reg 15 bit 3 */
 	FM_LANE_TXRX,		/* regs 6, 3 */
 	FM_LANE_SIGDET,		/* regs 31, 38 */

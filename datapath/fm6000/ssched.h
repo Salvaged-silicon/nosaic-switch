@@ -160,4 +160,6 @@ const char *fm_ssched_phase_name(int ph);
 int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 			struct fm_ssched_report *rep);
 
+int fm_ssched_tx_reload(struct fm6000 *d);
+
 #endif /* NOSAIC_FM6000_SSCHED_H */

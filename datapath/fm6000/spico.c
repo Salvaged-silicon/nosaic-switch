@@ -15,28 +15,51 @@
  *
  * EXTRACTION PATH
  *   1. /run/spico_fw.bin  -- pre-extracted cache from a prior boot
- *   2. unzip -p /tmp/flash/EOS-*.swi usr/lib/libFocalpointSDK.so | dd ...
- *      (slow: ~2s; the result is cached in /run/spico_fw.bin for next time)
- *      The 7150S mounts its vfat flash at /tmp/flash, not /mnt/flash.
+ *   2. /tmp/eos_root/usr/lib/libFocalpointSDK.so  -- EOS squashfs mounted here
+ *      The EOS SWI (/mnt/flash/EOS-*.swi) is a ZIP whose 'EOS' member is a
+ *      squashfs. try_swi() extracts it to /tmp/eos_sqsh and loop-mounts it at
+ *      /tmp/eos_root so the direct path works. (~2 s on first call; cached.)
+ *      The initramfs bind-moves the vfat flash to /mnt/flash after pivot_root.
  */
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include "pci.h"
 #include "sbus.h"
 #include "spico.h"
 
+static void spico_kmsg(const char *fmt, ...)
+{
+	char buf[256];
+	va_list ap;
+	int fd, n;
+
+	va_start(ap, fmt);
+	n = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	fd = open("/dev/kmsg", O_WRONLY | O_NOCTTY);
+	if (fd >= 0) {
+		write(fd, buf, n);
+		write(fd, "\n", 1);
+		close(fd);
+	}
+	fprintf(stderr, "%s\n", buf);
+}
+
 /* Byte offset of the firmware blob inside libFocalpointSDK.so. [RE] */
 #define FM_SPICO_LIB_OFF  0x37e500ul
 /* Pre-extracted firmware cache -- survives reboots on tmpfs. */
 #define FM_SPICO_CACHE    "/run/spico_fw.bin"
 /*
- * Direct path to the library in the EOS squashfs.  On the 7150S-52 the EOS
- * rootfs squashfs is kept mounted at /tmp/eos_root by the NOSaic init; when
- * it is present this is by far the fastest path (a seek + read, no shell).
+ * Direct path to the library in the EOS squashfs.  try_swi() mounts the EOS
+ * squashfs at /tmp/eos_root; once it is there this path is a direct seek+read
+ * with no further shell involvement.
  */
 #define FM_SPICO_LIB_DIRECT "/tmp/eos_root/usr/lib/libFocalpointSDK.so"
 /* Member name inside the EOS SWI (ZIP) for the fallback path. */
@@ -60,39 +83,74 @@ static int try_file(uint16_t *buf, const char *path, unsigned long off)
 
 static int try_swi(uint16_t *buf)
 {
-	char swi[256];
-	char cmd[640];
 	FILE *f;
-	size_t n;
+	char swi[256];
+	char cmd[1024];
+	size_t len;
+	int rv;
 
 	/*
-	 * On the 7150S-52 the vfat flash is mounted at /tmp/flash -- not
-	 * /mnt/flash as on other platforms.
+	 * Already mounted? The mount persists for the process lifetime, so a
+	 * second call is just a fast file read.
 	 */
-	f = popen("ls /tmp/flash/EOS-*.swi 2>/dev/null | head -1", "r");
+	if (try_file(buf, FM_SPICO_LIB_DIRECT, FM_SPICO_LIB_OFF) == 0)
+		return 0;
+
+	/*
+	 * Locate the EOS SWI. On the 7150S-52 the vendor SWI is stored as a
+	 * hidden file (.boot-image.swi) not as the conventional EOS-<ver>.swi.
+	 * Try the hidden name first, then fall back to the conventional glob.
+	 * The initramfs bind-moves the vfat flash to /mnt/flash before
+	 * pivot_root, so that is the correct path in the running system.
+	 */
+	f = popen(
+		"ls /mnt/flash/.boot-image.swi /mnt/flash/EOS-*.swi 2>/dev/null"
+		" | grep -v NOSaic | head -1",
+		"r");
 	if (!f)
 		return -1;
 	swi[0] = '\0';
 	if (fgets(swi, sizeof(swi), f) == NULL)
 		swi[0] = '\0';
 	pclose(f);
-
-	{
-		size_t len = strlen(swi);
-		if (len > 0 && swi[len - 1] == '\n')
-			swi[len - 1] = '\0';
-	}
-	if (swi[0] == '\0')
+	len = strlen(swi);
+	if (len > 0 && swi[len - 1] == '\n')
+		swi[len - 1] = '\0';
+	if (swi[0] == '\0') {
+		spico_kmsg("nosd-fm6000: spico: no EOS SWI found in /mnt/flash");
 		return -1;
+	}
+	spico_kmsg("nosd-fm6000: spico: SWI=%s", swi);
 
 	/*
-	 * The SWI is a ZIP of a squashfs; the library is not a direct ZIP
-	 * member.  We would need to mount the squashfs to reach it, which
-	 * requires root and loop devices.  Skip this path for now; the
-	 * direct-mount path above covers the normal case.
+	 * The EOS SWI is a ZIP archive.  On 4.16.x the root filesystem
+	 * squashfs is the member named 'rootfs-i386.sqsh'; on other releases
+	 * it may simply be 'EOS'.  Find it dynamically by looking for the
+	 * largest member whose name ends in '.sqsh', falling back to 'EOS'.
+	 *
+	 * Extract it to /tmp/eos_sqsh and loop-mount it at /tmp/eos_root.
+	 * This runs once; subsequent calls return from the early try_file().
+	 * The mount is not unmounted -- it persists for the process lifetime.
+	 *
+	 * The squashfs is ~400 MB; extracting into RAM takes ~2 s. Acceptable
+	 * for a one-time init on a switch with 3 GB of usable RAM.
 	 */
-	(void)cmd; (void)n;
-	return -1;
+	snprintf(cmd, sizeof(cmd),
+		"swi='%s'; "
+		"sqsh=$(unzip -l \"$swi\" 2>/dev/null"
+		" | awk 'NF==4 && $NF~/\\.sqsh$/{print $1,$NF}'"
+		" | sort -rn | awk '{print $2}' | head -1); "
+		"[ -z \"$sqsh\" ] && sqsh=EOS; "
+		"mkdir -p /tmp/eos_root && "
+		"unzip -p \"$swi\" \"$sqsh\" > /tmp/eos_sqsh 2>/dev/null && "
+		"mount -t squashfs -o loop,ro /tmp/eos_sqsh /tmp/eos_root 2>/dev/null",
+		swi);
+	rv = system(cmd);
+	spico_kmsg("nosd-fm6000: spico: swi_mount rv=%d", rv);
+	if (rv != 0)
+		return -1;
+
+	return try_file(buf, FM_SPICO_LIB_DIRECT, FM_SPICO_LIB_OFF);
 }
 
 static void write_cache(const uint16_t *buf)

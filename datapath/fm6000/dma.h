@@ -57,10 +57,11 @@ void fm_dma_shutdown(struct fm_dma *dma);
  * Inject a frame from the CPU to the fabric.
  *
  * `frame`  = raw Ethernet frame WITHOUT the F64 tag: DMAC(6) SMAC(6) EType...
- *             The tag is inserted inline between SMAC and EType.
- * `len`    = frame length (without the 8-byte F64 tag that will be inserted)
- * `sglort` = source GLORT (FM6000_GLORT_CPU for CPU-generated frames)
- * `dglort` = destination GLORT (target port's GLORT; e.g. 1 for et1)
+ *             The 8-byte F64 tag is inserted inline between SMAC and EType.
+ * `len`    = frame length without F64; must be >= 12
+ * `sglort` = source GLORT (FM6000_CPU_GLORT = 0xFF00 for CPU-injected frames)
+ * `dglort` = inject destination GLORT; any GLORT not in the per-port CAM falls
+ *             to the catch-all entry and floods to {HOST, et1, et2}.
  *
  * Returns 0 on success, -1 if TX ring full or frame too long.
  */
@@ -84,6 +85,26 @@ int fm_dma_tx_reclaim(struct fm_dma *dma);
 int fm_dma_rx_poll(struct fm_dma *dma, int budget,
 		   void (*cb)(void *ctx, const uint8_t *frame, uint16_t len),
 		   void *ctx);
+
+/*
+ * Read a DMA engine register safely: routes through d->regs (LBUS) when the
+ * LBUS probe found DMA registers accessible there, otherwise through BAR0.
+ * Safe to call from fwd_thread heartbeat after fm_dma_init has run.
+ */
+uint32_t fm_dma_rd_reg(const struct fm_dma *dma, uint32_t byte_off);
+
+/*
+ * Re-program the DMA ring addresses after a chip soft self-reset.
+ *
+ * A soft self-reset clears DMA_TX/RX_BD_BASE to 0; calling this function
+ * restores the correct ring addresses and restarts both engines.  It is safe
+ * to call while fwd_thread is running: it first stops both engines (DMA_CMD
+ * STOP), reprograms, then restarts, so no in-flight descriptor is lost
+ * (descriptors not yet processed are still in host memory at the correct
+ * virtual/physical address; the chip just needs to be told to look there
+ * again).
+ */
+void fm_dma_reprogram(struct fm_dma *dma);
 
 /*
  * Extract the SGLORT from an F64 tag already inline in a received frame.

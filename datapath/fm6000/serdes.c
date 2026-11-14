@@ -256,6 +256,34 @@ int fm_lane_enable(struct fm6000 *d, const struct fm_port *p,
 		return rv;
 
 	/*
+	 * ⚠ SERDES_CFG_LO.RefSel MUST BE SET BEFORE WAITING FOR PLL LOCK.
+	 *
+	 * SERDES_CFG_LO[11:6] = RefSel selects the reference clock source for
+	 * the analog SerDes PLL.  The power-on default is 0 (no valid clock).
+	 * Without writing RefSel = 0x1b here, the PLL has no target frequency
+	 * and reg 15 bit 3 never asserts, regardless of how long we wait.
+	 *
+	 * SERDES_RX_CFG enables the RX path (RxEn=1); the PLL lives in the RX
+	 * signal chain and needs the path powered before it will run.
+	 *
+	 * Both are EPL hardware registers (written via LBUS), not SBus SerDes
+	 * registers.  They are written again in FM_LANE_SERDES; the second
+	 * write is idempotent but kept for the complete record.
+	 */
+	{
+		uint32_t lb = FM6000_EPL_LANE(p->epl, p->lane);
+
+		if ((rv = fm_wr(d, lb + FM6000_EPL_SERDES_CFG_LO,
+				FM6000_EPL_SERDES_CFG_LO_10G)) == FM_OK)
+			rv = fm_wr(d, lb + FM6000_EPL_SERDES_RX_CFG,
+				   FM6000_EPL_SERDES_RX_10G);
+	}
+	set(rep, FM_LANE_REFCLK, rv,
+	    "SERDES_CFG_LO RefSel=0x1b, SERDES_RX_CFG RxEn=1", NULL);
+	if (rv != FM_OK)
+		return rv;
+
+	/*
 	 * ⚠ PLL lock is reg 15 BIT 3, and bit 3 alone. An earlier version of
 	 * this waited on bits 0 and 3 together, from a superseded reading, and
 	 * timed out for five seconds on a chip whose PLL was already locked --
