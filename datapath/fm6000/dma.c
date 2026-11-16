@@ -360,6 +360,16 @@ static void program_rings(struct fm_dma *dma, bool stop_engines)
 	fprintf(stderr, "nosd-fm6000: DMA program_rings: CFG group\n");
 	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* enable first   */
 	dma_kmsg("nosd-fm6000: DMA230: DMA_CFG done [install230]");
+	{
+		/* install236: read back DMA_CFG to verify write reached FM6000.
+		 * If BAR0 not decoded (CMD.MemSpace=0 or BAR0=0), returns 0xFFFFFFFF. */
+		uint32_t rb = dma_rd(d, FM6000_DMA_CFG);
+		char b236[80];
+		snprintf(b236, sizeof(b236),
+			"nosd-fm6000: DMA236: DMA_CFG rb=0x%08x (want 0x37) [install236]",
+			rb);
+		dma_kmsg(b236);
+	}
 	dma_wr_nc(d, FM6000_DMA_IP,    0xFFFFFFFFu);	/* clear pending  */
 	dma_kmsg("nosd-fm6000: DMA230: DMA_IP done [install230]");
 	dma_wr_nc(d, FM6000_DMA_UNK68, 0);
@@ -476,31 +486,54 @@ int fm_dma_init(struct fm_dma *dma, struct fm6000 *d)
 	{
 		/*
 		 * install235: fix fm_wait_link_active to check DLLLA alone.
+		 * install236: add fm_wait_pcie_alive before BAR0 reprogram.
 		 *
-		 * Root cause of rv=-1 with 3s and 10s timeouts:
-		 * fm_wait_link_active checked (DLLLA=1 AND CurrentLinkSpeed!=0).
-		 * The RS780 root port (0000:00:04.0) reports CurrentLinkSpeed=0
-		 * in LNKSTA bits[3:0] even when the link IS established (DLLLA=1).
-		 * Hardware confirmation: LNKSTA=0xd040 during normal operation;
-		 * bit 12 (DLLLA)=1, bits[3:0]=0.  The speed check blocked forever.
+		 * Root cause of install235 DMA failure (tx_sent=14, STATUS=HANDOFF):
+		 * DLLLA=1 (data-link layer active) does NOT mean the FM6000's PCIe
+		 * config space is ready.  fm_reprogram_bar_and_cmd_portio ran the
+		 * CF8 BAR0 write immediately after DLLLA=1 (~0 ms after Hot Reset).
+		 * The FM6000 endpoint was still initialising its config space and
+		 * returned UR for the config write.  BAR0 stayed 0.  All subsequent
+		 * DMA register writes (pcie_regs -> 0xe2000000+) were silently
+		 * dropped — FM6000 had no BAR decoding that range.
+		 * Hardware evidence: devmem 0xe2005060 returned 0xFFFFFFFF 1280s
+		 * after program_rings; bus rescan found nothing on bus 2 at that
+		 * point. [install236]
 		 *
-		 * Fix (pci.c): check only DLLLA (bit 12); ignore CurrentLinkSpeed.
-		 * fm_wait_link_active now returns rv=0 as soon as DLLLA sets.
-		 * fm_reprogram_bar_and_cmd_portio and program_rings then run with
-		 * the link confirmed up and the FM6000 BAR0 writable.  [install235]
+		 * Fix: call fm_wait_pcie_alive(1500) after fm_wait_link_active.
+		 * fm_wait_pcie_alive polls vendor-ID via sysfs (5x50ms stable
+		 * window) and retries PCIe rescans when the device is off-bus.
+		 * Only once config space is confirmed readable do we write BAR0.
 		 */
-		int r232a = fm_wait_link_active(10000);
+		int r235 = fm_wait_link_active(10000);
+		{
+			char b[80];
+			snprintf(b, sizeof(b),
+				"nosd-fm6000: install236: link_active rv=%d [install236]",
+				r235);
+			dma_kmsg(b);
+		}
+		{
+			int r236 = fm_wait_pcie_alive(1500);
+			char b[80];
+			snprintf(b, sizeof(b),
+				"nosd-fm6000: install236: pcie_alive rv=%d [install236]",
+				r236);
+			dma_kmsg(b);
+		}
 		/* BAR0 and Command registers are cleared by the link reset;
-		 * reprogram both via CF8 portio (no sysfs required). [install232] */
-		int r232b = fm_reprogram_bar_and_cmd_portio(dma->d);
-		char b[128];
-		snprintf(b, sizeof(b),
-			"nosd-fm6000: install235: link_active rv=%d bar_rv=%d [install235]",
-			r232a, r232b);
-		dma_kmsg(b);
+		 * reprogram only after config space is confirmed readable. [install236] */
+		{
+			int r236b = fm_reprogram_bar_and_cmd_portio(dma->d);
+			char b[80];
+			snprintf(b, sizeof(b),
+				"nosd-fm6000: install236: bar_rv=%d [install236]",
+				r236b);
+			dma_kmsg(b);
+		}
 	}
 	usleep(200000);	/* 200ms: FC credit settle after fresh FC_INIT [install232] */
-	dma_kmsg("nosd-fm6000: install235: ready for BAR0 [install235]");
+	dma_kmsg("nosd-fm6000: install236: ready for BAR0 [install236]");
 	program_rings(dma, false);	/* initial boot: engines never started, skip STOP [install217] */
 	dma_kmsg("nosd-fm6000: DMA program_rings done");
 	fprintf(stderr, "nosd-fm6000: DMA rings up (tx=%u rx=%u)\n",

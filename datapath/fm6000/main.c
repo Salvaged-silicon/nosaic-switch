@@ -561,6 +561,16 @@ static void *fwd_thread(void *arg)
 							rx_poll_count, g_rx_total, tx_sent, fc);
 						kmsg(hb);
 					}
+					/* install236: periodic DMA_CFG readback to detect post-init BAR0 loss */
+					{
+						uint32_t dma_cfg = fm_dma_rd_reg(&fwd->dma, FM6000_DMA_CFG);
+						uint32_t dma_sts = fm_dma_rd_reg(&fwd->dma, FM6000_DMA_STATUS);
+						char hb2[120];
+						snprintf(hb2, sizeof(hb2),
+							"nosd-fm6000: DMA236 bar_check: cfg=0x%08x sts=0x%08x tx_h=%u tx_t=%u [install236]",
+							dma_cfg, dma_sts, fwd->dma.tx.head, fwd->dma.tx.tail);
+						kmsg(hb2);
+					}
 				}
 			}
 		}
