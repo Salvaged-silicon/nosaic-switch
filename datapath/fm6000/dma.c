@@ -354,34 +354,32 @@ static void program_rings(struct fm_dma *dma, bool stop_engines)
 		int r230 = fm_wr(d, FM6000_PCI_DMA_CFG, 0x37u);
 		char buf230[120];
 		snprintf(buf230, sizeof(buf230),
-			"nosd-fm6000: install240: PCI_DMA_CFG=0x37 LBUS rv=%d (run state before BAR0) [install240]",
+			"nosd-fm6000: install241: PCI_DMA_CFG=0x37 LBUS rv=%d [install241]",
 			r230);
 		dma_kmsg(buf230);
 	}
-	usleep(10000);	/* 10ms: DMA engine run-state settle before first BAR0 write */
-	{
-		/* Pre-write diagnostic: verify FM6000 responds to BAR0 reads.
-		 * Returns 0xFFFFFFFF if the chip is not responding (link down or
-		 * Memory Space disabled). [install240] */
-		uint32_t pre = dma_rd(d, FM6000_DMA_CFG);
-		char bpre[80];
-		snprintf(bpre, sizeof(bpre),
-			"nosd-fm6000: install240: pre-write DMA_CFG rb=0x%08x [install240]",
-			pre);
-		dma_kmsg(bpre);
-	}
+	/*
+	 * install240 LESSON: a BAR0 READ before the first write triggers a
+	 * CTO (completion timeout) → MCE → system freeze.  The DMA block
+	 * stalls non-posted transactions until a BAR0 WRITE enables it.
+	 * 100ms settle gives the LBUS-side enablement time to propagate.
+	 * Do NOT add BAR0 reads here; use LBUS readbacks instead.
+	 */
+	usleep(100000);	/* 100ms: DMA block LBUS-enable propagation */
+	dma_kmsg("nosd-fm6000: install241: about to write DMA_CFG via BAR0 [install241]");
 	fprintf(stderr, "nosd-fm6000: DMA program_rings: CFG group\n");
-	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* confirm run state via BAR0 */
+	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* posted write; no completion risk */
 	dma_kmsg("nosd-fm6000: DMA230: DMA_CFG done [install230]");
 	{
-		/* install236: read back DMA_CFG to verify write reached FM6000.
-		 * If BAR0 not decoded (CMD.MemSpace=0 or BAR0=0), returns 0xFFFFFFFF. */
-		uint32_t rb = dma_rd(d, FM6000_DMA_CFG);
-		char b236[80];
-		snprintf(b236, sizeof(b236),
-			"nosd-fm6000: DMA236: DMA_CFG rb=0x%08x (want 0x37) [install236]",
+		/* install241: read PCI_DMA_CFG via LBUS (safe — not a BAR0 access)
+		 * to confirm the write reached the FM6000 DMA block. */
+		uint32_t rb = 0;
+		char b241[80];
+		fm_rd(d, FM6000_PCI_DMA_CFG, &rb);
+		snprintf(b241, sizeof(b241),
+			"nosd-fm6000: install241: post-write PCI_DMA_CFG LBUS rb=0x%08x [install241]",
 			rb);
-		dma_kmsg(b236);
+		dma_kmsg(b241);
 	}
 	dma_wr_nc(d, FM6000_DMA_IP,    0xFFFFFFFFu);	/* clear pending  */
 	dma_kmsg("nosd-fm6000: DMA230: DMA_IP done [install230]");
