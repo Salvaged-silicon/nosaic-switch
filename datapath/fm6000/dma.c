@@ -447,31 +447,29 @@ int fm_dma_init(struct fm_dma *dma, struct fm6000 *d)
 		dma_kmsg(_lbuf);
 	}
 	/*
-	 * install237: skip the install232 link-disable (Hot Reset) cycle.
+	 * install238: removed CF8 BAR0 diagnostic (fm_read_bar0_portio).
 	 *
-	 * install232 forced LNKCTL.LinkDisable to flush stale PCIe FC credits
-	 * (ESCHED FATALs during ring-reinit can zero the FM6000 endpoint's
-	 * posted-header credit advertisement).  install236 showed the Hot Reset
-	 * permanently kills the FM6000's config space: fm_wait_pcie_alive timed
-	 * out (rv=-1, 1500ms) and DMA_CFG readback was 0xFFFFFFFF throughout.
+	 * install237 added a CF8 config-read diagnostic before program_rings to
+	 * confirm BAR0 was intact after the second SSCHED ring_init.  install237
+	 * hung immediately after "DMA program_rings start" with no further output
+	 * for 396 seconds (full 540s console watch timeout).
 	 *
-	 * BAR0=0xe2000000 (bar_lo=0xe2000004) and CMD=0x0406 were already set by
-	 * install184/192 before this function.  Read them back via CF8 to confirm
-	 * the values are intact, then call program_rings directly without any
-	 * link-disable cycle.  If DMA_CFG rb=0xFFFFFFFF after program_rings, the
-	 * FC credit problem from install232 has reappeared and needs a different
-	 * fix.  [install237]
+	 * Root cause: fm_read_bar0_portio calls outl(0x80020010, 0xCF8) (a CF8
+	 * config write).  install211 attempted to disable SMI before CF8 accesses
+	 * but printed "WARNING: PMIO enable write did not stick" and all three
+	 * direct PMIO base probes (0x400, 0x800, 0x0c00) returned 0xffffffff.
+	 * The SMI disable did not reach the real SMI_EN register, so the CF8
+	 * write triggered an SMI.  The SMI handler in BIOS/SMM stalled the CPU
+	 * permanently (all PCIe state is inconsistent during ring_reinit).
+	 *
+	 * BAR0=0xe2000000 is confirmed by install221 (bar_phys logged in pre-DMA
+	 * header).  Call program_rings directly without any CF8 access.  The
+	 * DMA236 DMA_CFG readback inside program_rings is the definitive test:
+	 *   rb=0x37 → success (FC credits intact, second ring_init fc=1)
+	 *   rb=0xFFFFFFFF → FC credit problem still present (needs a new fix)
+	 * [install238]
 	 */
-	{
-		uint32_t bar237 = 0, cmd237 = 0;
-		fm_read_bar0_portio(dma->d, &bar237, &cmd237);
-		char b[128];
-		snprintf(b, sizeof(b),
-			"nosd-fm6000: install237: bar0=0x%08x cmd=0x%04x"
-			" (want 0xe2000004 / 0x0406) [install237]",
-			bar237, cmd237);
-		dma_kmsg(b);
-	}
+	dma_kmsg("nosd-fm6000: install238: skip CF8 diag; calling program_rings [install238]");
 	program_rings(dma, false);	/* initial boot: engines never started, skip STOP [install217] */
 	dma_kmsg("nosd-fm6000: DMA program_rings done");
 	fprintf(stderr, "nosd-fm6000: DMA rings up (tx=%u rx=%u)\n",
