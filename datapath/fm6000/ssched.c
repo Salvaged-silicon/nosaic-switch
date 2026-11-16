@@ -464,16 +464,45 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 	}
 	ssched_dbg("nosd-fm6000: SSCHED boot_freelists done");
 	/*
-	 * install228: 200ms CRM-block settle wait.
+	 * install239: replace fixed 200ms wait with FATAL_COUNT stability poll.
 	 *
-	 * fm_boot_freelists() causes 42 chip self-resets (ECC-init storm, code
-	 * 0xd0). The CRM block's LBUS interface needs ~200ms to come out of
-	 * reset before its registers respond via LBUS. Without this wait, the
-	 * first fm_rd(FM6000_CRM_STATUS) in fm_crm_memset() stalls the SCD's
-	 * LBUS bridge indefinitely (no timeout), freezing the CPU.
-	 * [Measured 2026-11-13: 42 resets take ≤84ms; 200ms is a safe margin]
+	 * install228's nap_ms(200) was insufficient on install238's run:
+	 * fm_crm_memset() hung on the CRM_STATUS read (CRM block still in reset
+	 * despite 200ms wait).  Root cause: fm_boot_freelists() triggers 42
+	 * asynchronous chip self-resets (ECC-init storm, code 0xd0).  The fixed
+	 * 200ms wait was measured as sufficient (42 resets ≤84ms + ~100ms CRM
+	 * recovery), but proved non-deterministic across boots.
+	 *
+	 * Fix: keep the 200ms minimum (install228), then poll FATAL_COUNT every
+	 * 50ms via fm_rd_hazardous() (management block register, safe even when
+	 * CRM is in reset).  Stop when FATAL_COUNT is unchanged for 5
+	 * consecutive polls (250ms of stability), capped at 40 iterations
+	 * (~2.2s total worst case).  By the time FATAL_COUNT stabilises and
+	 * we've waited one more poll interval, the CRM block has had >200ms
+	 * since the last reset and its LBUS interface is ready.  [install239]
 	 */
-	nap_ms(200);
+	{
+		uint32_t fc239_last = 0xFFFFFFFFu, fc239_now = 0;
+		int stable239 = 0, iter239;
+		char b239[128];
+		nap_ms(200);
+		for (iter239 = 0; iter239 < 40; iter239++) {
+			if (fm_rd_hazardous(d, FM6000_FATAL_COUNT, &fc239_now) != FM_OK)
+				fc239_now = 0xFFFFFFFFu;
+			if (fc239_now == fc239_last)
+				stable239++;
+			else
+				stable239 = 0;
+			fc239_last = fc239_now;
+			if (stable239 >= 5)
+				break;
+			nap_ms(50);
+		}
+		snprintf(b239, sizeof b239,
+			"nosd-fm6000: install239: post-freelists fc=0x%08x stable=%d iter=%d [install239]",
+			fc239_last, stable239, iter239);
+		ssched_dbg(b239);
+	}
 	if ((rv = fm_crm_memset(d, 0, 0x111000u, 2432u, FM_CRM_SIZE_32, 0u)) != FM_OK) {
 		ssched_dbg("nosd-fm6000: SSCHED crm_memset 0x111000 fail");
 		return rv;
