@@ -334,31 +334,44 @@ static void program_rings(struct fm_dma *dma, bool stop_engines)
 	 * "config" step writes DMA_CFG=0x37 (enable) first.  We were writing
 	 * DMA_IP (0x5030) first instead.  DMA_IP is only reachable once the DMA
 	 * engine is enabled by DMA_CFG.  With DMA_CFG bit 1 = 0 (reset state)
-	 * the FM6000 endpoint stalls posted writes to 0x5030, back-pressuring
-	 * the AMD RS780's posted-write buffer and freezing the CPU.
+	 * the FM6000 endpoint stalls posted writes to any DMA register, back-
+	 * pressuring the AMD RS780's posted-write buffer and freezing the CPU.
 	 *
-	 * Also: FM6000_PCI_DMA_CFG (LBUS 0x01418) is the LBUS-side mirror of
-	 * DMA_CFG.  pcie_init.c writes it once at cold boot.  ESCHED FATALs can
-	 * reset it.  Re-writing 0x35 via LBUS before the BAR0 enable ensures
-	 * the DMA block is out of LBUS-side reset before any BAR0 access.
+	 * install240: PCI_DMA_CFG (LBUS 0x01418) is the LBUS-side mirror of
+	 * DMA_CFG.  Write 0x37 (run state, bit 1 = 1) via LBUS FIRST so that
+	 * the DMA block accepts BAR0 writes before the first dma_wr_nc.
+	 * Writing 0x35 (bit 1 = 0) leaves the DMA block in reset state; the
+	 * subsequent BAR0 write to DMA_CFG (0x5060) stalls the CPU for exactly
+	 * the same reason DMA_IP did in install229.  [install240, 2026-11-16]
 	 *
 	 * Correct init order (matches fpdma_init disasm, FPDMA.md):
-	 *   1. PCI_DMA_CFG (LBUS) = 0x35  — DMA block out of LBUS reset
-	 *   2. DMA_CFG  (BAR0 0x5060) = 0x37 — DMA engine enabled (run state)
+	 *   1. PCI_DMA_CFG (LBUS) = 0x37  — DMA engine run state via LBUS mirror
+	 *   2. DMA_CFG  (BAR0 0x5060) = 0x37 — confirm run state via BAR0
 	 *   3. DMA_IP   (BAR0 0x5030) = 0xFFFFFFFF — clear pending interrupts
 	 *   4. DMA_UNK68 / DMA_CFG2 as before
 	 */
 	{
-		int r230 = fm_wr(d, FM6000_PCI_DMA_CFG, 0x35u);
-		char buf230[80];
+		int r230 = fm_wr(d, FM6000_PCI_DMA_CFG, 0x37u);
+		char buf230[120];
 		snprintf(buf230, sizeof(buf230),
-			"nosd-fm6000: DMA230: PCI_DMA_CFG LBUS rv=%d [install230]",
+			"nosd-fm6000: install240: PCI_DMA_CFG=0x37 LBUS rv=%d (run state before BAR0) [install240]",
 			r230);
 		dma_kmsg(buf230);
 	}
-	usleep(1000);	/* 1ms: DMA block LBUS-side stabilise before BAR0 enable */
+	usleep(10000);	/* 10ms: DMA engine run-state settle before first BAR0 write */
+	{
+		/* Pre-write diagnostic: verify FM6000 responds to BAR0 reads.
+		 * Returns 0xFFFFFFFF if the chip is not responding (link down or
+		 * Memory Space disabled). [install240] */
+		uint32_t pre = dma_rd(d, FM6000_DMA_CFG);
+		char bpre[80];
+		snprintf(bpre, sizeof(bpre),
+			"nosd-fm6000: install240: pre-write DMA_CFG rb=0x%08x [install240]",
+			pre);
+		dma_kmsg(bpre);
+	}
 	fprintf(stderr, "nosd-fm6000: DMA program_rings: CFG group\n");
-	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* enable first   */
+	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* confirm run state via BAR0 */
 	dma_kmsg("nosd-fm6000: DMA230: DMA_CFG done [install230]");
 	{
 		/* install236: read back DMA_CFG to verify write reached FM6000.
