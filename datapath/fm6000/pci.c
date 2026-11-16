@@ -615,6 +615,26 @@ int fm_reprogram_bar_and_cmd_portio(struct fm6000 *d)
 }
 
 /*
+ * Read BAR0 (lo word) and Command register from FM6000 config space via CF8.
+ * Returns 0 on success, -1 on iopl failure.  [install237]
+ */
+int fm_read_bar0_portio(struct fm6000 *d, uint32_t *bar_lo_out, uint32_t *cmd_out)
+{
+	uint32_t bar_lo, cmd;
+	(void)d;
+	if (iopl(3) != 0)
+		return -1;
+	outl(0x80020010u, 0xCF8);
+	bar_lo = inl(0xCFC);
+	outl(0x80020004u, 0xCF8);
+	cmd = inl(0xCFC);
+	iopl(0);
+	if (bar_lo_out) *bar_lo_out = bar_lo;
+	if (cmd_out)    *cmd_out    = cmd & 0xFFFFu;
+	return 0;
+}
+
+/*
  * Poll the FM6000's PCIe config-space vendor ID until the chip is alive
  * or max_ms elapses.  Config-space reads are handled by the root complex and
  * return 0xffff quickly (a few ms) when the chip is off-bus; they do NOT go

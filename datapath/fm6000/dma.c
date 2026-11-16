@@ -447,93 +447,31 @@ int fm_dma_init(struct fm_dma *dma, struct fm6000 *d)
 		dma_kmsg(_lbuf);
 	}
 	/*
-	 * install232: force a full PCIe link down/up cycle to reinitialize
-	 * flow-control credits before the first BAR0 write.
+	 * install237: skip the install232 link-disable (Hot Reset) cycle.
 	 *
-	 * install231 confirmed the stall is NOT caused by an in-progress link
-	 * Recovery: fm_wait_link_active returned rv=0 (DLLLA already 1) and
-	 * 500ms passed, yet the first BAR0 write still stalled.  The RS780's
-	 * PH credit counter for the FM6000 endpoint is permanently 0 after
-	 * ESCHED FATALs, regardless of DLLLA state.
+	 * install232 forced LNKCTL.LinkDisable to flush stale PCIe FC credits
+	 * (ESCHED FATALs during ring-reinit can zero the FM6000 endpoint's
+	 * posted-header credit advertisement).  install236 showed the Hot Reset
+	 * permanently kills the FM6000's config space: fm_wait_pcie_alive timed
+	 * out (rv=-1, 1500ms) and DMA_CFG readback was 0xFFFFFFFF throughout.
 	 *
-	 * Root cause: ESCHED FATALs cause the FM6000 endpoint to reset and
-	 * re-advertise FC credits = 0 during FC_INIT after the last Recovery
-	 * cycle (DMA block in init state → endpoint buffer = 0).  The RS780
-	 * records PH = 0 and can never forward posted writes thereafter.
-	 *
-	 * Fix: a full Link Disable → re-enable cycle (via root port LNKCTL
-	 * bit 4) forces a fresh FC_INIT exchange.  After the link comes back
-	 * (DLLLA=1), the endpoint advertises positive PH credits and the RS780
-	 * resumes TLP forwarding.  install113 runs the same sequence earlier
-	 * in the boot; this repeats it here to cover ESCHED FATALs that
-	 * happen AFTER install113. [install232]
+	 * BAR0=0xe2000000 (bar_lo=0xe2000004) and CMD=0x0406 were already set by
+	 * install184/192 before this function.  Read them back via CF8 to confirm
+	 * the values are intact, then call program_rings directly without any
+	 * link-disable cycle.  If DMA_CFG rb=0xFFFFFFFF after program_rings, the
+	 * FC credit problem from install232 has reappeared and needs a different
+	 * fix.  [install237]
 	 */
 	{
-		int r232 = fm_upstream_link_disable(1);
-		char b[80];
+		uint32_t bar237 = 0, cmd237 = 0;
+		fm_read_bar0_portio(dma->d, &bar237, &cmd237);
+		char b[128];
 		snprintf(b, sizeof(b),
-			"nosd-fm6000: install232: link_down rv=%d [install232]", r232);
+			"nosd-fm6000: install237: bar0=0x%08x cmd=0x%04x"
+			" (want 0xe2000004 / 0x0406) [install237]",
+			bar237, cmd237);
 		dma_kmsg(b);
 	}
-	usleep(100000);	/* 100ms: link goes dark (Detect/Electrical Idle) */
-	{
-		int r232 = fm_upstream_link_disable(0);
-		char b[80];
-		snprintf(b, sizeof(b),
-			"nosd-fm6000: install232: link_up_start rv=%d [install232]", r232);
-		dma_kmsg(b);
-	}
-	{
-		/*
-		 * install235: fix fm_wait_link_active to check DLLLA alone.
-		 * install236: add fm_wait_pcie_alive before BAR0 reprogram.
-		 *
-		 * Root cause of install235 DMA failure (tx_sent=14, STATUS=HANDOFF):
-		 * DLLLA=1 (data-link layer active) does NOT mean the FM6000's PCIe
-		 * config space is ready.  fm_reprogram_bar_and_cmd_portio ran the
-		 * CF8 BAR0 write immediately after DLLLA=1 (~0 ms after Hot Reset).
-		 * The FM6000 endpoint was still initialising its config space and
-		 * returned UR for the config write.  BAR0 stayed 0.  All subsequent
-		 * DMA register writes (pcie_regs -> 0xe2000000+) were silently
-		 * dropped — FM6000 had no BAR decoding that range.
-		 * Hardware evidence: devmem 0xe2005060 returned 0xFFFFFFFF 1280s
-		 * after program_rings; bus rescan found nothing on bus 2 at that
-		 * point. [install236]
-		 *
-		 * Fix: call fm_wait_pcie_alive(1500) after fm_wait_link_active.
-		 * fm_wait_pcie_alive polls vendor-ID via sysfs (5x50ms stable
-		 * window) and retries PCIe rescans when the device is off-bus.
-		 * Only once config space is confirmed readable do we write BAR0.
-		 */
-		int r235 = fm_wait_link_active(10000);
-		{
-			char b[80];
-			snprintf(b, sizeof(b),
-				"nosd-fm6000: install236: link_active rv=%d [install236]",
-				r235);
-			dma_kmsg(b);
-		}
-		{
-			int r236 = fm_wait_pcie_alive(1500);
-			char b[80];
-			snprintf(b, sizeof(b),
-				"nosd-fm6000: install236: pcie_alive rv=%d [install236]",
-				r236);
-			dma_kmsg(b);
-		}
-		/* BAR0 and Command registers are cleared by the link reset;
-		 * reprogram only after config space is confirmed readable. [install236] */
-		{
-			int r236b = fm_reprogram_bar_and_cmd_portio(dma->d);
-			char b[80];
-			snprintf(b, sizeof(b),
-				"nosd-fm6000: install236: bar_rv=%d [install236]",
-				r236b);
-			dma_kmsg(b);
-		}
-	}
-	usleep(200000);	/* 200ms: FC credit settle after fresh FC_INIT [install232] */
-	dma_kmsg("nosd-fm6000: install236: ready for BAR0 [install236]");
 	program_rings(dma, false);	/* initial boot: engines never started, skip STOP [install217] */
 	dma_kmsg("nosd-fm6000: DMA program_rings done");
 	fprintf(stderr, "nosd-fm6000: DMA rings up (tx=%u rx=%u)\n",

@@ -254,6 +254,7 @@ int fm_pcie_enable_portio(uint8_t bus, uint8_t dev, uint8_t func);
 void fm_detach_pcie(struct fm6000 *d);
 int  fm_reprogram_bar_portio(struct fm6000 *d);     /* install204 */
 int  fm_reprogram_bar_and_cmd_portio(struct fm6000 *d); /* install219 */
+int  fm_read_bar0_portio(struct fm6000 *d, uint32_t *bar_lo, uint32_t *cmd); /* install237 */
 
 /*
  * Poll FM6000 PCIe config-space vendor ID until valid or max_ms expires.
