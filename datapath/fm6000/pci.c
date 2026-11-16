@@ -2376,11 +2376,12 @@ int fm_wait_link_active(int max_ms)
 
 		if (pread(fd, &ls, 2, cap + 0x12) != 2)
 			break;
-		/* DL_Active = bit 12; Current Link Speed = bits [3:0] */
-		if ((ls & 0x1000) && (ls & 0x000f)) {
+		/* DL_Active = bit 12.  RS780 reports Current Link Speed=0 even
+		 * when the link is established, so check DLLLA alone. [install235] */
+		if (ls & 0x1000) {
 			close(fd);
 			snprintf(msg, sizeof msg,
-				 "nosd-fm6000: pre-DMA: link active lnksta=0x%04x speed=%u width=%u",
+				 "nosd-fm6000: pre-DMA: link active lnksta=0x%04x speed=%u width=%u [install235]",
 				 ls, ls & 0xf, (ls >> 4) & 0x3f);
 			fprintf(stderr, "%s\n", msg);
 			return FM_OK;

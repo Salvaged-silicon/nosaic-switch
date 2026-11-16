@@ -475,25 +475,19 @@ int fm_dma_init(struct fm_dma *dma, struct fm6000 *d)
 	}
 	{
 		/*
-		 * install234: extend timeout from 3000ms to 10000ms.
+		 * install235: fix fm_wait_link_active to check DLLLA alone.
 		 *
-		 * On this hardware the link takes ~3700ms to reach DL_Active
-		 * after link_up_start (the second link-disable cycle, following
-		 * multiple SSCHED FATALs, is slower than the first).  The
-		 * previous 3000ms timeout fired 700ms early; fm_reprogram_bar_and_cmd_portio
-		 * and all of program_rings then ran while the FM6000 link was still
-		 * in training.
+		 * Root cause of rv=-1 with 3s and 10s timeouts:
+		 * fm_wait_link_active checked (DLLLA=1 AND CurrentLinkSpeed!=0).
+		 * The RS780 root port (0000:00:04.0) reports CurrentLinkSpeed=0
+		 * in LNKSTA bits[3:0] even when the link IS established (DLLLA=1).
+		 * Hardware confirmation: LNKSTA=0xd040 during normal operation;
+		 * bit 12 (DLLLA)=1, bits[3:0]=0.  The speed check blocked forever.
 		 *
-		 * When the link is not in L0 the RS780 drops Type-1 Config Writes
-		 * (CF8/CFC to bus=2), so the BAR0 reprogram is silently lost.
-		 * The FM6000's BAR0 register stays 0 after the Hot Reset.  With
-		 * BAR0=0 the endpoint does not decode pcie_bar_phys, so every
-		 * subsequent BAR0 MMIO write (DMA_CFG, BD_BASE, CMD_TX …) is also
-		 * silently dropped — the DMA engine is never enabled.
-		 *
-		 * With fm_wait_link_active(10000) we block until DLLLA=1 (observed
-		 * at ~3700ms), reprogram BAR0+Command when the link is known-good,
-		 * and only then write DMA registers.  [install234]
+		 * Fix (pci.c): check only DLLLA (bit 12); ignore CurrentLinkSpeed.
+		 * fm_wait_link_active now returns rv=0 as soon as DLLLA sets.
+		 * fm_reprogram_bar_and_cmd_portio and program_rings then run with
+		 * the link confirmed up and the FM6000 BAR0 writable.  [install235]
 		 */
 		int r232a = fm_wait_link_active(10000);
 		/* BAR0 and Command registers are cleared by the link reset;
@@ -501,12 +495,12 @@ int fm_dma_init(struct fm_dma *dma, struct fm6000 *d)
 		int r232b = fm_reprogram_bar_and_cmd_portio(dma->d);
 		char b[128];
 		snprintf(b, sizeof(b),
-			"nosd-fm6000: install234: link_active rv=%d bar_rv=%d [install234]",
+			"nosd-fm6000: install235: link_active rv=%d bar_rv=%d [install235]",
 			r232a, r232b);
 		dma_kmsg(b);
 	}
 	usleep(200000);	/* 200ms: FC credit settle after fresh FC_INIT [install232] */
-	dma_kmsg("nosd-fm6000: install234: ready for BAR0 [install234]");
+	dma_kmsg("nosd-fm6000: install235: ready for BAR0 [install235]");
 	program_rings(dma, false);	/* initial boot: engines never started, skip STOP [install217] */
 	dma_kmsg("nosd-fm6000: DMA program_rings done");
 	fprintf(stderr, "nosd-fm6000: DMA rings up (tx=%u rx=%u)\n",
