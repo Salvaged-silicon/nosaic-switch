@@ -194,7 +194,7 @@ int fm_esched_init(struct fm6000 *d, unsigned *written, uint32_t *culprit)
  * No-op when d->pcie_regs is NULL.  Never writes via LBUS (fatal for all
  * addresses in 0x002000-0x003fff regardless of ring state).
  */
-int fm_esched_set_cfg2(struct fm6000 *d)
+int fm_esched_set_cfg2(struct fm6000 *d, unsigned flags)
 {
 	static const uint32_t drr_q[12] = {
 		0x1450, 0x1450, 0x1450, 0x05c8, 0x1450, 0x05c8,
@@ -239,6 +239,13 @@ int fm_esched_set_cfg2(struct fm6000 *d)
 	 *    SERR# now 0x0007 → CTO → no error completion → RS780 stall.
 	 * Polling FATAL_COUNT via LBUS (SCD BAR1) has no CF8 I/O and is safe
 	 * during FATAL; once stable the link is confirmed up before CFG_2.
+	 *
+	 * install257: use fm_rd_hazardous (LBUS/BAR1) instead of fm_rd (BAR0).
+	 * With SERR# disabled, a BAR0 read to an off-bus FM6000 (which is
+	 * transiently off-bus during the CFG_1 FATAL recovery) has no CTO
+	 * error-completion path on AMD RS780 → CPU stalls permanently.  LBUS
+	 * reads always get an error completion (0 return) even with SERR# off.
+	 * [install257, 2026-11-20]
 	 */
 	esched_dbg("nosd-fm6000: ESCHED post-ring: aer_clear after CFG_1");
 	fm_pcie_clear_root_aer_errors();
@@ -249,7 +256,7 @@ int fm_esched_set_cfg2(struct fm6000 *d)
 		for (int i = 0; i < 40 && stable < 5; i++) {
 			struct timespec ts = { 0, 100000000L };	/* 100 ms */
 			nanosleep(&ts, NULL);
-			if (fm_rd(d, FM6000_FATAL_COUNT, &fc1) != FM_OK)
+			if (fm_rd_hazardous(d, FM6000_FATAL_COUNT, &fc1) != FM_OK)
 				fc1 = 0xFFFFFFFFu;
 			if (fc1 != 0xFFFFFFFFu && fc1 == fc0)
 				stable++;
@@ -257,11 +264,24 @@ int fm_esched_set_cfg2(struct fm6000 *d)
 		}
 	}
 
-	/* 3. CFG_2: front-panel then CPU. */
-	esched_dbg("nosd-fm6000: ESCHED post-ring: writing CFG_2 (front-panel + CPU)");
-	for (i = 0; i < 2; i++)
-		for (p = ESCHED_FRONT[i].lo; p <= ESCHED_FRONT[i].hi; p++)
-			fm_wr_pcie(d, ESCHED_CFG_2(p), ESCHED_ALL_TC);
+	/*
+	 * 3. CFG_2: front-panel then CPU.
+	 *
+	 * install258: skip front-panel ports when FM_ESCHED_CFG2_SKIP_FP_PORTS
+	 * is set.  Writing CFG_2 for front-panel ports (port 20+) while the
+	 * SSCHED ring is not circulating (TX_RT=0 after tx_reload(SKIP_PLL))
+	 * triggers a chip FATAL → PCIe link bounce → kernel IRQ handler grabs
+	 * logbuf_lock then stalls on ECAM read with SERR# disabled → deadlock.
+	 * CPU-port CFG_2 (port 0, addr 0x002080) is safe and always written.
+	 */
+	if (flags & FM_ESCHED_CFG2_SKIP_FP_PORTS) {
+		esched_dbg("nosd-fm6000: ESCHED post-ring: writing CFG_2 (CPU port only, fp skipped) [install258]");
+	} else {
+		esched_dbg("nosd-fm6000: ESCHED post-ring: writing CFG_2 (front-panel + CPU)");
+		for (i = 0; i < 2; i++)
+			for (p = ESCHED_FRONT[i].lo; p <= ESCHED_FRONT[i].hi; p++)
+				fm_wr_pcie(d, ESCHED_CFG_2(p), ESCHED_ALL_TC);
+	}
 	fm_wr_pcie(d, ESCHED_CFG_2(ESCHED_CPU_PORT), ESCHED_CPU_CFG_2);
 
 	/*
@@ -271,6 +291,6 @@ int fm_esched_set_cfg2(struct fm6000 *d)
 	 * DRR_Q + CFG_2 (steps 1-2 above) are sufficient for forwarding.
 	 */
 
-	esched_dbg("nosd-fm6000: ESCHED post-ring: CFG_1+CFG_2+DRR_Q done");
+	esched_dbg("nosd-fm6000: ESCHED post-ring: CFG_1+CFG_2+DRR_Q done [install258]");
 	return FM_OK;
 }

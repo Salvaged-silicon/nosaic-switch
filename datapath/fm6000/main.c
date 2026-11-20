@@ -50,6 +50,7 @@ static void kmsg(const char *msg)
 #include "boot.h"
 #include "esched.h"
 #include "dma.h"
+#include "ffu.h"
 #include "glort.h"
 #include "l2f.h"
 #include "lbs.h"
@@ -343,6 +344,11 @@ static void pipeline_init(struct fm6000 *d)
 				"TABLE[3]=0x%08x(et2,exp 0x0035ffca)\n",
 				glort_cam0, gt1, gt3);
 	}
+	/* FFU init is NOT called here: pipeline_init runs before AER is disabled
+	 * (fm_pcie_serr_disable / fm_pcie_disable_root_aer_cmd at "install209").
+	 * A chip self-reset during the 14,549-entry FFU bulk write causes a PCIe
+	 * CTO, which fires AER while the mfence stalls, deadlocking the kernel.
+	 * FFU is instead called in the pre-DMA block (after install209). */
 	kmsg("nosd-fm6000: pipeline_init done");
 }
 
@@ -515,6 +521,62 @@ static void *fwd_thread(void *arg)
 				 * fm_pcie_enable_portio waits for Link Active before
 				 * writing, so this is safe even if stability is marginal. */
 				fm_pcie_enable_portio(2, 0, 0);
+
+				/* After SSCHED MASTER_RESET, the PCIe link bounces.
+				 * DL_Init runs while BusMaster=0 → FM6000 advertises
+				 * 0 PD (Posted-Data) flow-control credits.  With 0 PD
+				 * credits the RS780 cannot forward any Memory Write
+				 * TLPs to the FM6000 (BAR0 or BAR1).  The first BAR0
+				 * write in pipeline_init() stalls the CPU indefinitely
+				 * in the RS780 posted-write buffer.
+				 *
+				 * fm_pcie_enable_portio() restores BusMaster=1.
+				 * Calling fm_pcie_retrain_link() triggers a new DL_Init
+				 * while DMAEn=1 in PCI_CORE_CTRL_1, so the FM6000
+				 * allocates its DMA receive buffer and advertises
+				 * nonzero PD credits.  BAR0 writes are then safe.
+				 * [install248] */
+				{
+					struct timespec ts_retrain = { 0, 600000000L };
+					char rb[96];
+					int rv_retrain = fm_pcie_retrain_link();
+					snprintf(rb, sizeof rb,
+						"nosd-fm6000: RESET reprogram: retrain rv=%d [install248]",
+						rv_retrain);
+					kmsg(rb);
+					nanosleep(&ts_retrain, NULL);
+				}
+
+				/* Re-initialize pipeline SRAM and FFU BEFORE starting
+				 * DMA.  After a chip self-reset the DMA engine is
+				 * stopped; fm_dma_reprogram's CMD_TX/CMD_RX restart it.
+				 * If we start DMA while FFU is still empty, the first
+				 * frame the fabric forwards hits no FFU rule and the
+				 * chip self-resets again, creating an infinite loop.
+				 * Run pipeline_init + ffu_init while DMA is stopped,
+				 * then let fm_dma_reprogram start the engines safely. */
+				{
+					struct fm6000 *d = fwd->dma.d;
+					int rv_fill4k, rv_fill256, rv_l2f, rv_ffu;
+					char rp_buf[96];
+
+					rv_fill4k = fm_mem_fill(d, 0x180000u, 16384u, 0u);
+					rv_fill256 = fm_mem_fill(d, 0x1a0000u, 4096u, 0u);
+					snprintf(rp_buf, sizeof rp_buf,
+						"nosd-fm6000: RESET reprogram: L2F pre-fill rv4k=%d rv256=%d",
+						rv_fill4k, rv_fill256);
+					kmsg(rp_buf);
+					rv_l2f = fm_l2f_init(d);
+					snprintf(rp_buf, sizeof rp_buf,
+						"nosd-fm6000: RESET reprogram: l2f_init rv=%d", rv_l2f);
+					kmsg(rp_buf);
+					pipeline_init(d);
+					kmsg("nosd-fm6000: RESET reprogram: pipeline_init done");
+					rv_ffu = fm_ffu_init(d);
+					snprintf(rp_buf, sizeof rp_buf,
+						"nosd-fm6000: RESET reprogram: ffu_init rv=%d", rv_ffu);
+					kmsg(rp_buf);
+				}
 
 				fm_dma_reprogram(&fwd->dma);
 			}
@@ -885,45 +947,29 @@ static int start_forwarding(struct fm6000 *d)
 		}
 
 		/*
-		 * Phase 2: Link Disable guard + PCIe SerDes re-init post-SPICO.
-		 *
-		 * install94 (no Link Disable, no SerDes re-init): FM6000 trained
-		 * naturally, but pipeline_init caused ECC soft-resets that bounced
-		 * the PCIe link.  fm_wait_pcie_alive's rescan triggered a kernel
-		 * Config Write on a bouncing bus 2; on AMD RS780 with SERR disabled,
-		 * that stalled the CPU indefinitely → kernel freeze.
-		 *
-		 * install89-93 used Link Disable + fm_pcie_serdes_init: correct bus
-		 * protection, but fm_pcie_serdes_init wrote SOFT_RESET_PCIE while
-		 * SBus was in a post-SPICO broken state → non-trainable SerDes
-		 * (lnksta=0x9040, Speed=0).  Five installs, all timed out.
-		 *
-		 * install95: Link Disable + 200 ms nap + no fm_pcie_serdes_init.
-		 * Worked only because ECC resets were still happening continuously —
-		 * the chip was in mid-reset when Link Disable was cleared, so its
-		 * PCIe SerDes was in the default (trainable) post-reset state.
-		 *
-		 * install110 (skip Link Disable entirely): ECC soft-resets eliminated
-		 * (CMWM+CMREST now in ssched.c, TICK_CFG=2, IC=0).  A single brief
-		 * reset from fm_lane_enable remains.  Without Link Disable, pciehp
-		 * fired a Config Write ~7 s after the link came back; the Config
-		 * Write arrived while the link was still re-training → CPU freeze.
-		 *
-		 * install111-112: Link Disable + 6 s nap, no fm_pcie_serdes_init.
-		 * With ECC resets gone, the FM6000 PCIe SerDes is left in a hybrid
-		 * state after the SPICO hard reset (some pre-SPICO fm_pcie_serdes_init
-		 * registers survive, others default).  That hybrid state does not
-		 * auto-train via Link Disable/Clear → same lnksta=0x9040 timeout.
+		 * Phase 2: PCIe SerDes re-init post-SPICO.
 		 *
 		 * install113: Link Disable + fm_pcie_serdes_init post-SPICO.
-		 * bring_up_ports has already called fm_sbus_start, so SBus is ready.
-		 * fm_pcie_serdes_init resets just the PCIe block (SOFT_RESET_PCIE),
-		 * configures it via SBus, and enables the endpoint.  LBUS (SCD slot)
-		 * is disrupted after PCI_CORE_CTRL_1; we release it before waiting.
-		 * Clear Link Disable after 5 s → natural training → L0.
+		 * install110 (no Link Disable) failed because pciehp fired a Config
+		 * Write ~7 s after the link came back (CPU freeze).
+		 *
+		 * install244: drop the fm_upstream_link_disable(1) call.
+		 * Root cause found: Link Disable on the RS780 root port causes the
+		 * FM6000 to deallocate its PCIe posted-data receive buffer and
+		 * advertise 0 PD flow-control credits in the subsequent DL_Init.
+		 * With 0 PD credits the RS780 cannot forward Memory Write TLPs to
+		 * the FM6000; the CPU hangs on the first dma_wr_nc() call (BAR0
+		 * Memory Write stalls in the RS780 posted-write buffer indefinitely).
+		 * The pciehp problem that forced install113 to add Link Disable is
+		 * now gone: fm6000_kdrv silences pciehp slot events at bind time
+		 * ("pciehp + AER + PME IRQ silenced"), so no Config Write races.
+		 * fm_pcie_serdes_init (SOFT_RESET_PCIE) alone does NOT reset the
+		 * PD credit advertiser — only the Link Disable / Electrical Idle
+		 * transition does.  Skipping Link Disable preserves the nonzero PD
+		 * credits set during the initial (T+55s) DL_Init.
+		 * [install244, 2026-11-16]
 		 */
-		kmsg("nosd-fm6000: pre-DMA: disabling upstream PCIe link [install113]");
-		(void)fm_upstream_link_disable(1);
+		kmsg("nosd-fm6000: pre-DMA: SerDes re-init (no Link Disable — pciehp silenced) [install244]");
 
 		{
 			int rv_si = fm_pcie_serdes_init(d);
@@ -1600,9 +1646,318 @@ static int start_forwarding(struct fm6000 *d)
 		kmsg("nosd-fm6000: install211: SMI disabled; CF8 writes now safe [install211]");
 	else
 		kmsg("nosd-fm6000: install211: WARNING: SMI NOT disabled (PMIO not found) [install211]");
+
+	/*
+	 * install246: third fm_pcie_serdes_init() to get a DL_Init that runs
+	 * with PCI_DMA_CFG=0x35 (DMAEn=1 → nonzero PD flow-control credits).
+	 *
+	 * Root cause of install241 BAR0 write stall (fully confirmed by install245):
+	 *
+	 * EVERY DL_Init triggered in this path is preceded by a FATAL that
+	 * resets FM6000_PCI_DMA_CFG=0:
+	 *
+	 *   1. ring_reinit's fm_boot_cold: ~31 FAT ALs (freelists) reset all FM6000
+	 *      registers.  fm_pcie_serdes_init (#2) writes PCI_DMA_CFG=0x35 then
+	 *      PCI_CORE_CTRL_1 → DL_Init with DMAEn=1.  BUT the subsequent port /
+	 *      pipeline init causes 1 more FATAL (confirmed: install201 fc=1) which
+	 *      resets PCI_DMA_CFG=0.  The chip self-trains from Detect with
+	 *      PCI_DMA_CFG=0 → PD credits=0.
+	 *
+	 *   2. install242 LNKCTL retrain: Recovery triggered another FATAL on
+	 *      every attempt (confirmed: fc wraps on each retrain).  install245
+	 *      re-wrote PCI_DMA_CFG=0x35 before the retrain, but the retrain's
+	 *      FATAL zeroed it again before DL_Init ran.  Writing PCI_DMA_CFG=0x35
+	 *      after a FATAL is always too late — PD credits are set at DL_Init
+	 *      time and don't change until the next DL_Init.
+	 *
+	 * Fix: use fm_pcie_serdes_init() (SerDes re-init #3) after all FAT ALs
+	 * are done.  Its sequence:
+	 *   SOFT_RESET_PCIE cycle  — may cause a synchronous FATAL (clears fast)
+	 *   SBus SerDes config writes
+	 *   PCI_DMA_CFG = 0x35      — written AFTER any FATAL from SerDes init
+	 *   PCI_CORE_CTRL_1 = 0x1c01f → DL_Init with DMAEn=1 → nonzero PD credits
+	 *
+	 * No subsequent FATAL follows (port/pipeline already done), so PD credits
+	 * stay nonzero and BAR0 Memory Writes are accepted by the RS780.
+	 * This matches the pcie_init_main.c (tool) flow that works.
+	 *
+	 * PCI_CORE_CTRL_1 disrupts the SCD slot; LBUS must be released immediately
+	 * and reopened with the same recovery used after the second SerDes init
+	 * in ring_reinit (munmap → wait 5s → fm_wait_link_active → fm_reopen_lbus).
+	 * CF8 Config Writes to bus=2 deadlock after the sysfs rescan (install192),
+	 * so fm_pcie_enable_portio(2,...) is intentionally skipped here; Command
+	 * and BAR0 written earlier by boot.c:784 persist through SOFT_RESET_PCIE.
+	 * [install246, 2026-11-16]
+	 */
+	{
+		char               slot246[FM_SLOT_LEN];
+		volatile uint32_t *saved_pcie_regs   = d->pcie_regs;
+		size_t             saved_pcie_bytes  = d->pcie_bar_bytes;
+		unsigned long      saved_pcie_phys   = d->pcie_bar_phys;
+		int                saved_pcie_bar_fd = d->pcie_bar_fd;
+		int                saved_banks_ready = d->banks_ready;
+		int                saved_boot_done   = d->boot_done;
+		int                saved_sched_ready = d->sched_ready;
+		int                rv246;
+		char               b246[128];
+
+		snprintf(slot246, sizeof(slot246), "%s", d->slot);
+
+		rv246 = fm_pcie_serdes_init(d);
+		snprintf(b246, sizeof(b246),
+			 "nosd-fm6000: install246: SerDes re-init #3 rv=%d [install246]",
+			 rv246);
+		kmsg(b246);
+
+		/* PCI_CORE_CTRL_1 disrupted the SCD slot; release LBUS immediately. */
+		munmap((void *)d->regs, d->bar_bytes);
+		close(d->bar_fd);
+		d->regs   = NULL;
+		d->bar_fd = -1;
+
+		kmsg("nosd-fm6000: install246: waiting 5s for SCD slot to stabilize [install246]");
+		{
+			struct timespec nap5 = { 5, 0 };
+			nanosleep(&nap5, NULL);
+		}
+
+		(void)fm_upstream_link_disable(0);
+
+		{
+			int wla246 = fm_wait_link_active(15000);
+			char b246w[128];
+			snprintf(b246w, sizeof(b246w),
+				 "nosd-fm6000: install246: DLLLA rv=%d [install246]",
+				 wla246);
+			kmsg(b246w);
+		}
+
+		/* fm_reopen_lbus_devmem clears d with memset; restore PCIe state after. */
+		if (fm_reopen_lbus_devmem(d, slot246) != FM_OK) {
+			kmsg("nosd-fm6000: install246: FATAL: cannot reopen LBUS after SerDes #3 [install246]");
+			return -1;
+		}
+		d->pcie_regs      = saved_pcie_regs;
+		d->pcie_bar_bytes = saved_pcie_bytes;
+		d->pcie_bar_phys  = saved_pcie_phys;
+		d->pcie_bar_fd    = saved_pcie_bar_fd;
+		d->banks_ready    = saved_banks_ready;
+		d->boot_done      = saved_boot_done;
+		d->sched_ready    = saved_sched_ready;
+		kmsg("nosd-fm6000: install246: LBUS reopened after SerDes #3 [install246]");
+
+		/* FATAL_COUNT stability: up to 20 × 500ms, require 5 consecutive stable. */
+		{
+			uint32_t fc246a = 0, fc246b = 0;
+			int n246 = 0, i246;
+			char fb246[128];
+
+			fm_rd(d, 0x8, &fc246a);
+			for (i246 = 0; i246 < 20 && n246 < 5; i246++) {
+				struct timespec ts = { 0, 500000000L };
+				nanosleep(&ts, NULL);
+				fm_rd(d, 0x8, &fc246b);
+				if (fc246b == fc246a)
+					n246++;
+				else {
+					fc246a = fc246b;
+					n246 = 0;
+				}
+			}
+			snprintf(fb246, sizeof(fb246),
+				 "nosd-fm6000: install246: post-SerDes-3 fc=0x%08x n_stable=%d [install246]",
+				 fc246a, n246);
+			kmsg(fb246);
+		}
+		/* Confirm PCI_DMA_CFG=0x35 from fm_pcie_serdes_init; re-write if another FATAL reset it. */
+		{
+			uint32_t pdc246 = 0xdeadbeef;
+			char b246d[192];
+
+			fm_rd(d, FM6000_PCI_DMA_CFG, &pdc246);
+			snprintf(b246d, sizeof(b246d),
+				 "nosd-fm6000: install246: PCI_DMA_CFG=0x%05x [install246]",
+				 pdc246);
+			kmsg(b246d);
+			if (pdc246 != 0x35u) {
+				kmsg("nosd-fm6000: install246: WARNING PCI_DMA_CFG not 0x35"
+				     " — another FATAL reset it; re-writing [install246]");
+				fm_wr(d, FM6000_PCI_DMA_CFG, 0x35u);
+			}
+		}
+
+		/*
+		 * install247: sysfs rescan bus=2 + BAR0 remap after SerDes re-init #3.
+		 *
+		 * Root cause of bar_check: cfg=0xffffffff (confirmed install246):
+		 *   fm_pcie_serdes_init's SOFT_RESET_PCIE clears the FM6000's PCIe BAR0
+		 *   config register (0xe2000000 → 0x0).  pciehp also removes 0000:02:00.0
+		 *   from sysfs when the link bounces.  Without a rescan:
+		 *     a. The FM6000's BAR0 decoder no longer claims 0xe2000000 → all
+		 *        BAR0 Memory Write TLPs are silently discarded.  DMA_CFG, CMD_TX,
+		 *        CMD_RX never reach the DMA engine.
+		 *     b. BAR0 Memory Read TLPs return CTO (0xffffffff) — the FM6000 has
+		 *        no address decoder active for BAR0.
+		 *     c. The DMA engine never starts; rx_frames=0 forever.
+		 *
+		 * Fix: rescan bus=2 (kernel re-enumerates FM6000, restores BAR0 and
+		 * Command config registers via ECAM), then remap d->pcie_regs.
+		 * Safe here: SMI is globally disabled (install211), SERR# is still
+		 * enabled (install209 has not run), FM6000 is stable (install201 fc poll).
+		 * [install247, 2026-11-16]
+		 */
+		{
+			char b247[192];
+			int  rfd247;
+
+			rfd247 = open("/sys/class/pci_bus/0000:02/rescan", O_WRONLY);
+			if (rfd247 >= 0) {
+				(void)write(rfd247, "1\n", 2);
+				close(rfd247);
+				kmsg("nosd-fm6000: install247: bus=2 rescan done [install247]");
+			} else {
+				kmsg("nosd-fm6000: install247: WARNING bus=2 rescan open failed [install247]");
+			}
+			nap_ms(200); /* let fm6000_kdrv probe() settle */
+
+			/* Remap BAR0: SOFT_RESET_PCIE clears the FM6000 BAR0 config register. */
+			fm_detach_pcie(d);
+			if (fm_attach_pcie(d) == FM_OK) {
+				snprintf(b247, sizeof(b247),
+					 "nosd-fm6000: install247: BAR0 remapped"
+					 " regs=%p phys=0x%016lx [install247]",
+					 (void *)d->pcie_regs, d->pcie_bar_phys);
+				kmsg(b247);
+			} else {
+				kmsg("nosd-fm6000: install247: WARNING BAR0 remap failed; using saved mapping [install247]");
+				/* Restore stale mapping as fallback; install221 will catch NULL. */
+				d->pcie_regs      = saved_pcie_regs;
+				d->pcie_bar_bytes = saved_pcie_bytes;
+				d->pcie_bar_phys  = saved_pcie_phys;
+				d->pcie_bar_fd    = saved_pcie_bar_fd;
+			}
+		}
+	}
+
+	/*
+	 * install254: SERR# disabled BEFORE tx_reload.
+	 *
+	 * install253 diagnosis: tx_reload(SKIP_PLL) runs at ~90s with SERR#
+	 * still enabled.  If the ring is STUCK, esched_set_cfg2(IC=0) fires a
+	 * chip FATAL, which asserts SERR# → Linux AER handler → CF8 access to
+	 * bus=2 stalls waiting for BIOS SMM → kernel deadlock → SSH unreachable
+	 * from ~90s to reboot at ~374s.  The deadlock prevents reading dmesg.
+	 *
+	 * Fix: disable SERR# and AER before tx_reload so any FATAL during the
+	 * SSCHED/ESCHED restore is silent.  The original install209 comment
+	 * ("before DMA init") still holds — SERR# is never re-enabled after
+	 * this point.  Moving the disable earlier is safe and allows the kernel
+	 * to stay responsive so the tx_reload result can be read via SSH.
+	 * [install254, 2026-11-18]
+	 */
 	fm_pcie_serr_disable();
 	fm_pcie_disable_root_aer_cmd();
-	kmsg("nosd-fm6000: install209: SERR#+AER-cmd+SMI disabled before DMA init [install209]");
+	kmsg("nosd-fm6000: install254: SERR#+AER-cmd disabled before tx_reload [install254]");
+
+	/*
+	 * install252: SSCHED + ESCHED restore after SerDes #3 (install246).
+	 *
+	 * install246's fm_pcie_serdes_init() uses SOFT_RESET_PCIE to cycle the
+	 * PCIe SerDes.  SOFT_RESET_PCIE is NOT a chip HARD FATAL:
+	 *   - FATAL_COUNT (reg 0x8) stays at 1 before and after install246
+	 *     (confirmed in install246's post-SerDes-3 fc poll, 2026-11-18).
+	 *   - SSCHED SRAM (NEXT_PORT, freelist) is intact from boot_cold's
+	 *     ring_init and fm_boot_freelists — a PCIe-subsystem reset does not
+	 *     wipe chip SRAM arrays.
+	 *   - Chip registers ARE zeroed (SOFT_RESET_PCIE is a register reset):
+	 *     PLL_CTRL_0=0, JSS_CFG_8=0, IC=0.  PLL hardware continues running.
+	 *
+	 * Earlier approaches failed:
+	 *
+	 *   install249/250 (tx_reload): _need_reinit=1 (PLL_CTRL_0=0) → writes
+	 *     PLL_CTRL_0=GOLDEN → PLL re-lock triggers a true HARD FATAL
+	 *     (FATAL_COUNT++, SSCHED SRAM wiped, NEXT_PORT=0) → STUCK.
+	 *
+	 *   install251 (ring_init): probe writes PLL_CTRL_0=GOLDEN → same HARD
+	 *     FATAL cascade; without fm_bist_memory_init+freelists first the
+	 *     settle phase hit cascading ECC FATALs (code 0xd0) for 1457s and
+	 *     never converged.
+	 *
+	 *   install252 (tx_reload, SKIP_PLL, SBus inside block): SBus 0x45
+	 *     JSS clock enable was inside the SKIP_PLL block → JSS synthesiser
+	 *     dead → TX_FOUND=0 → STUCK → esched_set_cfg2(IC=0) FATAL → panic.
+	 *
+	 *   install253 (SBus moved outside SKIP_PLL): TX probe showed STUCK; the
+	 *     esched_set_cfg2 FATAL (expected with TX stuck) briefly bounced FM6000
+	 *     off-bus.  With SERR# disabled (install254), any BAR0 read that races
+	 *     the bounce stalls the CPU permanently (no CTO error completion on
+	 *     AMD RS780 when SERR# off).  fm_ffu_init, the first BAR0 access after
+	 *     the esched block, could race that ~100-200ms recovery window.
+	 *
+	 *   install255 (Memory Space disable before IC=1): disabling PCI_COMMAND
+	 *     Memory Space bit makes FM6000 return Unsupported Request for ALL
+	 *     Memory Space TLPs — including BAR1 (LBUS).  Every NEXT_PORT / token /
+	 *     IC=1 write in tx_reload was silently dropped; TX always read as 0x0
+	 *     ("STUCK") because the ring was never set up.  Config Space (CF8/CFC)
+	 *     is unaffected by the Memory Space bit, so the BIOS SMI during the
+	 *     first cold boot could always read bus=2 and not stall — explaining
+	 *     why the first boot survived 50 h while the second froze after
+	 *     Memory Space was re-enabled and esched's FATAL raced an fm_ffu_init
+	 *     BAR0 read.
+	 *
+	 * Fix (install256): leave Memory Space enabled throughout (LBUS writes
+	 * work normally).  After esched_set_cfg2, call fm_wait_link_active(2000)
+	 * to block until FM6000's PCIe link is active again after any FATAL the
+	 * esched writes may have triggered.  This guarantees fm_ffu_init and
+	 * fm_dma_init never race the bounce window.
+	 *
+	 *   install256 (cold boot): survived esched_set_cfg2 but trial-boot
+	 *     watchdog fired at 412s — DMA init never confirmed.  Root cause:
+	 *     esched_set_cfg2's FATAL_COUNT stability poll (esched.c:252) used
+	 *     fm_rd (BAR0); with SERR# disabled, the first BAR0 read during the
+	 *     CFG_1 FATAL stalled the CPU permanently (no error completion on
+	 *     AMD RS780 when SERR# off).  install256 cold boot survived by luck
+	 *     — the CFG_1 FATAL happened to clear before the fm_rd — but the
+	 *     warm-reboot path freezes consistently because FM6000 is in a
+	 *     more complex state (IC=1 from prior session).
+	 *
+	 * Fix (install257): change esched_set_cfg2's FATAL_COUNT poll to use
+	 * fm_rd_hazardous (LBUS/BAR1) which always gets an error completion
+	 * (returns 0) when FM6000 is transiently off-bus, never stalling.
+	 * [install257, 2026-11-20]
+	 */
+	{
+		int rv252, rv_cfg2;
+		char b252[128];
+
+		rv252 = fm_ssched_tx_reload(d, FM_SSCHED_TX_RELOAD_SKIP_PLL);
+		snprintf(b252, sizeof b252,
+			"nosd-fm6000: install256: tx_reload(SKIP_PLL) rv=%d [install256]",
+			rv252);
+		kmsg(b252);
+
+		/*
+		 * install258: pass FM_ESCHED_CFG2_SKIP_FP_PORTS.
+		 *
+		 * After tx_reload(SKIP_PLL) the SSCHED ring is STUCK (TX_RT=0).
+		 * Writing CFG_2 for front-panel ports (port 20+) with ring not
+		 * circulating triggers a chip FATAL → PCIe link bounce → kernel
+		 * IRQ handler grabs logbuf_lock + stalls on ECAM read with SERR#
+		 * disabled → esched_dbg("done") write() syscall never returns.
+		 * Skip front-panel CFG_2 here; it will be written in a later
+		 * install once ring circulation is confirmed.  CPU-port CFG_2
+		 * (port 0) is still written — needed for DMA rx_frames.
+		 * [install258, 2026-11-20]
+		 */
+		rv_cfg2 = fm_esched_set_cfg2(d, FM_ESCHED_CFG2_SKIP_FP_PORTS);
+		snprintf(b252, sizeof b252,
+			"nosd-fm6000: install258: esched_set_cfg2(SKIP_FP) rv=%d [install258]",
+			rv_cfg2);
+		kmsg(b252);
+
+		(void)fm_wait_link_active(2000);
+		kmsg("nosd-fm6000: install256: link active (or timeout) after esched [install256]");
+	}
 
 	/*
 	 * install221: skip the bus=2 Config Write reprogram before DMA init.
@@ -1654,6 +2009,21 @@ static int start_forwarding(struct fm6000 *d)
 		}
 	}
 
+	/* Re-run FFU just before DMA init.  RESET_N (triggered by any chip
+	 * self-reset during the FATAL_COUNT stability wait above) wipes FFU SRAM.
+	 * pipeline_init() runs earlier (before the stability wait) and is itself
+	 * subject to those self-resets.  Running FFU here, after the chip has
+	 * been declared stable, ensures the forwarding rules survive into the
+	 * DMA-active window without being wiped by a subsequent self-reset. */
+	{
+		int rv_ffu = fm_ffu_init(d);
+		if (rv_ffu != FM_OK) {
+			char buf_ffu[128];
+			snprintf(buf_ffu, sizeof buf_ffu,
+				 "nosd-fm6000: pre-DMA FFU re-init failed rv=%d", rv_ffu);
+			kmsg(buf_ffu);
+		}
+	}
 	kmsg("nosd-fm6000: DMA init start");
 	if (fm_dma_init(&g_fwd.dma, d) < 0)
 		return -1;

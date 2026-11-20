@@ -989,7 +989,7 @@ static int boot_steps(struct fm6000 *d, struct fm_boot_report *rep, int mem_init
 	dbg("nosd-fm6000: post-SSCHED: SRAM pre-fill done [install196]");
 
 	dbg("nosd-fm6000: post-SSCHED: writing ESCHED post-ring config");
-	fm_esched_set_cfg2(d);
+	fm_esched_set_cfg2(d, 0); /* ring circulating — write all ports */
 	dbg("nosd-fm6000: post-SSCHED: ESCHED post-ring config done");
 	/* Leave BAR0 mapped (d->pcie_regs) -- the DMA engine needs it. */
 
