@@ -122,6 +122,29 @@ struct fm6000;
  */
 #define FM_SSCHED_MGMT_ONLY	(1u << 5)
 
+/*
+ * FM_SSCHED_NEXT_SKIP_PLL: skip PLL_CTRL_0/1 and DLL_CTRL writes in
+ * ring_init's NEXT_CHAIN block.
+ *
+ * Use when the caller has already written PLL_CTRL_0=GOLDEN and confirmed
+ * PLL_STATUS locked BEFORE calling ring_init.  The write must happen while
+ * FM6000_SOFT_RESET_JSS is set (JSS held in soft reset), which suppresses
+ * the HARD chip FATAL that writing PLL_CTRL_0=GOLDEN normally causes when
+ * JSS is active (see main.c RESET reprogram, install283).
+ *
+ * Without this flag, ring_init's NEXT_CHAIN writes PLL_CTRL_0=GOLDEN while
+ * JSS is active (started by SPICO ROM after DMA FATAL + SCD RESET_N).  This
+ * triggers a HARD chip FATAL with an internal RESET_N that clears PLL_CTRL_0
+ * back to 0.  The PLL never re-locks and fm_boot_freelists fails (FM_ETIMEOUT).
+ *
+ * With this flag: PLL_CTRL_0/1 and DLL_CTRL writes are skipped.  PLL is
+ * already locked (confirmed by the caller before ring_init).  The SBus 0x45
+ * write that follows (always present in NEXT_CHAIN) re-enables the JSS
+ * clock synthesiser.
+ * [install283, 2026-11-21]
+ */
+#define FM_SSCHED_NEXT_SKIP_PLL	(1u << 7)
+
 
 /*
  * Where the ring init was when the chip reset itself.

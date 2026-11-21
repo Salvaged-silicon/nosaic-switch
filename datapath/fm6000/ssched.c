@@ -326,27 +326,45 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 	 * properly clocked when JSS fires. Writing PLL_CTRL AFTER JSS causes
 	 * a clock glitch on the newly-enabled domain → FATAL_CODE 0x00 resets.
 	 * Measured 2026-10-02. [RE]
+	 *
+	 * FM_SSCHED_NEXT_SKIP_PLL: skip these writes.  The caller wrote
+	 * PLL_CTRL_0=GOLDEN while JSS was held in SOFT_RESET (before ring_init),
+	 * and confirmed PLL_STATUS locked.  Re-writing here would trigger a HARD
+	 * chip FATAL (RESET_N) since JSS is now active.  PLL is already set.
+	 * [install283, 2026-11-21]
 	 */
-	if ((rv = fm_wr(d, FM6000_PLL_CTRL_0, FM6000_PLL_CTRL_0_GOLDEN)) != FM_OK) {
-		ssched_dbg("nosd-fm6000: SSCHED PLL_CTRL_0 wr fail");
-		return rv;
-	}
-	if ((rv = fm_wr(d, FM6000_PLL_CTRL_1, FM6000_PLL_CTRL_1_GOLDEN)) != FM_OK) {
-		ssched_dbg("nosd-fm6000: SSCHED PLL_CTRL_1 wr fail");
-		return rv;
-	}
-	/*
-	 * DLL_CTRL is write-only (reads as 0); re-write to ensure the DLLs
-	 * are enabled regardless of what the boot fill reset cleared. [RE]
-	 */
-	if ((rv = fm_wr(d, FM6000_DLL_CTRL, FM6000_DLL_CTRL_ENABLE)) != FM_OK) {
-		ssched_dbg("nosd-fm6000: SSCHED DLL_CTRL wr fail");
-		return rv;
+	if (!(flags & FM_SSCHED_NEXT_SKIP_PLL)) {
+		if ((rv = fm_wr(d, FM6000_PLL_CTRL_0, FM6000_PLL_CTRL_0_GOLDEN)) != FM_OK) {
+			ssched_dbg("nosd-fm6000: SSCHED PLL_CTRL_0 wr fail");
+			return rv;
+		}
+		if ((rv = fm_wr(d, FM6000_PLL_CTRL_1, FM6000_PLL_CTRL_1_GOLDEN)) != FM_OK) {
+			ssched_dbg("nosd-fm6000: SSCHED PLL_CTRL_1 wr fail");
+			return rv;
+		}
+		/*
+		 * DLL_CTRL is write-only (reads as 0); re-write to ensure the DLLs
+		 * are enabled regardless of what the boot fill reset cleared. [RE]
+		 */
+		if ((rv = fm_wr(d, FM6000_DLL_CTRL, FM6000_DLL_CTRL_ENABLE)) != FM_OK) {
+			ssched_dbg("nosd-fm6000: SSCHED DLL_CTRL wr fail");
+			return rv;
+		}
+	} else {
+		ssched_dbg("nosd-fm6000: SSCHED PLL_CTRL_0/1 skipped (NEXT_SKIP_PLL) [install283]");
 	}
 
 	/*
 	 * Wait for PLL lock before enabling the clock domain.
 	 * PLL_STATUS bits [1:0] = PLL pair, [3:2] = DLLs. [RE, 2026-10-01]
+	 *
+	 * install282: use fm_rd_hazardous (LBUS/BAR1) instead of fm_rd (BAR0).
+	 * Writing PLL_CTRL_0=GOLDEN while JSS is active triggers a PLL re-lock
+	 * FATAL. fm_rd calls fm_check_offbus (a sysfs Config Space read), which
+	 * returns 0xFFFFFFFF during the FATAL and causes FM_EOFFBUS, aborting
+	 * the wait. fm_rd_hazardous bypasses that check and can poll safely
+	 * through the FATAL until the PLL re-locks (~100-200ms after the FATAL).
+	 * On the first FM_EOFFBUS from hazardous read, continue polling.
 	 */
 	{
 		unsigned waited;
@@ -354,12 +372,12 @@ int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 		char _pl[96];
 
 		for (waited = 0; waited < FM6000_PLL_LOCK_MAX_MS; waited++) {
-			if ((rv = fm_rd(d, FM6000_PLL_STATUS, &pll)) != FM_OK) {
-				snprintf(_pl, sizeof _pl,
-					"nosd-fm6000: SSCHED PLL_STATUS rd fail waited=%u",
-					waited);
-				ssched_dbg(_pl);
-				return rv;
+			int _prv = fm_rd_hazardous(d, FM6000_PLL_STATUS, &pll);
+			if (_prv != FM_OK) {
+				/* chip is mid-FATAL re-lock: keep polling */
+				pll = 0;
+				usleep(1000);
+				continue;
 			}
 			if ((pll & FM6000_PLL_STATUS_LOCKED_ALL) ==
 			    FM6000_PLL_STATUS_LOCKED_ALL)

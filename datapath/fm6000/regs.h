@@ -624,8 +624,12 @@ static inline unsigned fm6000_epl_refclk(unsigned epl)
  */
 
 /* PLL_STATUS, polled for lock in Table 4-1 step 6; maximum lock time 80 ms.
+ * install282: increased to 300 ms. After a DMA FATAL + SCD pulse, writing
+ * PLL_CTRL_0=GOLDEN while JSS is active triggers a PLL re-lock FATAL. The
+ * PLL must fully re-lock after that FATAL before the SSCHED DATA clock is
+ * usable. 80 ms was too short; 300 ms covers the re-lock window observed.
  * [DS §4.2 Table 4-1 step 6 names it; address UNKNOWN] */
-#define FM6000_PLL_LOCK_MAX_MS		80
+#define FM6000_PLL_LOCK_MAX_MS		300
 
 /* No documented bound for a boot-controller command. 500 ms is far longer than
  * any of the three should need and short enough that a wedged one is reported

@@ -665,16 +665,188 @@ static void *fwd_thread(void *arg)
 					fm_detach_pcie(d);
 					kmsg("nosd-fm6000: RESET reprogram: install270 BAR0 detached before ring_init");
 
-					/* 270b: SSCHED ring_init */
+					/* 270b: SCD reset pulse + ring_init.
+					 *
+					 * alive_wait [install272] confirmed: after a DMA FATAL the
+					 * chip's internal RESET_N (from the DMA watchdog) clears
+					 * SSCHED state but does NOT re-run SPICO ROM.  pin_strap
+					 * stays 0x0 forever — 120 polls (120s) all returned alive=0.
+					 *
+					 * SPICO ROM only runs when the SCD hardware drives an
+					 * EXTERNAL RESET_N via the RESET_N pin on the FM6000.
+					 * fm_scd_reset_pulse() issues exactly that.  After the pulse,
+					 * SPICO ROM runs and initialises the SSCHED ring; pin_strap
+					 * returns 0x208 within ~100ms of the pulse (same path as
+					 * boot.c:241 on initial cold boot).
+					 *
+					 * After the pulse the FM6000 PCIe endpoint also resets and
+					 * re-trains (BAR values cleared by the chip; install270c's
+					 * rescan re-enables them).  d->pcie_regs is already NULL
+					 * (detached by install270a) so no BAR0 access races.
+					 * [install273]
+					 */
 					{
-						struct fm_ssched_report srep270 = {0};
-						int circulating270 = 0;
-						char sri[128];
-						int rv_ri = fm_ssched_ring_init(d, 0, &circulating270, &srep270);
-						snprintf(sri, sizeof sri,
-							"nosd-fm6000: RESET reprogram: ring_init rv=%d circ=%d lf=0x%08x [install270]",
-							rv_ri, circulating270, srep270.last_fatal);
-						kmsg(sri);
+						/* SCD reset pulse → SPICO ROM → ring alive */
+						{
+							int rv_pulse = fm_scd_reset_pulse(d);
+							char pb[128];
+							snprintf(pb, sizeof pb,
+								"nosd-fm6000: RESET reprogram: scd_reset_pulse rv=%d [install273]",
+								rv_pulse);
+							kmsg(pb);
+						}
+						nap_ms(500); /* SPICO ROM start + initial PCIe re-train.
+						 *
+						 * install275 tried 10s but that did not help: ring_init
+						 * with flags=0 does fm_mem_fill(0x118800) which zeroes
+						 * SPICO ROM's ring memory and kills the ring every time
+						 * regardless of how long we wait.
+						 *
+						 * The fix [install276] is to call ring_init with the
+						 * same flags as the cold-boot path: NEXT_CHAIN |
+						 * NO_SWEEPER.  NEXT_CHAIN skips the initial 0x118800
+						 * fill, so SPICO ROM's ring stays alive.  The settle
+						 * phase's ~163 ECC-init resets do not clear pin_strap,
+						 * so fm_alive passes throughout.  After settle, the
+						 * 0x118800 fill runs on a stopped chip (safe). */
+						fm_clear_offbus(d);
+
+						/* alive_wait: should be alive within 1–2 polls;
+						 * keep up to 10s in case SPICO needs slightly more. */
+						{
+							char awb[128];
+							for (int aw = 0; aw < 10; aw++) {
+								fm_clear_offbus(d);
+								int alive273 = fm_alive(d);
+								snprintf(awb, sizeof awb,
+									"nosd-fm6000: RESET reprogram: alive_wait aw=%d alive=%d [install273]",
+									aw, alive273);
+								kmsg(awb);
+								if (alive273 == 1)
+									break;
+								nap_ms(1000);
+							}
+						}
+
+						/* Post-pulse DLLLA wait [install274].
+						 *
+						 * ring_init's fm_sbus_start (first fm_wr) uses
+						 * check_writes → fm_check_offbus reads PCIe vendor
+						 * ID via /sys/.../config.  After the SCD reset pulse
+						 * the FM6000 PCIe endpoint resets and re-trains; during
+						 * re-training the vendor ID reads 0xFFFF → offbus=1 →
+						 * ring_init exits in 0.3s with rv=-2.
+						 *
+						 * LBUS (pin_strap) becomes 0x208 within 500ms (as
+						 * alive_wait confirms), but PCIe DLLLA takes longer.
+						 * Waiting for DLLLA ensures the vendor ID is valid
+						 * before ring_init's check_writes run. [install274]
+						 */
+						{
+							int rv_link = fm_wait_link_active(10000);
+							char lb[128];
+							snprintf(lb, sizeof lb,
+								"nosd-fm6000: RESET reprogram: post-pulse DLLLA rv=%d [install274]",
+								rv_link);
+							kmsg(lb);
+							fm_clear_offbus(d);
+						}
+
+						/*
+						 * install283: PLL setup before ring_init (boot.c step 6
+						 * pattern), then ring_init with NEXT_SKIP_PLL.
+						 *
+						 * Root cause chain (install278-282):
+						 * - RESET_N (SCD pulse) clears PLL_CTRL_0/1 to 0.
+						 * - PLL_CTRL_0=0 powers down the PLL block entirely.
+						 * - SPICO ROM re-runs after RESET_N and releases JSS from
+						 *   SOFT_RESET (makes JSS active, starts SBus).
+						 * - Writing PLL_CTRL_0=GOLDEN while JSS is active triggers
+						 *   a HARD chip FATAL with internal RESET_N (not merely
+						 *   an SSCHED SRAM wipe). After this internal RESET_N,
+						 *   PLL_CTRL_0 is cleared to 0 again. This repeats: the
+						 *   fm_rd_hazardous + 300ms wait in install282 never sees
+						 *   pll != 0x0 because the FATAL keeps resetting the chip.
+						 *
+						 * Fix (install283): mirror boot.c steps 6-7 exactly.
+						 * Before ring_init: hold JSS in SOFT_RESET, then write
+						 * PLL_CTRL_0=GOLDEN safely (JSS not active, no FATAL),
+						 * wait for PLL lock, then release JSS from SOFT_RESET.
+						 * Then call ring_init with NEXT_SKIP_PLL so its NEXT_CHAIN
+						 * does not re-write PLL_CTRL_0 (already set).
+						 * boot.c: step6 (PLL, JSS held) -> step7 (release JSS)
+						 *         -> ring_init.  We reproduce that here.
+						 * [install283, 2026-11-21]
+						 */
+						{
+							char spll[128];
+
+							/* Hold JSS in SOFT_RESET (also holds SBus). */
+							(void)fm_wr(d, FM6000_SOFT_RESET,
+								    FM6000_SOFT_RESET_JSS);
+							kmsg("nosd-fm6000: RESET reprogram: JSS held in SOFT_RESET [install283]");
+
+							/* Write PLL_CTRL_0=GOLDEN (safe: JSS not active). */
+							(void)fm_wr(d, FM6000_PLL_CTRL_0,
+								    FM6000_PLL_CTRL_0_GOLDEN);
+							(void)fm_wr(d, FM6000_PLL_CTRL_1,
+								    FM6000_PLL_CTRL_1_GOLDEN);
+							(void)fm_wr(d, FM6000_DLL_CTRL,
+								    FM6000_DLL_CTRL_ENABLE);
+
+							/* Wait for PLL lock (fm_rd_hazardous, 300ms). */
+							{
+								uint32_t pll283 = 0;
+								unsigned w283;
+								for (w283 = 0;
+								     w283 < FM6000_PLL_LOCK_MAX_MS;
+								     w283++) {
+									if (fm_rd_hazardous(d,
+									    FM6000_PLL_STATUS,
+									    &pll283) == FM_OK &&
+									    (pll283 & FM6000_PLL_STATUS_LOCKED_ALL) ==
+									    FM6000_PLL_STATUS_LOCKED_ALL)
+										break;
+									usleep(1000);
+								}
+								snprintf(spll, sizeof spll,
+									"nosd-fm6000: RESET reprogram: pre-ring PLL waited=%u pll=0x%08x [install283]",
+									w283, pll283);
+								kmsg(spll);
+							}
+
+							/* Release JSS from SOFT_RESET. */
+							(void)fm_wr(d, FM6000_SOFT_RESET, 0);
+							kmsg("nosd-fm6000: RESET reprogram: JSS released from SOFT_RESET [install283]");
+						}
+
+						{
+							struct fm_ssched_report srep283 = {0};
+							int circulating283 = 0;
+							char sri[128];
+							int rv_ri = FM_EOFFBUS;
+
+							for (int ring_try = 0;
+							     ring_try < 5 &&
+							     rv_ri < 0 && rv_ri != FM_ERR;
+							     ring_try++) {
+								fm_clear_offbus(d);
+								memset(&srep283, 0, sizeof srep283);
+								circulating283 = 0;
+								rv_ri = fm_ssched_ring_init(d,
+									FM_SSCHED_NEXT_CHAIN |
+									FM_SSCHED_NO_SWEEPER |
+									FM_SSCHED_NEXT_SKIP_PLL,
+									&circulating283, &srep283);
+								snprintf(sri, sizeof sri,
+									"nosd-fm6000: RESET reprogram: ring_init try=%d rv=%d circ=%d lf=0x%08x [install283]",
+									ring_try, rv_ri, circulating283,
+									srep283.last_fatal);
+								kmsg(sri);
+								if (rv_ri < 0)
+									nap_ms(2000);
+							}
+						}
 					}
 
 					/* 270c: re-link PCIe after ring_init's FATALs.
@@ -728,31 +900,15 @@ static void *fwd_thread(void *arg)
 						kmsg("nosd-fm6000: RESET reprogram: install270c PCI_DMA_CFG=0x35");
 					}
 
-					/* 270d: BIST + freelists + esched */
+					/* 270d: esched only (bist+freelists moved to
+					 * before ring_init by install277 above) */
 					{
-						struct fm_bist_report brep270 = {0};
 						char bc270[128];
-						int rv_bist = fm_bist_memory_init(d, 0, &brep270);
+						int rv_es = fm_esched_set_cfg2(d, FM_ESCHED_CFG2_SKIP_FP_PORTS);
 						snprintf(bc270, sizeof bc270,
-							"nosd-fm6000: RESET reprogram: bist rv=%d march=%d ms=%u [install270]",
-							rv_bist, brep270.marched, brep270.march_ms);
+							"nosd-fm6000: RESET reprogram: esched_cfg2 rv=%d [install270]",
+							rv_es);
 						kmsg(bc270);
-
-						{
-							int rv_fl = fm_boot_freelists(d);
-							snprintf(bc270, sizeof bc270,
-								"nosd-fm6000: RESET reprogram: freelists rv=%d [install270]",
-								rv_fl);
-							kmsg(bc270);
-						}
-
-						{
-							int rv_es = fm_esched_set_cfg2(d, FM_ESCHED_CFG2_SKIP_FP_PORTS);
-							snprintf(bc270, sizeof bc270,
-								"nosd-fm6000: RESET reprogram: esched_cfg2 rv=%d [install270]",
-								rv_es);
-							kmsg(bc270);
-						}
 					}
 
 					rv_fill4k = fm_mem_fill(d, 0x180000u, 16384u, 0u);
