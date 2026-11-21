@@ -327,34 +327,51 @@ static void program_rings(struct fm_dma *dma, bool stop_engines)
 	}
 
 	/*
-	 * install230: write FM6000_PCI_DMA_CFG (LBUS) + DMA_CFG (BAR0) BEFORE
-	 * DMA_IP.  Root cause of the install229 posted-write stall:
+	 * install230: write DMA_CFG (BAR0) before DMA_IP, matching fpdma_init
+	 * disasm order.  install229 wrote DMA_IP first and stalled the CPU.
 	 *
-	 * fpdma_init's sequence is "config → TX ring → TX_START → …".  The
-	 * "config" step writes DMA_CFG=0x37 (enable) first.  We were writing
-	 * DMA_IP (0x5030) first instead.  DMA_IP is only reachable once the DMA
-	 * engine is enabled by DMA_CFG.  With DMA_CFG bit 1 = 0 (reset state)
-	 * the FM6000 endpoint stalls posted writes to any DMA register, back-
-	 * pressuring the AMD RS780's posted-write buffer and freezing the CPU.
-	 *
-	 * install240: PCI_DMA_CFG (LBUS 0x01418) is the LBUS-side mirror of
-	 * DMA_CFG.  Write 0x37 (run state, bit 1 = 1) via LBUS FIRST so that
-	 * the DMA block accepts BAR0 writes before the first dma_wr_nc.
-	 * Writing 0x35 (bit 1 = 0) leaves the DMA block in reset state; the
-	 * subsequent BAR0 write to DMA_CFG (0x5060) stalls the CPU for exactly
-	 * the same reason DMA_IP did in install229.  [install240, 2026-11-16]
+	 * install242: the true root cause of BAR0 write stalls is NOT DMA_CFG
+	 * bit 1 (we confirmed EDGENOS uses PCI_DMA_CFG=0x35, bit 1=0, and their
+	 * DMA writes succeed).  The actual cause is 0 posted-data (PD) flow-
+	 * control credits from DL_Init:  ring_reinit's fm_pcie_serdes_init
+	 * SET+releases SOFT_RESET_PCIE, clearing FM6000 config space (Command=0,
+	 * BusMaster=0).  With BusMaster=0 the FM6000 does not allocate its DMA
+	 * posted receive buffer, so DL_Init advertises 0 PD credits.  Any BAR0
+	 * Memory Write TLP stalls in the RS780 posted-write buffer.  Fix: main.c
+	 * install242 reprogram BAR0+Command via portio (BusMaster=1) and retrain
+	 * the link so the new DL_Init advertises nonzero PD credits.  By the time
+	 * dma_wr_nc() is called here, PD credits are nonzero.  [install242]
 	 *
 	 * Correct init order (matches fpdma_init disasm, FPDMA.md):
-	 *   1. PCI_DMA_CFG (LBUS) = 0x37  — DMA engine run state via LBUS mirror
-	 *   2. DMA_CFG  (BAR0 0x5060) = 0x37 — confirm run state via BAR0
+	 *   1. PCI_DMA_CFG (LBUS) = 0x37  — LBUS mirror (belt-and-suspenders)
+	 *   2. DMA_CFG  (BAR0 0x5060) = 0x37
 	 *   3. DMA_IP   (BAR0 0x5030) = 0xFFFFFFFF — clear pending interrupts
 	 *   4. DMA_UNK68 / DMA_CFG2 as before
 	 */
 	{
+		/* install263: FM6000_DMA_CFG (BAR0 0x5060) and FM6000_PCI_DMA_CFG
+		 * (LBUS 0x01418) are the SAME register (LBUS word address × 4 =
+		 * BAR0 byte offset; confirmed in scaffold/fm6000_regs.h comment
+		 * "dma_cfg (w0x1418); reset 0x35").  Writing via LBUS is safe;
+		 * writing via BAR0 triggers a HARD FATAL (confirmed with 0x37 and
+		 * 0x35 — skipped in install262).
+		 *
+		 * EDGENOS program_rings writes DMA_CFG=0x37 (not 0x35) via BAR0.
+		 * FM6000_DMA_CFG_ENABLE=0x2 is bit1 ("engine enable — golden EOS").
+		 * Without bit1=1, CMD_TX=0x1 does not advance TX BDs (confirmed:
+		 * install262 LOOP_TEST STILL_READY, tx_tail never moved despite
+		 * CMD_TX written).  Setting bit1 via the safe LBUS path (0x37)
+		 * achieves the same final register state EDGENOS gets via BAR0.
+		 *
+		 * PD credit note: install259 did DL_Init with PCI_DMA_CFG=0x35,
+		 * so the RS780 already has PD=0x35 credits allocated for the FM6000.
+		 * Writing 0x37 here does not retroactively change those credits;
+		 * it only affects the NEXT DL_Init (which the RESET reprogram path
+		 * restores to 0x35 before triggering, keeping DL_Init credit-safe). */
 		int r230 = fm_wr(d, FM6000_PCI_DMA_CFG, 0x37u);
 		char buf230[120];
 		snprintf(buf230, sizeof(buf230),
-			"nosd-fm6000: install241: PCI_DMA_CFG=0x37 LBUS rv=%d [install241]",
+			"nosd-fm6000: install263: PCI_DMA_CFG=0x37 LBUS (enable bit1) rv=%d [install263]",
 			r230);
 		dma_kmsg(buf230);
 	}
@@ -364,26 +381,38 @@ static void program_rings(struct fm_dma *dma, bool stop_engines)
 	 * stalls non-posted transactions until a BAR0 WRITE enables it.
 	 * 100ms settle gives the LBUS-side enablement time to propagate.
 	 * Do NOT add BAR0 reads here; use LBUS readbacks instead.
+	 *
+	 * install262: FM6000_DMA_CFG BAR0 write removed (see above).
+	 * FM6000_DMA_IP is now the first BAR0 write, which is fine —
+	 * all BAR0 writes are CPU-posted and do not stall.
 	 */
 	usleep(100000);	/* 100ms: DMA block LBUS-enable propagation */
-	dma_kmsg("nosd-fm6000: install241: about to write DMA_CFG via BAR0 [install241]");
+	/*
+	 * install267: write DMA_CFG=0x37 via BAR0 (EDGENOS exact order: IP, UNK68, CFG, CFG2).
+	 *
+	 * install262 skipped this because install241 showed DMA_CFG BAR0 write → HARD FATAL.
+	 * That FATAL was caused by the DMA engine touching SPICO-corrupted SRAM ECC as soon as
+	 * bit1 (DMAEn) enabled it.  At install241 time, ring-reinit had not yet run; SAF, parser,
+	 * LBS, and GLORT ECC were all in SPICO-residue state.
+	 *
+	 * After ring-reinit + BIST + pipeline_init, all SRAM ECC is fully restored.  The DMA
+	 * engine can now be enabled without hitting an ECC fault.  The LBUS-only write (install263)
+	 * sets the register visible to management software but does not engage the DMA engine's
+	 * internal BAR0 enable latch — the engine reads DMA_CFG at CMD_TX time via the DMA block's
+	 * own path, not through the LBUS management ring.  Result: tx_tail never advances (DMA TX
+	 * engine sees DMAEn=0 at CMD_TX time), and the engine's NPR-stall watchdog fires after
+	 * ~100ms → FATAL.
+	 *
+	 * Writing DMA_CFG=0x37 via BAR0 (the third BAR0 write, matching EDGENOS fpdma.c:138)
+	 * engages the BAR0-side latch, enabling the DMA TX engine so it can issue Memory Read TLPs
+	 * for descriptor data and advance tx_tail.  [install267]
+	 */
+	dma_kmsg("nosd-fm6000: install267: DMA_CFG=0x37 via BAR0 (enable latch) [install267]");
 	fprintf(stderr, "nosd-fm6000: DMA program_rings: CFG group\n");
-	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* posted write; no completion risk */
-	dma_kmsg("nosd-fm6000: DMA230: DMA_CFG done [install230]");
-	{
-		/* install241: read PCI_DMA_CFG via LBUS (safe — not a BAR0 access)
-		 * to confirm the write reached the FM6000 DMA block. */
-		uint32_t rb = 0;
-		char b241[80];
-		fm_rd(d, FM6000_PCI_DMA_CFG, &rb);
-		snprintf(b241, sizeof(b241),
-			"nosd-fm6000: install241: post-write PCI_DMA_CFG LBUS rb=0x%08x [install241]",
-			rb);
-		dma_kmsg(b241);
-	}
-	dma_wr_nc(d, FM6000_DMA_IP,    0xFFFFFFFFu);	/* clear pending  */
+	dma_wr_nc(d, FM6000_DMA_IP,    0xFFFFFFFFu);	/* clear pending — first BAR0 write */
 	dma_kmsg("nosd-fm6000: DMA230: DMA_IP done [install230]");
 	dma_wr_nc(d, FM6000_DMA_UNK68, 0);
+	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* install267: DMAEn via BAR0 latch */
 	dma_wr_nc(d, FM6000_DMA_CFG2,  FM6000_DMA_CFG2_INIT);
 	dma_kmsg("nosd-fm6000: DMA rings: CFG group done");
 
@@ -487,15 +516,18 @@ int fm_dma_init(struct fm_dma *dma, struct fm6000 *d)
 		FM_DMA_TX_RING, FM_DMA_RX_RING);
 
 	/*
-	 * Self-loop diagnostic: inject one frame to DGLORT=0 (HOST itself).
+	 * DMA TX sanity check: inject one frame to DGLORT=0 (FM6000_GLORT_HOST).
 	 *
-	 * For injection frames (FTYPE=0x0100) the chip routes by DGLORT directly,
-	 * bypassing L2F MAC lookup.  DGLORT=0 = FM6000_GLORT_HOST; the chip should
-	 * deliver the frame back to the DMA RX ring.  If the RX descriptor stays
-	 * RX_READY (0x01) the DMA RX ring is not working -- either the chip rejects
-	 * HOST→HOST loopback or the RX engine itself is broken.  If it becomes DONE
-	 * (0x04), the DMA TX/RX pipeline is intact and the real problem is DGLORT
-	 * routing for et1/et2 (GLORT_TABLE or GLORT_CAM lookup).
+	 * IMPORTANT: STILL_READY is EXPECTED on this chip.  The FM6000 injection
+	 * path is one-directional: injected frames (FTYPE=0x0100) go from CPU to
+	 * an egress port.  DGLORT=0 on an injected frame does NOT cause the chip
+	 * to loop the frame back via DMA RX.  The chip simply routes the frame to
+	 * whatever GLORT_TABLE[0] points at (the CPU GLORT egress entry) and drops
+	 * it there.  EdgeNOS never injects with DGLORT=0 for this reason.
+	 *
+	 * What this test DOES verify: the DMA TX engine is consuming descriptors
+	 * (fm_dma_tx_reclaim advances, tx_sent increments).  DMA RX can only be
+	 * verified by physical port traffic punted by the FFU.
 	 */
 	{
 		static const uint8_t test_pkt[14] = {
@@ -528,7 +560,18 @@ void fm_dma_reprogram(struct fm_dma *dma)
 {
 	/* Caller (fwd_thread) has already called fm_pcie_enable_portio() to
 	 * restore Bus Master after the FATAL_COUNT stability wait.  We only
-	 * need to reprogram the DMA ring addresses. */
+	 * need to reprogram the DMA ring addresses.
+	 *
+	 * install248: CMD_TX restart (in program_rings) resets the DMA engine's
+	 * internal TX tail to BD_BASE (index 0).  The loopback test consumed
+	 * desc[0] and fm_dma_tx_reclaim advanced r->tail to 1; without resetting
+	 * r->head/r->tail here the forwarding engine writes desc[1..N] while the
+	 * DMA engine is stuck at index 0 (status=0x0c, NOT READY), and no frames
+	 * are ever consumed.  Reset both indices so the forwarding engine starts
+	 * at index 0, overwrites desc[0].status with HANDOFF (0x09), sends
+	 * TX_POST, and the restarted DMA engine processes it. */
+	dma->tx.head = 0;
+	dma->tx.tail = 0;
 	program_rings(dma, true);	/* reprogram: engines running, must stop first [install217] */
 }
 

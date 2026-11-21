@@ -160,6 +160,21 @@ const char *fm_ssched_phase_name(int ph);
 int fm_ssched_ring_init(struct fm6000 *d, unsigned flags, int *circulating,
 			struct fm_ssched_report *rep);
 
-int fm_ssched_tx_reload(struct fm6000 *d);
+/*
+ * FM_SSCHED_TX_RELOAD_SKIP_PLL: skip PLL_CTRL_0/1 writes in the JSS re-init
+ * block.  Use after fm_pcie_serdes_init() (SOFT_RESET_PCIE), which zeroes
+ * JSS/TICK registers but is NOT a chip HARD FATAL (FATAL_COUNT unchanged) —
+ * SSCHED SRAM is intact and the PLL hardware is still running.  Writing
+ * PLL_CTRL_0=GOLDEN in that state triggers a true HARD FATAL that wipes SRAM.
+ * With this flag: PLL writes are skipped; the JSS SBus clock enable, JSS=1
+ * and TICK are still issued (SBus 0x45 re-enables the clock path from the
+ * still-running PLL hardware into the JSS domain).
+ * install252 bug: SBus 0x45 was inside the SKIP_PLL block → dead JSS clock.
+ * Fixed in install253 by moving SBus 0x45 outside the SKIP_PLL block.
+ * [install253, 2026-11-18]
+ */
+#define FM_SSCHED_TX_RELOAD_SKIP_PLL (1u << 0)
+
+int fm_ssched_tx_reload(struct fm6000 *d, unsigned flags);
 
 #endif /* NOSAIC_FM6000_SSCHED_H */

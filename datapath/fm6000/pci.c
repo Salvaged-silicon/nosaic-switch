@@ -592,9 +592,21 @@ int fm_reprogram_bar_portio(struct fm6000 *d)
 
 /*
  * Reprogram BAR0 and Command (MemSp + BusMaster + IntDis) in the FM6000's
- * PCIe config space via CF8/CFC portio.  Used after ESCHED FALTALs clear
- * config space; SERR# must be disabled when called (posted config writes
- * complete immediately per install172, no SMM trigger).  [install219]
+ * PCIe config space via CF8/CFC portio.
+ *
+ * Call AFTER fm_pcie_smi_global_disable() (GBL_SMI_EN=0) and BEFORE
+ * fm_pcie_serr_disable(), i.e. with SERR# still enabled.  With GBL_SMI_EN=0
+ * the I/O-port SMI trap fired by iopl/outl does not wake the BIOS SMM handler.
+ * With SERR# enabled there is an error-completion path; Config Writes are
+ * "posted" from the CPU's perspective (install172) — the CPU's outw does not
+ * stall even if the write TLP gets a CTO.
+ *
+ * Do NOT call after fm_pcie_serr_disable(): with SERR# disabled the RS780 has
+ * no error-completion path for a Config Write CTO to bus=2; the CPU stalls
+ * indefinitely (install219/220 confirmed this freeze).
+ *
+ * After this call, invoke fm_pcie_retrain_link() so that DL_Init runs with
+ * BusMaster=1 → FM6000 advertises nonzero posted receive credits.  [install242]
  */
 int fm_reprogram_bar_and_cmd_portio(struct fm6000 *d)
 {
@@ -851,6 +863,54 @@ static uint16_t bus0_read_link_status(uint8_t rp_dev, uint8_t pcie_cap)
 	dword = inl(0xCFC);
 	/* Link Status is the word at byte off; determine which half of dword */
 	return (off & 2u) ? (uint16_t)(dword >> 16) : (uint16_t)(dword & 0xFFFFu);
+}
+
+/*
+ * Trigger a PCIe link retrain on the RS780 root port that bridges bus=2.
+ * Sets the Retrain Link bit (bit 5) in LNKCTL via CF8/CFC (bus=0, never
+ * stalls).  Called after fm_reprogram_bar_and_cmd_portio() sets Command=0x0406
+ * (BusMaster=1) on the FM6000, so the new DL_Init advertises nonzero posted
+ * receive credits.
+ *
+ * Requires GBL_SMI_EN=0 (fm_pcie_smi_global_disable already called) so that
+ * the I/O-port SMI trap fired by iopl/outl does not wake the BIOS SMM handler.
+ * SERR# may be enabled; bus=0 accesses never trigger CTO. [install242]
+ */
+int fm_pcie_retrain_link(void)
+{
+	uint8_t  rp_dev, pcie_cap;
+	uint32_t cf8, dword;
+	uint16_t lnkctl;
+
+	if (iopl(3) != 0)
+		return FM_ERR;
+
+	rp_dev   = find_root_port_for_bus(2);
+	pcie_cap = (rp_dev != 0xFFu) ? bus0_find_pcie_cap(rp_dev, 0) : 0;
+
+	if (rp_dev == 0xFFu || pcie_cap == 0) {
+		iopl(0);
+		return FM_ERR;
+	}
+
+	/*
+	 * LNKCTL is a 16-bit field at pcie_cap+0x10.  For 4-byte-aligned cap
+	 * offsets (enforced by the BIOS), LNKCTL is in the low 16 bits of the
+	 * DWORD at pcie_cap+0x10 → write to 0xCFC.
+	 */
+	cf8 = 0x80000000u | ((uint32_t)rp_dev << 11) | ((pcie_cap + 0x10u) & 0xFCu);
+	outl(cf8, 0xCF8);
+	dword  = inl(0xCFC);
+	lnkctl = (uint16_t)(dword & 0xFFFFu);
+
+	/* Set Retrain Link bit (bit 5) */
+	lnkctl |= (1u << 5);
+
+	outl(cf8, 0xCF8);
+	outw(lnkctl, 0xCFC);
+
+	iopl(0);
+	return FM_OK;
 }
 
 /*

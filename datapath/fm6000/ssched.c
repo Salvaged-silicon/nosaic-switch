@@ -1541,45 +1541,12 @@ no_sweeper:
  * IC=0 on a never-started TX FSM corrupts it.
  * [RE 2026-10-24, install72]
  */
-int fm_ssched_tx_reload(struct fm6000 *d)
+int fm_ssched_tx_reload(struct fm6000 *d, unsigned flags)
 {
 	uint32_t v = 0;
 	unsigned i, r;
 	int rv;
 	char _mb[128];
-
-	/*
-	 * Re-write TX and RX NEXT_PORT.
-	 *
-	 * Chip resets from the pre-DMA SPICO stability wait wipe SSCHED SRAM
-	 * including TX_NEXT_PORT and RX_NEXT_PORT.  With NEXT_PORT zeroed the
-	 * rings loop at port 0 and never advance.  Re-write the same NEXT_CHAIN
-	 * table ring_init wrote for both directions.
-	 * [RE 2026-10-25, install79; RX added install117]
-	 */
-	{
-		uint32_t tnp[FM6000_SSCHED_NEXT_PORT_WORDS];
-		unsigned n = sizeof ssched_ring;
-
-		for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++)
-			tnp[i] = 0;
-		for (i = 0; i < n; i++) {
-			unsigned here = ssched_ring[i];
-			unsigned next = (i + 1 == n) ? (unsigned)SSCHED_MGMT_PORT
-						     : (unsigned)ssched_ring[i + 1];
-			ring_next(tnp, here, next);
-		}
-		ring_next(tnp, SSCHED_MGMT_PORT, (unsigned)ssched_ring[0]);
-
-		ssched_dbg("nosd-fm6000: pre-DMA TX reload: re-writing TX+RX NEXT_PORT");
-		for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++) {
-			if ((rv = fm_wr(d, FM6000_SSCHED_TX_NEXT_PORT(i), tnp[i])) != FM_OK)
-				return rv;
-			if ((rv = fm_wr(d, FM6000_SSCHED_RX_NEXT_PORT(i), tnp[i])) != FM_OK)
-				return rv;
-		}
-		ssched_dbg("nosd-fm6000: pre-DMA TX reload: TX+RX NEXT_PORT done");
-	}
 
 	/*
 	 * Stop TX and RX (IC=0) only if IC is currently non-zero.
@@ -1669,8 +1636,9 @@ int fm_ssched_tx_reload(struct fm6000 *d)
 
 		snprintf(_jmsg, sizeof _jmsg,
 			"nosd-fm6000: pre-DMA TX reload: PLL re-init + JSS enable"
-			" (ctrl0=0x%08x pll=0x%08x jss=%u tick=%u reinit=%d)",
-			_ctrl0, _pll, _jss, _tick, _need_reinit);
+			" (ctrl0=0x%08x pll=0x%08x jss=%u tick=%u reinit=%d skip_pll=%d)",
+			_ctrl0, _pll, _jss, _tick, _need_reinit,
+			!!(flags & FM_SSCHED_TX_RELOAD_SKIP_PLL));
 		ssched_dbg(_jmsg);
 
 		if (_need_reinit) {
@@ -1679,29 +1647,55 @@ int fm_ssched_tx_reload(struct fm6000 *d)
 			 * Re-apply the full sequence.  PLL re-write may itself
 			 * trigger another FATAL; the fm_rd_hazardous PLL poll and
 			 * (void) SBus write below handle that safely.
+			 *
+			 * FM_SSCHED_TX_RELOAD_SKIP_PLL: skip PLL_CTRL_0/1 writes.
+			 * Use after SOFT_RESET_PCIE (install246) which is NOT a
+			 * chip HARD FATAL — SSCHED SRAM is intact and PLL hardware
+			 * is still running.  Writing PLL_CTRL_0=GOLDEN there
+			 * triggers a HARD FATAL that wipes SRAM.  JSS and TICK are
+			 * still written (zeroed by SOFT_RESET_PCIE).
+			 * [install252, 2026-11-18]
 			 */
-			if ((rv = fm_wr(d, FM6000_PLL_CTRL_0, FM6000_PLL_CTRL_0_GOLDEN)) != FM_OK)
-				return rv;
-			if ((rv = fm_wr(d, FM6000_PLL_CTRL_1, FM6000_PLL_CTRL_1_GOLDEN)) != FM_OK)
-				return rv;
-			if ((rv = fm_wr(d, FM6000_DLL_CTRL,   FM6000_DLL_CTRL_ENABLE))   != FM_OK)
-				return rv;
+			if (!(flags & FM_SSCHED_TX_RELOAD_SKIP_PLL)) {
+				if ((rv = fm_wr(d, FM6000_PLL_CTRL_0, FM6000_PLL_CTRL_0_GOLDEN)) != FM_OK)
+					return rv;
+				if ((rv = fm_wr(d, FM6000_PLL_CTRL_1, FM6000_PLL_CTRL_1_GOLDEN)) != FM_OK)
+					return rv;
+				if ((rv = fm_wr(d, FM6000_DLL_CTRL,   FM6000_DLL_CTRL_ENABLE))   != FM_OK)
+					return rv;
 
-			/* Wait for PLL lock via hazardous read (no fm_check_offbus). */
-			for (_w = 0; _w < FM6000_PLL_LOCK_MAX_MS; _w++) {
-				if (fm_rd_hazardous(d, FM6000_PLL_STATUS, &_pll) != FM_OK)
-					break;
-				if ((_pll & FM6000_PLL_STATUS_LOCKED_ALL) ==
-				    FM6000_PLL_STATUS_LOCKED_ALL)
-					break;
-				usleep(1000);
+				/* Wait for PLL lock via hazardous read (no fm_check_offbus). */
+				for (_w = 0; _w < FM6000_PLL_LOCK_MAX_MS; _w++) {
+					if (fm_rd_hazardous(d, FM6000_PLL_STATUS, &_pll) != FM_OK)
+						break;
+					if ((_pll & FM6000_PLL_STATUS_LOCKED_ALL) ==
+					    FM6000_PLL_STATUS_LOCKED_ALL)
+						break;
+					usleep(1000);
+				}
+				snprintf(_jmsg, sizeof _jmsg,
+					"nosd-fm6000: pre-DMA TX reload: PLL_STATUS=0x%08x waited=%ums",
+					_pll, _w);
+				ssched_dbg(_jmsg);
 			}
-			snprintf(_jmsg, sizeof _jmsg,
-				"nosd-fm6000: pre-DMA TX reload: PLL_STATUS=0x%08x waited=%ums",
-				_pll, _w);
-			ssched_dbg(_jmsg);
 
-			/* JSS SBus clock enable; ignore failure (chip may be mid-FATAL). */
+			/*
+			 * JSS SBus clock enable — ALWAYS, even with SKIP_PLL.
+			 *
+			 * install252 bug: this was inside the SKIP_PLL block.
+			 * fm_sbus_write(0x45, 0x2a, 0x16) enables the JSS internal
+			 * clock synthesiser.  JSS_CFG_8=1 alone does NOT start the
+			 * synthesiser; it only tells the SSCHED domain to use the
+			 * JSS clock.  Without the SBus write the JSS clock is dead
+			 * even with JSS_CFG_8=1 — TX_FOUND=0, ring never circulates.
+			 *
+			 * After SOFT_RESET_PCIE (install246), the PLL hardware keeps
+			 * running at GOLDEN frequency (registers are cleared, hardware
+			 * is not).  The SBus write here re-enables the JSS clock path
+			 * from that still-running PLL into the SSCHED domain.
+			 * Ignore failure (chip may be mid-FATAL in the non-SKIP path).
+			 * [install253, 2026-11-18]
+			 */
 			(void)fm_sbus_write(d, 0x45, 0x2a, 0x16u);
 
 			if ((rv = fm_wr(d, FM6000_JSS_CFG_8,       0x00000001u)) != FM_OK)
@@ -1711,6 +1705,45 @@ int fm_ssched_tx_reload(struct fm6000 *d)
 		}
 
 		ssched_dbg("nosd-fm6000: pre-DMA TX reload: JSS enabled");
+	}
+
+	/*
+	 * Re-write TX and RX NEXT_PORT — after PLL/JSS reinit.
+	 *
+	 * ⚠ This block must follow the JSS/PLL reinit above, not precede it.
+	 * When PLL_CTRL_0 is 0 (cleared by any chip FATAL), writing PLL_CTRL_0
+	 * to its golden value triggers a PLL re-lock cycle that fires another
+	 * chip FATAL.  That FATAL wipes all SSCHED SRAM including NEXT_PORT.
+	 * If NEXT_PORT is written before the PLL reinit block, the FATAL zeros
+	 * it again, leaving the ring looping at port 0 (TX_FOUND=0, STUCK).
+	 *
+	 * By placing this write after the 80ms PLL_STATUS poll (the FATAL fires
+	 * and settles during that wait), NEXT_PORT is written on a stable chip
+	 * and sticks.  RX was added in install117; ordering fix is install250.
+	 * [RE 2026-10-25, install79; RX install117; order fix install250]
+	 */
+	{
+		uint32_t tnp[FM6000_SSCHED_NEXT_PORT_WORDS];
+		unsigned n = sizeof ssched_ring;
+
+		for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++)
+			tnp[i] = 0;
+		for (i = 0; i < n; i++) {
+			unsigned here = ssched_ring[i];
+			unsigned next = (i + 1 == n) ? (unsigned)SSCHED_MGMT_PORT
+						     : (unsigned)ssched_ring[i + 1];
+			ring_next(tnp, here, next);
+		}
+		ring_next(tnp, SSCHED_MGMT_PORT, (unsigned)ssched_ring[0]);
+
+		ssched_dbg("nosd-fm6000: pre-DMA TX reload: re-writing TX+RX NEXT_PORT");
+		for (i = 0; i < FM6000_SSCHED_NEXT_PORT_WORDS; i++) {
+			if ((rv = fm_wr(d, FM6000_SSCHED_TX_NEXT_PORT(i), tnp[i])) != FM_OK)
+				return rv;
+			if ((rv = fm_wr(d, FM6000_SSCHED_RX_NEXT_PORT(i), tnp[i])) != FM_OK)
+				return rv;
+		}
+		ssched_dbg("nosd-fm6000: pre-DMA TX reload: TX+RX NEXT_PORT done");
 	}
 
 	/* Reload 64 TX and RX tokens into their FIFOs. */
