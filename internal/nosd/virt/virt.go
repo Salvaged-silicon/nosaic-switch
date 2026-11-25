@@ -249,6 +249,10 @@ func (s *Switch) SetPortMTU(name string, mtu int) error {
 
 // PortCounters reads sysfs rather than parsing ip output: the numbers are
 // there directly, and it works even when the interface is down.
+func (s *Switch) SetPortBreakout(name, mode string) error {
+	return switchapi.ErrUnsupported
+}
+
 func (s *Switch) PortCounters(name string) (switchapi.Counters, error) {
 	if err := s.known(name); err != nil {
 		return switchapi.Counters{}, err

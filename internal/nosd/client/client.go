@@ -265,6 +265,10 @@ func (c *Client) SetPortAdmin(name string, up bool) error {
 	return c.call(proto.OpSetPortAdmin, proto.PortArgs{Name: name, Up: up}, nil)
 }
 
+func (c *Client) SetPortBreakout(name, mode string) error {
+	return c.call(proto.OpSetPortBreakout, proto.PortBreakoutArgs{Name: name, Mode: mode}, nil)
+}
+
 func (c *Client) SetPortMTU(name string, mtu int) error {
 	return c.call(proto.OpSetPortMTU, proto.PortArgs{Name: name, MTU: mtu}, nil)
 }

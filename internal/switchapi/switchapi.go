@@ -499,6 +499,7 @@ type Switch interface {
 	PortStatus(name string) (PortStatus, error)
 	SetPortAdmin(name string, up bool) error
 	SetPortMTU(name string, mtu int) error
+	SetPortBreakout(name string, mode string) error
 	PortCounters(name string) (Counters, error)
 
 	// VLANs.

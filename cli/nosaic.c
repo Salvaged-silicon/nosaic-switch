@@ -55,6 +55,8 @@ static const char usage[] =
 "  vlan add|del <vid>      create or remove a VLAN\n"
 "  switchport <port> access <vid> | trunk <vid,...> [native <vid>] | none\n"
 "                          a port's whole VLAN membership; none routes again\n"
+"  port breakout <port> <40g|4x10g>\n"
+"                          switch a QSFP+ cage between 40G and 4x10G\n"
 "  svi add|del <vid>       the routed interface vlan<vid>\n"
 "  lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow]\n"
 "      [mode active|passive] [port-priority <n>] | none\n"
@@ -441,6 +443,8 @@ int main(int argc, char **argv)
 		return nosaic_svi_cmd(argc, argv);
 	if (strcmp(argv[1], "switchport") == 0)
 		return nosaic_switchport_cmd(argc, argv);
+	if (strcmp(argv[1], "port") == 0)
+		return nosaic_port_cmd(argc, argv);
 	if (strcmp(argv[1], "lag") == 0)
 		return nosaic_lag_cmd(argc, argv);
 	if (strcmp(argv[1], "lacp") == 0)

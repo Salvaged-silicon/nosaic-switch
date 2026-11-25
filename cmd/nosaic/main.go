@@ -71,6 +71,8 @@ on a running switch
   switchport <port> trunk <vid,...> tpid 0x88a8   an 802.1ad (QinQ) provider trunk
   switchport <port> tunnel <svid>  a QinQ customer port of service VLAN svid
   switchport <port> none       a port's whole VLAN membership; none routes again
+  port breakout <port> <40g|4x10g>
+                               switch a QSFP+ cage between 40G and 4x10G
   svi add|del <vid>            the routed interface vlan<vid>
   lag <poN> lacp|static <port,...> [mlag <id>] [rate fast|slow] [mode active|passive] [port-priority <n>]
   lacp system-priority <n>     the switch's LACP system priority
@@ -208,7 +210,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway", "mac":
+	case "show", "interface", "port", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway", "mac":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -480,6 +482,7 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 		}
 	}
 
+	bootMiB, slotMiB, _ := b.Layout()
 	img := boot.Image{
 		Kernel: res.Kernel, Initramfs: res.Initramfs,
 		Squashfs: res.Squashfs, Disk: res.Disk,
@@ -492,6 +495,8 @@ func buildImage(root, boardID, profileOverride string, ramBoot, allowStale bool)
 		FITHash:         b.UBootFITHash,
 		AbootMaxHWEpoch: b.AbootMaxHWEpoch,
 		KernelParams:    b.KernelParams,
+		BootMiB:         bootMiB,
+		SlotMiB:         slotMiB,
 		RAMBoot:         ramBoot,
 	}
 	outDir := filepath.Join(root, "out", "images", boardID)
@@ -799,6 +804,9 @@ func switchCmd(args []string) error {
 		}
 		return fmt.Errorf("unknown interface command %q", args[2])
 
+	case "port":
+		return portCmd(c, args[1:])
+
 	case "route":
 		return routeCmd(c, args[1:])
 
@@ -828,6 +836,17 @@ func switchCmd(args []string) error {
 		return gatewayCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
+}
+
+func portCmd(c *nosdclient.Client, args []string) error {
+	if len(args) != 3 || args[0] != "breakout" || (args[2] != "40g" && args[2] != "4x10g") {
+		return fmt.Errorf("usage: nosaic port breakout <port> <40g|4x10g>")
+	}
+	if err := c.SetPortBreakout(args[1], args[2]); err != nil {
+		return err
+	}
+	fmt.Printf("%s set to %s\n", args[1], args[2])
+	return nil
 }
 
 func showCmd(c *nosdclient.Client, what string, rest []string) error {

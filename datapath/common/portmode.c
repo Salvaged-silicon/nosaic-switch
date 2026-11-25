@@ -83,30 +83,51 @@ int nosaic_portmode_apply(int unit)
 		}
 
 		/*
-		 * ⚠ THE THREE LOGICAL PORTS AFTER THE BASE MUST BE FREE.
-		 *
-		 * In 40G mode they are the cage's own lanes and carry no map
-		 * entry of their own. If one of them DOES have an entry, the map
-		 * is not what this code thinks it is -- refusing is much better
-		 * than overwriting a port that belongs to something else.
+		 * Prefer base+1..3 when free (the Arista layout: 49, 53, 57, 61).
+		 * If occupied (e.g. Dell S6000-ON where 32 cages are 1..32), allocate
+		 * three free logical ports in 1..128.
 		 */
+		int subs[LANES];
+		subs[0] = base;
+		int need_alloc = 0;
 		for (i = 1; i < LANES; i++) {
 			snprintf(key, sizeof(key), "portmap_%d", base + i);
 			if (nosaic_props_get_unit(key, unit) != NULL) {
-				fprintf(stderr, "portmode: port %d cannot break out because "
-					"port %d already has a portmap entry\n",
-					base, base + i);
+				need_alloc = 1;
+				break;
+			}
+			subs[i] = base + i;
+		}
+		if (need_alloc) {
+			int cand = 33, found = 1;
+			for (; cand <= 128 && found < LANES; cand++) {
+				snprintf(key, sizeof(key), "portmap_%d", cand);
+				if (nosaic_props_get_unit(key, unit) == NULL) {
+					subs[found++] = cand;
+				}
+			}
+			if (found < LANES) {
+				fprintf(stderr, "portmode: no free logical ports to break out port %d\n",
+					base);
 				return -1;
 			}
 		}
 
 		for (i = 0; i < LANES; i++) {
-			snprintf(key, sizeof(key), "portmap_%d.%d", base + i, unit);
+			snprintf(key, sizeof(key), "portmap_%d.%d", subs[i], unit);
 			snprintf(val, sizeof(val), "%d:10", phys + i);
 			if (nosaic_props_set(key, val) != 0) {
 				fprintf(stderr, "portmode: no room to break out port %d\n",
 					base);
 				return -1;
+			}
+			if (i > 0) {
+				snprintf(key, sizeof(key), "tap_swp%d", subs[i]);
+				if (nosaic_props_get(key) == NULL) {
+					snprintf(val, sizeof(val), "%d:%d:1500",
+						 subs[i], 1000 + subs[i]);
+					nosaic_props_set(key, val);
+				}
 			}
 		}
 		/* The unsuffixed form, if the generated map used one, would now
@@ -117,7 +138,7 @@ int nosaic_portmode_apply(int unit)
 		printf("portmode: port %d broken out -- %d:10 %d:10 %d:10 %d:10 "
 		       "on logical %d %d %d %d\n", base,
 		       phys, phys + 1, phys + 2, phys + 3,
-		       base, base + 1, base + 2, base + 3);
+		       subs[0], subs[1], subs[2], subs[3]);
 		broken++;
 	}
 	if (broken)

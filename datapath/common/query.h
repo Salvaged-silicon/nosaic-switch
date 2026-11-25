@@ -34,6 +34,14 @@ struct nosaic_dmapool;
 void nosaic_query_set_dmapool(struct nosaic_dmapool *p);
 
 /*
+ * Register a live port-breakout handler ("40g" <-> "4x10g").
+ * Optional: datapaths that do not register one return ErrUnsupported.
+ */
+void nosaic_query_set_breakout(int (*fn)(int unit, const char *name,
+					 const char *mode,
+					 char *err, int errlen));
+
+/*
  * Let the socket dump the external PHYs' own status registers.
  *
  * Optional and per datapath, for the same reason as the DMA pool above: only

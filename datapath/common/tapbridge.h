@@ -14,7 +14,7 @@
  * got 8, silently, and the network service then waited out its full deadline
  * for interfaces that were never going to be made.
  */
-#define NOSAIC_MAX_TAPS 64
+#define NOSAIC_MAX_TAPS 132
 
 /* One hardware port presented to Linux under a name. */
 struct tap_spec {
@@ -80,6 +80,11 @@ int nosaic_tap_aging_get(void);
 int nosaic_tap_count(void);
 int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
 		    unsigned char mac[6]);
+
+/* Dynamically add or remove a front-panel port tap (used by live flexport). */
+int  nosaic_tap_port_add(int unit, const char *name, int port, int vlan, int mtu,
+			 unsigned char mac[6]);
+void nosaic_tap_port_del(int port, char *name_out, size_t name_len);
 
 /*
  * A tap for a routed VLAN interface, named name (vlan<VID>), carrying VID

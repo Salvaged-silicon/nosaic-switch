@@ -216,6 +216,10 @@ func (s *Switch) SetPortMTU(name string, mtu int) error {
 	return nil
 }
 
+func (s *Switch) SetPortBreakout(name, mode string) error {
+	return switchapi.ErrUnsupported
+}
+
 func (s *Switch) PortCounters(name string) (switchapi.Counters, error) {
 	if !s.cfg.Caps.Counters {
 		return switchapi.Counters{}, switchapi.Unsupported("counters")

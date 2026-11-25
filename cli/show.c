@@ -409,3 +409,29 @@ int nosaic_show_acl(void)
 	emit(&t);
 	return 0;
 }
+
+int nosaic_port_cmd(int argc, char **argv)
+{
+	char req[256], *resp;
+
+	if (argc != 5 || strcmp(argv[2], "breakout") != 0 ||
+	    (strcmp(argv[4], "40g") != 0 && strcmp(argv[4], "4x10g") != 0)) {
+		fprintf(stderr, "usage: nosaic port breakout <port> <40g|4x10g>\n");
+		return 2;
+	}
+	snprintf(req, sizeof(req),
+		 "{\"op\":\"port.breakout\",\"args\":{\"name\":\"%s\",\"mode\":\"%s\"}}",
+		 argv[3], argv[4]);
+	resp = nosaic_query_once(NOSAIC_QUERY_SOCKET, req);
+	if (resp == NULL) {
+		no_datapath();
+		return 1;
+	}
+	if (refused(resp)) {
+		free(resp);
+		return 1;
+	}
+	free(resp);
+	printf("%s set to %s\n", argv[3], argv[4]);
+	return 0;
+}

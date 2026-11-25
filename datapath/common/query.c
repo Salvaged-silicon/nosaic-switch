@@ -58,6 +58,16 @@ static int query_unit;
  * see nosaic_query_set_dmapool. */
 static struct nosaic_dmapool *query_pool;
 
+static int (*breakout_fn)(int unit, const char *name, const char *mode,
+			  char *err, int errlen);
+
+void nosaic_query_set_breakout(int (*fn)(int unit, const char *name,
+					 const char *mode,
+					 char *err, int errlen))
+{
+	breakout_fn = fn;
+}
+
 void nosaic_query_set_dmapool(struct nosaic_dmapool *p)
 {
 	query_pool = p;
@@ -163,7 +173,7 @@ static void req_str(const char *req, const char *key, char *out, size_t len)
  * no matter what the chip did, which is exactly the failure this exists to
  * catch.
  */
-static void port_json(FILE *out, int i)
+static int port_json(FILE *out, int i, int first)
 {
 	const char *name = NULL;
 	unsigned char mac[6];
@@ -175,7 +185,7 @@ static void port_json(FILE *out, int i)
 	int cpu_member = -1, lag;
 
 	if (nosaic_tap_info(i, &name, &port, &want_vlan, &want_mtu, mac) != 0)
-		return;
+		return 0;
 
 	if (bcm_port_link_status_get(query_unit, port, &link) != BCM_E_NONE)
 		link = -1;
@@ -225,10 +235,11 @@ static void port_json(FILE *out, int i)
 		"\"cpu_member\":%d,\"frame_max\":%d,\"speed\":%d,"
 		"\"switched\":%d,\"lag\":\"%s\","
 		"\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\"}",
-		i ? "," : "", name, port, link, enabled, (int)pvid, want_vlan,
+		first ? "" : ",", name, port, link, enabled, (int)pvid, want_vlan,
 		(int)stg, stp, cpu_member, frame_max, speed,
 		nosaic_vlan_port_switched(port) ? 1 : 0, lag ? nosaic_lag_name(lag) : "",
 		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+	return 1;
 }
 
 /*
@@ -460,6 +471,15 @@ static int handle_lag(FILE *out, const char *req)
 		     nosaic_gw_del(svi, prefix, err, sizeof(err));
 	} else if (strcmp(op, "port.admin") == 0) {
 		rv = port_admin(name, strstr(req, "\"up\":true") != NULL, err, sizeof(err));
+	} else if (strcmp(op, "port.breakout") == 0) {
+		char mode[32] = "";
+		req_str(req, "mode", mode, sizeof(mode));
+		if (breakout_fn == NULL) {
+			fprintf(out, "{\"ok\":false,\"unsupported\":true,"
+				     "\"error\":\"port breakout not supported by this datapath\"}\n");
+			return 1;
+		}
+		rv = breakout_fn(query_unit, name, mode, err, sizeof(err));
 	} else {
 		return 0;
 	}
@@ -663,9 +683,11 @@ static void handle(FILE *out, const char *req)
 	}
 
 	if (strstr(req, "\"asic.ports\"") != NULL) {
+		int emitted = 0;
+
 		fprintf(out, "{\"ok\":true,\"result\":[");
 		for (i = 0; i < nosaic_tap_count(); i++)
-			port_json(out, i);
+			emitted += port_json(out, i, emitted == 0);
 		fprintf(out, "]}\n");
 		return;
 	}
@@ -753,6 +775,11 @@ static void handle(FILE *out, const char *req)
 		 * are SVIs. L2Learning stays false: the chip learns, but l2.fdb
 		 * is not served, and the capability is about the call.
 		 */
+		int active_ports = 0;
+
+		for (i = 0; i < nosaic_tap_count(); i++)
+			if (nosaic_tap_info(i, NULL, NULL, NULL, NULL, NULL) == 0)
+				active_ports++;
 		fprintf(out,
 			"{\"ok\":true,\"result\":{\"Contract\":\"1.13\","
 			"\"Driver\":\"%s\",\"MaxPorts\":%d,\"VLANs\":true,"
@@ -763,7 +790,7 @@ static void handle(FILE *out, const char *req)
 			"\"LAGs\":%s,\"MaxLAGs\":%d,\"MaxLAGMembers\":%d,"
 			"\"LACP\":%s,\"STP\":%s,\"MLAG\":%s,\"VirtualGateway\":%s,"
 			"\"VirtualGateway6\":%s,\"MACAging\":true,\"QinQ\":true}}\n",
-			NOSAIC_QUERY_DRIVER, nosaic_tap_count(), maxv4,
+			NOSAIC_QUERY_DRIVER, active_ports, maxv4,
 			maxecmp > 1 ? "true" : "false", maxecmp,
 			acl.v4 ? "true" : "false", acl.v4_total,
 			acl.v6 ? "true" : "false", acl.v6_total,
@@ -807,7 +834,7 @@ static void handle(FILE *out, const char *req)
 
 	if (strstr(req, "\"ports\"") != NULL &&
 	    strstr(req, "\"asic.ports\"") == NULL) {
-		int i;
+		int i, emitted = 0;
 
 		fprintf(out, "{\"ok\":true,\"result\":[");
 		for (i = 0; i < nosaic_tap_count(); i++) {
@@ -818,7 +845,7 @@ static void handle(FILE *out, const char *req)
 			if (nosaic_tap_info(i, &name, &port, &vlan, &mtu, mac) != 0)
 				continue;
 			fprintf(out, "%s{\"Name\":\"%s\",\"Index\":%d}",
-				i ? "," : "", name, port);
+				emitted++ ? "," : "", name, port);
 		}
 		fprintf(out, "]}\n");
 		return;

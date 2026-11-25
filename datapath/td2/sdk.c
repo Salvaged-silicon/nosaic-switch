@@ -37,6 +37,14 @@
 
 /* The SDK's own headers. Included last: they define types with names general
  * enough to collide with anything declared after them. */
+#include <errno.h>
+#include <pthread.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include "tapbridge.h"
+#include "l3sync.h"
+#include "vlan.h"
+#include "lag.h"
 #include <sal/types.h>
 #include <sal/core/boot.h>
 #include <sal/appl/sal.h>
@@ -1170,5 +1178,274 @@ int nosaic_sdk_ports(int unit)
 		       "does not reach the cages that are -- which is exactly what this\n"
 		       "survey exists to tell apart, and it cannot until something is\n"
 		       "known to be connected.\n");
+	return 0;
+}
+
+static void *restart_after_reply(void *arg)
+{
+	(void)arg;
+	usleep(200000);
+	printf("portmode: restarting nosd-td2 to apply breakout change\n");
+	fflush(stdout);
+	_exit(0);
+	return NULL;
+}
+
+static void schedule_restart(void)
+{
+	pthread_t tid;
+	pthread_attr_t attr;
+
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	if (pthread_create(&tid, &attr, restart_after_reply, NULL) != 0)
+		_exit(0);
+	pthread_attr_destroy(&attr);
+}
+
+static int persist_portmode(int base, const char *mode, char *err, int errlen)
+{
+	const char *path = "/mnt/data/config/portmode.conf";
+	const char *tmp = "/mnt/data/config/portmode.conf.tmp";
+	char key[48];
+	FILE *in, *out;
+	char line[256];
+
+	snprintf(key, sizeof(key), "nosaic_portmode_%d=", base);
+	(void)mkdir("/mnt/data/config", 0755);
+	out = fopen(tmp, "w");
+	if (out == NULL) {
+		snprintf(err, errlen, "open %s: %s", tmp, strerror(errno));
+		return -1;
+	}
+	in = fopen(path, "r");
+	if (in != NULL) {
+		while (fgets(line, sizeof(line), in) != NULL) {
+			if (strncmp(line, key, strlen(key)) != 0)
+				fputs(line, out);
+		}
+		fclose(in);
+	}
+	fprintf(out, "%s%s\n", key, mode);
+	if (fclose(out) != 0) {
+		snprintf(err, errlen, "write %s: %s", tmp, strerror(errno));
+		return -1;
+	}
+	if (rename(tmp, path) != 0) {
+		snprintf(err, errlen, "rename %s: %s", path, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+int nosaic_sdk_port_breakout(int unit, const char *name, const char *mode,
+			     char *err, int errlen)
+{
+	int base, phys = 0, speed = 0, i, rv;
+	char key[48];
+	const char *map;
+
+	if (strncmp(name, "swp", 3) != 0 || atoi(name + 3) <= 0) {
+		snprintf(err, errlen, "invalid port %s (expected swp<N>)", name);
+		return -1;
+	}
+	base = atoi(name + 3);
+	if (strcmp(mode, "4x10g") != 0 && strcmp(mode, "40g") != 0) {
+		snprintf(err, errlen, "unsupported breakout mode %s (use 40g or 4x10g)", mode);
+		return -1;
+	}
+
+	snprintf(key, sizeof(key), "portmap_%d", base);
+	map = nosaic_props_get_unit(key, unit);
+	if (map == NULL) {
+		snprintf(err, errlen, "port %s has no portmap entry", name);
+		return -1;
+	}
+	if (sscanf(map, "%d:%d", &phys, &speed) != 2 || phys <= 0) {
+		snprintf(err, errlen, "unreadable portmap entry %s for %s", map, name);
+		return -1;
+	}
+
+	if (strcmp(mode, "4x10g") == 0) {
+		int subs[4] = { base, 0, 0, 0 };
+		int need_alloc = 0;
+		bcm_port_resource_t res[5];
+
+		if (speed != 40 && speed != 40000) {
+			snprintf(err, errlen, "port %s is already %dG, not 40G", name, speed);
+			return -1;
+		}
+		if (nosaic_vlan_port_switched(base) || nosaic_lag_port_claimed(base)) {
+			snprintf(err, errlen, "port %s is switched or in a LAG; remove it first", name);
+			return -1;
+		}
+
+		for (i = 1; i < 4; i++) {
+			snprintf(key, sizeof(key), "portmap_%d", base + i);
+			if (nosaic_props_get_unit(key, unit) != NULL) {
+				need_alloc = 1;
+				break;
+			}
+			subs[i] = base + i;
+		}
+		if (need_alloc) {
+			int cand = 33, found = 1;
+			for (; cand <= 128 && found < 4; cand++) {
+				snprintf(key, sizeof(key), "portmap_%d", cand);
+				if (nosaic_props_get_unit(key, unit) == NULL)
+					subs[found++] = cand;
+			}
+			if (found < 4) {
+				snprintf(err, errlen, "no free logical ports for %s breakout", name);
+				return -1;
+			}
+		}
+
+		bcm_port_enable_set(unit, base, 0);
+		bcm_port_resource_t_init(&res[0]);
+		res[0].port = base;
+		res[0].physical_port = -1;
+		for (i = 0; i < 4; i++) {
+			bcm_port_resource_t_init(&res[1 + i]);
+			res[1 + i].port = subs[i];
+			res[1 + i].physical_port = phys + i;
+			res[1 + i].speed = 10000;
+			res[1 + i].lanes = 1;
+			res[1 + i].encap = BCM_PORT_ENCAP_IEEE;
+		}
+		rv = bcm_port_resource_multi_set(unit, 5, res);
+		if (rv == BCM_E_UNAVAIL) {
+			/* Trident II (BCM56850) does not implement live
+			 * bcm_port_resource_multi_set; persist portmode.conf
+			 * and let the supervisor restart nosd-td2 cleanly. */
+			bcm_port_enable_set(unit, base, 1);
+			if (persist_portmode(base, mode, err, errlen) != 0)
+				return -1;
+			schedule_restart();
+			return 0;
+		}
+		if (rv != BCM_E_NONE) {
+			bcm_port_enable_set(unit, base, 1);
+			snprintf(err, errlen, "flexport 4x10g failed: %s (%d)", bcm_errmsg(rv), rv);
+			return -1;
+		}
+		snprintf(key, sizeof(key), "portmap_%d", base);
+		nosaic_props_unset(key);
+		{
+			char oldname[32];
+			nosaic_tap_port_del(base, oldname, sizeof(oldname));
+			if (oldname[0] != '\0')
+				nosaic_l3_del_intf(oldname);
+		}
+		for (i = 0; i < 4; i++) {
+			char val[32], tname[32];
+			unsigned char mac[6];
+			int vid = 1000 + subs[i];
+
+			snprintf(key, sizeof(key), "portmap_%d.%d", subs[i], unit);
+			snprintf(val, sizeof(val), "%d:10", phys + i);
+			nosaic_props_set(key, val);
+			bcm_port_enable_set(unit, subs[i], 1);
+			bcm_linkscan_mode_set(unit, subs[i], BCM_LINKSCAN_MODE_SW);
+			if (i == 0)
+				snprintf(tname, sizeof(tname), "%s", name);
+			else
+				snprintf(tname, sizeof(tname), "swp%d", subs[i]);
+			if (nosaic_tap_port_add(unit, tname, subs[i], vid, 1500, mac) == 0)
+				nosaic_l3_add_intf(unit, tname, subs[i], vid, mac, 1500);
+		}
+	} else {
+		bcm_port_resource_t res[5];
+		int del_ports[4] = { base, 0, 0, 0 };
+		int nres = 0, p;
+
+		if (speed == 40 || speed == 40000) {
+			snprintf(err, errlen, "port %s is already 40G", name);
+			return -1;
+		}
+		if ((phys - 1) % 4 != 0) {
+			snprintf(err, errlen, "port %s (lane %d) is a breakout sub-port; "
+				 "specify the cage's base port", name, phys);
+			return -1;
+		}
+
+		for (p = 1; p <= 128; p++) {
+			int p_phys = 0, p_spd = 0;
+			const char *pm;
+			snprintf(key, sizeof(key), "portmap_%d", p);
+			pm = nosaic_props_get_unit(key, unit);
+			if (pm != NULL && sscanf(pm, "%d:%d", &p_phys, &p_spd) == 2 &&
+			    p_phys >= phys && p_phys < phys + 4) {
+				if (nosaic_vlan_port_switched(p) || nosaic_lag_port_claimed(p)) {
+					snprintf(err, errlen, "port swp%d is switched or in a LAG; "
+						 "remove it first", p);
+					return -1;
+				}
+				del_ports[nres++] = p;
+				if (nres == 4)
+					break;
+			}
+		}
+		if (nres != 4) {
+			snprintf(err, errlen, "port %s has %d breakout lane(s), expected 4",
+				 name, nres);
+			return -1;
+		}
+		for (i = 0; i < nres; i++) {
+			bcm_port_enable_set(unit, del_ports[i], 0);
+			bcm_port_resource_t_init(&res[i]);
+			res[i].port = del_ports[i];
+			res[i].physical_port = -1;
+		}
+		bcm_port_resource_t_init(&res[nres]);
+		res[nres].port = base;
+		res[nres].physical_port = phys;
+		res[nres].speed = 40000;
+		res[nres].lanes = 4;
+		res[nres].encap = BCM_PORT_ENCAP_IEEE;
+		nres++;
+
+		rv = bcm_port_resource_multi_set(unit, nres, res);
+		if (rv == BCM_E_UNAVAIL) {
+			for (i = 0; i < nres - 1; i++)
+				bcm_port_enable_set(unit, del_ports[i], 1);
+			if (persist_portmode(base, mode, err, errlen) != 0)
+				return -1;
+			schedule_restart();
+			return 0;
+		}
+		if (rv != BCM_E_NONE) {
+			for (i = 0; i < nres - 1; i++)
+				bcm_port_enable_set(unit, del_ports[i], 1);
+			snprintf(err, errlen, "flexport 40g failed: %s (%d)", bcm_errmsg(rv), rv);
+			return -1;
+		}
+		for (i = 0; i < nres - 1; i++) {
+			char oldname[32];
+			nosaic_tap_port_del(del_ports[i], oldname, sizeof(oldname));
+			if (oldname[0] != '\0')
+				nosaic_l3_del_intf(oldname);
+			snprintf(key, sizeof(key), "portmap_%d.%d", del_ports[i], unit);
+			nosaic_props_unset(key);
+			snprintf(key, sizeof(key), "portmap_%d", del_ports[i]);
+			nosaic_props_unset(key);
+		}
+		{
+			char val[32];
+			unsigned char mac[6];
+			int vid = 1000 + base;
+
+			snprintf(key, sizeof(key), "portmap_%d.%d", base, unit);
+			snprintf(val, sizeof(val), "%d:40", phys);
+			nosaic_props_set(key, val);
+			if (nosaic_tap_port_add(unit, name, base, vid, 1500, mac) == 0)
+				nosaic_l3_add_intf(unit, name, base, vid, mac, 1500);
+		}
+		bcm_port_enable_set(unit, base, 1);
+		bcm_linkscan_mode_set(unit, base, BCM_LINKSCAN_MODE_SW);
+	}
+
+	if (persist_portmode(base, mode, err, errlen) != 0)
+		return -1;
 	return 0;
 }
