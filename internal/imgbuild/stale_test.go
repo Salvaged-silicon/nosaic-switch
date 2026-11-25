@@ -211,6 +211,12 @@ func TestAnotherRecipesSubdirIsNotThisOnesSource(t *testing.T) {
 // MMIO ordering and the DMA pool, and a change there does affect both daemons.
 func TestSharedSourceOutsideEverySubdirIsStale(t *testing.T) {
 	o, refs, _ := staleFixture(t, false, "source:\n  local: thing\n\nbuild:\n  system: make\n  subdir: mine\n")
+	// The package was built after thing.c, but before dmapool.c.
+	pkg := filepath.Join(o.PackageDir, refs[0].file)
+	mid := time.Now().Add(-30 * time.Minute)
+	if err := os.Chtimes(pkg, mid, mid); err != nil {
+		t.Fatal(err)
+	}
 	common := filepath.Join(o.Root, "thing", "common")
 	if err := os.MkdirAll(common, 0o755); err != nil {
 		t.Fatal(err)

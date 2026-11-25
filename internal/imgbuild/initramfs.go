@@ -229,7 +229,7 @@ _dwaited=0
 _after=""
 while :; do
     [ "$_dwaited" -gt 0 ] && _after=" after ${_dwaited}s"
-    DATA="$(findfs LABEL=nosaic-data 2>/dev/null)"
+    DATA="$(findfs LABEL=nosaic-data 2>/dev/null || findfs PARTLABEL=nosaic-data 2>/dev/null)"
     [ -z "$DATA" ] && [ -b /dev/vda4 ] && DATA=/dev/vda4
     if [ -n "$DATA" ] && mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
         echo "NOSAIC-INITRAMFS data partition mounted ($DATA)$_after"
@@ -342,6 +342,7 @@ slotdev() {
         *) echo ""; return ;;
     esac
     findfs "LABEL=$want" 2>/dev/null && return
+    findfs "PARTLABEL=$want" 2>/dev/null && return
 
     # A slot file on the bootloader's own filesystem, for boards where the
     # bootloader owns the whole disk and there is no room for a partition of

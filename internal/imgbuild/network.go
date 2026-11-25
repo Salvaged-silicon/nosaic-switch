@@ -510,6 +510,13 @@ func writeNetwork(o Options, rootfs string) (bool, error) {
 	src := filepath.Join(o.Root, "platform", o.Board.ID, "config", "network.conf")
 	b, err := os.ReadFile(src)
 	if os.IsNotExist(err) {
+		siteSrc := filepath.Join(o.Root, "platform", o.Board.ID, "config", "network.site.conf")
+		if sb, serr := os.ReadFile(siteSrc); serr == nil {
+			b, err = sb, nil
+			src = siteSrc
+		}
+	}
+	if os.IsNotExist(err) {
 		fmt.Fprintf(o.Log, "    no board network configuration; this image expects\n")
 		fmt.Fprintf(o.Log, "    /mnt/data/config/network.conf on the switch itself\n")
 		return false, nil
@@ -520,7 +527,7 @@ func writeNetwork(o Options, rootfs string) (bool, error) {
 	if err := writeFile(rootfs, "/etc/nosaic/network.conf", string(b), 0o644); err != nil {
 		return false, err
 	}
-	fmt.Fprintf(o.Log, "    network configuration from the board\n")
+	fmt.Fprintf(o.Log, "    network configuration from %s\n", filepath.Base(src))
 	return true, nil
 }
 

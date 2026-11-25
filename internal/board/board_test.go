@@ -64,6 +64,24 @@ func TestOtherBootloadersDoNotNeedAddresses(t *testing.T) {
 	}
 }
 
+func TestX86ONIEBoardAllowsKernelParams(t *testing.T) {
+	b := &Board{
+		ID: "b", Path: filepath.Join("platform", "b", "board.yml"),
+		Arch: "x86_64", ASIC: "td2", Boot: "onie-sfx",
+		Status: "planned", Profile: "minimal",
+		KernelParams: "console=ttyS0,115200n8 memmap=64M$0xb0000000 iomem=relaxed",
+	}
+	if errs := b.Validate(repoRoot); len(errs) != 0 {
+		t.Errorf("x86_64 onie-sfx board with kernel_params was rejected: %q", errs)
+	}
+
+	b.Arch = "powerpc"
+	errs := strings.Join(b.Validate(repoRoot), "; ")
+	if !strings.Contains(errs, "kernel_params") {
+		t.Errorf("powerpc onie-sfx board with kernel_params should be rejected, got %q", errs)
+	}
+}
+
 // The kernel spells its console "ttyS0,115200"; getty is handed the device
 // alone. Writing the kernel's spelling into console: produces a getty opening
 // a device of that name, which does not exist -- so the board boots correctly

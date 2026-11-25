@@ -85,7 +85,8 @@ func (d Disk) partitions() ([]partition, error) {
 	return doc.PartitionTable.Partitions, nil
 }
 
-// slotIndex maps a slot letter to its partition index.
+// slotIndex maps a slot letter to its default partition index when GPT names
+// are absent (e.g. a DOS partition table).
 func slotIndex(slot string) (int, error) {
 	switch slot {
 	case "a":
@@ -96,10 +97,27 @@ func slotIndex(slot string) (int, error) {
 	return 0, fmt.Errorf("unknown slot %q: slots are a and b", slot)
 }
 
-// bootIndex is the partition holding the slot pointer. It carries no journal,
-// so an offline edit with debugfs is not reverted when the kernel next mounts
-// it -- which is exactly what happens on ext4, silently.
+// bootIndex is the default partition holding the slot pointer when GPT names
+// are absent. It carries no journal, so an offline edit with debugfs is not
+// reverted when the kernel next mounts it -- which is exactly what happens on
+// ext4, silently.
 const bootIndex = 0
+
+// findPartition resolves a NOSaic partition by GPT name first (so disks that
+// preserve vendor/ONIE partitions ahead of NOSaic, such as GRUB-BOOT and
+// ONIE-BOOT on x86_64 ONIE switches, do not overwrite them), falling back to
+// the conventional index on unnamed/DOS tables.
+func findPartition(parts []partition, name string, fallback int) (partition, bool) {
+	for _, p := range parts {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	if fallback >= 0 && fallback < len(parts) {
+		return parts[fallback], true
+	}
+	return partition{}, false
+}
 
 // Install writes an image into a slot and marks it for trial.
 //
@@ -153,7 +171,8 @@ func Install(d Disk, slot, image string) error {
 	if err != nil {
 		return err
 	}
-	if idx >= len(parts) {
+	target, ok := findPartition(parts, "nosaic-slot-"+slot, idx)
+	if !ok {
 		return fmt.Errorf("this disk has no slot %s", slot)
 	}
 
@@ -173,12 +192,12 @@ func Install(d Disk, slot, image string) error {
 	// against the kernel: whatever "/" is actually on must not be what we are
 	// about to write. Where the two disagree, believing the pointer overwrites
 	// the running switch and the first symptom is at the next reboot.
-	if start, ok := rootPartitionStart(); ok && start == parts[idx].Start {
+	if start, ok := rootPartitionStart(); ok && start == target.Start {
 		return fmt.Errorf("slot %s is at sector %d, which is the partition this "+
 			"system is running from; the boot pointer and the kernel disagree "+
 			"about which slot is active, so nothing was written", slot, start)
 	}
-	limit := parts[idx].Size * 512
+	limit := target.Size * 512
 	if fi.Size() > limit {
 		return fmt.Errorf("the image is %.1f MiB and slot %s is %.1f MiB",
 			float64(fi.Size())/(1<<20), slot, float64(limit)/(1<<20))
@@ -189,7 +208,7 @@ func Install(d Disk, slot, image string) error {
 		return err
 	}
 	defer dst.Close()
-	if _, err := dst.Seek(parts[idx].Start*512, io.SeekStart); err != nil {
+	if _, err := dst.Seek(target.Start*512, io.SeekStart); err != nil {
 		return err
 	}
 	if _, err := io.Copy(dst, src); err != nil {
@@ -272,12 +291,16 @@ func Status(d Disk) (State, error) {
 // on a running switch — it is used directly and nothing is copied.
 func (d Disk) withData(write bool, fn func(path string) error) error {
 	parts, err := d.partitions()
-	if err != nil || len(parts) <= bootIndex {
+	if err != nil {
 		// No partition table: this is the filesystem itself.
 		return fn(d.Path)
 	}
-	start := parts[bootIndex].Start * 512
-	size := parts[bootIndex].Size * 512
+	bootPart, ok := findPartition(parts, "nosaic-boot", bootIndex)
+	if !ok {
+		return fn(d.Path)
+	}
+	start := bootPart.Start * 512
+	size := bootPart.Size * 512
 
 	tmp, err := os.CreateTemp("", "nosaic-data-*.ext4")
 	if err != nil {

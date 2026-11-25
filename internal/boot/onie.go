@@ -190,7 +190,190 @@ exit 0
 __NOSAIC_PAYLOAD__
 `
 
+const installerX86 = `#!/bin/sh
+# NOSaic x86_64 ONIE installer. Generated -- do not edit.
+#
+# ONIE executes this file directly. Everything below the marker is a tar
+# archive appended to this script containing vmlinuz, initramfs.cpio.gz,
+# and rootfs.sqsh.
+
+set -e
+
+export PATH="/usr/sbin:/sbin:/usr/bin:/bin:$PATH"
+
+echo "NOSaic %s for %s (%s)"
+
+BOOT_MIB=%d
+SLOT_MIB=%d
+KERNEL_PARAMS='%s'
+
+# Locate ONIE-BOOT so we preserve GRUB-BOOT and ONIE-BOOT intact.
+ONIE_DEV=$(blkid -L ONIE-BOOT 2>/dev/null || findfs LABEL=ONIE-BOOT 2>/dev/null || true)
+if [ -n "$ONIE_DEV" ]; then
+    DISK=$(echo "$ONIE_DEV" | sed -E 's/p?[0-9]+$//')
+    ONIE_PART=$(echo "$ONIE_DEV" | sed -E 's/^.*[^0-9]([0-9]+)$/\1/')
+elif [ -n "$onie_boot_dev" ]; then
+    DISK=$(echo "$onie_boot_dev" | sed -E 's/p?[0-9]+$//')
+    ONIE_PART=$(echo "$onie_boot_dev" | sed -E 's/^.*[^0-9]([0-9]+)$/\1/')
+    ONIE_DEV="$onie_boot_dev"
+elif [ -b /dev/sda ]; then
+    DISK=/dev/sda
+    ONIE_PART=2
+    ONIE_DEV=/dev/sda2
+    echo "note: ONIE-BOOT not found by label; assuming $ONIE_DEV on $DISK"
+else
+    echo "error: no disk found to install onto" >&2
+    exit 1
+fi
+
+case "$DISK" in
+    *nvme*|*mmcblk*) PART_PREFIX="${DISK}p" ;;
+    *)               PART_PREFIX="$DISK" ;;
+esac
+
+echo "installing onto $DISK (preserving partitions 1..$ONIE_PART)"
+
+# Remove any previous NOS partitions after ONIE-BOOT and create NOSaic's
+# boot, A/B slot, and data partitions.
+if command -v sgdisk >/dev/null 2>&1; then
+    for p in $(sgdisk -p "$DISK" 2>/dev/null | awk '/^ *[0-9]+ /{print $1}'); do
+        if [ "$p" -gt "$ONIE_PART" ]; then
+            sgdisk -d "$p" "$DISK" >/dev/null
+        fi
+    done
+    P_BOOT=$((ONIE_PART + 1))
+    P_SLOTA=$((ONIE_PART + 2))
+    P_SLOTB=$((ONIE_PART + 3))
+    P_DATA=$((ONIE_PART + 4))
+    sgdisk -n "${P_BOOT}:0:+${BOOT_MIB}M"  -t "${P_BOOT}:8300"  -c "${P_BOOT}:nosaic-boot" \
+           -n "${P_SLOTA}:0:+${SLOT_MIB}M" -t "${P_SLOTA}:8300" -c "${P_SLOTA}:nosaic-slot-a" \
+           -n "${P_SLOTB}:0:+${SLOT_MIB}M" -t "${P_SLOTB}:8300" -c "${P_SLOTB}:nosaic-slot-b" \
+           -n "${P_DATA}:0:0"              -t "${P_DATA}:8300"  -c "${P_DATA}:nosaic-data" \
+           "$DISK" >/dev/null
+elif command -v parted >/dev/null 2>&1; then
+    for p in $(parted -ms "$DISK" print 2>/dev/null | awk -F: '/^[0-9]+:/{print $1}'); do
+        if [ "$p" -gt "$ONIE_PART" ]; then
+            parted -s "$DISK" rm "$p"
+        fi
+    done
+    START_MB=$(parted -ms "$DISK" unit MiB print | awk -F: -v p="$ONIE_PART" '$1==p{gsub(/MiB/,"",$3); printf "%%d", $3 + 1}')
+    END_BOOT=$((START_MB + BOOT_MIB))
+    END_SLOTA=$((END_BOOT + SLOT_MIB))
+    END_SLOTB=$((END_SLOTA + SLOT_MIB))
+    P_BOOT=$((ONIE_PART + 1))
+    P_SLOTA=$((ONIE_PART + 2))
+    P_SLOTB=$((ONIE_PART + 3))
+    P_DATA=$((ONIE_PART + 4))
+    parted -s -a optimal "$DISK" \
+        mkpart nosaic-boot ext2 "${START_MB}MiB" "${END_BOOT}MiB" \
+        mkpart nosaic-slot-a "${END_BOOT}MiB" "${END_SLOTA}MiB" \
+        mkpart nosaic-slot-b "${END_SLOTA}MiB" "${END_SLOTB}MiB" \
+        mkpart nosaic-data ext4 "${END_SLOTB}MiB" 100%%
+else
+    echo "error: neither sgdisk nor parted is available in ONIE" >&2
+    exit 1
+fi
+
+sync
+partprobe "$DISK" 2>/dev/null || blockdev --rereadpt "$DISK" 2>/dev/null || true
+sleep 2
+
+DEV_BOOT="${PART_PREFIX}${P_BOOT}"
+DEV_SLOTA="${PART_PREFIX}${P_SLOTA}"
+DEV_DATA="${PART_PREFIX}${P_DATA}"
+
+SKIP=$(awk '/^__NOSAIC_PAYLOAD__$/ { print NR + 1; exit 0; }' "$0")
+
+echo "formatting and populating nosaic-boot ($DEV_BOOT)"
+mke2fs -q -t ext2 -L nosaic-boot -U 8f3a1c22-0000-4000-8000-6e6f73616962 -F "$DEV_BOOT"
+MNT_BOOT=$(mktemp -d /tmp/nosaic-boot.XXXXXX)
+mount -t ext2 "$DEV_BOOT" "$MNT_BOOT"
+mkdir -p "$MNT_BOOT/boot"
+tail -n +$SKIP "$0" | tar -xO vmlinuz > "$MNT_BOOT/boot/vmlinuz"
+tail -n +$SKIP "$0" | tar -xO initramfs.cpio.gz > "$MNT_BOOT/boot/initramfs.cpio.gz"
+printf 'a\n' > "$MNT_BOOT/boot/active"
+sync
+umount "$MNT_BOOT"
+rmdir "$MNT_BOOT"
+
+echo "writing nosaic-slot-a ($DEV_SLOTA)"
+tail -n +$SKIP "$0" | tar -xO rootfs.sqsh | dd of="$DEV_SLOTA" bs=1M conv=fsync
+
+echo "formatting nosaic-data ($DEV_DATA)"
+mke2fs -q -t ext4 -L nosaic-data -U 8f3a1c22-0000-4000-8000-6e6f73616963 -F "$DEV_DATA"
+MNT_DATA=$(mktemp -d /tmp/nosaic-data.XXXXXX)
+mount -t ext4 "$DEV_DATA" "$MNT_DATA"
+mkdir -p "$MNT_DATA/config" "$MNT_DATA/secrets" "$MNT_DATA/slot-a/upper" "$MNT_DATA/slot-a/work" "$MNT_DATA/slot-b/upper" "$MNT_DATA/slot-b/work" "$MNT_DATA/log"
+chmod 0700 "$MNT_DATA/secrets"
+sync
+umount "$MNT_DATA"
+rmdir "$MNT_DATA"
+
+echo "configuring GRUB on ONIE-BOOT ($ONIE_DEV)"
+MNT_ONIE=$(mktemp -d /tmp/nosaic-onie.XXXXXX)
+mount "$ONIE_DEV" "$MNT_ONIE"
+GRUB_DIR=""
+for d in "$MNT_ONIE/grub" "$MNT_ONIE/boot/grub"; do
+    if [ -d "$d" ]; then
+        GRUB_DIR="$d"
+        break
+    fi
+done
+if [ -z "$GRUB_DIR" ]; then
+    GRUB_DIR="$MNT_ONIE/grub"
+    mkdir -p "$GRUB_DIR"
+fi
+GRUB_REL="${GRUB_DIR#$MNT_ONIE}"
+if [ -f "$GRUB_DIR/grub.cfg" ] && [ ! -f "$GRUB_DIR/grub.cfg.onie" ]; then
+    cp "$GRUB_DIR/grub.cfg" "$GRUB_DIR/grub.cfg.onie"
+fi
+cat > "$GRUB_DIR/grub.cfg" <<EOF
+serial --port=0x3f8 --speed=115200 --word=8 --parity=no --stop=1
+terminal_input serial
+terminal_output serial
+set timeout=5
+set default=0
+
+menuentry "NOSaic" {
+    insmod part_gpt
+    insmod ext2
+    search --no-floppy --label --set=root nosaic-boot
+    linux /boot/vmlinuz ${KERNEL_PARAMS}
+    initrd /boot/initramfs.cpio.gz
+}
+EOF
+if [ -f "$GRUB_DIR/grub.cfg.onie" ]; then
+    cat >> "$GRUB_DIR/grub.cfg" <<EOF
+
+menuentry "ONIE" {
+    configfile ${GRUB_REL}/grub.cfg.onie
+}
+EOF
+fi
+sync
+umount "$MNT_ONIE"
+rmdir "$MNT_ONIE"
+
+if command -v onie-boot-mode >/dev/null 2>&1; then
+    onie-boot-mode -o none 2>/dev/null || true
+fi
+
+echo "NOSaic installed."
+if [ -x /sbin/reboot ]; then
+    echo "rebooting"
+    /sbin/reboot || true
+else
+    echo "reboot this switch to start it"
+fi
+exit 0
+
+__NOSAIC_PAYLOAD__
+`
+
 func (o onieSFX) Wrap(img Image, outDir string, log io.Writer) (string, error) {
+	if img.Arch == "x86_64" {
+		return o.wrapX86(img, outDir, log)
+	}
 	if img.Disk == "" {
 		return "", fmt.Errorf("onie-sfx needs a disk image")
 	}
@@ -251,6 +434,94 @@ func (o onieSFX) Wrap(img Image, outDir string, log io.Writer) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// wrapX86 builds an x86_64 ONIE self-extracting installer that preserves
+// GRUB-BOOT and ONIE-BOOT, creates nosaic-boot/slot-a/slot-b/data, and
+// configures GRUB2 on ONIE-BOOT.
+func (o onieSFX) wrapX86(img Image, outDir string, log io.Writer) (string, error) {
+	if img.Kernel == "" || img.Initramfs == "" || img.Squashfs == "" {
+		return "", fmt.Errorf("x86_64 onie-sfx needs kernel, initramfs, and squashfs")
+	}
+	if strings.ContainsRune(img.KernelParams, '\'') {
+		return "", fmt.Errorf("a single quote in kernel_params would break the installer's quoting")
+	}
+	bootMiB, slotMiB := img.BootMiB, img.SlotMiB
+	if bootMiB <= 0 {
+		bootMiB = 64
+	}
+	if slotMiB <= 0 {
+		slotMiB = 512
+	}
+
+	out := filepath.Join(outDir,
+		fmt.Sprintf("NOSaic-%s-%s.bin", img.Version, img.Board))
+	fmt.Fprintf(log, "==> building the x86_64 ONIE installer\n")
+
+	f, err := os.Create(out)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	// GRUB2 expands $var inside unquoted linux command-line arguments, so a
+	// literal '$' (such as memmap=64M$0xb0000000) must be escaped as '\$'.
+	grubKernelParams := strings.ReplaceAll(img.KernelParams, "$", `\$`)
+	head := fmt.Sprintf(installerX86, img.Version, img.Board, img.Arch,
+		bootMiB, slotMiB, grubKernelParams)
+	if !strings.HasSuffix(head, "\n") {
+		head += "\n"
+	}
+	if _, err := f.WriteString(head); err != nil {
+		return "", err
+	}
+
+	stage, err := os.MkdirTemp("", "nosaic-onie-x86-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(stage)
+
+	for _, pair := range []struct{ src, dst string }{
+		{img.Kernel, "vmlinuz"},
+		{img.Initramfs, "initramfs.cpio.gz"},
+		{img.Squashfs, "rootfs.sqsh"},
+	} {
+		dst := filepath.Join(stage, pair.dst)
+		if err := os.Link(pair.src, dst); err != nil {
+			if err := copyFile(pair.src, dst); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	cmd := exec.Command("tar", "-cf", "-", "-C", stage, "vmlinuz", "initramfs.cpio.gz", "rootfs.sqsh")
+	cmd.Stdout = f
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("appending the payload: %w", err)
+	}
+	if err := os.Chmod(out, 0o755); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 // gzipFile compresses src to dst and returns dst.
