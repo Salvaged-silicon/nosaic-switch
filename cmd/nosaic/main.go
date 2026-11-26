@@ -89,6 +89,8 @@ on a running switch
   verify ports                 what Linux believes against what the chip holds, per port
   verify routes                the kernel's routing table against the chip's forwarding table
   config show [pattern] | get <name> | set <name> <value> | unset <name> | files
+  config running | diff | save
+                               inspect, diff, or save live config to network.conf
   upgrade status | install <img> [--slot a|b] | commit | confirm
   platform <command>           the board itself; "nosaic platform" lists them
 
@@ -1371,6 +1373,12 @@ func configCmd(args []string) error {
 	}
 
 	switch sub {
+	case "running":
+		return configRunningCmd()
+	case "diff":
+		return configDiffCmd()
+	case "save":
+		return configSaveCmd()
 	case "show":
 		pat := ""
 		if len(args) > 1 {
