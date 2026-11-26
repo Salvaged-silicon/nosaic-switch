@@ -57,7 +57,7 @@ building (on a build host)
   docs index                   regenerate the board index
 
 on a running switch
-  show ports | routes | vlans | lags | stp | mac | mlag | gateways | acl | caps
+  show ports | routes | vlans | lags | stp | mac | mlag | gateways | lldp | acl | caps
                                what the datapath is doing
   interface <name> up|down     administrative state
   interface <name> mtu <n>     set the MTU
@@ -85,6 +85,7 @@ on a running switch
   gateway add|del <svi> <address/len> | gateway mac <mac>
                                a virtual gateway both of a pair answer for
   mac aging <seconds>          how long a learned MAC lives unseen; 0 is never (default 300)
+  lldp [iface] on|off          global or per-interface LLDP (e.g. eth0, swp1)
   verify contract              run the switchapi conformance suite on this datapath
   verify ports                 what Linux believes against what the chip holds, per port
   verify routes                the kernel's routing table against the chip's forwarding table
@@ -210,7 +211,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway", "mac":
+	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway", "mac", "lldp":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -828,6 +829,8 @@ func switchCmd(args []string) error {
 		return mlagCmd(c, args[1:])
 	case "gateway":
 		return gatewayCmd(c, args[1:])
+	case "lldp":
+		return lldpCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -1094,6 +1097,9 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 
 	case "gateways":
 		return showGateways(c, w)
+
+	case "lldp":
+		return showLLDPCmd(c, w)
 
 	case "routes":
 		routes, err := c.Routes()

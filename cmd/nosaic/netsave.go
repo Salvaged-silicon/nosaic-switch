@@ -282,6 +282,25 @@ func renderRunningConfig(sw switchapi.Switch, ifaces, routes []string) (string, 
 		}
 	}
 
+	// LLDP (only emit non-default settings: global off, eth0 on, or disabled swp*).
+	if lldpSw, ok := sw.(interface {
+		LLDPConfig() (nosdclient.LLDPConfig, error)
+	}); ok {
+		if cfg, err := lldpSw.LLDPConfig(); err == nil {
+			if !cfg.Enabled {
+				out = append(out, "lldp off")
+			}
+			if cfg.Eth0 {
+				out = append(out, "lldp eth0 on")
+			}
+			disabled := append([]string(nil), cfg.Disabled...)
+			sort.Strings(disabled)
+			for _, p := range disabled {
+				out = append(out, fmt.Sprintf("lldp %s off", p))
+			}
+		}
+	}
+
 	return strings.Join(out, "\n") + "\n", nil
 }
 

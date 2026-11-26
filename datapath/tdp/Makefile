@@ -46,7 +46,7 @@ LDFLAGS += -Wl,--wrap=sal_usleep
 # Shared with nosd-td2p: punting ports to Linux and mirroring the kernel FIB
 # into the chip are the same problem on any Broadcom ASIC, and both are written
 # against bcm_* alone. They need the SDK, so they live inside this branch.
-OBJS    += ../common/tapbridge.o ../common/l3sync.o ../common/acl.o ../common/query.o ../common/vlan.o ../common/lag.o ../common/rstp.o ../common/mlag.o ../common/gateway.o led.o
+OBJS    += ../common/tapbridge.o ../common/l3sync.o ../common/acl.o ../common/query.o ../common/vlan.o ../common/lag.o ../common/rstp.o ../common/mlag.o ../common/gateway.o ../common/lldp.o led.o
 endif
 
 # sdk.o is always built. Without SDK_DIR it compiles to a stub that says the
