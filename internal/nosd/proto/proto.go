@@ -134,6 +134,10 @@ const (
 	OpACL           = "acl"
 	OpSetACL        = "acl.set"
 	OpDelACL        = "acl.del"
+	OpSetVTEP       = "vxlan.vtep"
+	OpAddVNI        = "vxlan.vni.add"
+	OpDelVNI        = "vxlan.vni.del"
+	OpVXLAN         = "vxlan"
 )
 
 // Argument shapes.

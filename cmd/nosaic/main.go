@@ -57,7 +57,7 @@ building (on a build host)
   docs index                   regenerate the board index
 
 on a running switch
-  show ports | routes | vlans | lags | stp | mac | mlag | gateways | acl | caps
+  show ports | routes | vlans | lags | stp | mac | mlag | gateways | lldp | vxlan | acl | caps
                                what the datapath is doing
   interface <name> up|down     administrative state
   interface <name> mtu <n>     set the MTU
@@ -85,10 +85,15 @@ on a running switch
   gateway add|del <svi> <address/len> | gateway mac <mac>
                                a virtual gateway both of a pair answer for
   mac aging <seconds>          how long a learned MAC lives unseen; 0 is never (default 300)
+  lldp [iface] on|off          global or per-interface LLDP (e.g. eth0, swp1)
+  vxlan vtep <ip> | vni add <vni> [vrf <vrf>] vlan <vid> | vni del <vni>
+                               L2/L3 VXLAN & EVPN mappings
   verify contract              run the switchapi conformance suite on this datapath
   verify ports                 what Linux believes against what the chip holds, per port
   verify routes                the kernel's routing table against the chip's forwarding table
   config show [pattern] | get <name> | set <name> <value> | unset <name> | files
+  config running | diff | save
+                               inspect, diff, or save live config to network.conf
   upgrade status | install <img> [--slot a|b] | commit | confirm
   platform <command>           the board itself; "nosaic platform" lists them
 
@@ -208,7 +213,7 @@ func main() {
 			os.Exit(1)
 		}
 
-	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway", "mac":
+	case "show", "interface", "route", "acl", "vlan", "svi", "switchport", "lag", "lacp", "stp", "mlag", "gateway", "mac", "lldp", "vxlan":
 		if err := switchCmd(args); err != nil {
 			fmt.Fprintf(os.Stderr, "nosaic: %v\n", err)
 			os.Exit(1)
@@ -826,6 +831,10 @@ func switchCmd(args []string) error {
 		return mlagCmd(c, args[1:])
 	case "gateway":
 		return gatewayCmd(c, args[1:])
+	case "lldp":
+		return lldpCmd(c, args[1:])
+	case "vxlan":
+		return vxlanCmd(c, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -1092,6 +1101,12 @@ func showCmd(c *nosdclient.Client, what string, rest []string) error {
 
 	case "gateways":
 		return showGateways(c, w)
+
+	case "lldp":
+		return showLLDPCmd(c, w)
+
+	case "vxlan":
+		return showVXLANCmd(c, w)
 
 	case "routes":
 		routes, err := c.Routes()
@@ -1371,6 +1386,12 @@ func configCmd(args []string) error {
 	}
 
 	switch sub {
+	case "running":
+		return configRunningCmd()
+	case "diff":
+		return configDiffCmd()
+	case "save":
+		return configSaveCmd()
 	case "show":
 		pat := ""
 		if len(args) > 1 {

@@ -51,6 +51,8 @@
 #include "rstp.h"
 #include "mlag.h"
 #include "gateway.h"
+#include "lldp.h"
+#include "vxlan.h"
 
 static int query_unit;
 
@@ -445,6 +447,29 @@ static int handle_lag(FILE *out, const char *req)
 	} else if (strcmp(op, "gateways") == 0) {
 		nosaic_gw_query(out);
 		return 1;
+	} else if (strcmp(op, "lldp") == 0) {
+		nosaic_lldp_query(out);
+		return 1;
+	} else if (strcmp(op, "lldp.config") == 0) {
+		nosaic_lldp_config_query(out);
+		return 1;
+	} else if (strcmp(op, "lldp.set") == 0) {
+		rv = nosaic_lldp_set(name, strstr(req, "\"enabled\":true") != NULL, err, sizeof(err));
+	} else if (strcmp(op, "vxlan") == 0) {
+		nosaic_vxlan_query(out);
+		return 1;
+	} else if (strcmp(op, "vxlan.vtep") == 0) {
+		char ip[32] = "";
+		req_str(req, "ip", ip, sizeof(ip));
+		rv = nosaic_vxlan_set_vtep(ip, err, sizeof(err));
+	} else if (strcmp(op, "vxlan.vni.add") == 0) {
+		char vrf[32] = "";
+		req_str(req, "vrf", vrf, sizeof(vrf));
+		rv = nosaic_vxlan_add_vni(req_int(req, "vni", 0), req_int(req, "vid", 0),
+					  vrf, strstr(req, "\"l3\":true") != NULL,
+					  err, sizeof(err));
+	} else if (strcmp(op, "vxlan.vni.del") == 0) {
+		rv = nosaic_vxlan_del_vni(req_int(req, "vni", 0), err, sizeof(err));
 	} else if (strcmp(op, "gateway.mac") == 0) {
 		char mac[32];
 
@@ -956,6 +981,8 @@ int nosaic_query_start(int unit, const char *path)
 	nosaic_rstp_start(unit);
 	nosaic_mlag_start(unit);
 	nosaic_gw_start(unit);
+	nosaic_lldp_start(unit);
+	nosaic_vxlan_start(unit);
 
 	struct sockaddr_un a;
 	pthread_t th;
