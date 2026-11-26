@@ -18,6 +18,7 @@ import (
 	// honest about what exists.
 	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/as4610"
 	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/n3172tq" // registers the "n3172tq" driver
+	_ "github.com/salvaged-silicon/nosaic-switch/internal/platformhal/s6000"   // registers the "s6000" driver
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/scd"
 	"github.com/salvaged-silicon/nosaic-switch/internal/platformhal/sff"
 )
