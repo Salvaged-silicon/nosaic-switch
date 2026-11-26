@@ -367,6 +367,32 @@ func (c *Client) SetLLDP(iface string, enabled bool) error {
 	}{Name: iface, Enabled: enabled}, nil)
 }
 
+func (c *Client) SetVTEP(ip string) error {
+	return c.call(proto.OpSetVTEP, struct {
+		IP string `json:"ip"`
+	}{IP: ip}, nil)
+}
+
+func (c *Client) AddVNI(vni, vid int, vrf string, l3 bool) error {
+	return c.call(proto.OpAddVNI, switchapi.VXLANVNI{
+		VNI: vni,
+		VID: vid,
+		VRF: vrf,
+		L3:  l3,
+	}, nil)
+}
+
+func (c *Client) DelVNI(vni int) error {
+	return c.call(proto.OpDelVNI, struct {
+		VNI int `json:"vni"`
+	}{VNI: vni}, nil)
+}
+
+func (c *Client) VXLAN() (switchapi.VXLANConfig, error) {
+	var out switchapi.VXLANConfig
+	return out, c.call(proto.OpVXLAN, nil, &out)
+}
+
 func (c *Client) STP() (switchapi.STPStatus, error) {
 	var st switchapi.STPStatus
 	return st, c.call(proto.OpSTP, nil, &st)

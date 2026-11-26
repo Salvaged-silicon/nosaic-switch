@@ -35,7 +35,7 @@ CFLAGS  += $(shell cat $(SDK_DEFINES_FILE))
 CFLAGS  += -DNOSAIC_QUERY_DRIVER=\"helix4\" -DNOSAIC_WITH_SDK -I$(SDK_DIR)/include/openbcm
 SDK_LIBS = -Wl,--start-group $(wildcard $(SDK_DIR)/lib/openbcm/*.a) -Wl,--end-group
 LDLIBS  += $(SDK_LIBS) -lpthread -lm -lrt
-OBJS    += ../common/tapbridge.o ../common/l3sync.o ../common/query.o ../common/vlan.o ../common/lag.o ../common/rstp.o ../common/mlag.o ../common/gateway.o ../common/lldp.o
+OBJS    += ../common/tapbridge.o ../common/l3sync.o ../common/query.o ../common/vlan.o ../common/lag.o ../common/rstp.o ../common/mlag.o ../common/gateway.o ../common/lldp.o ../common/vxlan.o
 endif
 
 # sdk.o is always built. Without SDK_DIR it compiles to a stub that says the

@@ -199,7 +199,7 @@ fi
 # $1 = "quiet" while waiting for the datapath, whose ports do not exist yet.
 apply_vlans() {
 command -v nosaic >/dev/null 2>&1 || return 0
-grep -Eq '^(vlan|switchport|lag|lacp|stp|mlag|gateway|mac|lldp|interface)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+grep -Eq '^(vlan|switchport|lag|lacp|stp|mlag|gateway|mac|lldp|vxlan|interface)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
 # The LACP system priority first: every LAG negotiates with it from the start.
 # The MAC aging time and LLDP settings with it.
 while read -r kind rest; do
@@ -268,6 +268,48 @@ done < "$CONF"
 while read -r kind name state; do
     [ "$kind" = "interface" ] && [ -n "$name" ] && [ -n "$state" ] || continue
     out=$(nosaic interface "$name" "$state" 2>&1) || say "interface $name $state FAILED: $out" "$1"
+done < "$CONF"
+# VXLAN / EVPN:
+#     vxlan vtep 10.255.0.1
+#     vxlan vni 10700 vlan 700
+#     vxlan vni 50100 vrf tenant-a vlan 4001
+VTEP_IP=""
+while read -r kind sub a rest; do
+    [ "$kind" = "vxlan" ] && [ "$sub" = "vtep" ] && [ -n "$a" ] || continue
+    VTEP_IP="$a"
+    out=$(nosaic vxlan vtep "$a" 2>&1) || say "vxlan vtep $a FAILED: $out" "$1"
+done < "$CONF"
+while read -r kind sub vni k1 v1 k2 v2; do
+    [ "$kind" = "vxlan" ] && [ "$sub" = "vni" ] && [ -n "$vni" ] || continue
+    vid=""
+    vrf=""
+    [ "$k1" = "vlan" ] && vid="$v1"
+    [ "$k1" = "vrf" ]  && vrf="$v1"
+    [ "$k2" = "vlan" ] && vid="$v2"
+    [ "$k2" = "vrf" ]  && vrf="$v2"
+    [ -n "$vid" ] || continue
+    if [ -n "$vrf" ]; then
+        out=$(nosaic vxlan vni add "$vni" vrf "$vrf" vlan "$vid" 2>&1) \
+            || say "vxlan vni $vni vrf $vrf vlan $vid FAILED: $out" "$1"
+    else
+        out=$(nosaic vxlan vni add "$vni" vlan "$vid" 2>&1) \
+            || say "vxlan vni $vni vlan $vid FAILED: $out" "$1"
+    fi
+    # Create Linux bridge + vxlan device for FRR BGP EVPN control plane.
+    if [ -n "$VTEP_IP" ]; then
+        br="br$vid"
+        vx="vxlan$vni"
+        if ! ip link show "$br" >/dev/null 2>&1; then
+            ip link add "$br" type bridge stp_state 0 2>/dev/null || true
+        fi
+        [ -n "$vrf" ] && ip link set dev "$br" master "$vrf" 2>/dev/null || true
+        ip link set dev "$br" up 2>/dev/null || true
+        if ! ip link show "$vx" >/dev/null 2>&1; then
+            ip link add "$vx" type vxlan id "$vni" dstport 4789 local "$VTEP_IP" nolearning 2>/dev/null || true
+        fi
+        ip link set dev "$vx" master "$br" 2>/dev/null || true
+        ip link set dev "$vx" up 2>/dev/null || true
+    fi
 done < "$CONF"
 }
 

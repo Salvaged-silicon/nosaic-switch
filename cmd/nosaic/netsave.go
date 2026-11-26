@@ -301,6 +301,26 @@ func renderRunningConfig(sw switchapi.Switch, ifaces, routes []string) (string, 
 		}
 	}
 
+	// VXLAN / EVPN (optional extension implemented by nosdclient.Client).
+	if vxSw, ok := sw.(interface {
+		VXLAN() (switchapi.VXLANConfig, error)
+	}); ok {
+		if cfg, err := vxSw.VXLAN(); err == nil {
+			if cfg.VTEP != "" {
+				out = append(out, "vxlan vtep "+cfg.VTEP)
+			}
+			vnis := append([]switchapi.VXLANVNI(nil), cfg.VNIs...)
+			sort.Slice(vnis, func(i, j int) bool { return vnis[i].VNI < vnis[j].VNI })
+			for _, v := range vnis {
+				if v.L3 {
+					out = append(out, fmt.Sprintf("vxlan vni %d vrf %s vlan %d", v.VNI, v.VRF, v.VID))
+				} else {
+					out = append(out, fmt.Sprintf("vxlan vni %d vlan %d", v.VNI, v.VID))
+				}
+			}
+		}
+	}
+
 	return strings.Join(out, "\n") + "\n", nil
 }
 
