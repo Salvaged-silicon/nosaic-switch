@@ -385,34 +385,25 @@ static void program_rings(struct fm_dma *dma, bool stop_engines)
 	 * install262: FM6000_DMA_CFG BAR0 write removed (see above).
 	 * FM6000_DMA_IP is now the first BAR0 write, which is fine —
 	 * all BAR0 writes are CPU-posted and do not stall.
+	 *
+	 * install285: DMA_CFG must be the FIRST BAR0 write, before DMA_IP.
+	 * install267 reversed the order (IP then CFG, matching EDGENOS fpdma.c
+	 * :138 literal order), which broke TX: fpdma_init's disassembly shows
+	 * DMA_CFG written BEFORE DMA_IP (confirmed from FPDMA.md "correct init
+	 * order" at the install230 comment above).  With IP first, the DMA engine
+	 * reads DMA_CFG before it has been written, sees stale ECC or 0, and
+	 * tx_tail never advances (tx_sent=0 for first 60 s until a RESET reprogram
+	 * re-runs program_rings with the correct order).  Writing CFG first arms
+	 * the DMA engine's BAR0-side enable latch before DMA_IP triggers it.
+	 * [install285, 2026-11-26]
 	 */
 	usleep(100000);	/* 100ms: DMA block LBUS-enable propagation */
-	/*
-	 * install267: write DMA_CFG=0x37 via BAR0 (EDGENOS exact order: IP, UNK68, CFG, CFG2).
-	 *
-	 * install262 skipped this because install241 showed DMA_CFG BAR0 write → HARD FATAL.
-	 * That FATAL was caused by the DMA engine touching SPICO-corrupted SRAM ECC as soon as
-	 * bit1 (DMAEn) enabled it.  At install241 time, ring-reinit had not yet run; SAF, parser,
-	 * LBS, and GLORT ECC were all in SPICO-residue state.
-	 *
-	 * After ring-reinit + BIST + pipeline_init, all SRAM ECC is fully restored.  The DMA
-	 * engine can now be enabled without hitting an ECC fault.  The LBUS-only write (install263)
-	 * sets the register visible to management software but does not engage the DMA engine's
-	 * internal BAR0 enable latch — the engine reads DMA_CFG at CMD_TX time via the DMA block's
-	 * own path, not through the LBUS management ring.  Result: tx_tail never advances (DMA TX
-	 * engine sees DMAEn=0 at CMD_TX time), and the engine's NPR-stall watchdog fires after
-	 * ~100ms → FATAL.
-	 *
-	 * Writing DMA_CFG=0x37 via BAR0 (the third BAR0 write, matching EDGENOS fpdma.c:138)
-	 * engages the BAR0-side latch, enabling the DMA TX engine so it can issue Memory Read TLPs
-	 * for descriptor data and advance tx_tail.  [install267]
-	 */
-	dma_kmsg("nosd-fm6000: install267: DMA_CFG=0x37 via BAR0 (enable latch) [install267]");
 	fprintf(stderr, "nosd-fm6000: DMA program_rings: CFG group\n");
-	dma_wr_nc(d, FM6000_DMA_IP,    0xFFFFFFFFu);	/* clear pending — first BAR0 write */
+	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* install285: DMA_CFG BAR0 FIRST (restore fpdma order) */
+	dma_kmsg("nosd-fm6000: install285: DMA_CFG=0x37 BAR0 FIRST (restore fpdma order) [install285]");
+	dma_wr_nc(d, FM6000_DMA_IP,    0xFFFFFFFFu);	/* clear pending interrupts */
 	dma_kmsg("nosd-fm6000: DMA230: DMA_IP done [install230]");
 	dma_wr_nc(d, FM6000_DMA_UNK68, 0);
-	dma_wr_nc(d, FM6000_DMA_CFG,   0x37u);		/* install267: DMAEn via BAR0 latch */
 	dma_wr_nc(d, FM6000_DMA_CFG2,  FM6000_DMA_CFG2_INIT);
 	dma_kmsg("nosd-fm6000: DMA rings: CFG group done");
 
