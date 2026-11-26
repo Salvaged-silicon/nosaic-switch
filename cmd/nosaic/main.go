@@ -87,7 +87,7 @@ on a running switch
   mac aging <seconds>          how long a learned MAC lives unseen; 0 is never (default 300)
   lldp [iface] on|off          global or per-interface LLDP (e.g. eth0, swp1)
   vxlan vtep <ip> | vni add <vni> [vrf <vrf>] vlan <vid> | vni del <vni>
-                               L2/L3 VXLAN & EVPN mappings
+                               L2/L3 VXLAN & EVPN mappings; see docs/evpn.md
   verify contract              run the switchapi conformance suite on this datapath
   verify ports                 what Linux believes against what the chip holds, per port
   verify routes                the kernel's routing table against the chip's forwarding table
