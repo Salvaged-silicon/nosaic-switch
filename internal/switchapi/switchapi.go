@@ -476,10 +476,12 @@ const DefaultVirtualMAC = "00:00:5e:00:01:01"
 // local VLAN (L2 EVPN bridging) or a VRF (L3 EVPN Type-5 routing, with an
 // internal transit VLAN).
 type VXLANVNI struct {
-	VNI int    `json:"vni"`
-	VID int    `json:"vid"`
-	VRF string `json:"vrf,omitempty"`
-	L3  bool   `json:"l3,omitempty"`
+	VNI   int    `json:"vni"`
+	VID   int    `json:"vid"`
+	VRF   string `json:"vrf,omitempty"`
+	L3    bool   `json:"l3,omitempty"`
+	Peers int    `json:"peers,omitempty"`
+	MACs  uint64 `json:"macs,omitempty"`
 }
 
 // VXLANConfig is the switch's VXLAN/EVPN state: its local VTEP source address

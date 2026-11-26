@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	nosdclient "github.com/salvaged-silicon/nosaic-switch/internal/nosd/client"
+	"github.com/salvaged-silicon/nosaic-switch/internal/switchapi"
 )
 
 func vxlanCmd(c *nosdclient.Client, args []string) error {
@@ -108,35 +109,9 @@ func showVXLANCmd(c *nosdclient.Client, w *tabwriter.Writer) error {
 		return nil
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "VNI\tTYPE\tVLAN\tVRF")
-	vnis := append([]struct {
-		VNI int
-		VID int
-		VRF string
-		L3  bool
-	}{}, func() []struct {
-		VNI int
-		VID int
-		VRF string
-		L3  bool
-	} {
-		out := make([]struct {
-			VNI int
-			VID int
-			VRF string
-			L3  bool
-		}, len(cfg.VNIs))
-		for i, v := range cfg.VNIs {
-			out[i] = struct {
-				VNI int
-				VID int
-				VRF string
-				L3  bool
-			}{v.VNI, v.VID, v.VRF, v.L3}
-		}
-		sort.Slice(out, func(i, j int) bool { return out[i].VNI < out[j].VNI })
-		return out
-	}()...)
+	fmt.Fprintln(w, "VNI\tTYPE\tVLAN\tVRF\tPEERS\tMACS")
+	vnis := append([]switchapi.VXLANVNI(nil), cfg.VNIs...)
+	sort.Slice(vnis, func(i, j int) bool { return vnis[i].VNI < vnis[j].VNI })
 	for _, v := range vnis {
 		kind := "L2"
 		vrf := "-"
@@ -144,7 +119,7 @@ func showVXLANCmd(c *nosdclient.Client, w *tabwriter.Writer) error {
 			kind = "L3"
 			vrf = v.VRF
 		}
-		fmt.Fprintf(w, "%d\t%s\t%d\t%s\n", v.VNI, kind, v.VID, vrf)
+		fmt.Fprintf(w, "%d\t%s\t%d\t%s\t%d\t%d\n", v.VNI, kind, v.VID, vrf, v.Peers, v.MACs)
 	}
 	return nil
 }
