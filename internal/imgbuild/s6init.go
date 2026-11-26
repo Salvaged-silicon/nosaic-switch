@@ -40,7 +40,10 @@ done
 mkdir -p /dev/pts /run /tmp
 mount -t devpts devpts /dev/pts || echo "NOSAIC-S6-WARN could not mount /dev/pts"
 mount -t tmpfs  tmpfs  /run     || echo "NOSAIC-S6-WARN could not mount /run"
-hostname nosaic || true
+H=nosaic
+[ -r /etc/hostname ] && H=$(cat /etc/hostname)
+[ -r /mnt/data/config/hostname ] && H=$(cat /mnt/data/config/hostname)
+hostname "${H:-nosaic}" || true
 
 echo "NOSAIC-BOOT userspace reached (s6)"
 

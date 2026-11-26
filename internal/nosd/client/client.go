@@ -333,6 +333,66 @@ func (c *Client) SetSTPPort(name string, cfg switchapi.STPPortConfig) error {
 		Priority: cfg.Priority, BPDUGuard: cfg.BPDUGuard, RootGuard: cfg.RootGuard}, nil)
 }
 
+type LLDPNeighbor struct {
+	Local    string `json:"local"`
+	Chassis  string `json:"chassis"`
+	Port     string `json:"port"`
+	SysName  string `json:"sysname"`
+	SysDesc  string `json:"sysdesc"`
+	PortDesc string `json:"portdesc"`
+	Mgmt     string `json:"mgmt"`
+	TTL      int    `json:"ttl"`
+}
+
+type LLDPConfig struct {
+	Enabled  bool     `json:"enabled"`
+	Eth0     bool     `json:"eth0"`
+	Disabled []string `json:"disabled"`
+}
+
+func (c *Client) LLDP() ([]LLDPNeighbor, error) {
+	var out []LLDPNeighbor
+	return out, c.call("lldp", nil, &out)
+}
+
+func (c *Client) LLDPConfig() (LLDPConfig, error) {
+	var out LLDPConfig
+	return out, c.call("lldp.config", nil, &out)
+}
+
+func (c *Client) SetLLDP(iface string, enabled bool) error {
+	return c.call("lldp.set", struct {
+		Name    string `json:"name,omitempty"`
+		Enabled bool   `json:"enabled"`
+	}{Name: iface, Enabled: enabled}, nil)
+}
+
+func (c *Client) SetVTEP(ip string) error {
+	return c.call(proto.OpSetVTEP, struct {
+		IP string `json:"ip"`
+	}{IP: ip}, nil)
+}
+
+func (c *Client) AddVNI(vni, vid int, vrf string, l3 bool) error {
+	return c.call(proto.OpAddVNI, switchapi.VXLANVNI{
+		VNI: vni,
+		VID: vid,
+		VRF: vrf,
+		L3:  l3,
+	}, nil)
+}
+
+func (c *Client) DelVNI(vni int) error {
+	return c.call(proto.OpDelVNI, struct {
+		VNI int `json:"vni"`
+	}{VNI: vni}, nil)
+}
+
+func (c *Client) VXLAN() (switchapi.VXLANConfig, error) {
+	var out switchapi.VXLANConfig
+	return out, c.call(proto.OpVXLAN, nil, &out)
+}
+
 func (c *Client) STP() (switchapi.STPStatus, error) {
 	var st switchapi.STPStatus
 	return st, c.call(proto.OpSTP, nil, &st)

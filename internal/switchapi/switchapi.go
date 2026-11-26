@@ -188,6 +188,7 @@ type Capabilities struct {
 	Counters bool
 	SFP      bool
 	Breakout bool
+	VXLAN    bool
 }
 
 // Supports reports whether ECMP of the requested width is available, which is
@@ -470,6 +471,23 @@ type VirtualGateway struct {
 // IANA VRRP MAC for virtual router 1. Both switches of a pair must use the
 // same one; a second pair in the same VLANs needs another.
 const DefaultVirtualMAC = "00:00:5e:00:01:01"
+
+// VXLANVNI maps a 24-bit VXLAN Network Identifier (1..16777215) to either a
+// local VLAN (L2 EVPN bridging) or a VRF (L3 EVPN Type-5 routing, with an
+// internal transit VLAN).
+type VXLANVNI struct {
+	VNI int    `json:"vni"`
+	VID int    `json:"vid"`
+	VRF string `json:"vrf,omitempty"`
+	L3  bool   `json:"l3,omitempty"`
+}
+
+// VXLANConfig is the switch's VXLAN/EVPN state: its local VTEP source address
+// and all configured L2 and L3 VNIs.
+type VXLANConfig struct {
+	VTEP string     `json:"vtep"`
+	VNIs []VXLANVNI `json:"vnis"`
+}
 
 // MLAGMaxID is the largest MLAG id.
 const MLAGMaxID = 1000
