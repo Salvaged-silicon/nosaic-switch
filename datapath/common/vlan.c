@@ -50,6 +50,7 @@
 #include "gateway.h"
 #include "tapbridge.h"
 #include "vlan.h"
+#include "vxlan.h"
 
 #define MAX_VID    4096
 /* An SVI's router interface MTU in the chip. The kernel enforces the
@@ -496,6 +497,7 @@ int nosaic_vlan_port_set(const char *name, int vid, int tagged, char *err, size_
 		lagvl[f.lag][vid] = tagged ? 2 : 1;
 	pst[f.key].switched++;
 	pthread_mutex_unlock(&vlan_lock);
+	nosaic_vxlan_sync_vlan(vid);
 	printf("vlan: %s in vlan %d, %s\n", name, vid,
 	       tagged ? "tagged" : "untagged (native)");
 	fflush(stdout);

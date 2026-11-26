@@ -6,6 +6,7 @@
  */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <net/if.h>
@@ -23,22 +24,30 @@
 #include <bcm/l2.h>
 #include <bcm/l3.h>
 #include <bcm/multicast.h>
+#include <bcm/port.h>
 #include <bcm/switch.h>
 #include <bcm/tunnel.h>
+#include <bcm/vlan.h>
 #include <bcm/vxlan.h>
 
 #include "vxlan.h"
 
-#define MAX_VNIS       256
-#define MAX_VTEPS      128
-#define MAX_VNI_VTEPS  64
-#define VXLAN_UDP_PORT 4789
+#define MAX_VNIS         256
+#define MAX_VTEPS        128
+#define MAX_VNI_VTEPS    64
+#define MAX_ACCESS_PORTS 132
+#define VXLAN_UDP_PORT   4789
+
+#ifndef IFLA_VRF_TABLE
+#define IFLA_VRF_TABLE 1
+#endif
 
 struct vtep_entry {
 	int         used;
 	uint32_t    dip;          /* host byte order */
 	bcm_if_t    ul_egr;       /* underlay L3 egress object */
 	bcm_if_t    tnl_intf;     /* L3 intf carrying the tunnel initiator */
+	bcm_if_t    l3_egr;       /* L3 VXLAN overlay egress (for Type-5) */
 	bcm_gport_t init_id;      /* tunnel initiator gport */
 	bcm_gport_t term_id;      /* tunnel terminator gport */
 };
@@ -50,16 +59,25 @@ struct vni_vtep {
 	int         in_bum;       /* added to vni->mcast */
 };
 
+struct access_vp {
+	int         used;
+	bcm_port_t  port;
+	bcm_gport_t vp_id;
+};
+
 struct vni_entry {
-	int             used;
-	int             vni;
-	int             vid;
-	int             l3;
-	char            vrf[32];
-	bcm_vpn_t       vpn;
-	bcm_multicast_t mcast;
-	struct vni_vtep peers[MAX_VNI_VTEPS];
-	unsigned long   macs_synced;
+	int              used;
+	int              vni;
+	int              vid;
+	int              l3;
+	char             vrf[32];
+	uint32_t         table_id;  /* Linux VRF routing table ID */
+	bcm_vrf_t        vrf_id;    /* hardware bcm_vrf_t (1..255) */
+	bcm_vpn_t        vpn;
+	bcm_multicast_t  mcast;
+	struct vni_vtep  peers[MAX_VNI_VTEPS];
+	struct access_vp access[MAX_ACCESS_PORTS];
+	unsigned long    macs_synced;
 };
 
 static int vxlan_unit = -1;
@@ -428,6 +446,199 @@ int nosaic_vxlan_set_vtep(const char *ip, char *err, size_t errlen)
 	return 0;
 }
 
+/* Query Linux netlink (RTM_GETLINK) for a VRF interface's routing table ID. */
+static uint32_t vrf_table_id(const char *vrf_name)
+{
+	struct {
+		struct nlmsghdr  nlh;
+		struct ifinfomsg ifi;
+	} req;
+	unsigned char buf[8192];
+	int fd, ifx;
+	ssize_t n;
+
+	if (vrf_name == NULL || vrf_name[0] == '\0')
+		return 0;
+	ifx = (int)if_nametoindex(vrf_name);
+	if (ifx <= 0)
+		return 0;
+
+	fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	if (fd < 0)
+		return 0;
+	memset(&req, 0, sizeof(req));
+	req.nlh.nlmsg_len = sizeof(req);
+	req.nlh.nlmsg_type = RTM_GETLINK;
+	req.nlh.nlmsg_flags = NLM_F_REQUEST;
+	req.ifi.ifi_family = AF_UNSPEC;
+	req.ifi.ifi_index = ifx;
+	if (send(fd, &req, sizeof(req), 0) < 0) {
+		close(fd);
+		return 0;
+	}
+	n = recv(fd, buf, sizeof(buf), 0);
+	close(fd);
+	if (n <= 0)
+		return 0;
+
+	{
+		const struct nlmsghdr *nlh = (const struct nlmsghdr *)buf;
+		int rem = (int)n;
+		for (; NLMSG_OK(nlh, rem); nlh = NLMSG_NEXT(nlh, rem)) {
+			const struct ifinfomsg *ifi;
+			const struct rtattr *rta;
+			int rlen;
+
+			if (nlh->nlmsg_type != RTM_NEWLINK)
+				continue;
+			ifi = (const struct ifinfomsg *)NLMSG_DATA(nlh);
+			rta = (const struct rtattr *)((const char *)ifi + NLMSG_ALIGN(sizeof(*ifi)));
+			rlen = (int)nlh->nlmsg_len - (int)NLMSG_LENGTH(sizeof(*ifi));
+			for (; RTA_OK(rta, rlen); rta = RTA_NEXT(rta, rlen)) {
+				if (rta->rta_type != IFLA_LINKINFO)
+					continue;
+				const struct rtattr *li = (const struct rtattr *)RTA_DATA(rta);
+				int lilen = (int)RTA_PAYLOAD(rta);
+				for (; RTA_OK(li, lilen); li = RTA_NEXT(li, lilen)) {
+					if (li->rta_type != IFLA_INFO_DATA)
+						continue;
+					const struct rtattr *da = (const struct rtattr *)RTA_DATA(li);
+					int dalen = (int)RTA_PAYLOAD(li);
+					for (; RTA_OK(da, dalen); da = RTA_NEXT(da, dalen)) {
+						if (da->rta_type == IFLA_VRF_TABLE && RTA_PAYLOAD(da) == 4) {
+							uint32_t tbl = 0;
+							memcpy(&tbl, RTA_DATA(da), 4);
+							return tbl;
+						}
+					}
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+/* Bind all front-panel ports currently in ve->vid as local VXLAN access ports
+ * on ve->vpn and add them to ve->mcast so remote BUM traffic floods locally.
+ * Caller holds vxlan_lock. */
+static void vni_bind_access_ports_locked(int vi)
+{
+	struct vni_entry *ve = &vnis[vi];
+	bcm_pbmp_t pbmp, ubmp;
+	bcm_port_t p;
+
+	if (!ve->used || ve->vid <= 0)
+		return;
+	BCM_PBMP_CLEAR(pbmp);
+	BCM_PBMP_CLEAR(ubmp);
+	if (bcm_vlan_port_get(vxlan_unit, (bcm_vlan_t)ve->vid, &pbmp, &ubmp) != BCM_E_NONE)
+		return;
+
+	BCM_PBMP_ITER(pbmp, p) {
+		bcm_gport_t gp;
+		bcm_vxlan_port_t vp;
+		bcm_if_t encap = 0;
+		int i, exists = 0, slot = -1;
+
+		if (p == 0) /* skip CPU port */
+			continue;
+		for (i = 0; i < MAX_ACCESS_PORTS; i++) {
+			if (ve->access[i].used && ve->access[i].port == p) {
+				exists = 1;
+				break;
+			}
+			if (!ve->access[i].used && slot < 0)
+				slot = i;
+		}
+		if (exists || slot < 0)
+			continue;
+		if (bcm_port_gport_get(vxlan_unit, p, &gp) != BCM_E_NONE)
+			continue;
+		bcm_vxlan_port_t_init(&vp);
+		vp.flags = BCM_VXLAN_PORT_SERVICE_TAGGED;
+		vp.criteria = BCM_VXLAN_PORT_MATCH_PORT_VLAN;
+		vp.match_port = gp;
+		vp.match_vlan = (bcm_vlan_t)ve->vid;
+		vp.egress_service_tpid = 0x8100;
+		vp.egress_service_vlan = (bcm_vlan_t)ve->vid;
+		if (bcm_vxlan_port_add(vxlan_unit, ve->vpn, &vp) != BCM_E_NONE)
+			continue;
+		ve->access[slot].used = 1;
+		ve->access[slot].port = p;
+		ve->access[slot].vp_id = vp.vxlan_port_id;
+		if (ve->mcast != 0 &&
+		    bcm_multicast_vxlan_encap_get(vxlan_unit, ve->mcast, gp,
+						  vp.vxlan_port_id, &encap) == BCM_E_NONE) {
+			(void)bcm_multicast_egress_add(vxlan_unit, ve->mcast, gp, encap);
+		}
+	}
+}
+
+void nosaic_vxlan_sync_vlan(int vid)
+{
+	int i;
+
+	if (!vxlan_ok || vid <= 0)
+		return;
+	pthread_mutex_lock(&vxlan_lock);
+	for (i = 0; i < MAX_VNIS; i++) {
+		if (vnis[i].used && vnis[i].vid == vid)
+			vni_bind_access_ports_locked(i);
+	}
+	pthread_mutex_unlock(&vxlan_lock);
+}
+
+int nosaic_vxlan_vrf_for_table(uint32_t table_id, bcm_vrf_t *vrf_out)
+{
+	int i;
+
+	if (!vxlan_ok || table_id == 0)
+		return -1;
+	pthread_mutex_lock(&vxlan_lock);
+	for (i = 0; i < MAX_VNIS; i++) {
+		if (!vnis[i].used || !vnis[i].l3)
+			continue;
+		if (vnis[i].table_id == 0 && vnis[i].vrf[0] != '\0')
+			vnis[i].table_id = vrf_table_id(vnis[i].vrf);
+		if (vnis[i].table_id == table_id && vnis[i].vrf_id > 0) {
+			if (vrf_out != NULL)
+				*vrf_out = vnis[i].vrf_id;
+			pthread_mutex_unlock(&vxlan_lock);
+			return 0;
+		}
+	}
+	pthread_mutex_unlock(&vxlan_lock);
+	return -1;
+}
+
+int nosaic_vxlan_l3_egress(bcm_vrf_t vrf, uint32_t gw_hbo, bcm_if_t *egr_out)
+{
+	int ti;
+	bcm_l3_egress_t egr;
+
+	if (!vxlan_ok || vrf <= 0 || gw_hbo == 0 || egr_out == NULL)
+		return -1;
+	pthread_mutex_lock(&vxlan_lock);
+	ti = vtep_ensure_locked(gw_hbo);
+	if (ti < 0) {
+		pthread_mutex_unlock(&vxlan_lock);
+		return -1;
+	}
+	if (vteps[ti].l3_egr == 0) {
+		bcm_l3_egress_t_init(&egr);
+		egr.intf = vteps[ti].tnl_intf;
+		egr.port = vteps[ti].init_id;
+		egr.flags = BCM_L3_VXLAN_ONLY;
+		if (bcm_l3_egress_create(vxlan_unit, 0, &egr, &vteps[ti].l3_egr) != BCM_E_NONE) {
+			/* Fallback to underlay egress if chip does not support BCM_L3_VXLAN_ONLY. */
+			vteps[ti].l3_egr = vteps[ti].ul_egr;
+		}
+	}
+	*egr_out = vteps[ti].l3_egr;
+	pthread_mutex_unlock(&vxlan_lock);
+	return 0;
+}
+
 int nosaic_vxlan_add_vni(int vni, int vid, const char *vrf, int l3,
 			 char *err, size_t errlen)
 {
@@ -498,8 +709,13 @@ int nosaic_vxlan_add_vni(int vni, int vid, const char *vrf, int l3,
 	vnis[slot].l3 = l3 ? 1 : 0;
 	if (vrf != NULL)
 		snprintf(vnis[slot].vrf, sizeof(vnis[slot].vrf), "%s", vrf);
+	if (l3) {
+		vnis[slot].vrf_id = (bcm_vrf_t)(slot + 1);
+		vnis[slot].table_id = vrf_table_id(vrf);
+	}
 	vnis[slot].vpn = cfg.vpn;
 	vnis[slot].mcast = mcast;
+	vni_bind_access_ports_locked(slot);
 	pthread_mutex_unlock(&vxlan_lock);
 
 	printf("vxlan: added %s VNI %d (vlan %d%s%s, vpn 0x%x)\n",

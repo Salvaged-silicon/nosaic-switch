@@ -113,6 +113,7 @@
 #include "props.h"
 #include "tapbridge.h"
 #include "vlan.h"
+#include "vxlan.h"
 
 /* One router interface per tap, so this tracks the bridge's own limit.
  *
@@ -170,7 +171,7 @@ static int fp_stats;        /* see the note above: off unless asked for */
  */
 static struct { int ifx; uint32_t gw; bcm_if_t eg; int port; uint8_t mac[6]; } nh[MAX_NH];
 static int nnh;
-static struct { uint32_t dst, mask; bcm_if_t eg; int seen; } rt[MAX_RT];
+static struct { bcm_vrf_t vrf; uint32_t dst, mask; bcm_if_t eg; int seen; } rt[MAX_RT];
 static int nrt;
 static struct { int ifx; uint32_t ip; } hs[MAX_HOST];
 static int nhs;
@@ -825,12 +826,12 @@ static void self_punt(struct l3if *ifp, struct ifaddrs *head)
 	fflush(stdout);
 }
 
-static int rt_find(uint32_t dst, uint32_t mask)
+static int rt_find(bcm_vrf_t vrf, uint32_t dst, uint32_t mask)
 {
 	int i;
 
 	for (i = 0; i < nrt; i++) {
-		if (rt[i].dst == dst && rt[i].mask == mask)
+		if (rt[i].vrf == vrf && rt[i].dst == dst && rt[i].mask == mask)
 			return i;
 	}
 	return -1;
@@ -851,6 +852,7 @@ static void rt_sweep(void)
 			continue;
 		}
 		bcm_l3_route_t_init(&r);
+		r.l3a_vrf = rt[i].vrf;
 		r.l3a_subnet = rt[i].dst;
 		r.l3a_ip_mask = rt[i].mask;
 		r.l3a_intf = rt[i].eg;
@@ -889,8 +891,8 @@ struct rt_paths {
 	int      n;
 };
 
-static void rt_walk(void (*fn)(uint32_t dst, int plen, const struct rt_paths *p,
-			       void *arg), void *arg)
+static void rt_walk(void (*fn)(bcm_vrf_t vrf, uint32_t dst, int plen,
+			       const struct rt_paths *p, void *arg), void *arg)
 {
 	struct {
 		struct nlmsghdr n;
@@ -923,7 +925,8 @@ static void rt_walk(void (*fn)(uint32_t dst, int plen, const struct rt_paths *p,
 			struct rtmsg *rm;
 			struct rtattr *rta;
 			struct rt_paths paths;
-			uint32_t dst = 0;
+			uint32_t dst = 0, table = 0;
+			bcm_vrf_t vrf = BCM_L3_VRF_DEFAULT;
 			int rlen, oif = 0;
 
 			if (n->nlmsg_type == NLMSG_DONE) {
@@ -933,20 +936,18 @@ static void rt_walk(void (*fn)(uint32_t dst, int plen, const struct rt_paths *p,
 			if (n->nlmsg_type != RTM_NEWROUTE)
 				continue;
 			rm = (struct rtmsg *)NLMSG_DATA(n);
-			if (rm->rtm_family != AF_INET)
-				continue;
-			/* Only the main table's unicast routes. Local, broadcast
-			 * and the rest describe this box rather than where to
-			 * send traffic. */
-			if (rm->rtm_table != RT_TABLE_MAIN ||
-			    rm->rtm_type != RTN_UNICAST)
+			if (rm->rtm_family != AF_INET || rm->rtm_type != RTN_UNICAST)
 				continue;
 
+			table = rm->rtm_table;
 			memset(&paths, 0, sizeof(paths));
 			rta = (struct rtattr *)((char *)rm + NLMSG_ALIGN(sizeof(*rm)));
 			rlen = (int)n->nlmsg_len - (int)NLMSG_LENGTH(sizeof(*rm));
 			for (; RTA_OK(rta, rlen); rta = RTA_NEXT(rta, rlen)) {
-				if (rta->rta_type == RTA_DST &&
+				if (rta->rta_type == RTA_TABLE &&
+				    RTA_PAYLOAD(rta) == 4)
+					memcpy(&table, RTA_DATA(rta), 4);
+				else if (rta->rta_type == RTA_DST &&
 				    RTA_PAYLOAD(rta) == 4)
 					memcpy(&dst, RTA_DATA(rta), 4);
 				else if (rta->rta_type == RTA_OIF &&
@@ -989,13 +990,19 @@ static void rt_walk(void (*fn)(uint32_t dst, int plen, const struct rt_paths *p,
 				}
 			}
 
+			if (table == RT_TABLE_MAIN) {
+				vrf = BCM_L3_VRF_DEFAULT;
+			} else if (nosaic_vxlan_vrf_for_table(table, &vrf) != 0) {
+				continue;
+			}
+
 			/* A single-gateway route carries its interface in
 			 * RTA_OIF rather than per-hop. */
 			if (paths.n == 1 && paths.ifindex[0] == 0)
 				paths.ifindex[0] = oif;
 
 			if (paths.n > 0 && dst != 0)
-				fn(ntohl(dst), rm->rtm_dst_len, &paths, arg);
+				fn(vrf, ntohl(dst), rm->rtm_dst_len, &paths, arg);
 		}
 		if (done)
 			break;
@@ -1076,7 +1083,8 @@ struct route_ctx {
  * the same path so ECMP is not a separate mechanism that can rot while the
  * ordinary case keeps working.
  */
-static void route_one(uint32_t dst, int plen, const struct rt_paths *p, void *arg)
+static void route_one(bcm_vrf_t vrf, uint32_t dst, int plen,
+		      const struct rt_paths *p, void *arg)
 {
 	struct route_ctx *ctx = arg;
 	bcm_if_t member[MAX_PATHS], eg;
@@ -1100,6 +1108,11 @@ static void route_one(uint32_t dst, int plen, const struct rt_paths *p, void *ar
 		}
 		ifp = if_by_name(name);
 		if (ifp == NULL) {
+			if (vrf != BCM_L3_VRF_DEFAULT &&
+			    nosaic_vxlan_l3_egress(vrf, ntohl(p->gw[i]), &eg) == 0) {
+				member[n++] = eg;
+				continue;
+			}
 			why_notours++;
 			if (why_notours_said < 4) {
 				why_notours_said++;
@@ -1135,7 +1148,7 @@ static void route_one(uint32_t dst, int plen, const struct rt_paths *p, void *ar
 		return;
 	}
 
-	idx = rt_find(dst, mask);
+	idx = rt_find(vrf, dst, mask);
 	if (idx >= 0) {
 		rt[idx].seen = 1;
 		if (rt[idx].eg == eg)
@@ -1144,6 +1157,7 @@ static void route_one(uint32_t dst, int plen, const struct rt_paths *p, void *ar
 	}
 
 	bcm_l3_route_t_init(&r);
+	r.l3a_vrf = vrf;
 	r.l3a_subnet = dst;
 	r.l3a_ip_mask = mask;
 	r.l3a_intf = eg;
@@ -1161,6 +1175,7 @@ static void route_one(uint32_t dst, int plen, const struct rt_paths *p, void *ar
 		rt[idx].eg = eg;
 		st_moved++;
 	} else if (nrt < MAX_RT) {
+		rt[nrt].vrf = vrf;
 		rt[nrt].dst = dst;
 		rt[nrt].mask = mask;
 		rt[nrt].eg = eg;
