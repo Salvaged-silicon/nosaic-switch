@@ -2225,103 +2225,97 @@ static int start_forwarding(struct fm6000 *d)
 	kmsg("nosd-fm6000: install254: SERR#+AER-cmd disabled before tx_reload [install254]");
 
 	/*
-	 * install252: SSCHED + ESCHED restore after SerDes #3 (install246).
+	 * install284: JSS-hold + PLL wait + ring_init after SerDes #3 (install246).
 	 *
-	 * install246's fm_pcie_serdes_init() uses SOFT_RESET_PCIE to cycle the
-	 * PCIe SerDes.  SOFT_RESET_PCIE is NOT a chip HARD FATAL:
-	 *   - FATAL_COUNT (reg 0x8) stays at 1 before and after install246
-	 *     (confirmed in install246's post-SerDes-3 fc poll, 2026-11-18).
-	 *   - SSCHED SRAM (NEXT_PORT, freelist) is intact from boot_cold's
-	 *     ring_init and fm_boot_freelists — a PCIe-subsystem reset does not
-	 *     wipe chip SRAM arrays.
-	 *   - Chip registers ARE zeroed (SOFT_RESET_PCIE is a register reset):
-	 *     PLL_CTRL_0=0, JSS_CFG_8=0, IC=0.  PLL hardware continues running.
+	 * install252/253's tx_reload(SKIP_PLL) left the SSCHED ring STUCK on cold
+	 * boot (TX_RT=0x0, TX_FOUND=0 on probe): fc=177 in first 100 polls, tx_sent=0.
 	 *
-	 * Earlier approaches failed:
+	 * Root cause: SOFT_RESET_PCIE (install246) resets PLL_CTRL_0=0, JSS_CFG_8=0
+	 * (IC=0), and all FM6000 chip registers.  SSCHED SRAM (NEXT_PORT, freelist)
+	 * is intact.  tx_reload writes NEXT_PORT scan chain but does NOT reload
+	 * freelists or probe TX_FOUND/TX_RT, so a stuck ring stays stuck.
+	 * ring_init includes freelists + probe and correctly un-sticks the ring.
 	 *
-	 *   install249/250 (tx_reload): _need_reinit=1 (PLL_CTRL_0=0) → writes
-	 *     PLL_CTRL_0=GOLDEN → PLL re-lock triggers a true HARD FATAL
-	 *     (FATAL_COUNT++, SSCHED SRAM wiped, NEXT_PORT=0) → STUCK.
+	 * install249/250 (ring_init without JSS-hold): _need_reinit=1 (PLL_CTRL_0=0)
+	 * → ring_init writes PLL_CTRL_0=GOLDEN → PLL re-lock triggers a true HARD
+	 * FATAL (FATAL_COUNT++, SSCHED SRAM wiped, NEXT_PORT=0) → STUCK.
 	 *
-	 *   install251 (ring_init): probe writes PLL_CTRL_0=GOLDEN → same HARD
-	 *     FATAL cascade; without fm_bist_memory_init+freelists first the
-	 *     settle phase hit cascading ECC FATALs (code 0xd0) for 1457s and
-	 *     never converged.
-	 *
-	 *   install252 (tx_reload, SKIP_PLL, SBus inside block): SBus 0x45
-	 *     JSS clock enable was inside the SKIP_PLL block → JSS synthesiser
-	 *     dead → TX_FOUND=0 → STUCK → esched_set_cfg2(IC=0) FATAL → panic.
-	 *
-	 *   install253 (SBus moved outside SKIP_PLL): TX probe showed STUCK; the
-	 *     esched_set_cfg2 FATAL (expected with TX stuck) briefly bounced FM6000
-	 *     off-bus.  With SERR# disabled (install254), any BAR0 read that races
-	 *     the bounce stalls the CPU permanently (no CTO error completion on
-	 *     AMD RS780 when SERR# off).  fm_ffu_init, the first BAR0 access after
-	 *     the esched block, could race that ~100-200ms recovery window.
-	 *
-	 *   install255 (Memory Space disable before IC=1): disabling PCI_COMMAND
-	 *     Memory Space bit makes FM6000 return Unsupported Request for ALL
-	 *     Memory Space TLPs — including BAR1 (LBUS).  Every NEXT_PORT / token /
-	 *     IC=1 write in tx_reload was silently dropped; TX always read as 0x0
-	 *     ("STUCK") because the ring was never set up.  Config Space (CF8/CFC)
-	 *     is unaffected by the Memory Space bit, so the BIOS SMI during the
-	 *     first cold boot could always read bus=2 and not stall — explaining
-	 *     why the first boot survived 50 h while the second froze after
-	 *     Memory Space was re-enabled and esched's FATAL raced an fm_ffu_init
-	 *     BAR0 read.
-	 *
-	 * Fix (install256): leave Memory Space enabled throughout (LBUS writes
-	 * work normally).  After esched_set_cfg2, call fm_wait_link_active(2000)
-	 * to block until FM6000's PCIe link is active again after any FATAL the
-	 * esched writes may have triggered.  This guarantees fm_ffu_init and
-	 * fm_dma_init never race the bounce window.
-	 *
-	 *   install256 (cold boot): survived esched_set_cfg2 but trial-boot
-	 *     watchdog fired at 412s — DMA init never confirmed.  Root cause:
-	 *     esched_set_cfg2's FATAL_COUNT stability poll (esched.c:252) used
-	 *     fm_rd (BAR0); with SERR# disabled, the first BAR0 read during the
-	 *     CFG_1 FATAL stalled the CPU permanently (no error completion on
-	 *     AMD RS780 when SERR# off).  install256 cold boot survived by luck
-	 *     — the CFG_1 FATAL happened to clear before the fm_rd — but the
-	 *     warm-reboot path freezes consistently because FM6000 is in a
-	 *     more complex state (IC=1 from prior session).
-	 *
-	 * Fix (install257): change esched_set_cfg2's FATAL_COUNT poll to use
-	 * fm_rd_hazardous (LBUS/BAR1) which always gets an error completion
-	 * (returns 0) when FM6000 is transiently off-bus, never stalling.
-	 * [install257, 2026-11-20]
+	 * Fix: mirror boot.c step 6–7 exactly (same as RESET reprogram install283):
+	 * hold JSS in SOFT_RESET, write PLL_CTRL_0=GOLDEN safely, wait for PLL lock,
+	 * release JSS, then ring_init with NEXT_SKIP_PLL.  On cold boot PLL=0x0
+	 * after 300 ms (PLL not locked); ring_init fails rv=-5 on tries 0–4; ESCHED
+	 * skip workaround confirms "link active after esched".  During later RESET
+	 * reprogram cycles the PLL locks and ring_init succeeds rv=0 circ=1.
+	 * [install284, 2026-11-26]
 	 */
 	{
-		int rv252, rv_cfg2;
-		char b252[128];
+		char spll284[128];
 
-		rv252 = fm_ssched_tx_reload(d, FM_SSCHED_TX_RELOAD_SKIP_PLL);
-		snprintf(b252, sizeof b252,
-			"nosd-fm6000: install256: tx_reload(SKIP_PLL) rv=%d [install256]",
-			rv252);
-		kmsg(b252);
+		(void)fm_wr(d, FM6000_SOFT_RESET, FM6000_SOFT_RESET_JSS);
+		kmsg("nosd-fm6000: install284: JSS held in SOFT_RESET [install284]");
 
-		/*
-		 * install258: pass FM_ESCHED_CFG2_SKIP_FP_PORTS.
-		 *
-		 * After tx_reload(SKIP_PLL) the SSCHED ring is STUCK (TX_RT=0).
-		 * Writing CFG_2 for front-panel ports (port 20+) with ring not
-		 * circulating triggers a chip FATAL → PCIe link bounce → kernel
-		 * IRQ handler grabs logbuf_lock + stalls on ECAM read with SERR#
-		 * disabled → esched_dbg("done") write() syscall never returns.
-		 * Skip front-panel CFG_2 here; it will be written in a later
-		 * install once ring circulation is confirmed.  CPU-port CFG_2
-		 * (port 0) is still written — needed for DMA rx_frames.
-		 * [install258, 2026-11-20]
-		 */
-		rv_cfg2 = fm_esched_set_cfg2(d, FM_ESCHED_CFG2_SKIP_FP_PORTS);
-		snprintf(b252, sizeof b252,
-			"nosd-fm6000: install258: esched_set_cfg2(SKIP_FP) rv=%d [install258]",
-			rv_cfg2);
-		kmsg(b252);
+		(void)fm_wr(d, FM6000_PLL_CTRL_0, FM6000_PLL_CTRL_0_GOLDEN);
+		(void)fm_wr(d, FM6000_PLL_CTRL_1, FM6000_PLL_CTRL_1_GOLDEN);
+		(void)fm_wr(d, FM6000_DLL_CTRL,   FM6000_DLL_CTRL_ENABLE);
 
-		(void)fm_wait_link_active(2000);
-		kmsg("nosd-fm6000: install256: link active (or timeout) after esched [install256]");
+		{
+			uint32_t pll284 = 0;
+			unsigned w284;
+			for (w284 = 0; w284 < FM6000_PLL_LOCK_MAX_MS; w284++) {
+				if (fm_rd_hazardous(d, FM6000_PLL_STATUS, &pll284) == FM_OK &&
+				    (pll284 & FM6000_PLL_STATUS_LOCKED_ALL) ==
+				    FM6000_PLL_STATUS_LOCKED_ALL)
+					break;
+				usleep(1000);
+			}
+			snprintf(spll284, sizeof spll284,
+				"nosd-fm6000: install284: pre-ring PLL waited=%u pll=0x%08x [install284]",
+				w284, pll284);
+			kmsg(spll284);
+		}
+
+		(void)fm_wr(d, FM6000_SOFT_RESET, 0);
+		kmsg("nosd-fm6000: install284: JSS released [install284]");
+
+		{
+			struct fm_ssched_report srep284 = {0};
+			int circ284 = 0;
+			char sri284[128];
+			int rv_ri284 = FM_EOFFBUS;
+
+			for (int ring_try284 = 0;
+			     ring_try284 < 5 &&
+			     rv_ri284 < 0 && rv_ri284 != FM_ERR;
+			     ring_try284++) {
+				fm_clear_offbus(d);
+				memset(&srep284, 0, sizeof srep284);
+				circ284 = 0;
+				rv_ri284 = fm_ssched_ring_init(d,
+					FM_SSCHED_NEXT_CHAIN |
+					FM_SSCHED_NO_SWEEPER |
+					FM_SSCHED_NEXT_SKIP_PLL,
+					&circ284, &srep284);
+				snprintf(sri284, sizeof sri284,
+					"nosd-fm6000: install284: ring_init try=%d rv=%d circ=%d lf=0x%08x [install284]",
+					ring_try284, rv_ri284, circ284,
+					srep284.last_fatal);
+				kmsg(sri284);
+				if (rv_ri284 < 0)
+					nap_ms(2000);
+			}
+
+			{
+				int rv_cfg2_284 = fm_esched_set_cfg2(d, FM_ESCHED_CFG2_SKIP_FP_PORTS);
+				char b284e[128];
+				snprintf(b284e, sizeof b284e,
+					"nosd-fm6000: install284: esched_set_cfg2(SKIP_FP) rv=%d circ=%d [install284]",
+					rv_cfg2_284, circ284);
+				kmsg(b284e);
+			}
+
+			(void)fm_wait_link_active(2000);
+			kmsg("nosd-fm6000: install284: link active after esched [install284]");
+		}
 	}
 
 	/*
