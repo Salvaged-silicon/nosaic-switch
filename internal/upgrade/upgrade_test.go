@@ -260,6 +260,40 @@ func TestTheRefusedSlotFollowsTheCommit(t *testing.T) {
 	}
 }
 
+func TestFindPartitionPrefersGPTName(t *testing.T) {
+	// x86_64 ONIE layout: GRUB-BOOT and ONIE-BOOT precede NOSaic's partitions.
+	onieParts := []partition{
+		{Start: 2048, Size: 4096, Name: "GRUB-BOOT"},
+		{Start: 6144, Size: 262144, Name: "ONIE-BOOT"},
+		{Start: 268288, Size: 131072, Name: "nosaic-boot"},
+		{Start: 399360, Size: 1048576, Name: "nosaic-slot-a"},
+		{Start: 1447936, Size: 1048576, Name: "nosaic-slot-b"},
+		{Start: 2496512, Size: 2097152, Name: "nosaic-data"},
+	}
+	if got, ok := findPartition(onieParts, "nosaic-boot", bootIndex); !ok || got.Start != 268288 {
+		t.Errorf("nosaic-boot = (%+v, %v), want Start=268288", got, ok)
+	}
+	if got, ok := findPartition(onieParts, "nosaic-slot-a", 1); !ok || got.Start != 399360 {
+		t.Errorf("nosaic-slot-a = (%+v, %v), want Start=399360", got, ok)
+	}
+	if got, ok := findPartition(onieParts, "nosaic-slot-b", 2); !ok || got.Start != 1447936 {
+		t.Errorf("nosaic-slot-b = (%+v, %v), want Start=1447936", got, ok)
+	}
+
+	// Unnamed / DOS partition table falls back to conventional indices.
+	dosParts := []partition{
+		{Start: 2048, Size: 131072},
+		{Start: 133120, Size: 1048576},
+		{Start: 1181696, Size: 1048576},
+	}
+	if got, ok := findPartition(dosParts, "nosaic-boot", bootIndex); !ok || got.Start != 2048 {
+		t.Errorf("DOS fallback boot = (%+v, %v), want Start=2048", got, ok)
+	}
+	if got, ok := findPartition(dosParts, "nosaic-slot-b", 2); !ok || got.Start != 1181696 {
+		t.Errorf("DOS fallback slot-b = (%+v, %v), want Start=1181696", got, ok)
+	}
+}
+
 // Confirming a trial only reads and sets the boot pointer, so it must not
 // depend on the bootloader's filesystem being mounted. It did, and a healthy
 // image on the 7050SX2 quietly failed to commit: the service was handed

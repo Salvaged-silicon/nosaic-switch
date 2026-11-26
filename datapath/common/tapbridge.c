@@ -149,6 +149,7 @@ struct tap {
 };
 
 static struct tap taps[MAX_TAPS];
+static pthread_rwlock_t tap_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 /*
  * Routed VLAN interfaces: one tap per SVI, not tied to a port.
@@ -415,9 +416,15 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 	 * -- which is not trustworthy on the 40G ports, below.
 	 */
 	if (vid != 0) {
-		for (i = 0; i < ntaps; i++)
-			if (taps[i].vlan == vid)
-				return tap_deliver(&taps[i], pkt);
+		pthread_rwlock_rdlock(&tap_lock);
+		for (i = 0; i < ntaps; i++) {
+			if (taps[i].fd >= 0 && taps[i].vlan == vid) {
+				bcm_rx_t r = tap_deliver(&taps[i], pkt);
+				pthread_rwlock_unlock(&tap_lock);
+				return r;
+			}
+		}
+		pthread_rwlock_unlock(&tap_lock);
 
 		pthread_rwlock_rdlock(&svi_lock);
 		for (i = 0; i < nsvi; i++) {
@@ -446,6 +453,7 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 		}
 	}
 
+	pthread_rwlock_rdlock(&tap_lock);
 	for (i = 0; i < ntaps; i++) {
 		/*
 		 * By source port, for a frame whose VLAN named nothing.
@@ -464,9 +472,13 @@ static bcm_rx_t tap_rx(int unit, bcm_pkt_t *pkt, void *cookie)
 		 * formed on a link whose counters showed clean traffic arriving.
 		 * That is why the VLAN is tried first.
 		 */
-		if (taps[i].port == pkt->src_port)
-			return tap_deliver(&taps[i], pkt);
+		if (taps[i].fd >= 0 && taps[i].port == pkt->src_port) {
+			bcm_rx_t r = tap_deliver(&taps[i], pkt);
+			pthread_rwlock_unlock(&tap_lock);
+			return r;
+		}
 	}
+	pthread_rwlock_unlock(&tap_lock);
 
 	/*
 	 * A frame the chip punted to us from a port we have no tap for.
@@ -1333,6 +1345,9 @@ void nosaic_tap_stats(void)
 	for (i = 0; i < ntaps; i++) {
 		int link = -1;
 
+		if (taps[i].fd < 0)
+			continue;
+
 		/* Link state as LINKSCAN sees it, which is the state that matters:
 		 * the transmit path ANDs its port bitmap with linkscan's, and a port
 		 * missing from that bitmap gets no descriptor built and no error
@@ -1574,14 +1589,22 @@ void nosaic_tap_stats(void)
 
 int nosaic_tap_count(void)
 {
-	return ntaps;
+	int n;
+
+	pthread_rwlock_rdlock(&tap_lock);
+	n = ntaps;
+	pthread_rwlock_unlock(&tap_lock);
+	return n;
 }
 
 int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
 		    unsigned char mac[6])
 {
-	if (i < 0 || i >= ntaps)
+	pthread_rwlock_rdlock(&tap_lock);
+	if (i < 0 || i >= ntaps || taps[i].fd < 0) {
+		pthread_rwlock_unlock(&tap_lock);
 		return -1;
+	}
 	if (name != NULL)
 		*name = taps[i].name;
 	if (port != NULL)
@@ -1592,7 +1615,93 @@ int nosaic_tap_info(int i, const char **name, int *port, int *vlan, int *mtu,
 		*mtu = taps[i].mtu;
 	if (mac != NULL)
 		memcpy(mac, taps[i].mac, 6);
+	pthread_rwlock_unlock(&tap_lock);
 	return 0;
+}
+
+int nosaic_tap_port_add(int unit, const char *name, int port, int vlan, int mtu,
+			unsigned char mac[6])
+{
+	int i, slot = -1;
+
+	pthread_rwlock_wrlock(&tap_lock);
+	for (i = 0; i < ntaps; i++) {
+		if (taps[i].fd >= 0 && taps[i].port == port) {
+			if (mac != NULL)
+				memcpy(mac, taps[i].mac, 6);
+			pthread_rwlock_unlock(&tap_lock);
+			return 0;
+		}
+		if (taps[i].fd < 0 && slot < 0)
+			slot = i;
+	}
+	if (slot < 0) {
+		if (ntaps >= MAX_TAPS) {
+			pthread_rwlock_unlock(&tap_lock);
+			fprintf(stderr, "tap: %s: all %d port taps are in use\n",
+				name, MAX_TAPS);
+			return -1;
+		}
+		slot = ntaps;
+	}
+	memset(&taps[slot], 0, sizeof(taps[slot]));
+	taps[slot].fd = -1;
+	if (tap_open(&taps[slot], name, port, slot, mtu) != 0) {
+		taps[slot].fd = -1;
+		pthread_rwlock_unlock(&tap_lock);
+		return -1;
+	}
+	if (tap_frame_max(unit, port, mtu) != 0) {
+		close(taps[slot].fd);
+		taps[slot].fd = -1;
+		pthread_rwlock_unlock(&tap_lock);
+		return -1;
+	}
+	taps[slot].vlan = vlan;
+	taps[slot].mtu = mtu;
+	if (tap_vlan_setup(unit, &taps[slot], vlan) != 0) {
+		close(taps[slot].fd);
+		taps[slot].fd = -1;
+		pthread_rwlock_unlock(&tap_lock);
+		return -1;
+	}
+	if (mac != NULL)
+		memcpy(mac, taps[slot].mac, 6);
+	if (slot == ntaps)
+		ntaps++;
+	printf("tap: %s <-> port %d\n", taps[slot].name, taps[slot].port);
+	fflush(stdout);
+	pthread_rwlock_unlock(&tap_lock);
+	return 0;
+}
+
+void nosaic_tap_port_del(int port, char *name_out, size_t name_len)
+{
+	int i;
+
+	if (name_out != NULL && name_len > 0)
+		name_out[0] = '\0';
+	pthread_rwlock_wrlock(&tap_lock);
+	for (i = 0; i < ntaps; i++) {
+		if (taps[i].fd >= 0 && taps[i].port == port) {
+			int vid = taps[i].vlan;
+
+			if (name_out != NULL && name_len > 0)
+				snprintf(name_out, name_len, "%s", taps[i].name);
+			close(taps[i].fd);
+			taps[i].fd = -1;
+			taps[i].port = -1;
+			taps[i].vlan = 0;
+			if (vid > 1) {
+				bcm_pbmp_t pbm;
+				BCM_PBMP_CLEAR(pbm);
+				BCM_PBMP_PORT_ADD(pbm, port);
+				(void)bcm_vlan_port_remove(tap_unit, (bcm_vlan_t)vid, pbm);
+				(void)bcm_vlan_destroy(tap_unit, (bcm_vlan_t)vid);
+			}
+		}
+	}
+	pthread_rwlock_unlock(&tap_lock);
 }
 
 int nosaic_tap_svi_add(int vid, const char *name, unsigned char mac[6])
@@ -1679,17 +1788,21 @@ void nosaic_tap_svi_del(int vid)
 void nosaic_tap_pump(void (*tick)(void), int tick_ms)
 {
 	struct pollfd fds[MAX_TAPS + MAX_SVI];
+	int           tapfd[MAX_TAPS];
 	int           svifd[MAX_SVI];
 	unsigned char buf[TAP_MTU];
 	int i, n, ns;
 
 	for (;;) {
-		for (i = 0; i < ntaps; i++) {
+		pthread_rwlock_rdlock(&tap_lock);
+		n = ntaps;
+		for (i = 0; i < n; i++) {
+			tapfd[i] = taps[i].fd;
 			fds[i].fd = taps[i].fd;
 			fds[i].events = POLLIN;
 			fds[i].revents = 0;
 		}
-		n = ntaps;
+		pthread_rwlock_unlock(&tap_lock);
 		pthread_rwlock_rdlock(&svi_lock);
 		ns = nsvi;
 		for (i = 0; i < ns; i++) {
@@ -1712,15 +1825,18 @@ void nosaic_tap_pump(void (*tick)(void), int tick_ms)
 		}
 		if (tick != NULL)
 			tick();
+		pthread_rwlock_rdlock(&tap_lock);
 		for (i = 0; i < n; i++) {
 			ssize_t len;
 
-			if (!(fds[i].revents & POLLIN))
+			if (taps[i].fd < 0 || taps[i].fd != tapfd[i] ||
+			    !(fds[i].revents & POLLIN))
 				continue;
 			len = read(taps[i].fd, buf, sizeof(buf));
 			if (len > 0)
 				tap_tx(&taps[i], buf, (int)len);
 		}
+		pthread_rwlock_unlock(&tap_lock);
 		pthread_rwlock_rdlock(&svi_lock);
 		for (i = 0; i < ns; i++) {
 			ssize_t len;

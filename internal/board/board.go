@@ -371,10 +371,10 @@ func (b *Board) Validate(root string) []string {
 	// the EFI startup script as well -- so a test for `!= "aboot"` refuses a
 	// perfectly correct UEFI board. Anything added here that renders
 	// KernelParams has to be added to this list too.
-	if b.KernelParams != "" && b.Boot != "aboot" && b.Boot != "uefi" && b.Boot != "" {
-		bad("kernel_params is read only by the aboot and uefi backends, and "+
+	if b.KernelParams != "" && b.Boot != "aboot" && b.Boot != "uefi" && !(b.Boot == "onie-sfx" && b.Arch == "x86_64") && b.Boot != "" {
+		bad("kernel_params is read only by the aboot, uefi, and x86_64 onie-sfx backends, and "+
 			"this board boots with %q. Put them where that bootloader gets "+
-			"its command line -- for uboot and onie-sfx that is "+
+			"its command line -- for uboot and non-x86_64 onie-sfx that is "+
 			"u_boot_nos_bootcmd", b.Boot)
 	}
 

@@ -224,12 +224,28 @@ mount_flash() {
 # a flash board its image the moment the stick appears, and a board with
 # neither waits exactly as long as it did before. mount_flash is asked for one
 # pass per round (FLASH_OPTIONAL=yes); the rounds are counted here.
+# Resolve a GPT partition by its PARTNAME in sysfs.
+# BusyBox findfs only understands LABEL=/UUID=/PARTUUID=, not PARTLABEL=, and
+# squashfs slots carry no filesystem label of their own. The kernel always
+# publishes GPT partition names as PARTNAME=<name> in /sys/class/block/*/uevent.
+find_partlabel() {
+    for _u in /sys/class/block/*/uevent; do
+        [ -r "$_u" ] || continue
+        if grep -qx "PARTNAME=$1" "$_u" 2>/dev/null; then
+            _n="${_u%/uevent}"
+            _n="${_n##*/}"
+            [ -b "/dev/$_n" ] && { echo "/dev/$_n"; return 0; }
+        fi
+    done
+    return 1
+}
+
 PERSIST=no
 _dwaited=0
 _after=""
 while :; do
     [ "$_dwaited" -gt 0 ] && _after=" after ${_dwaited}s"
-    DATA="$(findfs LABEL=nosaic-data 2>/dev/null)"
+    DATA="$(findfs LABEL=nosaic-data 2>/dev/null || find_partlabel nosaic-data)"
     [ -z "$DATA" ] && [ -b /dev/vda4 ] && DATA=/dev/vda4
     if [ -n "$DATA" ] && mount -t ext4 "$DATA" /mnt/data 2>/dev/null; then
         echo "NOSAIC-INITRAMFS data partition mounted ($DATA)$_after"
@@ -301,7 +317,7 @@ mkdir -p /mnt/boot
 # whose GPT names survive.
 BOOTDEV="$(findfs LABEL=nosaic-boot 2>/dev/null \
         || findfs LABEL=NOSAIC-BOOT 2>/dev/null \
-        || findfs PARTLABEL=nosaic-boot 2>/dev/null \
+        || find_partlabel nosaic-boot \
         || echo /dev/vda1)"
 
 # ext2 first, then vfat. Tried rather than derived: the initramfs is one script
@@ -342,6 +358,7 @@ slotdev() {
         *) echo ""; return ;;
     esac
     findfs "LABEL=$want" 2>/dev/null && return
+    find_partlabel "$want" && return
 
     # A slot file on the bootloader's own filesystem, for boards where the
     # bootloader owns the whole disk and there is no room for a partition of

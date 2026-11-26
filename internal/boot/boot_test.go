@@ -63,6 +63,7 @@ func TestUnknownBootloaderIsAnError(t *testing.T) {
 // the script computes for itself must land exactly on the payload.
 func TestONIEInstallerExtractsItsOwnPayload(t *testing.T) {
 	img, dir := fixture(t)
+	img.Arch = "powerpc"
 	b, _ := For("onie-sfx")
 	out, err := b.Wrap(img, dir, io.Discard)
 	if err != nil {
@@ -101,6 +102,7 @@ tail -n +$SKIP "$1" | tar -xO disk.img.gz | gunzip -c`
 
 func TestONIEInstallerIsExecutable(t *testing.T) {
 	img, dir := fixture(t)
+	img.Arch = "powerpc"
 	b, _ := For("onie-sfx")
 	out, _ := b.Wrap(img, dir, io.Discard)
 	fi, err := os.Stat(out)
@@ -109,6 +111,49 @@ func TestONIEInstallerIsExecutable(t *testing.T) {
 	}
 	if fi.Mode().Perm()&0o111 == 0 {
 		t.Error("ONIE executes the installer, so it has to be executable")
+	}
+}
+
+func TestONIEInstallerX86_64(t *testing.T) {
+	img, dir := fixture(t)
+	img.Arch = "x86_64"
+	img.KernelParams = "console=ttyS0,115200n8 memmap=64M$0xb0000000 iomem=relaxed"
+	img.BootMiB = 64
+	img.SlotMiB = 512
+
+	b, _ := For("onie-sfx")
+	out, err := b.Wrap(img, dir, io.Discard)
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGRUBParams := `console=ttyS0,115200n8 memmap=64M\$0xb0000000 iomem=relaxed`
+	if !strings.Contains(string(raw), wantGRUBParams) {
+		t.Errorf("x86_64 installer missing GRUB-escaped kernel_params %q", wantGRUBParams)
+	}
+
+	for _, member := range []struct {
+		name string
+		want string
+	}{
+		{"vmlinuz", "KERNEL-CONTENT"},
+		{"initramfs.cpio.gz", "INITRAMFS-CONTENT"},
+		{"rootfs.sqsh", "SQUASHFS-CONTENT"},
+	} {
+		script := fmt.Sprintf(`set -e
+SKIP=$(awk '/^__NOSAIC_PAYLOAD__$/ { print NR + 1; exit 0; }' "$1")
+tail -n +$SKIP "$1" | tar -xO %s`, member.name)
+		got, err := exec.Command("sh", "-c", script, "sh", out).Output()
+		if err != nil {
+			t.Fatalf("extract %s: %v", member.name, err)
+		}
+		if string(got) != member.want {
+			t.Errorf("%s came back as %q, want %q", member.name, string(got), member.want)
+		}
 	}
 }
 

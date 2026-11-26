@@ -1,0 +1,53 @@
+# Dell Networking S6000-ON — Broadcom BCM56850 (Trident II), 32x 40GbE QSFP+.
+#
+# Intel Atom S1220 (Centerton, x86_64) CPU, ONIE Legacy BIOS + GPT + GRUB2,
+# Marvell SATA SSD, Intel 82574L management NIC (e1000e).
+
+id: dell-s6000-on
+vendor: dell
+model: s6000-on
+
+arch: x86_64
+asic: td2
+boot: onie-sfx
+
+profile: minimal
+kernel: ""
+
+status: bringup
+
+console: ttyS0
+console_baud: 115200
+
+# Partition sizes in MiB (created after GRUB-BOOT and ONIE-BOOT).
+boot_mib: 64
+slot_mib: 512
+data_mib: 1024
+
+# Usable RAM below 4 GiB ends at 0xbed0cfff on this board's BIOS-e820 map, so
+# the default 0xd0000000 lands in the PCI hole. 0xb0000000 is inside usable RAM
+# and iomem=relaxed allows nosd-td2's userspace BDE to map it via /dev/mem.
+kernel_params: "console=ttyS0,115200n8 net.ifnames=0 biosdevname=0 processor.max_cstate=1 intel_idle.max_cstate=0 panic=10 reboot=p memmap=64M$0xb0000000 iomem=relaxed"
+
+# Direct-attach 32x 40G QSFP+ cages; net_wait_secs kept short while portmap
+# and HAL are being brought up.
+net_wait_secs: 60
+
+platform_hal:
+  driver: s6000
+
+thermal:
+  min_c: 40
+  max_c: 75
+  slew_down_percent: 5
+  interval_seconds: 10
+
+notes: >
+  Intel Atom S1220 (Centerton) with 8 GiB RAM and a 14.9 GiB SATA SSD behind a
+  Marvell 88SE9170 controller. Management port is an Intel 82574L (e1000e) at
+  08:00.0. The Trident II (14e4:b850 rev 03) sits at 01:00.0.
+
+  ONIE boots via Legacy BIOS + GPT (GRUB-BOOT on sda1, ONIE-BOOT on sda2).
+  The x86_64 onie-sfx installer preserves those two partitions and creates
+  nosaic-boot, nosaic-slot-a, nosaic-slot-b, and nosaic-data after them,
+  updating ONIE-BOOT's grub.cfg with NOSaic as default and ONIE as fallback.

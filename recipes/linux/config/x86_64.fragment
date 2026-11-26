@@ -214,3 +214,21 @@ CONFIG_SENSORS_PMBUS=m
 # board that has no FPGA -- and this one has none: no IOFPGA, no MIFPGA, all
 # three FPGA BAR parameters read 0.
 CONFIG_GPIO_PCA953X=m
+
+# --- Dell S6000-ON (Intel Atom S1220 Centerton) ----------------------------
+#
+# The S1220 uses iSMT (00:13.0/.1) and SCH (00:1f.0) SMBus controllers rather
+# than i801 or PIIX4, plus SCH GPIOs driving a 4-channel I2C mux for sensors,
+# fans, CPLDs, and the 32 QSFP+ cages.
+CONFIG_I2C_ISMT=y
+CONFIG_I2C_ISCH=y
+CONFIG_I2C_MUX_GPIO=y
+CONFIG_GPIO_SCH=y
+CONFIG_EXPERT=y
+CONFIG_GPIO_SYSFS=y
+
+# S6000-ON thermal and DIMM sensors (in addition to lm75/pmbus above).
+# The MAX6620 fan controllers (0x29/0x2a) have no upstream Linux driver and are
+# driven from userspace via /dev/i2c-* in internal/platformhal/s6000/.
+CONFIG_SENSORS_EMC1403=m
+CONFIG_SENSORS_JC42=m

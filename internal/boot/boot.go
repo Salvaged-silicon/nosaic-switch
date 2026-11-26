@@ -89,6 +89,11 @@ type Image struct {
 	// KernelParams are appended to the kernel command line.
 	KernelParams string
 
+	// Partition sizes in MiB (from Board.Layout), used by installers that
+	// create partitions on the target disk (e.g. x86_64 ONIE).
+	BootMiB int
+	SlotMiB int
+
 	// AbootMaxHWEpoch is the newest Arista hardware epoch this image claims to
 	// support; Aboot refuses a board whose epoch is higher. Empty means 1.
 	AbootMaxHWEpoch string

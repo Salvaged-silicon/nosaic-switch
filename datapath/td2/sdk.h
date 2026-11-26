@@ -18,4 +18,8 @@ int nosaic_sdk_bcm_init(int unit);
 /* Report which ports have link. */
 int nosaic_sdk_ports(int unit);
 
+/* Live per-cage breakout ("40g" <-> "4x10g") + persistence to portmode.conf. */
+int nosaic_sdk_port_breakout(int unit, const char *name, const char *mode,
+			     char *err, int errlen);
+
 #endif

@@ -134,6 +134,13 @@ func (s *Server) dispatch(req proto.Request) proto.Response {
 		}
 		return done(s.sw.SetPortMTU(p.Name, p.MTU))
 
+	case proto.OpSetPortBreakout:
+		var b proto.PortBreakoutArgs
+		if err := json.Unmarshal(req.Args, &b); err != nil {
+			return proto.ErrorResponse(err)
+		}
+		return done(s.sw.SetPortBreakout(b.Name, b.Mode))
+
 	case proto.OpPortCounters:
 		if err := json.Unmarshal(req.Args, &p); err != nil {
 			return proto.ErrorResponse(err)
