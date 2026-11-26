@@ -199,11 +199,11 @@ fi
 # $1 = "quiet" while waiting for the datapath, whose ports do not exist yet.
 apply_vlans() {
 command -v nosaic >/dev/null 2>&1 || return 0
-grep -Eq '^(vlan|switchport|lag|lacp|stp|mlag|gateway|mac|interface)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
+grep -Eq '^(vlan|switchport|lag|lacp|stp|mlag|gateway|mac|lldp|interface)[[:space:]]|^iface[[:space:]]+vlan[0-9]' "$CONF" || return 0
 # The LACP system priority first: every LAG negotiates with it from the start.
-# The MAC aging time with it, before anything is learned.
+# The MAC aging time and LLDP settings with it.
 while read -r kind rest; do
-    case "$kind" in lacp|mac) ;; *) continue ;; esac
+    case "$kind" in lacp|mac|lldp) ;; *) continue ;; esac
     [ -n "$rest" ] || continue
     # shellcheck disable=SC2086 -- rest is the arguments, word-split on purpose
     out=$(nosaic $kind $rest 2>&1) || say "$kind $rest FAILED: $out" "$1"
